@@ -94,9 +94,9 @@ export default function LeadsTable({
                       <Mail size={12} />
                       <span>{lead.primary_email}</span>
                       {lead.email_verified ? (
-                        <ShieldCheck size={12} className="text-green-500 shrink-0" title="Email verified" />
+                        <ShieldCheck size={12} className="text-green-500 shrink-0" />
                       ) : lead.verification_status === 'invalid' ? (
-                        <ShieldX size={12} className="text-red-400 shrink-0" title="Email invalid" />
+                        <ShieldX size={12} className="text-red-400 shrink-0" />
                       ) : null}
                     </span>
                   ) : (
