@@ -11,3 +11,5 @@ scripts/
 skills/
 .tmp/
 .venv/
+requirements.txt
+Dockerfile
