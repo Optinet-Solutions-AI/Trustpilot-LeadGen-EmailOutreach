@@ -35,6 +35,26 @@ export async function updateCampaign(id: string, patch: Record<string, unknown>)
   return data;
 }
 
+export async function deleteCampaign(id: string) {
+  const supabase = getSupabase();
+  // campaign_leads are cascade-deleted by DB FK constraint
+  const { error } = await supabase.from('campaigns').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+/** Returns a Set of email addresses already successfully sent in any campaign. */
+export async function getSentEmails(): Promise<Set<string>> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('campaign_leads')
+    .select('email_used')
+    .in('status', ['sent', 'opened', 'replied']);
+  if (error) throw new Error(error.message);
+  return new Set(
+    (data || []).map((r: { email_used: string | null }) => r.email_used).filter(Boolean) as string[]
+  );
+}
+
 export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) {
   const supabase = getSupabase();
   // First get the emails for each lead

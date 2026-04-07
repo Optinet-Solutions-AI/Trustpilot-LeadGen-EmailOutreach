@@ -29,7 +29,7 @@ export interface CampaignLead {
 
 export interface CampaignSendProgress {
   campaignId: string;
-  stage: 'connected' | 'started' | 'sent' | 'completed' | 'failed';
+  stage: 'connected' | 'started' | 'sent' | 'completed' | 'failed' | 'cancelled';
   emailIndex?: number;
   total?: number;
   sent?: number;

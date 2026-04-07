@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
-import { getCampaigns, createCampaign, updateCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats } from '../db/campaigns.js';
+import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
 import { renderTemplate } from '../services/template-engine.js';
-import { runCampaignSend, campaignEvents } from '../services/campaign-sender.js';
+import { runCampaignSend, cancelCampaign, campaignEvents } from '../services/campaign-sender.js';
 import { rateLimiter } from '../services/rate-limiter.js';
 import { config } from '../config.js';
 import fs from 'fs';
@@ -63,6 +63,23 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/campaigns/:id — remove campaign and all its leads
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    await deleteCampaign(param(req.params.id));
+    res.json({ success: true, data: null });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/campaigns/:id/cancel — request stop of a running campaign
+router.post('/:id/cancel', (req: Request, res: Response) => {
+  cancelCampaign(param(req.params.id));
+  res.json({ success: true, data: { message: 'Cancel requested — will stop before next email.' } });
+});
+
 // POST /api/campaigns/:id/send — fire-and-forget async send
 router.post('/:id/send', async (req: Request, res: Response) => {
   try {
@@ -84,9 +101,27 @@ router.post('/:id/send', async (req: Request, res: Response) => {
 
     const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
 
+    // Personal email domains — skip for B2B outreach (these get blocked by Gmail)
+    const PERSONAL_DOMAINS = new Set([
+      'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
+      'live.com', 'icloud.com', 'aol.com', 'protonmail.com',
+      'mail.com', 'ymail.com', 'googlemail.com',
+    ]);
+
+    // Deduplication: collect emails already successfully sent in ANY campaign
+    const alreadySent = await getSentEmails();
+
     // Build email list for async sender
     const emails = campaignLeads
-      .filter((cl: { email_used: string | null; status: string }) => cl.email_used && cl.status === 'pending')
+      .filter((cl: { email_used: string | null; status: string }) => {
+        if (!cl.email_used || cl.status !== 'pending') return false;
+        // Skip already-sent emails (cross-campaign dedup)
+        if (alreadySent.has(cl.email_used)) return false;
+        // Skip personal email domains
+        const domain = cl.email_used.split('@')[1]?.toLowerCase();
+        if (domain && PERSONAL_DOMAINS.has(domain)) return false;
+        return true;
+      })
       .map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => {
         const lead = cl.leads as Record<string, unknown>;
         const screenshotPath = campaign.include_screenshot && lead.screenshot_path

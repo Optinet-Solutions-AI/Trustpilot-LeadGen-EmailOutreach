@@ -42,6 +42,15 @@ export function useCampaigns() {
     return res.data.data as { campaignId: string; emailCount: number; testMode: boolean; message: string };
   }, []);
 
+  const cancelCampaign = useCallback(async (campaignId: string) => {
+    await api.post(`/campaigns/${campaignId}/cancel`);
+  }, []);
+
+  const deleteCampaign = useCallback(async (campaignId: string) => {
+    await api.delete(`/campaigns/${campaignId}`);
+    setCampaigns((prev) => prev.filter((c) => c.id !== campaignId));
+  }, []);
+
   const addLeads = useCallback(async (campaignId: string, leadIds: string[]) => {
     await api.post(`/campaigns/${campaignId}/leads`, { leadIds });
   }, []);
@@ -78,5 +87,5 @@ export function useCampaigns() {
     };
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit };
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit };
 }

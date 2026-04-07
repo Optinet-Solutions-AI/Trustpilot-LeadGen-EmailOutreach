@@ -7,7 +7,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || '';
 
 export function useCampaignProgress() {
   const [progress, setProgress] = useState<CampaignSendProgress[]>([]);
-  const [status, setStatus] = useState<'idle' | 'connecting' | 'sending' | 'completed' | 'failed'>('idle');
+  const [status, setStatus] = useState<'idle' | 'connecting' | 'sending' | 'completed' | 'failed' | 'cancelled'>('idle');
   const [sent, setSent] = useState(0);
   const [failed, setFailed] = useState(0);
   const [total, setTotal] = useState(0);
@@ -46,6 +46,11 @@ export function useCampaignProgress() {
           setSent(data.sent ?? 0);
           setFailed(data.failed ?? 0);
           es.close();
+        } else if (data.stage === 'cancelled') {
+          setStatus('cancelled');
+          setSent(data.sent ?? 0);
+          setFailed(data.failed ?? 0);
+          es.close();
         } else if (data.stage === 'failed') {
           setStatus('failed');
           es.close();
@@ -57,7 +62,7 @@ export function useCampaignProgress() {
 
     es.onerror = () => {
       // SSE connection closed by server on completion — not necessarily an error
-      if (status !== 'completed') {
+      if (status !== 'completed' && status !== 'cancelled') {
         setStatus('failed');
       }
       es.close();

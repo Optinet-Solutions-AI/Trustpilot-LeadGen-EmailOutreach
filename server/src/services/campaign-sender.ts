@@ -18,6 +18,14 @@ import { getSupabase } from '../lib/supabase.js';
 export const campaignEvents = new EventEmitter();
 campaignEvents.setMaxListeners(50);
 
+// Campaigns that have been requested to cancel
+const cancelRequests = new Set<string>();
+
+/** Request a running campaign to stop before the next email. */
+export function cancelCampaign(campaignId: string) {
+  cancelRequests.add(campaignId);
+}
+
 export interface CampaignEmail {
   campaignLeadId: string;
   leadId: string;
@@ -63,6 +71,15 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
 
     for (let i = 0; i < emails.length; i++) {
       const email = emails[i];
+
+      // Check for cancellation request before each email
+      if (cancelRequests.has(campaignId)) {
+        cancelRequests.delete(campaignId);
+        await updateCampaign(campaignId, { status: 'draft' });
+        emitProgress(campaignId, { stage: 'cancelled', sent, failed, total });
+        console.log(`[Campaign] Cancelled by user after ${sent} sends.`);
+        return;
+      }
 
       // Wait for rate limiter if at cap
       await rateLimiter.waitUntilCanSend(`[Campaign:${campaignId}] `);
