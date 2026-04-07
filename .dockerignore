@@ -1,0 +1,37 @@
+# Dependencies (reinstalled inside container)
+node_modules/
+api/node_modules/
+frontend/node_modules/
+
+# Python virtual environment (system python3 used inside container)
+.venv/
+
+# Build outputs
+api/dist/
+frontend/dist/
+
+# Secrets — inject these via Cloud Run env vars, never bake into image
+.env
+
+# Dev/temp files
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.map
+
+# Git
+.git/
+.gitignore
+
+# Frontend (not needed in API container — deployed separately to Vercel)
+frontend/
+
+# Docs and misc
+docs/
+skills/
+scripts/
+workflows/
+*.md
+.claudeignore

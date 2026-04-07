@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+.env
+.tmp/
+__pycache__/
+dist/
+build/
+*.pyc
+*.map
+*.log
+credentials.json
+token.json
