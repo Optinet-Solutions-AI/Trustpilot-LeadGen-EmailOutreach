@@ -53,7 +53,24 @@ app.get('/api/health', (_req, res) => {
 // Error handler (must be last)
 app.use(errorHandler);
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`API server running on http://localhost:${config.port}`);
   console.log(`Email mode: ${config.emailMode}`);
+});
+
+// Graceful shutdown — Cloud Run sends SIGTERM before killing the instance.
+// Mark any running scrape jobs as failed so the UI doesn't show them stuck.
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received — marking running jobs as failed and shutting down');
+  try {
+    const { getSupabase } = await import('./lib/supabase.js');
+    const supabase = getSupabase();
+    await supabase
+      .from('scrape_jobs')
+      .update({ status: 'failed', error: 'Server shutdown during job' })
+      .eq('status', 'running');
+  } catch (e) {
+    console.error('Failed to clean up running jobs on shutdown:', e);
+  }
+  server.close(() => process.exit(0));
 });

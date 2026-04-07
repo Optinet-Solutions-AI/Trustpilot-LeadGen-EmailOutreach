@@ -1,0 +1,241 @@
+swagger: "2.0"
+info:
+  title: trustpilot-api
+  description: Trustpilot LeadGen API Gateway proxy to Cloud Run
+  version: "1.1.0"
+schemes:
+  - https
+produces:
+  - application/json
+x-google-backend:
+  address: https://trustpilot-api-pmj2zcippq-uc.a.run.app
+  jwt_audience: https://trustpilot-api-pmj2zcippq-uc.a.run.app
+  protocol: h2
+paths:
+  /api/health:
+    get:
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/scrape:
+    get:
+      operationId: listScrapeJobs
+      security: []
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: startScrapeJob
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/scrape/{id}/status:
+    get:
+      operationId: scrapeJobStatus
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads:
+    get:
+      operationId: listLeads
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/leads/bulk:
+    patch:
+      operationId: bulkUpdateLeads
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/leads/{id}:
+    get:
+      operationId: getLead
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+    patch:
+      operationId: updateLead
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: deleteLead
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/{id}/notes:
+    get:
+      operationId: getLeadNotes
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createLeadNote
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/{id}/follow-ups:
+    get:
+      operationId: getLeadFollowUps
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createLeadFollowUp
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/follow-ups:
+    get:
+      operationId: listFollowUps
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/follow-ups/{id}/complete:
+    patch:
+      operationId: completeFollowUp
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/verify:
+    post:
+      operationId: verifyEmails
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/enrich:
+    post:
+      operationId: enrichLeads
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/campaigns:
+    get:
+      operationId: listCampaigns
+      security: []
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createCampaign
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}:
+    patch:
+      operationId: updateCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/send:
+    post:
+      operationId: sendCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/stats:
+    get:
+      operationId: getCampaignStats
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/leads:
+    post:
+      operationId: addLeadsToCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/analytics:
+    get:
+      operationId: getAnalytics
+      security: []
+      responses:
+        "200":
+          description: OK

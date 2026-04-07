@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ExternalLink, Mail, Phone, Trash2 } from 'lucide-react';
+import { ExternalLink, Mail, Phone, Trash2, ShieldCheck, ShieldX } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import type { Lead, LeadStatus } from '../types/lead';
 
@@ -91,7 +91,13 @@ export default function LeadsTable({
                 <td className="p-3">
                   {lead.primary_email ? (
                     <span className="inline-flex items-center gap-1 text-gray-700">
-                      <Mail size={12} /> {lead.primary_email}
+                      <Mail size={12} />
+                      <span>{lead.primary_email}</span>
+                      {lead.email_verified ? (
+                        <ShieldCheck size={12} className="text-green-500 shrink-0" title="Email verified" />
+                      ) : lead.verification_status === 'invalid' ? (
+                        <ShieldX size={12} className="text-red-400 shrink-0" title="Email invalid" />
+                      ) : null}
                     </span>
                   ) : (
                     <span className="text-gray-400">-</span>
