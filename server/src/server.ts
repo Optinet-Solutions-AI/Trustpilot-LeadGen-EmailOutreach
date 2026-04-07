@@ -9,6 +9,7 @@ import scrapeRoutes from './routes/scrape.js';
 import leadsRoutes from './routes/leads.js';
 import campaignsRoutes from './routes/campaigns.js';
 import verifyRoutes from './routes/verify.js';
+import enrichRoutes from './routes/enrich.js';
 import notesRoutes from './routes/notes.js';
 import followUpsRoutes from './routes/follow-ups.js';
 import analyticsRoutes from './routes/analytics.js';
@@ -35,6 +36,7 @@ app.use('/api/leads', notesRoutes);       // /api/leads/:leadId/notes
 app.use('/api/leads', followUpsRoutes);   // /api/leads/:leadId/follow-ups (nested)
 app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/verify', verifyRoutes);
+app.use('/api/enrich', enrichRoutes);
 app.use('/api/follow-ups', followUpsRoutes);  // /api/follow-ups (top-level for dashboard)
 app.use('/api/analytics', analyticsRoutes);
 

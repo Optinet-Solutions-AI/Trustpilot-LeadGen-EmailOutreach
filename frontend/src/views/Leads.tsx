@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
 import LeadsTable from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
-import { LayoutList, Columns3, Search, ShieldCheck } from 'lucide-react';
+import { LayoutList, Columns3, Search, ShieldCheck, Globe } from 'lucide-react';
 import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
 
@@ -90,22 +90,71 @@ export default function Leads() {
     await updateLead(id, { outreach_status: status });
   };
 
+  const [verifying, setVerifying] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const notify = (type: 'success' | 'error', message: string) => {
+    setNotification({ type, message });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
   const handleBulkVerify = async () => {
     if (selectedIds.length === 0) return;
-    await api.post('/verify', { leadIds: selectedIds });
-    loadLeads();
+    setVerifying(true);
+    try {
+      const res = await api.post('/verify', { leadIds: selectedIds });
+      const { verified, invalid, catchAll } = res.data.data;
+      notify('success', `Verified ${selectedIds.length} leads — ${verified} valid, ${invalid} invalid, ${catchAll} catch-all`);
+      loadLeads();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Verification failed');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleBulkEnrich = async () => {
+    if (selectedIds.length === 0) return;
+    setEnriching(true);
+    try {
+      const res = await api.post('/enrich', { leadIds: selectedIds });
+      const { enriched, total } = res.data.data;
+      notify('success', `Enriched ${total} leads — ${enriched} new emails found`);
+      loadLeads();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Enrichment failed');
+    } finally {
+      setEnriching(false);
+    }
   };
 
   return (
     <div className="space-y-4">
+      {notification && (
+        <div className={`px-4 py-3 rounded-md text-sm font-medium ${
+          notification.type === 'success'
+            ? 'bg-green-50 text-green-800 border border-green-200'
+            : 'bg-red-50 text-red-800 border border-red-200'
+        }`}>
+          {notification.message}
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Leads</h1>
         <div className="flex items-center gap-2">
           {selectedIds.length > 0 && (
-            <button onClick={handleBulkVerify}
-              className="inline-flex items-center gap-1 bg-cyan-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-cyan-700">
-              <ShieldCheck size={14} /> Verify ({selectedIds.length})
-            </button>
+            <>
+              <button onClick={handleBulkEnrich} disabled={enriching || verifying}
+                className="inline-flex items-center gap-1 bg-emerald-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-emerald-700 disabled:opacity-50">
+                <Globe size={14} /> {enriching ? 'Enriching...' : `Enrich (${selectedIds.length})`}
+              </button>
+              <button onClick={handleBulkVerify} disabled={verifying || enriching}
+                className="inline-flex items-center gap-1 bg-cyan-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-cyan-700 disabled:opacity-50">
+                <ShieldCheck size={14} /> {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
+              </button>
+            </>
           )}
           <div className="flex border border-gray-300 rounded-md overflow-hidden">
             <button onClick={() => handleViewChange('table')}
