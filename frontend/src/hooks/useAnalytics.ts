@@ -29,16 +29,20 @@ export interface AnalyticsData {
 export function useAnalytics() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchAnalytics = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await api.get('/analytics');
       setData(res.data.data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load analytics');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  return { data, loading, fetchAnalytics };
+  return { data, loading, error, fetchAnalytics };
 }

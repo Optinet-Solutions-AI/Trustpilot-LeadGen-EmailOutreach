@@ -13,7 +13,7 @@ const COUNTRIES = [
 ];
 
 const CATEGORIES = [
-  // ── Gambling (all Trustpilot subcategories) ──────────────────
+  // ── Gambling ─────────────────────────────────────────────────
   'gambling',                      // Gambling (parent — broadest)
   'casino',                        // Casino
   'online_casino_or_bookmaker',    // Online Casino or Bookmaker
@@ -28,28 +28,12 @@ const CATEGORIES = [
   'lottery_retailer',              // Lottery Retailer
   'lottery_shop',                  // Lottery Shop
   'gambling_instructor',           // Gambling Instructor
-  // ── Gaming (Trustpilot subcategories) ───────────────────────
+  // ── Gaming ───────────────────────────────────────────────────
   'gaming',                        // Gaming (parent)
   'gaming_service_provider',       // Gaming Service Provider
   'bingo_hall',                    // Bingo Hall
   'video_game_store',              // Video Game Store
   'game_store',                    // Game Store
-  // ── Finance ─────────────────────────────────────────────────
-  'bank',
-  'insurance_agency',
-  'money_transfer_service',
-  // ── Other top-level ─────────────────────────────────────────
-  'electronics_technology',
-  'shopping_fashion',
-  'home_garden',
-  'travel_vacation',
-  'vehicles_transportation',
-  'health_medical',
-  'business_services',
-  'home_services',
-  'beauty_wellbeing',
-  'food_beverages_tobacco',
-  'events_entertainment',
 ];
 
 interface Props {

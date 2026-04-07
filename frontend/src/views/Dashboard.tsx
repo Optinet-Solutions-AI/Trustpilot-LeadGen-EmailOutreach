@@ -8,14 +8,34 @@ import StatsRow from '../components/StatsRow';
 import { Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 export default function Dashboard() {
-  const { data, loading, fetchAnalytics } = useAnalytics();
+  const { data, loading, error, fetchAnalytics } = useAnalytics();
   const { followUps, fetchFollowUps } = useFollowUps();
   const router = useRouter();
 
   useEffect(() => { fetchAnalytics(); fetchFollowUps(); }, [fetchAnalytics, fetchFollowUps]);
 
-  if (loading || !data) {
+  if (loading) {
     return <div className="flex items-center justify-center h-64 text-gray-400">Loading dashboard...</div>;
+  }
+
+  if (error || !data) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <p className="text-red-500 font-medium">
+          {error || 'Could not load dashboard data.'}
+        </p>
+        <p className="text-sm text-gray-500">
+          Make sure the API server is reachable. Check that{' '}
+          <code className="bg-gray-100 px-1 rounded">NEXT_PUBLIC_API_BASE_URL</code> is set correctly in your Vercel environment variables.
+        </p>
+        <button
+          onClick={fetchAnalytics}
+          className="px-4 py-2 text-sm bg-gray-900 text-white rounded hover:bg-gray-700"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   const stats = [

@@ -44,6 +44,7 @@ export function useScrape() {
       return id;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start scrape');
+      setStatus('failed');
       return null;
     }
   }, []);
