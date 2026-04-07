@@ -7,8 +7,9 @@ export async function getCampaigns() {
     .select('*, campaign_leads(count)')
     .order('created_at', { ascending: false });
   if (error) throw new Error(error.message);
-  // Flatten the count into a simple lead_count field
-  return (data || []).map((c: Record<string, unknown> & { campaign_leads?: { count: number }[] }) => ({
+  // Flatten the nested count into a simple lead_count field
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (data || []).map((c: any) => ({
     ...c,
     lead_count: c.campaign_leads?.[0]?.count ?? 0,
     campaign_leads: undefined,
