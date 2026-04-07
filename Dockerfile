@@ -41,15 +41,15 @@ RUN pip3 install --no-cache-dir -r requirements.txt && \
     python3 -m playwright install chromium
 
 # ── Node: install dependencies ────────────────────────────────
-COPY api/package*.json ./api/
-RUN cd api && npm ci
+COPY server/package*.json ./server/
+RUN cd server && npm ci
 
 # ── Node: copy source + compile TypeScript ────────────────────
-COPY api/ ./api/
-RUN cd api && npm run build
+COPY server/ ./server/
+RUN cd server && npm run build
 
 # Remove dev dependencies to slim the image
-RUN cd api && npm prune --production
+RUN cd server && npm prune --production
 
 # ── Python tools (scrapers + DB utils) ───────────────────────
 COPY tools/ ./tools/
@@ -65,4 +65,4 @@ ENV EMAIL_MODE=mock
 EXPOSE 8080
 
 # Start the compiled API server
-CMD ["node", "api/dist/server.js"]
+CMD ["node", "server/dist/server.js"]

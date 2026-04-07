@@ -152,7 +152,7 @@ EMAIL_FROM=outreach@yourdomain.com"
 cd frontend && npm run dev     # http://localhost:5173
 
 # Terminal 2 — API
-cd api && npm run dev          # http://localhost:3001
+cd server && npm run dev          # http://localhost:3001
 
 # Terminal 3 — Test a scrape manually
 .venv/Scripts/python.exe tools/scraper/scrape_category.py \

@@ -2,7 +2,7 @@
 # Only frontend/out/ (the Next.js static export) is served by Vercel.
 # The Express API runs separately on Google Cloud Run.
 
-api/
+server/
 tools/
 supabase/
 workflows/

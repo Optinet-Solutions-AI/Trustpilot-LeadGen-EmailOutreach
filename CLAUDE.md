@@ -104,7 +104,7 @@ trustpilot-leadgen/
 │       ├── supabase_client.py         ← Shared PostgREST client
 │       └── upsert_leads.py            ← Saves/updates leads in Supabase
 │
-├── api/                               ← Express + TypeScript backend
+├── server/                            ← Express + TypeScript backend
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── src/
@@ -380,10 +380,10 @@ All routes return: `{ success: true, data: {...} }` or `{ success: false, error:
 | Task | Command |
 |------|---------|
 | Start frontend | `cd frontend && npm run dev` (port 5173) |
-| Start API | `cd api && npm run dev` (port 3001) |
+| Start API | `cd server && npm run dev` (port 3001) |
 | Start both | Run both commands above in separate terminals |
 | Run scraper | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country US --category casino --max-rating 3.5` |
-| Type-check API | `cd api && npx tsc --noEmit` |
+| Type-check API | `cd server && npx tsc --noEmit` |
 | Type-check frontend | `cd frontend && npx tsc --noEmit` |
 | Setup Supabase | Run `supabase/migrations/001_initial_schema.sql` in Supabase SQL editor |
 

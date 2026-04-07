@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 
-// Load .env from project root (one level up from api/)
+// Load .env from project root (one level up from server/)
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 export const config = {
