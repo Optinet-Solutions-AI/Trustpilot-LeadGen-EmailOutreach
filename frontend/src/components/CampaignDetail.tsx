@@ -107,6 +107,8 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads }: Props)
               <thead>
                 <tr className="text-left text-xs text-gray-500 border-b">
                   <th className="py-2 font-medium">Company</th>
+                  <th className="py-2 font-medium">Country</th>
+                  <th className="py-2 font-medium">Category</th>
                   <th className="py-2 font-medium">Email</th>
                   <th className="py-2 font-medium">Rating</th>
                   <th className="py-2 font-medium">Status</th>
@@ -121,6 +123,8 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads }: Props)
                       <td className="py-2 font-medium text-gray-800">
                         {l.leads?.company_name || '—'}
                       </td>
+                      <td className="py-2 text-gray-500 text-xs">{l.leads?.country || '—'}</td>
+                      <td className="py-2 text-gray-500 text-xs capitalize">{l.leads?.category || '—'}</td>
                       <td className="py-2 text-gray-500 text-xs">{l.email_used || '—'}</td>
                       <td className="py-2 text-gray-600">
                         {l.leads?.star_rating ? `${l.leads.star_rating} ★` : '—'}

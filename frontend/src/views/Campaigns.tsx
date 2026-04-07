@@ -53,20 +53,25 @@ export default function Campaigns() {
     fetchCampaigns();
   };
 
-  const handleSend = async (id: string) => {
+  const handleSend = async (id: string, limit?: number) => {
+    const isSingleTest = limit === 1;
     const modeLabel = sendMode === 'test' ? 'TEST MODE' : 'LIVE MODE';
     const emailNote = sendMode === 'test'
       ? (testEmail ? ` → ${testEmail}` : ' → configured test addresses')
       : ' → REAL prospect inboxes';
-    if (!confirm(`Send this campaign in ${modeLabel}?\nEmails will go to:${emailNote}`)) return;
+    const confirmMsg = isSingleTest
+      ? `Send 1 test email in TEST MODE?\nEmail will go to: ${testEmail || 'configured test address'}`
+      : `Send this campaign in ${modeLabel}?\nEmails will go to:${emailNote}`;
+    if (!confirm(confirmMsg)) return;
 
     try {
       reset();
       setActiveCampaignId(id);
       subscribe(id);
       const result = await sendCampaign(id, {
-        testMode: sendMode === 'test',
-        testEmail: sendMode === 'test' && testEmail ? testEmail : undefined,
+        testMode: isSingleTest || sendMode === 'test',
+        testEmail: (isSingleTest || sendMode === 'test') && testEmail ? testEmail : undefined,
+        limit,
       });
       notify('success', result.message);
     } catch (e) {
@@ -296,22 +301,40 @@ export default function Campaigns() {
                   <td className="px-3 py-3 text-right">
                     {c.status === 'draft' && (
                       canSend ? (
-                        <button onClick={() => handleSend(c.id)} disabled={isSending && activeCampaignId === c.id}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 ${
-                            sendMode === 'test'
-                              ? 'bg-yellow-500 text-white hover:bg-yellow-600'
-                              : 'bg-red-600 text-white hover:bg-red-700'
-                          }`}>
-                          {sendMode === 'test' ? <FlaskConical size={10} /> : <Send size={10} />}
-                          {sendMode === 'test' ? 'Test Send' : 'Send Live'}
-                        </button>
+                        <div className="flex items-center justify-end gap-1">
+                          {/* Send 1 test — always available in draft */}
+                          <button
+                            onClick={() => handleSend(c.id, 1)}
+                            disabled={isSending}
+                            title="Send only 1 email to your test address to verify it works"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border border-yellow-400 text-yellow-700 bg-yellow-50 hover:bg-yellow-100 disabled:opacity-40">
+                            <FlaskConical size={9} /> 1 Test
+                          </button>
+                          {/* Full send */}
+                          <button
+                            onClick={() => handleSend(c.id)}
+                            disabled={isSending}
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium disabled:opacity-40 ${
+                              sendMode === 'test'
+                                ? 'bg-yellow-500 text-white hover:bg-yellow-600'
+                                : 'bg-red-600 text-white hover:bg-red-700'
+                            }`}>
+                            {sendMode === 'test' ? <FlaskConical size={10} /> : <Send size={10} />}
+                            {sendMode === 'test' ? 'Test All' : 'Send Live'}
+                          </button>
+                        </div>
                       ) : (
                         <span className="text-xs text-red-400 italic">No leads</span>
                       )
                     )}
-                    {c.status === 'sending' && c.id === activeCampaignId && (
+                    {c.status === 'sending' && (
                       <span className="text-xs text-blue-500 flex items-center justify-end gap-1">
                         <Loader2 size={10} className="animate-spin" /> Sending…
+                      </span>
+                    )}
+                    {c.status === 'sent' && (
+                      <span className="text-xs text-green-600 flex items-center justify-end gap-1">
+                        <CheckCircle size={10} /> Done
                       </span>
                     )}
                   </td>

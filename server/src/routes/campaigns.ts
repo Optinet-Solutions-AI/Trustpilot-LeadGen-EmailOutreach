@@ -67,7 +67,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 router.post('/:id/send', async (req: Request, res: Response) => {
   try {
     const campaignId = param(req.params.id);
-    const { testMode, testEmail } = req.body;
+    const { testMode, testEmail, limit } = req.body;
 
     const campaignLeads = await getCampaignLeads(campaignId);
     if (campaignLeads.length === 0) {
@@ -113,13 +113,16 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       return;
     }
 
+    // Optional limit — e.g. send only 1 lead for a quick test
+    const emailsToSend = limit && Number(limit) > 0 ? emails.slice(0, Number(limit)) : emails;
+
     const isTestMode = testMode === true || config.testMode.enabled;
 
     // Fire and forget — respond immediately
     runCampaignSend({
       campaignId,
       campaignName: campaign.name,
-      emails,
+      emails: emailsToSend,
       testMode: isTestMode,
       testEmailOverride: isTestMode && testEmail ? String(testEmail) : undefined,
     });
@@ -128,7 +131,7 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       success: true,
       data: {
         campaignId,
-        emailCount: emails.length,
+        emailCount: emailsToSend.length,
         testMode: isTestMode,
         message: `Campaign send started for ${emails.length} emails. Monitor progress via SSE.`,
       },
