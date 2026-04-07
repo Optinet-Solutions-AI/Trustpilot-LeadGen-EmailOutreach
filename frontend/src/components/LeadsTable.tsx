@@ -57,6 +57,7 @@ export default function LeadsTable({
               <th className="text-left p-3 font-medium text-gray-600">Email</th>
               <th className="text-left p-3 font-medium text-gray-600">Phone</th>
               <th className="text-left p-3 font-medium text-gray-600">Rating</th>
+              <th className="text-left p-3 font-medium text-gray-600">Tags</th>
               <th className="text-left p-3 font-medium text-gray-600">Status</th>
               <th className="w-16 p-3"></th>
             </tr>
@@ -116,6 +117,15 @@ export default function LeadsTable({
                   {lead.star_rating !== null ? (
                     <span className="font-medium">{lead.star_rating.toFixed(1)}</span>
                   ) : '-'}
+                </td>
+                <td className="p-3">
+                  <div className="flex flex-wrap gap-1">
+                    {(lead.tags || []).map((tag) => (
+                      <span key={tag} className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
                 </td>
                 <td className="p-3" onClick={(e) => e.stopPropagation()}>
                   <select value={lead.outreach_status}

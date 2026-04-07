@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink, Mail, Phone, Star } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Mail, Phone, Star, Tag, X, Plus } from 'lucide-react';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
@@ -19,6 +19,23 @@ export default function LeadDetail() {
   const id = params?.id;
   const router = useRouter();
   const [lead, setLead] = useState<Lead | null>(null);
+  const [tagInput, setTagInput] = useState('');
+
+  const handleAddTag = async () => {
+    const tag = tagInput.trim().toLowerCase().replace(/\s+/g, '-');
+    if (!tag || !lead || lead.tags?.includes(tag)) { setTagInput(''); return; }
+    const newTags = [...(lead.tags || []), tag];
+    const res = await api.patch(`/leads/${id}`, { tags: newTags });
+    setLead(res.data.data);
+    setTagInput('');
+  };
+
+  const handleRemoveTag = async (tag: string) => {
+    if (!lead) return;
+    const newTags = (lead.tags || []).filter((t) => t !== tag);
+    const res = await api.patch(`/leads/${id}`, { tags: newTags });
+    setLead(res.data.data);
+  };
   const { notes, fetchNotes, addNote } = useNotes(id || '');
   const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id);
 
@@ -100,6 +117,38 @@ export default function LeadDetail() {
           <div>
             <span className="text-gray-500">Scraped</span>
             <p className="font-medium">{lead.scraped_at ? new Date(lead.scraped_at).toLocaleDateString() : '-'}</p>
+          </div>
+        </div>
+
+        {/* Tags */}
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Tag size={13} className="text-gray-400" />
+            <span className="text-sm font-medium text-gray-700">Tags</span>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            {(lead.tags || []).map((tag) => (
+              <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded-full">
+                {tag}
+                <button onClick={() => handleRemoveTag(tag)} className="hover:text-violet-900">
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+            <div className="inline-flex items-center gap-1">
+              <input
+                type="text"
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddTag(); } }}
+                placeholder="Add tag…"
+                className="text-xs border border-gray-300 rounded-full px-3 py-1 w-28 focus:outline-none focus:border-violet-400"
+              />
+              <button onClick={handleAddTag}
+                className="text-xs text-violet-600 hover:text-violet-800 p-1">
+                <Plus size={13} />
+              </button>
+            </div>
           </div>
         </div>
 

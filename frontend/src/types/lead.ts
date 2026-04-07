@@ -17,6 +17,7 @@ export interface Lead {
   verification_status: VerificationStatus;
   outreach_status: LeadStatus;
   screenshot_path: string | null;
+  tags: string[];
   lead_source: string;
   scraped_at: string | null;
   contacted_at: string | null;

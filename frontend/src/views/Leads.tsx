@@ -119,8 +119,8 @@ export default function Leads() {
     setEnriching(true);
     try {
       const res = await api.post('/enrich', { leadIds: selectedIds });
-      const { enriched, total } = res.data.data;
-      notify('success', `Enriched ${total} leads — ${enriched} new emails found`);
+      const { total, message } = res.data.data;
+      notify('success', message || `Enrichment started for ${total} leads — refresh in a few minutes`);
       loadLeads();
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Enrichment failed');
