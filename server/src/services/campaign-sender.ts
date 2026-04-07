@@ -32,6 +32,7 @@ export interface CampaignSendParams {
   campaignName: string;
   emails: CampaignEmail[];
   testMode?: boolean;
+  testEmailOverride?: string;
 }
 
 function randomDelay() {
@@ -48,7 +49,7 @@ function emitProgress(campaignId: string, data: Record<string, unknown>) {
 }
 
 export async function runCampaignSend(params: CampaignSendParams): Promise<void> {
-  const { campaignId, campaignName, emails, testMode } = params;
+  const { campaignId, campaignName, emails, testMode, testEmailOverride } = params;
   const supabase = getSupabase();
   let sent = 0;
   let failed = 0;
@@ -74,8 +75,8 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
           : path.resolve(config.projectRoot, email.screenshotPath);
       }
 
-      // Apply test mode transform
-      const transformed = applyTestMode({ to: email.to, subject: email.subject, html: email.html }, testMode);
+      // Apply test mode transform (UI-provided testEmailOverride takes priority over .env)
+      const transformed = applyTestMode({ to: email.to, subject: email.subject, html: email.html }, testMode, testEmailOverride);
 
       // Send email
       const result = await sendEmail(

@@ -66,7 +66,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 router.post('/:id/send', async (req: Request, res: Response) => {
   try {
     const campaignId = param(req.params.id);
-    const { testMode } = req.body;
+    const { testMode, testEmail } = req.body;
 
     const campaignLeads = await getCampaignLeads(campaignId);
     if (campaignLeads.length === 0) {
@@ -112,12 +112,15 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       return;
     }
 
+    const isTestMode = testMode === true || config.testMode.enabled;
+
     // Fire and forget — respond immediately
     runCampaignSend({
       campaignId,
       campaignName: campaign.name,
       emails,
-      testMode: testMode === true || config.testMode.enabled,
+      testMode: isTestMode,
+      testEmailOverride: isTestMode && testEmail ? String(testEmail) : undefined,
     });
 
     res.json({
@@ -125,7 +128,7 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       data: {
         campaignId,
         emailCount: emails.length,
-        testMode: testMode === true || config.testMode.enabled,
+        testMode: isTestMode,
         message: `Campaign send started for ${emails.length} emails. Monitor progress via SSE.`,
       },
     });

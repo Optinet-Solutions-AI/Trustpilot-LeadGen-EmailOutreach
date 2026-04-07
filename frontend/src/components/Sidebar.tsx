@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Search, Users, Mail, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, Search, Users, Mail, BarChart3, FlaskConical } from 'lucide-react';
 
 const NAV_ITEMS = [
   { href: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -11,6 +11,8 @@ const NAV_ITEMS = [
   { href: '/campaigns', icon: Mail, label: 'Campaigns' },
   { href: '/analytics', icon: BarChart3, label: 'Analytics' },
 ];
+
+const isTestMode = process.env.NEXT_PUBLIC_EMAIL_TEST_MODE === 'true';
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -21,6 +23,18 @@ export default function Sidebar() {
         <h1 className="text-lg font-bold">Trustpilot CRM</h1>
         <p className="text-xs text-gray-400 mt-0.5">Lead Gen & Outreach</p>
       </div>
+
+      {isTestMode && (
+        <div className="mx-3 mt-3 px-3 py-2 bg-yellow-400/20 border border-yellow-400/40 rounded-md">
+          <div className="flex items-center gap-1.5 text-yellow-300 text-xs font-semibold">
+            <FlaskConical size={12} />
+            TEST MODE ON
+          </div>
+          <p className="text-yellow-400/80 text-xs mt-0.5 leading-tight">
+            Emails redirect to test inboxes — no real prospects contacted
+          </p>
+        </div>
+      )}
       <nav className="flex-1 py-4">
         {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
           const isActive = href === '/' ? pathname === '/' : (pathname ?? '').startsWith(href);

@@ -33,8 +33,11 @@ export function useCampaigns() {
     return res.data.data as Campaign;
   }, []);
 
-  const sendCampaign = useCallback(async (campaignId: string, options?: { testMode?: boolean }) => {
-    const res = await api.post(`/campaigns/${campaignId}/send`, { testMode: options?.testMode ?? false });
+  const sendCampaign = useCallback(async (campaignId: string, options?: { testMode?: boolean; testEmail?: string }) => {
+    const res = await api.post(`/campaigns/${campaignId}/send`, {
+      testMode: options?.testMode ?? false,
+      testEmail: options?.testEmail || undefined,
+    });
     return res.data.data as { campaignId: string; emailCount: number; testMode: boolean; message: string };
   }, []);
 
