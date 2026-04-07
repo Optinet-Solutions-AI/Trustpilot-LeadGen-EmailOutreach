@@ -91,6 +91,20 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
   return data;
 }
 
+export async function updateCampaignLeadGmailIds(
+  campaignLeadId: string,
+  gmailMessageId?: string,
+  gmailThreadId?: string
+) {
+  const supabase = getSupabase();
+  const patch: Record<string, string> = {};
+  if (gmailMessageId) patch.gmail_message_id = gmailMessageId;
+  if (gmailThreadId) patch.gmail_thread_id = gmailThreadId;
+  if (Object.keys(patch).length === 0) return;
+  const { error } = await supabase.from('campaign_leads').update(patch).eq('id', campaignLeadId);
+  if (error) console.warn('[DB] Failed to update gmail IDs:', error.message);
+}
+
 export async function getCampaignStats(campaignId: string) {
   const supabase = getSupabase();
   const { data, error } = await supabase

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink, Mail, Phone, Star, Tag, X, Plus } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Mail, Phone, Star, Tag, X, Plus, Send } from 'lucide-react';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
@@ -10,6 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
 import FollowUpScheduler from '../components/FollowUpScheduler';
+import QuickSendModal from '../components/QuickSendModal';
 import type { Lead, LeadStatus } from '../types/lead';
 
 const STATUSES: LeadStatus[] = ['new', 'contacted', 'replied', 'converted', 'lost'];
@@ -20,6 +21,7 @@ export default function LeadDetail() {
   const router = useRouter();
   const [lead, setLead] = useState<Lead | null>(null);
   const [tagInput, setTagInput] = useState('');
+  const [quickSendOpen, setQuickSendOpen] = useState(false);
 
   const handleAddTag = async () => {
     const tag = tagInput.trim().toLowerCase().replace(/\s+/g, '-');
@@ -73,10 +75,20 @@ export default function LeadDetail() {
               </a>
             )}
           </div>
-          <select value={lead.outreach_status} onChange={(e) => handleStatusChange(e.target.value as LeadStatus)}
-            className="border border-gray-300 rounded-md px-3 py-1.5 text-sm">
-            {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <div className="flex items-center gap-2">
+            {lead.primary_email && (
+              <button
+                onClick={() => setQuickSendOpen(true)}
+                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700"
+              >
+                <Send size={13} /> Send Email
+              </button>
+            )}
+            <select value={lead.outreach_status} onChange={(e) => handleStatusChange(e.target.value as LeadStatus)}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm">
+              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
@@ -167,6 +179,19 @@ export default function LeadDetail() {
           </div>
         )}
       </div>
+
+      {quickSendOpen && lead && (
+        <QuickSendModal
+          leadIds={[lead.id]}
+          leads={[lead]}
+          onClose={() => setQuickSendOpen(false)}
+          onDone={() => {
+            setQuickSendOpen(false);
+            api.get(`/leads/${id}`).then((res) => setLead(res.data.data));
+            fetchNotes();
+          }}
+        />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Activity Timeline */}

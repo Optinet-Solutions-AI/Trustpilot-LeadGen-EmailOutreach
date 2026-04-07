@@ -5,9 +5,10 @@ import { useRouter } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
 import LeadsTable from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
-import { LayoutList, Columns3, Search, ShieldCheck, Globe } from 'lucide-react';
+import { LayoutList, Columns3, Search, ShieldCheck, Globe, Mail } from 'lucide-react';
 import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
+import QuickSendModal from '../components/QuickSendModal';
 
 type View = 'table' | 'pipeline';
 
@@ -92,6 +93,7 @@ export default function Leads() {
 
   const [verifying, setVerifying] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const notify = (type: 'success' | 'error', message: string) => {
@@ -154,6 +156,10 @@ export default function Leads() {
                 className="inline-flex items-center gap-1 bg-cyan-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-cyan-700 disabled:opacity-50">
                 <ShieldCheck size={14} /> {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
               </button>
+              <button onClick={() => setQuickSendOpen(true)} disabled={verifying || enriching}
+                className="inline-flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
+                <Mail size={14} /> Send Email ({selectedIds.length})
+              </button>
             </>
           )}
           <div className="flex border border-gray-300 rounded-md overflow-hidden">
@@ -212,6 +218,15 @@ export default function Leads() {
           leads={leads}
           onStatusChange={handleStatusChange}
           onLeadClick={(id) => router.push(`/leads/${id}`)}
+        />
+      )}
+
+      {quickSendOpen && (
+        <QuickSendModal
+          leadIds={selectedIds}
+          leads={leads.filter((l) => selectedIds.includes(l.id))}
+          onClose={() => setQuickSendOpen(false)}
+          onDone={() => { setQuickSendOpen(false); loadLeads(); }}
         />
       )}
     </div>

@@ -13,6 +13,7 @@ import enrichRoutes from './routes/enrich.js';
 import notesRoutes from './routes/notes.js';
 import followUpsRoutes from './routes/follow-ups.js';
 import analyticsRoutes from './routes/analytics.js';
+import gmailRoutes from './routes/gmail.js';
 
 const app = express();
 
@@ -39,6 +40,7 @@ app.use('/api/verify', verifyRoutes);
 app.use('/api/enrich', enrichRoutes);
 app.use('/api/follow-ups', followUpsRoutes);  // /api/follow-ups (top-level for dashboard)
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/gmail', gmailRoutes);
 
 // Serve screenshots as static files
 app.use('/api/screenshots', express.static(
@@ -56,6 +58,21 @@ app.use(errorHandler);
 const server = app.listen(config.port, () => {
   console.log(`API server running on http://localhost:${config.port}`);
   console.log(`Email mode: ${config.emailMode}`);
+
+  // Start Gmail reply tracking poll (every 5 minutes) when in gmail mode
+  if (config.emailMode === 'gmail') {
+    const REPLY_CHECK_INTERVAL = 5 * 60 * 1000;
+    setInterval(async () => {
+      try {
+        const { checkForReplies } = await import('./services/reply-tracker.js');
+        const { repliesFound } = await checkForReplies();
+        if (repliesFound > 0) console.log(`[ReplyTracker] Found ${repliesFound} new replies`);
+      } catch (e) {
+        console.error('[ReplyTracker] Poll error:', e instanceof Error ? e.message : e);
+      }
+    }, REPLY_CHECK_INTERVAL);
+    console.log('Reply tracker: polling every 5 minutes');
+  }
 });
 
 // Graceful shutdown — Cloud Run sends SIGTERM before killing the instance.

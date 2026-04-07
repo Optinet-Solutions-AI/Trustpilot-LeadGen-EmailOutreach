@@ -1,4 +1,4 @@
-export type CampaignStatus = 'draft' | 'sent' | 'completed';
+export type CampaignStatus = 'draft' | 'sending' | 'sent' | 'completed';
 
 export interface Campaign {
   id: string;
@@ -22,4 +22,19 @@ export interface CampaignLead {
   email_used: string | null;
   status: 'pending' | 'sent' | 'opened' | 'replied' | 'bounced';
   sent_at: string | null;
+  gmail_message_id?: string | null;
+  gmail_thread_id?: string | null;
+}
+
+export interface CampaignSendProgress {
+  campaignId: string;
+  stage: 'connected' | 'started' | 'sent' | 'completed' | 'failed';
+  emailIndex?: number;
+  total?: number;
+  sent?: number;
+  failed?: number;
+  to?: string;
+  success?: boolean;
+  error?: string;
+  testMode?: boolean;
 }

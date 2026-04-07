@@ -1,8 +1,12 @@
 import { Router, Request, Response } from 'express';
+import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
 import { renderTemplate } from '../services/template-engine.js';
-import { sendCampaignEmails } from '../services/email-sender.mock.js';
+import { runCampaignSend, campaignEvents } from '../services/campaign-sender.js';
+import { rateLimiter } from '../services/rate-limiter.js';
+import { config } from '../config.js';
+import fs from 'fs';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -58,51 +62,111 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/campaigns/:id/send — send campaign emails
+// POST /api/campaigns/:id/send — fire-and-forget async send
 router.post('/:id/send', async (req: Request, res: Response) => {
   try {
-    const campaignLeads = await getCampaignLeads(param(req.params.id));
+    const campaignId = param(req.params.id);
+    const { testMode } = req.body;
+
+    const campaignLeads = await getCampaignLeads(campaignId);
     if (campaignLeads.length === 0) {
       res.status(400).json({ success: false, error: 'No leads in this campaign' });
       return;
     }
 
-    // Get campaign template
     const campaigns = await getCampaigns();
-    const campaign = campaigns.find((c: { id: string }) => c.id === param(req.params.id));
+    const campaign = campaigns.find((c: { id: string }) => c.id === campaignId);
     if (!campaign) {
       res.status(404).json({ success: false, error: 'Campaign not found' });
       return;
     }
 
-    // Build email list with rendered templates
+    const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
+
+    // Build email list for async sender
     const emails = campaignLeads
       .filter((cl: { email_used: string | null; status: string }) => cl.email_used && cl.status === 'pending')
-      .map((cl: { id: string; email_used: string; leads: Record<string, unknown> }) => ({
-        campaignLeadId: cl.id,
-        to: cl.email_used,
-        subject: renderTemplate(campaign.template_subject, cl.leads as Record<string, unknown>),
-        html: renderTemplate(campaign.template_body, cl.leads as Record<string, unknown>),
-      }));
+      .map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => {
+        const lead = cl.leads as Record<string, unknown>;
+        const screenshotPath = campaign.include_screenshot && lead.screenshot_path
+          ? path.resolve(screenshotsDir, path.basename(String(lead.screenshot_path)))
+          : undefined;
 
-    const result = await sendCampaignEmails(param(req.params.id), emails);
+        // Only include screenshot if file actually exists
+        const validScreenshotPath = screenshotPath && fs.existsSync(screenshotPath)
+          ? screenshotPath
+          : undefined;
 
-    // Create activity notes for each sent email
-    for (const cl of campaignLeads) {
-      if (cl.email_used) {
-        await createNote(cl.lead_id, {
-          type: 'email_sent',
-          content: `Campaign "${campaign.name}" email sent to ${cl.email_used}`,
-          metadata: { campaign_id: param(req.params.id) },
-        });
-      }
+        return {
+          campaignLeadId: cl.id,
+          leadId: cl.lead_id,
+          to: cl.email_used,
+          subject: renderTemplate(campaign.template_subject, lead),
+          html: renderTemplate(campaign.template_body, lead),
+          screenshotPath: validScreenshotPath,
+        };
+      });
+
+    if (emails.length === 0) {
+      res.status(400).json({ success: false, error: 'No pending leads with valid emails in this campaign' });
+      return;
     }
 
-    res.json({ success: true, data: result });
+    // Fire and forget — respond immediately
+    runCampaignSend({
+      campaignId,
+      campaignName: campaign.name,
+      emails,
+      testMode: testMode === true || config.testMode.enabled,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        campaignId,
+        emailCount: emails.length,
+        testMode: testMode === true || config.testMode.enabled,
+        message: `Campaign send started for ${emails.length} emails. Monitor progress via SSE.`,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
+});
+
+// GET /api/campaigns/:id/send/status — SSE stream for campaign progress
+router.get('/:id/send/status', (req: Request, res: Response) => {
+  const campaignId = param(req.params.id);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const send = (data: Record<string, unknown>) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const handler = (event: Record<string, unknown>) => {
+    if (event.campaignId !== campaignId) return;
+    send(event);
+    if (event.stage === 'completed' || event.stage === 'failed') {
+      cleanup();
+    }
+  };
+
+  const cleanup = () => {
+    campaignEvents.removeListener('progress', handler);
+    res.end();
+  };
+
+  campaignEvents.on('progress', handler);
+  req.on('close', cleanup);
+
+  // Send initial heartbeat
+  send({ campaignId, stage: 'connected' });
 });
 
 // GET /api/campaigns/:id/stats
@@ -131,5 +195,13 @@ router.post('/:id/leads', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: message });
   }
 });
+
+// GET /api/campaigns/rate-limit — email rate limit status
+router.get('/rate-limit', (_req: Request, res: Response) => {
+  res.json({ success: true, data: rateLimiter.getStatus() });
+});
+
+// Suppress unused import warning — createNote is used by the old sync path; keep for future use
+void createNote;
 
 export default router;
