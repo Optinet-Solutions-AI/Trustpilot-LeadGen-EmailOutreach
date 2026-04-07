@@ -1,5 +1,7 @@
+'use client';
+
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useRouter } from 'next/navigation';
 import { useAnalytics } from '../hooks/useAnalytics';
 import { useFollowUps } from '../hooks/useFollowUps';
 import StatsRow from '../components/StatsRow';
@@ -8,7 +10,7 @@ import { Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
 export default function Dashboard() {
   const { data, loading, fetchAnalytics } = useAnalytics();
   const { followUps, fetchFollowUps } = useFollowUps();
-  const navigate = useNavigate();
+  const router = useRouter();
 
   useEffect(() => { fetchAnalytics(); fetchFollowUps(); }, [fetchAnalytics, fetchFollowUps]);
 
@@ -40,7 +42,7 @@ export default function Dashboard() {
               const isOverdue = new Date(fu.due_date) < new Date();
               return (
                 <div key={fu.id} className="flex items-center justify-between p-2 rounded hover:bg-gray-50 cursor-pointer"
-                  onClick={() => navigate(`/leads/${fu.lead_id}`)}>
+                  onClick={() => router.push(`/leads/${fu.lead_id}`)}>
                   <div>
                     <p className="text-sm font-medium">{fu.leads?.company_name || 'Unknown'}</p>
                     <p className="text-xs text-gray-500">{fu.note}</p>

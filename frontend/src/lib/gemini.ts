@@ -1,12 +1,12 @@
 /**
  * Gemini AI — generates professional cold outreach email templates.
  * Uses Google Generative AI SDK (gemini-2.0-flash).
- * Requires VITE_GEMINI_API_KEY environment variable.
+ * Requires NEXT_PUBLIC_GEMINI_API_KEY environment variable.
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
+const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 
 export interface GenerateTemplateOptions {
   country?: string;
@@ -21,7 +21,7 @@ export interface GenerateTemplateOptions {
  */
 export async function generateEmailTemplate(options: GenerateTemplateOptions = {}): Promise<string> {
   if (!API_KEY) {
-    throw new Error('VITE_GEMINI_API_KEY is not set. Add it to your .env file.');
+    throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not set. Add it to your .env.local file.');
   }
 
   const genAI = new GoogleGenerativeAI(API_KEY);

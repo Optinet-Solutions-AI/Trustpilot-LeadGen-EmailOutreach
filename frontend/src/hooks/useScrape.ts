@@ -20,7 +20,7 @@ export function useScrape() {
       setStatus('running');
 
       // Subscribe to SSE progress
-      const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
       const es = new EventSource(`${baseUrl}/api/scrape/${id}/status`);
       eventSourceRef.current = es;
 

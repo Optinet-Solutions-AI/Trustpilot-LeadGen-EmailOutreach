@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect } from 'react';
 import { useAnalytics } from '../hooks/useAnalytics';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';

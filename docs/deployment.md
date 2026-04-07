@@ -106,8 +106,9 @@ gcloud api-gateway gateways update trustpilot-gateway \
 
 | Variable | Value |
 |----------|-------|
-| `VITE_API_BASE_URL` | `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev` (API Gateway URL) |
-| `VITE_GEMINI_API_KEY` | Your Google Gemini API key |
+| `NEXT_PUBLIC_API_BASE_URL` | `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev` (API Gateway URL) |
+| `NEXT_PUBLIC_API_SECRET_KEY` | Your `API_SECRET_KEY` value (same as set on Cloud Run) |
+| `NEXT_PUBLIC_GEMINI_API_KEY` | Your Google Gemini API key |
 
 ---
 

@@ -1,7 +1,8 @@
+'use client';
+
 import { useEffect } from 'react';
 import { useCampaigns } from '../hooks/useCampaigns';
 import CampaignBuilder from '../components/CampaignBuilder';
-import StatusBadge from '../components/StatusBadge';
 import { Send, ImageIcon } from 'lucide-react';
 
 export default function Campaigns() {

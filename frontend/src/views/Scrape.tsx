@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect } from 'react';
 import { useScrape } from '../hooks/useScrape';
 import ScrapeForm from '../components/ScrapeForm';

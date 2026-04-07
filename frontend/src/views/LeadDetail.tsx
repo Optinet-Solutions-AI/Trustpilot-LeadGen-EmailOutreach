@@ -1,5 +1,7 @@
+'use client';
+
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, ExternalLink, Mail, Phone, Star } from 'lucide-react';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
@@ -13,14 +15,15 @@ import type { Lead, LeadStatus } from '../types/lead';
 const STATUSES: LeadStatus[] = ['new', 'contacted', 'replied', 'converted', 'lost'];
 
 export default function LeadDetail() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const params = useParams<{ id: string }>();
+  const id = params?.id;
+  const router = useRouter();
   const [lead, setLead] = useState<Lead | null>(null);
   const { notes, fetchNotes, addNote } = useNotes(id || '');
   const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || id === '_id') return;
     api.get(`/leads/${id}`).then((res) => setLead(res.data.data));
     fetchNotes();
     fetchFollowUps();
@@ -36,7 +39,7 @@ export default function LeadDetail() {
 
   return (
     <div className="space-y-6">
-      <button onClick={() => navigate('/leads')}
+      <button onClick={() => router.push('/leads')}
         className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
         <ArrowLeft size={14} /> Back to leads
       </button>

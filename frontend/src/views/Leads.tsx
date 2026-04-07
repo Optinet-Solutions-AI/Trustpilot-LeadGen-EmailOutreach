@@ -1,5 +1,7 @@
+'use client';
+
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useRouter } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
 import LeadsTable from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
@@ -54,11 +56,13 @@ const CATEGORIES = [
 
 export default function Leads() {
   const { leads, total, totalPages, loading, fetchLeads, updateLead, deleteLead } = useLeads();
-  const navigate = useNavigate();
+  const router = useRouter();
 
-  const [view, setView] = useState<View>(() =>
-    (localStorage.getItem('leads_view') as View) || 'table'
-  );
+  const [view, setView] = useState<View>(() => {
+    // Guard against SSR — localStorage is only available in the browser
+    if (typeof window === 'undefined') return 'table';
+    return (localStorage.getItem('leads_view') as View) || 'table';
+  });
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
@@ -152,13 +156,13 @@ export default function Leads() {
           onStatusChange={handleStatusChange}
           onDelete={(id) => deleteLead(id)}
           onSelect={setSelectedIds}
-          onLeadClick={(id) => navigate(`/leads/${id}`)}
+          onLeadClick={(id) => router.push(`/leads/${id}`)}
         />
       ) : (
         <LeadPipeline
           leads={leads}
           onStatusChange={handleStatusChange}
-          onLeadClick={(id) => navigate(`/leads/${id}`)}
+          onLeadClick={(id) => router.push(`/leads/${id}`)}
         />
       )}
     </div>

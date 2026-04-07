@@ -1,6 +1,9 @@
 {
   "buildCommand": "cd frontend && npm ci && npm run build",
-  "outputDirectory": "frontend/dist",
+  "outputDirectory": "frontend/out",
   "installCommand": "cd frontend && npm ci",
-  "framework": null
+  "framework": null,
+  "rewrites": [
+    { "source": "/leads/:id", "destination": "/leads/_id" }
+  ]
 }

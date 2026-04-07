@@ -10,3 +10,8 @@ build/
 *.log
 credentials.json
 token.json
+
+# Next.js build output
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
