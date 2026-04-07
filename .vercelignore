@@ -1,0 +1,13 @@
+# Exclude server-side and tooling directories from Vercel deployment.
+# Only frontend/out/ (the Next.js static export) is served by Vercel.
+# The Express API runs separately on Google Cloud Run.
+
+api/
+tools/
+supabase/
+workflows/
+docs/
+scripts/
+skills/
+.tmp/
+.venv/
