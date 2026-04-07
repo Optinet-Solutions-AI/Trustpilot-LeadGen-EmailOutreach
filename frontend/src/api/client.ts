@@ -16,4 +16,18 @@ if (apiKey) {
   });
 }
 
+// Improve error messages to include the URL so misconfiguration is obvious
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (!err.response) {
+      const url = err.config?.baseURL && err.config?.url
+        ? `${err.config.baseURL}${err.config.url}`
+        : err.config?.url ?? 'unknown URL';
+      err.message = `Network Error — could not reach ${url}. Check NEXT_PUBLIC_API_BASE_URL in Vercel env vars and ensure the backend is running.`;
+    }
+    return Promise.reject(err);
+  }
+);
+
 export default api;

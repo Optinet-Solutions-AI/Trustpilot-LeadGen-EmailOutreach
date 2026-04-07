@@ -15,8 +15,16 @@ import analyticsRoutes from './routes/analytics.js';
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// CORS — must come first and handle OPTIONS preflight explicitly
+const corsOptions = {
+  origin: '*',
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-api-key', 'Authorization'],
+  optionsSuccessStatus: 200, // Some browsers (IE11) choke on 204
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Explicitly handle all preflight requests
+
 app.use(express.json());
 app.use(authMiddleware);
 
