@@ -8,8 +8,9 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
 - **Backend / API:** Node.js (Express) with TypeScript (port 3001)
 - **Database:** Supabase (PostgreSQL)
 - **Scraper Tools:** Python + Playwright (headless Chromium) + playwright-stealth
-- **Email Send:** Resend (mock mode available)
+- **Email Send:** Gmail API via OAuth2 (`EMAIL_MODE=gmail`) with async rate-limited sending
 - **Email Verify:** ZeroBounce (mock mode available)
+- **Deployed:** Frontend on Vercel (auto-deploy), Backend on Google Cloud Run
 
 ---
 
@@ -197,12 +198,22 @@ trustpilot-leadgen/
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key (never expose to client) |
 | `ZEROBOUNCE_API_KEY` | Email verification API key (blank = mock mode) |
-| `RESEND_API_KEY` | Email sending service key (blank = mock mode) |
-| `EMAIL_FROM` | Sender email address for campaigns |
-| `EMAIL_MODE` | `mock` (default) or `live` |
+| `EMAIL_FROM` | Sender Gmail address (e.g. axeldray5@gmail.com) |
+| `EMAIL_FROM_NAME` | Sender display name (e.g. OptiRate) |
+| `EMAIL_MODE` | `mock` or `gmail` (default: mock) |
+| `GOOGLE_CLIENT_ID` | Gmail OAuth2 client ID |
+| `GOOGLE_CLIENT_SECRET` | Gmail OAuth2 client secret |
+| `GOOGLE_REFRESH_TOKEN` | Gmail OAuth2 refresh token (get via `node scripts/gmail-auth-setup.js`) |
+| `EMAIL_TEST_MODE` | `true` = redirect all sends to TEST_EMAIL_ADDRESS |
+| `TEST_EMAIL_ADDRESS` | Safe email for test sends |
+| `EMAIL_DAILY_CAP` | Max emails per day (default: 50) |
+| `EMAIL_HOURLY_CAP` | Max emails per hour (default: 20) |
+| `EMAIL_MIN_DELAY` | Min ms between sends (default: 30000) |
+| `EMAIL_MAX_DELAY` | Max ms between sends (default: 90000) |
 | `PLAYWRIGHT_HEADLESS` | `true` in production, `false` for debugging |
 | `PYTHON_PATH` | Path to Python executable (default: `.venv/Scripts/python.exe`) |
-| `VITE_API_BASE_URL` | Frontend → API base URL |
+| `NEXT_PUBLIC_API_BASE_URL` | Frontend → API base URL (NEXT_PUBLIC_ prefix for Next.js) |
+| `NEXT_PUBLIC_GEMINI_API_KEY` | Gemini API key for AI email template generation |
 | `API_SECRET_KEY` | Internal API auth (blank = no auth in dev) |
 | `PORT` | API port (default: 3001) |
 
@@ -302,12 +313,17 @@ trustpilot-leadgen/
 
 ---
 
-## Mock Mode
+## Email Modes
 
-Email services start as mocks to allow full-flow development without API keys:
-- `EMAIL_MODE=mock` (default) — verification always returns `valid`, sending logs to console
-- `EMAIL_MODE=live` — uses real ZeroBounce/Resend APIs
-- Toggle in `.env`, no code changes needed
+| Mode | Behavior |
+|------|----------|
+| `EMAIL_MODE=mock` | Sending logs to console only — never hits Gmail API |
+| `EMAIL_MODE=gmail` | Real Gmail API sends via OAuth2 refresh token |
+| `EMAIL_TEST_MODE=true` | Redirects ALL sends to `TEST_EMAIL_ADDRESS` (safe test) |
+
+**Gmail account:** axeldray5@gmail.com. New account — keep sends ≤10/day until warmed up.
+**Personal email filter:** Built-in — auto-skips @gmail.com, @yahoo.com, @hotmail.com, @outlook.com, @live.com, @icloud.com, @aol.com, @protonmail.com for B2B sends.
+**Deduplication:** Built-in — won't resend to an email already sent in any prior campaign.
 
 ---
 
@@ -315,7 +331,7 @@ Email services start as mocks to allow full-flow development without API keys:
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/scrape` | POST | Start scrape job (async) |
+| `/api/scrape` | POST | Start scrape job (async, fire-and-forget) |
 | `/api/scrape` | GET | List recent jobs |
 | `/api/scrape/:id/status` | GET (SSE) | Live progress stream |
 | `/api/leads` | GET | Paginated + filterable |
@@ -327,10 +343,14 @@ Email services start as mocks to allow full-flow development without API keys:
 | `/api/follow-ups/:id/complete` | PATCH | Mark done |
 | `/api/verify` | POST | Batch email verification |
 | `/api/campaigns` | GET/POST | Campaign list + create |
-| `/api/campaigns/:id` | PATCH | Update |
-| `/api/campaigns/:id/send` | POST | Send emails |
+| `/api/campaigns/:id` | PATCH/DELETE | Update or delete campaign |
+| `/api/campaigns/:id/send` | POST | Start async send (body: testMode, testEmail, limit) |
+| `/api/campaigns/:id/cancel` | POST | Cancel a running send (stops before next email) |
+| `/api/campaigns/:id/send/status` | GET (SSE) | Live send progress stream |
 | `/api/campaigns/:id/stats` | GET | Performance metrics |
-| `/api/campaigns/:id/leads` | POST | Add leads |
+| `/api/campaigns/:id/leads` | GET/POST | List or add leads |
+| `/api/campaigns/rate-limit` | GET | Email rate limit status |
+| `/api/gmail/check-replies` | POST | Manually trigger reply scan |
 | `/api/analytics` | GET | Dashboard aggregates |
 
 All routes return: `{ success: true, data: {...} }` or `{ success: false, error: "message" }`
