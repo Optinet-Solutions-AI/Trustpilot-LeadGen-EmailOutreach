@@ -5,7 +5,7 @@ import path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 export const config = {
-  port: parseInt(process.env.PORT || '3001', 10),
+  port: +(process.env.PORT ?? '3001'),
   apiSecretKey: process.env.API_SECRET_KEY || '',
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',

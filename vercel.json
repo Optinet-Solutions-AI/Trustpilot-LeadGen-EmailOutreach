@@ -1,8 +1,12 @@
 {
-  "buildCommand": "cd frontend && npm ci && npm run build",
-  "outputDirectory": "frontend/out",
-  "installCommand": "cd frontend && npm ci",
-  "framework": null,
+  "version": 2,
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "out" }
+    }
+  ],
   "rewrites": [
     { "source": "/leads/:id", "destination": "/leads/_id" }
   ]
