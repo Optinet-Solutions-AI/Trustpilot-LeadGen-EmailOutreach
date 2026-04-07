@@ -8,6 +8,7 @@
     }
   ],
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://trustpilot-gateway-3lazv1k9.uc.gateway.dev/api/:path*" },
     { "source": "/leads/:id", "destination": "/leads/_id" }
   ]
 }
