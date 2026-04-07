@@ -3,8 +3,11 @@
 ## Architecture
 
 - **Frontend** → Vercel (static React build)
-- **API + Scrapers** → Google Cloud Run (Docker container: Node 20 + Python 3.11 + Playwright)
+- **API Gateway** → Google Cloud API Gateway (public HTTPS endpoint: `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev`)
+- **API + Scrapers** → Google Cloud Run (private, only accessible via API Gateway)
 - **Database** → Supabase (already cloud-hosted)
+
+> **Why API Gateway?** The `optinetsolutions.com` GCP org has an IAM policy (`iam.allowedPolicyMemberDomains`) that blocks granting `allUsers` direct invoker access to Cloud Run. API Gateway sits in front of Cloud Run: it accepts public HTTPS traffic, then authenticates to Cloud Run using a dedicated service account (`trustpilot-gateway-sa`). This satisfies the org policy while keeping the API publicly accessible.
 
 ---
 
@@ -36,10 +39,10 @@ gcloud builds submit \
 
 ```bash
 gcloud run deploy trustpilot-api \
-  --image gcr.io/trustpilot-leadgen/trustpilot-api \
+  --image us-central1-docker.pkg.dev/trustpilot-leadgen/trustpilot/api:latest \
   --platform managed \
   --region us-central1 \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --memory 2Gi \
   --cpu 2 \
   --timeout 3600 \
@@ -50,24 +53,41 @@ SUPABASE_SERVICE_ROLE_KEY=your-key,\
 API_SECRET_KEY=your-secret,\
 EMAIL_MODE=mock,\
 PLAYWRIGHT_HEADLESS=true,\
-PYTHON_PATH=/usr/bin/python3,\
-PORT=8080"
+PYTHON_PATH=/usr/bin/python3"
 ```
 
 **Important Cloud Run settings:**
+- `--no-allow-unauthenticated` — Cloud Run is private; traffic comes only from API Gateway
 - Memory: minimum 2Gi (Playwright Chromium needs headroom)
 - Timeout: 3600s (scrape jobs can take 10-30 min)
 - Concurrency: 10 (low — each scrape spawns a browser)
 
-### Get the Cloud Run URL
+### API Gateway (already deployed — no action needed)
+
+The API Gateway is live at: `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev`
+
+- **Managed API:** `trustpilot-managed-api`
+- **Config:** `trustpilot-config-v1`
+- **Gateway:** `trustpilot-gateway` (us-central1)
+- **Service Account:** `trustpilot-gateway-sa@trustpilot-leadgen.iam.gserviceaccount.com`
+
+If you need to update the gateway spec (e.g. add new routes):
 
 ```bash
-gcloud run services describe trustpilot-api \
-  --region us-central1 \
-  --format 'value(status.url)'
-```
+# Create new config version
+gcloud api-gateway api-configs create trustpilot-config-v2 \
+  --api=trustpilot-managed-api \
+  --openapi-spec=path/to/api-gateway-spec.yaml \
+  --backend-auth-service-account=trustpilot-gateway-sa@trustpilot-leadgen.iam.gserviceaccount.com \
+  --project=trustpilot-leadgen
 
-Save this URL — you need it for Vercel.
+# Update gateway to new config
+gcloud api-gateway gateways update trustpilot-gateway \
+  --api=trustpilot-managed-api \
+  --api-config=trustpilot-config-v2 \
+  --location=us-central1 \
+  --project=trustpilot-leadgen
+```
 
 ---
 
@@ -86,7 +106,7 @@ Save this URL — you need it for Vercel.
 
 | Variable | Value |
 |----------|-------|
-| `VITE_API_BASE_URL` | `https://trustpilot-api-xxx-uc.a.run.app` (your Cloud Run URL) |
+| `VITE_API_BASE_URL` | `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev` (API Gateway URL) |
 | `VITE_GEMINI_API_KEY` | Your Google Gemini API key |
 
 ---
@@ -145,10 +165,16 @@ cd api && npm run dev          # http://localhost:3001
 
 ```bash
 # Rebuild and redeploy API
-gcloud builds submit --tag gcr.io/trustpilot-leadgen/trustpilot-api
-gcloud run deploy trustpilot-api \
-  --image gcr.io/trustpilot-leadgen/trustpilot-api \
+gcloud builds submit \
+  --tag us-central1-docker.pkg.dev/trustpilot-leadgen/trustpilot/api:latest \
   --region us-central1
 
+gcloud run deploy trustpilot-api \
+  --image us-central1-docker.pkg.dev/trustpilot-leadgen/trustpilot/api:latest \
+  --region us-central1 \
+  --no-allow-unauthenticated
+
 # Frontend re-deploys automatically via Vercel GitHub integration on push
+
+# API Gateway only needs updating if routes change — see section 2 above
 ```
