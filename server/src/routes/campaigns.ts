@@ -184,6 +184,17 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/campaigns/:id/leads — list all leads in a campaign with their status
+router.get('/:id/leads', async (req: Request, res: Response) => {
+  try {
+    const leads = await getCampaignLeads(param(req.params.id));
+    res.json({ success: true, data: leads });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // POST /api/campaigns/:id/leads — add leads to campaign
 router.post('/:id/leads', async (req: Request, res: Response) => {
   try {

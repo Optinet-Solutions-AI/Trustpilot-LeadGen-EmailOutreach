@@ -45,6 +45,18 @@ export function useCampaigns() {
     await api.post(`/campaigns/${campaignId}/leads`, { leadIds });
   }, []);
 
+  const getCampaignLeads = useCallback(async (campaignId: string) => {
+    const res = await api.get(`/campaigns/${campaignId}/leads`);
+    return res.data.data as Array<{
+      id: string;
+      lead_id: string;
+      email_used: string | null;
+      status: string;
+      sent_at: string | null;
+      leads: { company_name: string; star_rating: number; country: string; category: string } | null;
+    }>;
+  }, []);
+
   const checkReplies = useCallback(async () => {
     const res = await api.post('/gmail/check-replies');
     return res.data.data as { repliesFound: number };
@@ -65,5 +77,5 @@ export function useCampaigns() {
     };
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, addLeads, checkReplies, getRateLimit };
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit };
 }

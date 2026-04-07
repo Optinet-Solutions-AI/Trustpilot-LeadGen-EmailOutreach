@@ -1,32 +1,26 @@
 /**
  * Email sender facade.
  * Routes to mock or Gmail sender based on EMAIL_MODE env var.
- * All calls pass through the test-mode interceptor.
+ * NOTE: test-mode transform is applied upstream in campaign-sender.ts — do NOT re-apply here.
  */
 
 import { config } from '../config.js';
-import { applyTestMode } from './test-mode.js';
 import type { SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
 
 export async function sendEmail(
   to: string,
   subject: string,
   html: string,
-  options: SendEmailOptions & { testMode?: boolean } = {}
+  options: SendEmailOptions = {}
 ): Promise<SendEmailResult> {
-  const { testMode: testModeOverride, ...sendOptions } = options;
-
-  // Apply test mode transform before sending
-  const transformed = applyTestMode({ to, subject, html }, testModeOverride);
-
   if (config.emailMode === 'gmail') {
     const { sendEmail: sendGmail } = await import('./email-sender.gmail.js');
-    return sendGmail(transformed.to, transformed.subject, transformed.html, sendOptions);
+    return sendGmail(to, subject, html, options);
   }
 
   // Mock mode
   const { sendEmail: sendMock } = await import('./email-sender.mock.js');
-  const success = await sendMock(transformed.to, transformed.subject, transformed.html);
+  const success = await sendMock(to, subject, html);
   return { success };
 }
 

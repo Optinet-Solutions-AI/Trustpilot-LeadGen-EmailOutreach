@@ -6,15 +6,17 @@ import { useCampaignProgress } from '../hooks/useCampaignProgress';
 import CampaignBuilder from '../components/CampaignBuilder';
 import {
   Send, ImageIcon, RefreshCw, Loader2, CheckCircle, Plus, X,
-  FlaskConical, Zap, ChevronDown, ChevronUp,
+  FlaskConical, Zap,
 } from 'lucide-react';
+import CampaignDetail from '../components/CampaignDetail';
 
 export default function Campaigns() {
-  const { campaigns, loading, fetchCampaigns, createCampaign, sendCampaign, checkReplies, getRateLimit } = useCampaigns();
+  const { campaigns, loading, fetchCampaigns, createCampaign, sendCampaign, getCampaignLeads, checkReplies, getRateLimit } = useCampaigns();
   const { status: sendStatus, sent, failed, total, subscribe, reset } = useCampaignProgress();
 
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
   const [showBuilder, setShowBuilder] = useState(false);
+  const [detailCampaign, setDetailCampaign] = useState<typeof campaigns[0] | null>(null);
 
   // Send mode: 'test' = safe, redirect to test email | 'live' = real sends
   const [sendMode, setSendMode] = useState<'test' | 'live'>('test');
@@ -256,12 +258,15 @@ export default function Campaigns() {
                 return (
                 <tr key={c.id} className="border-b hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-3 font-medium">
-                    <span className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setDetailCampaign(c)}
+                      className="flex items-center gap-1.5 text-left hover:text-blue-600 transition-colors"
+                    >
                       {c.name}
                       {c.include_screenshot && (
                         <span title="Includes screenshot"><ImageIcon size={12} className="text-blue-400" /></span>
                       )}
-                    </span>
+                    </button>
                   </td>
                   <td className="px-3 py-3">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
@@ -317,6 +322,13 @@ export default function Campaigns() {
           </table>
         )}
       </div>
+      {detailCampaign && (
+        <CampaignDetail
+          campaign={detailCampaign}
+          onClose={() => setDetailCampaign(null)}
+          fetchLeads={getCampaignLeads}
+        />
+      )}
     </div>
   );
 }

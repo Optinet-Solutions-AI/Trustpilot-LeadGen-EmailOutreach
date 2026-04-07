@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Send, Plus, ImageIcon, Users, Sparkles } from 'lucide-react';
 import { generateEmailTemplate } from '../lib/gemini';
 
-const TOKENS = ['{{company_name}}', '{{website_url}}', '{{star_rating}}', '{{review_count}}', '{{category}}', '{{country}}'];
+const TOKENS = ['{{company_name}}', '{{website_url}}', '{{star_rating}}', '{{category}}', '{{country}}'];
 
 const DEFAULT_SUBJECT = 'Your Trustpilot rating needs attention, {{company_name}}';
 
@@ -11,8 +11,7 @@ const DEFAULT_BODY = `<p>Hi,</p>
 <p>We recently noticed your brand's Trustpilot score isn't where it should be, with a relatively low overall rating (see details below). Our team can help you improve your Trustpilot score by boosting positive visibility, achieving a green rating, and enhancing your brand's credibility and trustworthy online image.</p>
 
 <p><strong>{{company_name}}</strong><br>
-Reviews: {{review_count}}<br>
-Rate: {{star_rating}}</p>
+Trustpilot Rating: {{star_rating}} ★</p>
 
 <p>Would you be open to a quick chat to see how we can clean up your Trustpilot presence and strengthen your online reputation?</p>
 
@@ -125,7 +124,6 @@ export default function CampaignBuilder({ onSubmit }: Props) {
     .replace(/\{\{company_name\}\}/g, 'Acme Corp')
     .replace(/\{\{website_url\}\}/g, 'acme.com')
     .replace(/\{\{star_rating\}\}/g, '2.5')
-    .replace(/\{\{review_count\}\}/g, '142')
     .replace(/\{\{category\}\}/g, 'casino')
     .replace(/\{\{country\}\}/g, 'DE')
     .replace(/\n{3,}/g, '\n\n')
