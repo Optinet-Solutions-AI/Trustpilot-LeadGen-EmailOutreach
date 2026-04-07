@@ -24,7 +24,7 @@ const corsOptions = {
   optionsSuccessStatus: 200, // Some browsers (IE11) choke on 204
 };
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Explicitly handle all preflight requests
+app.options('/(.*)', cors(corsOptions)); // Explicitly handle all preflight requests
 
 app.use(express.json());
 app.use(authMiddleware);
