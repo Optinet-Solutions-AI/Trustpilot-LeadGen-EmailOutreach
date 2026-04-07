@@ -101,13 +101,6 @@ router.post('/:id/send', async (req: Request, res: Response) => {
 
     const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
 
-    // Personal email domains — skip for B2B outreach (these get blocked by Gmail)
-    const PERSONAL_DOMAINS = new Set([
-      'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
-      'live.com', 'icloud.com', 'aol.com', 'protonmail.com',
-      'mail.com', 'ymail.com', 'googlemail.com',
-    ]);
-
     // Deduplication: collect emails already successfully sent in ANY campaign
     const alreadySent = await getSentEmails();
 
@@ -117,9 +110,6 @@ router.post('/:id/send', async (req: Request, res: Response) => {
         if (!cl.email_used || cl.status !== 'pending') return false;
         // Skip already-sent emails (cross-campaign dedup)
         if (alreadySent.has(cl.email_used)) return false;
-        // Skip personal email domains
-        const domain = cl.email_used.split('@')[1]?.toLowerCase();
-        if (domain && PERSONAL_DOMAINS.has(domain)) return false;
         return true;
       })
       .map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => {
