@@ -11,6 +11,7 @@ export interface Campaign {
   total_opened: number;
   total_replied: number;
   total_bounced: number;
+  lead_count: number;
   sent_at: string | null;
   created_at: string;
 }

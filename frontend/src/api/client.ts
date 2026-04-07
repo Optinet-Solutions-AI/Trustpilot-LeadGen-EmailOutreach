@@ -16,7 +16,7 @@ if (apiKey) {
   });
 }
 
-// Improve error messages to include the URL so misconfiguration is obvious
+// Extract server error messages and improve network error descriptions
 api.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -25,6 +25,10 @@ api.interceptors.response.use(
         ? `${err.config.baseURL}${err.config.url}`
         : err.config?.url ?? 'unknown URL';
       err.message = `Network Error — could not reach ${url}. Check NEXT_PUBLIC_API_BASE_URL in Vercel env vars and ensure the backend is running.`;
+    } else {
+      // Prefer the server's own error message over the generic HTTP status text
+      const serverMsg = err.response?.data?.error;
+      if (serverMsg) err.message = serverMsg;
     }
     return Promise.reject(err);
   }

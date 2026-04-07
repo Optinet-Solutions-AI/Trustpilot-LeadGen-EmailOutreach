@@ -241,15 +241,19 @@ export default function Campaigns() {
               <tr className="border-b bg-gray-50">
                 <th className="text-left px-5 py-2.5 font-medium text-gray-600">Name</th>
                 <th className="text-left px-3 py-2.5 font-medium text-gray-600">Status</th>
+                <th className="text-right px-3 py-2.5 font-medium text-gray-600">Leads</th>
                 <th className="text-right px-3 py-2.5 font-medium text-gray-600">Sent</th>
                 <th className="text-right px-3 py-2.5 font-medium text-gray-600">Replied</th>
                 <th className="text-right px-3 py-2.5 font-medium text-gray-600">Bounced</th>
                 <th className="text-right px-3 py-2.5 font-medium text-gray-600">Date</th>
-                <th className="w-28 px-3 py-2.5"></th>
+                <th className="w-32 px-3 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
-              {campaigns.map((c) => (
+              {campaigns.map((c) => {
+                const hasLeads = (c.lead_count ?? 0) > 0;
+                const canSend = c.status === 'draft' && hasLeads;
+                return (
                 <tr key={c.id} className="border-b hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-3 font-medium">
                     <span className="flex items-center gap-1.5">
@@ -270,6 +274,14 @@ export default function Campaigns() {
                       {c.status}
                     </span>
                   </td>
+                  <td className="text-right px-3 py-3">
+                    <span className={`text-xs font-medium ${hasLeads ? 'text-gray-700' : 'text-red-500'}`}>
+                      {c.lead_count ?? 0}
+                      {!hasLeads && c.status === 'draft' && (
+                        <span className="ml-1 text-red-400" title="No leads — campaign cannot be sent">⚠</span>
+                      )}
+                    </span>
+                  </td>
                   <td className="text-right px-3 py-3">{c.total_sent}</td>
                   <td className="text-right px-3 py-3 text-green-600">{c.total_replied}</td>
                   <td className="text-right px-3 py-3 text-red-600">{c.total_bounced}</td>
@@ -278,15 +290,19 @@ export default function Campaigns() {
                   </td>
                   <td className="px-3 py-3 text-right">
                     {c.status === 'draft' && (
-                      <button onClick={() => handleSend(c.id)} disabled={isSending && activeCampaignId === c.id}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 ${
-                          sendMode === 'test'
-                            ? 'bg-yellow-500 text-white hover:bg-yellow-600'
-                            : 'bg-red-600 text-white hover:bg-red-700'
-                        }`}>
-                        {sendMode === 'test' ? <FlaskConical size={10} /> : <Send size={10} />}
-                        {sendMode === 'test' ? 'Test Send' : 'Send Live'}
-                      </button>
+                      canSend ? (
+                        <button onClick={() => handleSend(c.id)} disabled={isSending && activeCampaignId === c.id}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50 ${
+                            sendMode === 'test'
+                              ? 'bg-yellow-500 text-white hover:bg-yellow-600'
+                              : 'bg-red-600 text-white hover:bg-red-700'
+                          }`}>
+                          {sendMode === 'test' ? <FlaskConical size={10} /> : <Send size={10} />}
+                          {sendMode === 'test' ? 'Test Send' : 'Send Live'}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-red-400 italic">No leads</span>
+                      )
                     )}
                     {c.status === 'sending' && c.id === activeCampaignId && (
                       <span className="text-xs text-blue-500 flex items-center justify-end gap-1">
@@ -295,7 +311,8 @@ export default function Campaigns() {
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}

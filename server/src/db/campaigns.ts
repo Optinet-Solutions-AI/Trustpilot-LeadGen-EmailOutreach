@@ -4,10 +4,15 @@ export async function getCampaigns() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('campaigns')
-    .select('*')
+    .select('*, campaign_leads(count)')
     .order('created_at', { ascending: false });
   if (error) throw new Error(error.message);
-  return data || [];
+  // Flatten the count into a simple lead_count field
+  return (data || []).map((c: Record<string, unknown> & { campaign_leads?: { count: number }[] }) => ({
+    ...c,
+    lead_count: c.campaign_leads?.[0]?.count ?? 0,
+    campaign_leads: undefined,
+  }));
 }
 
 export async function createCampaign(campaign: {
