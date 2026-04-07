@@ -55,9 +55,23 @@ app.get('/api/health', (_req, res) => {
 // Error handler (must be last)
 app.use(errorHandler);
 
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, async () => {
   console.log(`API server running on http://localhost:${config.port}`);
   console.log(`Email mode: ${config.emailMode}`);
+
+  // On startup, reset any orphaned 'sending' campaigns back to 'draft'.
+  // This happens when Cloud Run kills the old instance mid-send and deploys a new one.
+  try {
+    const { getSupabase } = await import('./lib/supabase.js');
+    const { error } = await getSupabase()
+      .from('campaigns')
+      .update({ status: 'draft' })
+      .eq('status', 'sending');
+    if (error) console.warn('[Startup] Failed to reset orphaned campaigns:', error.message);
+    else console.log('[Startup] Reset any orphaned sending campaigns to draft');
+  } catch (e) {
+    console.error('[Startup] Orphan reset error:', e instanceof Error ? e.message : e);
+  }
 
   // Start Gmail reply tracking poll (every 5 minutes) when in gmail mode
   if (config.emailMode === 'gmail') {
