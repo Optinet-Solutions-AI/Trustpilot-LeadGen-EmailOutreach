@@ -40,7 +40,8 @@ router.post('/', async (req: Request, res: Response) => {
 
     if (leadIds && leadIds.length > 0) {
       await addLeadsToCampaign(campaign.id, leadIds);
-    } else if (filterCountry || filterCategory) {
+    } else {
+      // Always run filter-based assignment — empty filters = all leads with a valid email
       await addLeadsByFilter(campaign.id, { country: filterCountry, category: filterCategory });
     }
 
