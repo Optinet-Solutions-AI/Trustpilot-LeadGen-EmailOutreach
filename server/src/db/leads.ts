@@ -39,8 +39,11 @@ export async function getLeads(filters: LeadFilters = {}) {
   const sortCol = filters.sortBy && ALLOWED_SORT_COLUMNS.has(filters.sortBy) ? filters.sortBy : 'created_at';
   const sortAsc = filters.sortDir === 'asc';
 
+  // For email: always put nulls last so leads with emails surface at the top
+  const nullsFirst = sortCol === 'primary_email' ? false : undefined;
+
   const { data, error, count } = await query
-    .order(sortCol, { ascending: sortAsc })
+    .order(sortCol, { ascending: sortAsc, nullsFirst })
     .range(offset, offset + limit - 1);
 
   if (error) throw new Error(error.message);
