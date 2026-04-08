@@ -39,16 +39,42 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const statusRef = useRef<ScrapeJob['status'] | null>(null);
+  const jobIdRef = useRef<string | null>(null);
 
-  // Keep statusRef in sync
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
+  // Keep refs in sync
+  useEffect(() => { statusRef.current = status; }, [status]);
+  useEffect(() => { jobIdRef.current = jobId; }, [jobId]);
 
   const closeEventSource = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
+    }
+  }, []);
+
+  // Silent fetch that doesn't trigger SSE reconnection (prevents loops)
+  const fetchJobsSilent = useCallback(async () => {
+    try {
+      const res = await api.get('/scrape');
+      const fetched = res.data.data as ScrapeJob[];
+      setJobs(fetched);
+
+      // Update status from server if our local job is in the list
+      const currentId = jobIdRef.current;
+      if (currentId) {
+        const match = fetched.find((j) => j.id === currentId);
+        if (match) {
+          if (match.status === 'completed' || match.status === 'failed') {
+            setStatus(match.status);
+            statusRef.current = match.status;
+            if (match.status === 'failed' && match.error) {
+              setError(match.error);
+            }
+          }
+        }
+      }
+    } catch {
+      // silent
     }
   }, []);
 
@@ -67,8 +93,15 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       // 'current' is the initial snapshot sent by the server when we first connect
       if (data.stage === 'current') {
         const jobStatus = data.status as ScrapeJob['status'];
-        if (jobStatus === 'completed') { setStatus('completed'); closeEventSource(); }
-        else if (jobStatus === 'failed') { setStatus('failed'); closeEventSource(); }
+        if (jobStatus === 'completed') {
+          setStatus('completed');
+          closeEventSource();
+          fetchJobsSilent();
+        } else if (jobStatus === 'failed') {
+          setStatus('failed');
+          closeEventSource();
+          fetchJobsSilent();
+        }
         return;
       }
 
@@ -88,20 +121,28 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       if (data.stage === 'completed') {
         setStatus('completed');
         closeEventSource();
+        fetchJobsSilent();
       } else if (data.stage === 'failed') {
         setStatus('failed');
         setError(data.detail || 'Scrape failed');
         closeEventSource();
+        fetchJobsSilent();
       }
     };
 
     es.onerror = () => {
-      // Use ref to avoid stale closure — only close if job is done
-      if (statusRef.current === 'completed' || statusRef.current === 'failed') {
+      const current = statusRef.current;
+      if (current === 'completed' || current === 'failed') {
         closeEventSource();
+        return;
       }
+      // SSE disconnected while job was running — poll server for actual status
+      closeEventSource();
+      setTimeout(() => {
+        fetchJobsSilent();
+      }, 2000);
     };
-  }, [closeEventSource]);
+  }, [closeEventSource, fetchJobsSilent]);
 
   const startScrape = useCallback(async (params: ScrapeParams) => {
     setError(null);

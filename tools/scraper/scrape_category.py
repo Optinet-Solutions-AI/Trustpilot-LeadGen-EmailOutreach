@@ -38,29 +38,47 @@ async def scrape_category(
             url = f"https://www.trustpilot.com/categories/{category}?country={country}&page={page_num}"
             print(f"\n[Page {page_num}] {url}")
 
-            if not await safe_goto(page, url):
-                print(f"  Skipping page {page_num} after failed navigation.")
-                break
+            # Retry page up to 2 times if navigation or card loading fails
+            page_loaded = False
+            for attempt in range(3):
+                if attempt > 0:
+                    print(f"  Retry attempt {attempt} for page {page_num}...")
+                    await human_delay(3.0, 6.0)
 
-            # Wait for company cards to appear
-            try:
-                await page.wait_for_selector(
-                    '[class*="businessUnitMain"]',
-                    timeout=10000,
-                )
-            except Exception:
-                # Fallback selectors for layout changes
+                if not await safe_goto(page, url):
+                    print(f"  Navigation failed (attempt {attempt + 1}).")
+                    continue
+
+                # Wait for company cards to appear
                 try:
                     await page.wait_for_selector(
-                        'a[href*="/review/"]',
-                        timeout=5000,
+                        '[class*="businessUnitMain"]',
+                        timeout=12000,
                     )
-                except Exception:
-                    print(f"  No company cards found on page {page_num}. Stopping pagination.")
+                    # Small wait to let all cards finish rendering
+                    await asyncio.sleep(1.5)
+                    page_loaded = True
                     break
+                except Exception:
+                    # Fallback selectors for layout changes
+                    try:
+                        await page.wait_for_selector(
+                            'a[href*="/review/"]',
+                            timeout=8000,
+                        )
+                        await asyncio.sleep(1.5)
+                        page_loaded = True
+                        break
+                    except Exception:
+                        print(f"  No company cards found (attempt {attempt + 1}).")
+                        continue
 
-            # Extract company data from the page
-            companies = await page.evaluate(r'''() => {
+            if not page_loaded:
+                print(f"  Failed to load page {page_num} after 3 attempts. Stopping pagination.")
+                break
+
+            # Extract company data from the page (with retry if 0 results on first try)
+            extract_js = r'''() => {
                 const cards = document.querySelectorAll('[class*="businessUnitMain"]');
                 const results = [];
 
@@ -102,7 +120,15 @@ async def scrape_category(
                     }
                 }
                 return results;
-            }''')
+            }'''
+
+            companies = await page.evaluate(extract_js)
+
+            # If 0 companies extracted but page loaded, wait and retry extraction
+            if len(companies) == 0 and page_num == 1:
+                print("  0 companies on first extraction, waiting for full render...")
+                await human_delay(3.0, 5.0)
+                companies = await page.evaluate(extract_js)
 
             # Filter by rating range
             page_results = []

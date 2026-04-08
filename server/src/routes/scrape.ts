@@ -90,7 +90,11 @@ router.get('/:id/status', async (req: Request, res: Response) => {
     if (event.jobId === jobId) {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
       if (event.stage === 'completed' || event.stage === 'failed') {
-        res.end();
+        // Delay res.end() to ensure the final message flushes to the client
+        // before the connection closes (prevents race condition with EventSource)
+        setTimeout(() => {
+          try { res.end(); } catch {}
+        }, 1000);
       }
     }
   };
