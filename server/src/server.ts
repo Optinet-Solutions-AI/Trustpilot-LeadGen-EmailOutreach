@@ -73,15 +73,24 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Orphan reset error:', e instanceof Error ? e.message : e);
   }
 
-  // Reset any orphaned 'running' scrape jobs to 'failed' on startup
+  // Reset truly orphaned 'running' scrape jobs to 'failed' on startup.
+  // Only mark jobs as orphaned if they started more than 30 minutes ago,
+  // to avoid killing jobs that are actively running on this or another instance.
   try {
     const { getSupabase } = await import('./lib/supabase.js');
-    const { error } = await getSupabase()
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data, error } = await getSupabase()
       .from('scrape_jobs')
       .update({ status: 'failed', error: 'Server restarted during job' })
-      .eq('status', 'running');
+      .eq('status', 'running')
+      .lt('started_at', thirtyMinAgo)
+      .select('id');
     if (error) console.warn('[Startup] Failed to reset orphaned scrape jobs:', error.message);
-    else console.log('[Startup] Reset any orphaned running scrape jobs to failed');
+    else {
+      const count = data?.length ?? 0;
+      if (count > 0) console.log(`[Startup] Reset ${count} orphaned scrape jobs (started >30min ago) to failed`);
+      else console.log('[Startup] No orphaned scrape jobs found');
+    }
   } catch (e) {
     console.error('[Startup] Scrape job orphan reset error:', e instanceof Error ? e.message : e);
   }
