@@ -87,5 +87,25 @@ export function useCampaigns() {
     };
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit };
+  const testFlightSend = useCallback(async (campaignId: string, testEmail: string) => {
+    const res = await api.post(`/campaigns/${campaignId}/test-flight`, { testEmail });
+    return res.data.data as { sentTo: string; leadUsed: string; originalEmail: string; messageId?: string };
+  }, []);
+
+  const duplicateCampaign = useCallback(async (campaignId: string) => {
+    const res = await api.post(`/campaigns/${campaignId}/duplicate`);
+    const newCampaign = res.data.data as Campaign;
+    setCampaigns((prev) => [newCampaign, ...prev]);
+    return newCampaign;
+  }, []);
+
+  const previewRecipients = useCallback(async (filters: { country?: string; category?: string }) => {
+    const params = new URLSearchParams();
+    if (filters.country) params.set('country', filters.country);
+    if (filters.category) params.set('category', filters.category);
+    const res = await api.get(`/campaigns/preview-recipients?${params.toString()}`);
+    return res.data.data as { count: number; sample: Array<{ id: string; company_name: string; primary_email: string; star_rating: number }> };
+  }, []);
+
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend };
 }

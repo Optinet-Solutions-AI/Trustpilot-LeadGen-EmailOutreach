@@ -196,9 +196,44 @@ paths:
       responses:
         "200":
           description: OK
+    delete:
+      operationId: deleteCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/cancel:
+    post:
+      operationId: cancelCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/campaigns/{id}/send:
     post:
       operationId: sendCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/send/status:
+    get:
+      operationId: campaignSendStatus
       security: []
       parameters:
         - in: path
@@ -221,6 +256,17 @@ paths:
         "200":
           description: OK
   /api/campaigns/{id}/leads:
+    get:
+      operationId: getCampaignLeads
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
     post:
       operationId: addLeadsToCampaign
       security: []
@@ -229,6 +275,58 @@ paths:
           name: id
           required: true
           type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/preview-recipients:
+    get:
+      operationId: previewRecipients
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/rate-limit:
+    get:
+      operationId: getCampaignRateLimit
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/test-flight:
+    post:
+      operationId: testFlightCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/duplicate:
+    post:
+      operationId: duplicateCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/gmail/check-replies:
+    post:
+      operationId: checkGmailReplies
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/gmail/rate-limit:
+    get:
+      operationId: getGmailRateLimit
+      security: []
       responses:
         "200":
           description: OK

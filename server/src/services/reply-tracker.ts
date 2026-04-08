@@ -78,10 +78,14 @@ export async function checkForReplies(): Promise<{ repliesFound: number }> {
         });
         const snippet = replyMsg?.snippet || '';
 
-        // Update campaign_leads status
+        // Update campaign_leads status + store reply snippet
         await supabase
           .from('campaign_leads')
-          .update({ status: 'replied', replied_at: new Date().toISOString() })
+          .update({
+            status: 'replied',
+            replied_at: new Date().toISOString(),
+            reply_snippet: snippet.slice(0, 200) || null,
+          })
           .eq('id', cl.id);
 
         // Update lead outreach status

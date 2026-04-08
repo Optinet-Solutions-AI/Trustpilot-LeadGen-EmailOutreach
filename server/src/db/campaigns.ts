@@ -21,6 +21,8 @@ export async function createCampaign(campaign: {
   template_subject: string;
   template_body: string;
   include_screenshot?: boolean;
+  filter_country?: string;
+  filter_category?: string;
 }) {
   const supabase = getSupabase();
   const { data, error } = await supabase.from('campaigns').insert(campaign).select().single();
@@ -145,4 +147,55 @@ export async function getCampaignStats(campaignId: string) {
     if (s in stats) stats[s]++;
   }
   return stats;
+}
+
+export async function duplicateCampaign(sourceId: string) {
+  const supabase = getSupabase();
+
+  // Fetch the source campaign
+  const { data: source, error: fetchErr } = await supabase
+    .from('campaigns')
+    .select('*')
+    .eq('id', sourceId)
+    .single();
+  if (fetchErr) throw new Error(fetchErr.message);
+  if (!source) throw new Error('Campaign not found');
+
+  // Create a copy as draft
+  const newCampaign = await createCampaign({
+    name: `${source.name} (copy)`,
+    template_subject: source.template_subject,
+    template_body: source.template_body,
+    include_screenshot: source.include_screenshot,
+    filter_country: source.filter_country || undefined,
+    filter_category: source.filter_category || undefined,
+  });
+
+  // Re-populate leads using the same filters
+  await addLeadsByFilter(newCampaign.id, {
+    country: source.filter_country || undefined,
+    category: source.filter_category || undefined,
+  });
+
+  return newCampaign;
+}
+
+export async function previewRecipientCount(filters: { country?: string; category?: string }) {
+  const supabase = getSupabase();
+
+  let query = supabase
+    .from('leads')
+    .select('id, company_name, primary_email, star_rating', { count: 'exact' })
+    .not('primary_email', 'is', null);
+
+  if (filters.country) query = query.eq('country', filters.country);
+  if (filters.category) query = query.eq('category', filters.category);
+
+  const { data, count, error } = await query.limit(10);
+  if (error) throw new Error(error.message);
+
+  return {
+    count: count ?? 0,
+    sample: data || [],
+  };
 }

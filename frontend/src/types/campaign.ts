@@ -6,6 +6,8 @@ export interface Campaign {
   template_subject: string | null;
   template_body: string | null;
   include_screenshot: boolean;
+  filter_country: string | null;
+  filter_category: string | null;
   status: CampaignStatus;
   total_sent: number;
   total_opened: number;
@@ -25,6 +27,7 @@ export interface CampaignLead {
   sent_at: string | null;
   gmail_message_id?: string | null;
   gmail_thread_id?: string | null;
+  reply_snippet?: string | null;
 }
 
 export interface CampaignSendProgress {

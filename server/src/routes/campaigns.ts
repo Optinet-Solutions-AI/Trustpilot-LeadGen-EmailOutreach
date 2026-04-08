@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
-import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails } from '../db/campaigns.js';
+import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
 import { renderTemplate } from '../services/template-engine.js';
 import { runCampaignSend, cancelCampaign, campaignEvents } from '../services/campaign-sender.js';
+import { applyTestMode } from '../services/test-mode.js';
+import { sendEmail } from '../services/email-sender.js';
 import { rateLimiter } from '../services/rate-limiter.js';
 import { config } from '../config.js';
 import fs from 'fs';
@@ -36,6 +38,8 @@ router.post('/', async (req: Request, res: Response) => {
       template_subject: templateSubject,
       template_body: templateBody,
       include_screenshot: includeScreenshot,
+      filter_country: filterCountry || undefined,
+      filter_category: filterCategory || undefined,
     });
 
     if (leadIds && leadIds.length > 0) {
@@ -50,6 +54,25 @@ router.post('/', async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
+});
+
+// GET /api/campaigns/preview-recipients — preview lead count + sample for given filters
+// Must be before /:id routes to avoid Express matching "preview-recipients" as an id
+router.get('/preview-recipients', async (req: Request, res: Response) => {
+  try {
+    const country = req.query.country ? String(req.query.country) : undefined;
+    const category = req.query.category ? String(req.query.category) : undefined;
+    const result = await previewRecipientCount({ country, category });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/campaigns/rate-limit — email rate limit status
+router.get('/rate-limit', (_req: Request, res: Response) => {
+  res.json({ success: true, data: rateLimiter.getStatus() });
 });
 
 // PATCH /api/campaigns/:id
@@ -68,6 +91,85 @@ router.delete('/:id', async (req: Request, res: Response) => {
   try {
     await deleteCampaign(param(req.params.id));
     res.json({ success: true, data: null });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/campaigns/:id/test-flight — send an exact replica to a test address using real lead data
+// Mandatory pre-flight gate before the user is allowed to blast a live campaign.
+// Uses the EXACT same rendering + screenshot logic as production; does NOT update DB or fire the async sender.
+router.post('/:id/test-flight', async (req: Request, res: Response) => {
+  try {
+    const campaignId = param(req.params.id);
+    const { testEmail } = req.body;
+
+    if (!testEmail || typeof testEmail !== 'string' || !testEmail.includes('@')) {
+      res.status(400).json({ success: false, error: 'A valid testEmail address is required.' });
+      return;
+    }
+
+    // Load campaign
+    const allCampaigns = await getCampaigns();
+    const campaign = allCampaigns.find((c: { id: string }) => c.id === campaignId);
+    if (!campaign) {
+      res.status(404).json({ success: false, error: 'Campaign not found.' });
+      return;
+    }
+
+    // Grab first pending lead with a real email — used to populate template variables authentically
+    const campaignLeads = await getCampaignLeads(campaignId);
+    const firstPendingLead = campaignLeads.find(
+      (cl: { email_used: string | null; status: string }) => cl.email_used && cl.status === 'pending'
+    );
+    if (!firstPendingLead) {
+      res.status(400).json({ success: false, error: 'No pending leads with a valid email found in this campaign.' });
+      return;
+    }
+
+    const lead = firstPendingLead.leads as Record<string, unknown>;
+
+    // Render with real lead data — identical to how production emails are built
+    const subject = renderTemplate(campaign.template_subject, lead);
+    const html    = renderTemplate(campaign.template_body, lead);
+
+    // Screenshot — same resolution logic as the production send route
+    const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
+    const screenshotPath = campaign.include_screenshot && lead.screenshot_path
+      ? path.resolve(screenshotsDir, path.basename(String(lead.screenshot_path)))
+      : undefined;
+    const validScreenshotPath = screenshotPath && fs.existsSync(screenshotPath) ? screenshotPath : undefined;
+
+    // Override recipient + inject [TEST FLIGHT] banner — never touches the real lead's inbox
+    const transformed = applyTestMode(
+      { to: firstPendingLead.email_used as string, subject, html },
+      true,       // force test mode on
+      testEmail,  // override with caller-supplied address
+    );
+
+    // Send synchronously — we need to know immediately if it succeeded before unlocking the live send
+    const result = await sendEmail(
+      transformed.to,
+      transformed.subject,
+      transformed.html,
+      { screenshotPath: validScreenshotPath }
+    );
+
+    if (!result.success) {
+      res.status(500).json({ success: false, error: result.error || 'Email delivery failed.' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        sentTo: testEmail,
+        leadUsed: String(lead.company_name || 'Unknown'),
+        originalEmail: firstPendingLead.email_used,
+        messageId: result.messageId,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
@@ -239,9 +341,15 @@ router.post('/:id/leads', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/campaigns/rate-limit — email rate limit status
-router.get('/rate-limit', (_req: Request, res: Response) => {
-  res.json({ success: true, data: rateLimiter.getStatus() });
+// POST /api/campaigns/:id/duplicate — create a copy of an existing campaign
+router.post('/:id/duplicate', async (req: Request, res: Response) => {
+  try {
+    const campaign = await duplicateCampaign(param(req.params.id));
+    res.json({ success: true, data: campaign });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
 });
 
 // Suppress unused import warning — createNote is used by the old sync path; keep for future use
