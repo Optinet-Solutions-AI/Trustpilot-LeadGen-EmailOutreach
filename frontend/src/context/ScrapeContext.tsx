@@ -28,6 +28,7 @@ interface ScrapeContextValue {
 const ScrapeContext = createContext<ScrapeContextValue | null>(null);
 
 const MAX_PROGRESS_ENTRIES = 200;
+const POLL_INTERVAL_MS = 5000; // Poll every 5s as SSE safety net
 
 export function ScrapeProvider({ children }: { children: ReactNode }) {
   const [jobId, setJobId] = useState<string | null>(null);
@@ -40,6 +41,7 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   const eventSourceRef = useRef<EventSource | null>(null);
   const statusRef = useRef<ScrapeJob['status'] | null>(null);
   const jobIdRef = useRef<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep refs in sync
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -52,36 +54,65 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Silent fetch that doesn't trigger SSE reconnection (prevents loops)
-  const fetchJobsSilent = useCallback(async () => {
-    try {
-      const res = await api.get('/scrape');
-      const fetched = res.data.data as ScrapeJob[];
-      setJobs(fetched);
-
-      // Update status from server if our local job is in the list
-      const currentId = jobIdRef.current;
-      if (currentId) {
-        const match = fetched.find((j) => j.id === currentId);
-        if (match) {
-          if (match.status === 'completed' || match.status === 'failed') {
-            setStatus(match.status);
-            statusRef.current = match.status;
-            if (match.status === 'failed' && match.error) {
-              setError(match.error);
-            }
-          }
-        }
-      }
-    } catch {
-      // silent
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
   }, []);
 
+  // Mark job as done — update state, close SSE, stop polling, refresh jobs list
+  const markDone = useCallback((newStatus: 'completed' | 'failed', errorMsg?: string) => {
+    setStatus(newStatus);
+    statusRef.current = newStatus;
+    if (errorMsg) setError(errorMsg);
+    closeEventSource();
+    stopPolling();
+    // Refresh jobs list to get final stats
+    api.get('/scrape').then(res => {
+      setJobs(res.data.data as ScrapeJob[]);
+    }).catch(() => {});
+  }, [closeEventSource, stopPolling]);
+
+  // Poll the server for job status (safety net when SSE fails)
+  const startPolling = useCallback((id: string) => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      // Stop if no longer running
+      if (statusRef.current !== 'running') {
+        stopPolling();
+        return;
+      }
+      try {
+        const res = await api.get('/scrape');
+        const fetched = res.data.data as ScrapeJob[];
+        setJobs(fetched);
+        const match = fetched.find((j: ScrapeJob) => j.id === id);
+        if (match && match.status === 'completed') {
+          markDone('completed');
+        } else if (match && match.status === 'failed') {
+          markDone('failed', match.error || 'Scrape failed');
+        }
+      } catch {
+        // silent — will retry next interval
+      }
+    }, POLL_INTERVAL_MS);
+  }, [stopPolling, markDone]);
+
   const subscribeToJob = useCallback((id: string, initialStatus?: ScrapeJob['status']) => {
     closeEventSource();
+    stopPolling();
     setJobId(id);
-    setStatus(initialStatus === 'completed' || initialStatus === 'failed' ? initialStatus : 'running');
+
+    if (initialStatus === 'completed' || initialStatus === 'failed') {
+      setStatus(initialStatus);
+      return;
+    }
+
+    setStatus('running');
+
+    // Start polling as safety net (catches completion if SSE misses it)
+    startPolling(id);
 
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
     const es = new EventSource(`${baseUrl}/api/scrape/${id}/status`);
@@ -94,13 +125,9 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       if (data.stage === 'current') {
         const jobStatus = data.status as ScrapeJob['status'];
         if (jobStatus === 'completed') {
-          setStatus('completed');
-          closeEventSource();
-          fetchJobsSilent();
+          markDone('completed');
         } else if (jobStatus === 'failed') {
-          setStatus('failed');
-          closeEventSource();
-          fetchJobsSilent();
+          markDone('failed');
         }
         return;
       }
@@ -119,14 +146,9 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       });
 
       if (data.stage === 'completed') {
-        setStatus('completed');
-        closeEventSource();
-        fetchJobsSilent();
+        markDone('completed');
       } else if (data.stage === 'failed') {
-        setStatus('failed');
-        setError(data.detail || 'Scrape failed');
-        closeEventSource();
-        fetchJobsSilent();
+        markDone('failed', data.detail || 'Scrape failed');
       }
     };
 
@@ -136,13 +158,10 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
         closeEventSource();
         return;
       }
-      // SSE disconnected while job was running — poll server for actual status
+      // SSE disconnected while job was running — close SSE, let polling handle it
       closeEventSource();
-      setTimeout(() => {
-        fetchJobsSilent();
-      }, 2000);
     };
-  }, [closeEventSource, fetchJobsSilent]);
+  }, [closeEventSource, stopPolling, startPolling, markDone]);
 
   const startScrape = useCallback(async (params: ScrapeParams) => {
     setError(null);
@@ -163,13 +182,11 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   const cancelJob = useCallback(async (id: string) => {
     try {
       await api.post(`/scrape/${id}/cancel`);
-      setStatus('failed');
-      setError('Cancelled by user');
-      closeEventSource();
+      markDone('failed', 'Cancelled by user');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to cancel');
     }
-  }, [closeEventSource]);
+  }, [markDone]);
 
   const retryFailed = useCallback(async (id: string) => {
     try {
@@ -195,6 +212,17 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       const fetched = res.data.data as ScrapeJob[];
       setJobs(fetched);
 
+      // Sync status from server for current job
+      const currentId = jobIdRef.current;
+      if (currentId) {
+        const match = fetched.find((j) => j.id === currentId);
+        if (match && (match.status === 'completed' || match.status === 'failed')) {
+          if (statusRef.current === 'running') {
+            markDone(match.status as 'completed' | 'failed', match.error || undefined);
+          }
+        }
+      }
+
       // Auto-reconnect if there's a running job and we have no active connection
       const alreadyConnected = eventSourceRef.current &&
         eventSourceRef.current.readyState !== EventSource.CLOSED;
@@ -209,12 +237,15 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     } catch {
       // silent — jobs list is non-critical
     }
-  }, [subscribeToJob]);
+  }, [subscribeToJob, markDone]);
 
-  // Cleanup EventSource on unmount (app close only, not page navigation)
+  // Cleanup on unmount
   useEffect(() => {
-    return () => closeEventSource();
-  }, [closeEventSource]);
+    return () => {
+      closeEventSource();
+      stopPolling();
+    };
+  }, [closeEventSource, stopPolling]);
 
   return (
     <ScrapeContext.Provider value={{
