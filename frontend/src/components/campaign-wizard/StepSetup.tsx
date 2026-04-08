@@ -79,7 +79,7 @@ export default function StepSetup({ name, filterCountry, filterCategory, onChang
           <label className="text-sm font-semibold text-blue-800">Target Audience</label>
         </div>
         <p className="text-xs text-blue-600 mb-4">
-          All leads matching these filters will automatically be added to the campaign.
+          Used to pre-filter leads in Step 3 — you'll choose exactly which ones to include.
         </p>
         <div className="grid grid-cols-2 gap-4">
           <div>
@@ -104,7 +104,7 @@ export default function StepSetup({ name, filterCountry, filterCategory, onChang
           </div>
         </div>
         <p className="text-xs text-blue-700 mt-3 font-medium">
-          Will target: {targetLabel}
+          Pre-filter for Step 3: {targetLabel}
         </p>
       </div>
     </div>

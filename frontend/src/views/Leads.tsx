@@ -70,6 +70,18 @@ export default function Leads() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [sortBy, setSortBy] = useState('created_at');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  const toggleSort = (col: string) => {
+    if (col === sortBy) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(col);
+      setSortDir('desc');
+    }
+    setPage(1);
+  };
 
   const loadLeads = useCallback(() => {
     const filters: Record<string, string | number> = { page, limit: view === 'pipeline' ? 200 : 25 };
@@ -77,8 +89,10 @@ export default function Leads() {
     if (countryFilter) filters.country = countryFilter;
     if (categoryFilter) filters.category = categoryFilter;
     if (search) filters.search = search;
+    filters.sortBy = sortBy;
+    filters.sortDir = sortDir;
     fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
-  }, [page, statusFilter, countryFilter, categoryFilter, search, view, fetchLeads]);
+  }, [page, statusFilter, countryFilter, categoryFilter, search, view, sortBy, sortDir, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 
@@ -212,6 +226,9 @@ export default function Leads() {
           onDelete={(id) => deleteLead(id)}
           onSelect={setSelectedIds}
           onLeadClick={(id) => router.push(`/leads/${id}`)}
+          sortBy={sortBy}
+          sortDir={sortDir}
+          onSortChange={toggleSort}
         />
       ) : (
         <LeadPipeline

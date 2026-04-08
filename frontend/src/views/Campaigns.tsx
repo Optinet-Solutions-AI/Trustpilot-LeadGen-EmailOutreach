@@ -66,9 +66,9 @@ export default function Campaigns() {
     setTimeout(() => setNotification(null), 6000);
   };
 
-  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; filterCountry?: string; filterCategory?: string }) => {
+  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[] }) => {
     const campaign = await createCampaign(data);
-    notify('success', `Campaign "${campaign.name}" created.`);
+    notify('success', `Campaign "${campaign.name}" created with ${data.leadIds.length} lead${data.leadIds.length !== 1 ? 's' : ''}.`);
     fetchCampaigns();
   };
 
@@ -278,7 +278,6 @@ export default function Campaigns() {
         <CampaignWizard
           onClose={() => setShowWizard(false)}
           onCreate={handleCreate}
-          previewRecipients={previewRecipients}
         />
       )}
 

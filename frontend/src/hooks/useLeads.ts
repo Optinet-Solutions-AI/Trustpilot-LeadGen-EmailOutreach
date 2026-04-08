@@ -9,6 +9,8 @@ interface LeadFilters {
   search?: string;
   page?: number;
   limit?: number;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
 }
 
 export function useLeads() {
@@ -29,6 +31,8 @@ export function useLeads() {
       if (filters.search) params.set('search', filters.search);
       if (filters.page) params.set('page', String(filters.page));
       if (filters.limit) params.set('limit', String(filters.limit));
+      if (filters.sortBy) params.set('sortBy', filters.sortBy);
+      if (filters.sortDir) params.set('sortDir', filters.sortDir);
 
       const res = await api.get(`/leads?${params}`);
       setLeads(res.data.data);

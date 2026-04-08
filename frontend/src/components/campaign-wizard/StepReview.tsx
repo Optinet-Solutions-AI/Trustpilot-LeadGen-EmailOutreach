@@ -41,10 +41,12 @@ export default function StepReview({
         <div className="px-5 py-4">
           <div className="flex items-center gap-2 mb-1">
             <Users size={14} className="text-blue-500" />
-            <p className="text-xs text-gray-500">Target Audience</p>
+            <p className="text-xs text-gray-500">Recipients</p>
           </div>
-          <p className="text-sm text-gray-800">{countryName} + {categoryName}</p>
-          <p className="text-xs text-blue-600 mt-1 font-medium">{recipientCount} leads will be added</p>
+          <p className="text-sm font-semibold text-blue-700">{recipientCount} lead{recipientCount !== 1 ? 's' : ''} selected</p>
+          {(filterCountry || filterCategory) && (
+            <p className="text-xs text-gray-400 mt-0.5">Filtered by: {countryName}{filterCountry && filterCategory ? ' + ' : ''}{filterCategory ? categoryName : ''}</p>
+          )}
         </div>
 
         {/* Subject */}
@@ -85,7 +87,7 @@ export default function StepReview({
 
       {recipientCount === 0 && (
         <p className="text-xs text-center text-red-500">
-          Cannot create — no matching leads found. Go back to adjust filters.
+          No leads selected. Go back to Step 3 and select at least one lead.
         </p>
       )}
 

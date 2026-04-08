@@ -28,16 +28,11 @@ interface Props {
     templateSubject: string;
     templateBody: string;
     includeScreenshot: boolean;
-    filterCountry?: string;
-    filterCategory?: string;
+    leadIds: string[];
   }) => Promise<void>;
-  previewRecipients: (filters: { country?: string; category?: string }) => Promise<{
-    count: number;
-    sample: Array<{ id: string; company_name: string; primary_email: string; star_rating: number }>;
-  }>;
 }
 
-export default function CampaignWizard({ onClose, onCreate, previewRecipients }: Props) {
+export default function CampaignWizard({ onClose, onCreate }: Props) {
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
 
@@ -48,27 +43,17 @@ export default function CampaignWizard({ onClose, onCreate, previewRecipients }:
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [body, setBody] = useState(DEFAULT_BODY);
   const [includeScreenshot, setIncludeScreenshot] = useState(true);
-  const [recipientCount, setRecipientCount] = useState(0);
-
-  // Fetch recipient count when reaching step 2 (recipients)
-  useEffect(() => {
-    if (step === 2) {
-      previewRecipients({
-        country: filterCountry || undefined,
-        category: filterCategory || undefined,
-      }).then((r) => setRecipientCount(r.count)).catch(() => setRecipientCount(0));
-    }
-  }, [step, filterCountry, filterCategory, previewRecipients]);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
 
   const completedSteps = new Set<number>();
   if (name.trim()) completedSteps.add(0);
   if (subject.trim() && body.trim()) completedSteps.add(1);
-  if (step > 2) completedSteps.add(2);
+  if (selectedLeadIds.length > 0) completedSteps.add(2);
 
   const canProceed = () => {
     if (step === 0) return name.trim().length > 0;
     if (step === 1) return subject.trim().length > 0 && body.trim().length > 0;
-    if (step === 2) return true; // Can proceed even with 0 leads (review will show warning)
+    if (step === 2) return selectedLeadIds.length > 0;
     return true;
   };
 
@@ -80,8 +65,7 @@ export default function CampaignWizard({ onClose, onCreate, previewRecipients }:
         templateSubject: subject,
         templateBody: body,
         includeScreenshot,
-        filterCountry: filterCountry || undefined,
-        filterCategory: filterCategory || undefined,
+        leadIds: selectedLeadIds,
       });
       onClose();
     } catch {
@@ -145,7 +129,8 @@ export default function CampaignWizard({ onClose, onCreate, previewRecipients }:
             <StepRecipients
               filterCountry={filterCountry}
               filterCategory={filterCategory}
-              previewRecipients={previewRecipients}
+              selectedLeadIds={selectedLeadIds}
+              onSelectionChange={setSelectedLeadIds}
             />
           )}
           {step === 3 && (
@@ -156,7 +141,7 @@ export default function CampaignWizard({ onClose, onCreate, previewRecipients }:
               includeScreenshot={includeScreenshot}
               filterCountry={filterCountry}
               filterCategory={filterCategory}
-              recipientCount={recipientCount}
+              recipientCount={selectedLeadIds.length}
               saving={saving}
               onSubmit={handleSubmit}
             />

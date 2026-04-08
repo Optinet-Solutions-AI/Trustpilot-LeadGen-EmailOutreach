@@ -17,6 +17,8 @@ router.get('/', async (req: Request, res: Response) => {
       maxRating: req.query.maxRating ? parseFloat(req.query.maxRating as string) : undefined,
       page: req.query.page ? parseInt(req.query.page as string) : 1,
       limit: req.query.limit ? parseInt(req.query.limit as string) : 25,
+      sortBy: req.query.sortBy as string | undefined,
+      sortDir: req.query.sortDir === 'asc' ? 'asc' : 'desc',
     });
     res.json({ success: true, ...result });
   } catch (err) {
