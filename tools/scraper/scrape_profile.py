@@ -6,6 +6,7 @@ Extracts: company_name, website_url, trustpilot_email, phone from the "Contact i
 Takes a cropped screenshot of the profile header (company name, rating, reviews breakdown).
 Uses parallel tabs for speed.
 """
+from __future__ import annotations
 
 import argparse
 import asyncio

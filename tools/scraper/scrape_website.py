@@ -6,6 +6,7 @@ Only enriches leads that have NO primary_email yet (skips those already found on
 Uses parallel browser tabs for speed.
 Email ranking: prefers specific contact/sales emails, accepts info@, skips noreply/mailer-daemon.
 """
+from __future__ import annotations
 
 import argparse
 import asyncio

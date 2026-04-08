@@ -2,6 +2,7 @@
 Upsert scraped leads into Supabase.
 Usage: python tools/db/upsert_leads.py --input .tmp/enriched_leads.json
 """
+from __future__ import annotations
 
 import argparse
 import json

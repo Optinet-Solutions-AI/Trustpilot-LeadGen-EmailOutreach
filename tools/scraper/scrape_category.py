@@ -4,6 +4,7 @@ Usage: python tools/scraper/scrape_category.py --country US --category casino --
 
 Output: JSON array of { name, slug, rating, trustpilot_url } saved to --output path.
 """
+from __future__ import annotations
 
 import argparse
 import asyncio
