@@ -5,6 +5,7 @@ export interface ScrapeParams {
   maxRating: number;
   enrich: boolean;
   verify: boolean;
+  forceRescrape: boolean;
 }
 
 export interface ScrapeJob {
@@ -20,6 +21,8 @@ export interface ScrapeJob {
   total_scraped: number;
   total_enriched: number;
   total_verified: number;
+  total_failed: number;
+  total_skipped: number;
   error: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -30,4 +33,5 @@ export interface ScrapeProgress {
   jobId: string;
   stage: string;
   detail: string;
+  timestamp?: string;
 }

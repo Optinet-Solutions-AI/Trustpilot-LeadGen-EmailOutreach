@@ -158,7 +158,7 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
     return contact_data
 
 
-async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, start_idx, total):
+async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, failed_list, start_idx, total):
     """Scrape a batch of profiles using a single page (tab)."""
     page = await context.new_page()
     try:
@@ -167,16 +167,30 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, sta
             if not slug:
                 continue
 
+            tp_url = lead.get('trustpilot_url', f"https://www.trustpilot.com/review/{slug}")
             print(f"  [{idx + 1}/{total}] {slug}")
-            contact = await scrape_single_profile(page, slug, screenshots_dir)
 
-            # Merge contact data with lead
-            enriched = {**lead}
-            for key in ('company_name', 'website_url', 'trustpilot_email', 'phone', 'screenshot_path'):
-                if contact.get(key):
-                    enriched[key] = contact[key]
+            try:
+                contact = await scrape_single_profile(page, slug, screenshots_dir)
 
-            results_dict[idx] = enriched
+                if not contact:
+                    print(f"FAILED:profile:{tp_url}:Empty response from profile page")
+                    failed_list.append(tp_url)
+                    results_dict[idx] = {**lead}
+                else:
+                    # Merge contact data with lead
+                    enriched = {**lead}
+                    for key in ('company_name', 'website_url', 'trustpilot_email', 'phone', 'screenshot_path'):
+                        if contact.get(key):
+                            enriched[key] = contact[key]
+                    results_dict[idx] = enriched
+            except Exception as e:
+                error_msg = str(e).replace('\n', ' ')[:200]
+                print(f"FAILED:profile:{tp_url}:{error_msg}")
+                failed_list.append(tp_url)
+                results_dict[idx] = {**lead}
+
+            print(f"PROGRESS:profile_progress:{idx + 1}/{total}")
 
             # Small delay between profiles within the same tab
             if i < len(slugs_batch) - 1:
@@ -202,6 +216,7 @@ async def scrape_profiles(
 
     total = len(leads)
     results_dict: dict[int, dict] = {}
+    failed_list: list[str] = []
 
     try:
         # Split leads into groups for parallel tabs
@@ -216,7 +231,7 @@ async def scrape_profiles(
 
         # Run all tabs concurrently
         tasks = [
-            _scrape_batch(context, batch, screenshots_dir, results_dict, 0, total)
+            _scrape_batch(context, batch, screenshots_dir, results_dict, failed_list, 0, total)
             for batch in batches
         ]
         await asyncio.gather(*tasks)
@@ -238,7 +253,7 @@ async def scrape_profiles(
         if i in results_dict:
             enriched.append(results_dict[i])
 
-    print(f"\nEnriched {len(enriched)} profiles.")
+    print(f"\nEnriched {len(enriched)} profiles. Failed: {len(failed_list)}")
     print(f"PROGRESS:profile_done:{len(enriched)}")
     return enriched
 

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Search, Users, Mail, BarChart3, FlaskConical } from 'lucide-react';
+import { useScrape } from '../hooks/useScrape';
 
 const NAV_ITEMS = [
   { href: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -16,6 +17,7 @@ const isTestMode = process.env.NEXT_PUBLIC_EMAIL_TEST_MODE === 'true';
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const { status } = useScrape();
 
   return (
     <aside className="w-56 bg-gray-900 text-white flex flex-col min-h-screen">
@@ -38,6 +40,7 @@ export default function Sidebar() {
       <nav className="flex-1 py-4">
         {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
           const isActive = href === '/' ? pathname === '/' : (pathname ?? '').startsWith(href);
+          const isScrapeRunning = href === '/scrape' && status === 'running';
           return (
             <Link
               key={href}
@@ -50,6 +53,12 @@ export default function Sidebar() {
             >
               <Icon size={18} />
               {label}
+              {isScrapeRunning && (
+                <span className="ml-auto flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-blue-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                </span>
+              )}
             </Link>
           );
         })}

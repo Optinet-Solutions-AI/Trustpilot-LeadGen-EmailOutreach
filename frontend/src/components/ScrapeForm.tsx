@@ -48,10 +48,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [maxRating, setMaxRating] = useState(3.5);
   const [enrich, setEnrich] = useState(false);
   const [verify, setVerify] = useState(false);
+  const [forceRescrape, setForceRescrape] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ country, category, minRating, maxRating, enrich, verify });
+    onSubmit({ country, category, minRating, maxRating, enrich, verify, forceRescrape });
   };
 
   return (
@@ -98,6 +99,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
           <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)}
             className="rounded border-gray-300" />
           Verify emails
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={forceRescrape} onChange={(e) => setForceRescrape(e.target.checked)}
+            className="rounded border-gray-300" />
+          Force re-scrape
         </label>
       </div>
 

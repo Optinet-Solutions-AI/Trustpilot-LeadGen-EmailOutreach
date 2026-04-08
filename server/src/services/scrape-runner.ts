@@ -1,15 +1,28 @@
 /**
  * Scrape orchestrator — spawns Python scraper scripts as child processes.
- * Reads stdout for PROGRESS: lines to update job status via SSE.
+ * Reads stdout for PROGRESS: and FAILED: lines to update job status via SSE.
+ *
+ * Features:
+ *   - Per-URL failure tracking (FAILED: lines → scrape_failures table)
+ *   - Pre-scrape deduplication (skips already-scraped profiles)
+ *   - Checkpoint saves (upserts after profile scrape, again after enrich)
+ *   - PID tracking for job cancellation
+ *   - Granular progress events with timestamps
  */
 
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import path from 'path';
+import fs from 'fs';
 import { config } from '../config.js';
 import { updateJob } from '../db/scrape-jobs.js';
+import { insertFailure } from '../db/scrape-failures.js';
+import { getSupabase } from '../lib/supabase.js';
 
 export const scrapeEvents = new EventEmitter();
+
+// Track active Python processes for cancellation
+const activeProcesses = new Map<string, ChildProcess>();
 
 interface ScrapeParams {
   jobId: string;
@@ -19,21 +32,37 @@ interface ScrapeParams {
   maxRating: number;
   enrich: boolean;
   verify: boolean;
+  forceRescrape?: boolean;
 }
 
-function runPython(scriptPath: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // If pythonPath is absolute (Linux: /usr/bin/python3) use as-is; if relative (Windows venv) resolve against project root
-    const pythonPath = path.isAbsolute(config.pythonPath)
-      ? config.pythonPath
-      : path.resolve(config.projectRoot, config.pythonPath);
-    const fullScript = path.resolve(config.projectRoot, scriptPath);
+function emitProgress(jobId: string, stage: string, detail: string) {
+  scrapeEvents.emit('progress', {
+    jobId,
+    stage,
+    detail,
+    timestamp: new Date().toISOString(),
+  });
+}
 
-    console.log(`Running: ${pythonPath} ${fullScript} ${args.join(' ')}`);
-    const proc = spawn(pythonPath, [fullScript, ...args], {
-      cwd: config.projectRoot,
-    });
+function runPython(
+  jobId: string,
+  scriptPath: string,
+  args: string[],
+): { promise: Promise<string>; proc: ChildProcess } {
+  const pythonPath = path.isAbsolute(config.pythonPath)
+    ? config.pythonPath
+    : path.resolve(config.projectRoot, config.pythonPath);
+  const fullScript = path.resolve(config.projectRoot, scriptPath);
 
+  console.log(`Running: ${pythonPath} ${fullScript} ${args.join(' ')}`);
+  const proc = spawn(pythonPath, [fullScript, ...args], {
+    cwd: config.projectRoot,
+  });
+
+  // Track process for cancellation
+  activeProcesses.set(jobId, proc);
+
+  const promise = new Promise<string>((resolve, reject) => {
     let stdout = '';
     let stderr = '';
 
@@ -41,18 +70,25 @@ function runPython(scriptPath: string, args: string[]): Promise<string> {
       const text = data.toString();
       stdout += text;
 
-      // Parse PROGRESS: lines for SSE streaming
       const lines = text.split('\n');
       for (const line of lines) {
-        if (line.startsWith('PROGRESS:')) {
-          const parts = line.trim().split(':');
-          scrapeEvents.emit('progress', {
-            jobId: args[0], // not ideal, but we pass it through
-            stage: parts[1],
-            detail: parts.slice(2).join(':'),
-          });
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        if (trimmed.startsWith('PROGRESS:')) {
+          const parts = trimmed.split(':');
+          emitProgress(jobId, parts[1], parts.slice(2).join(':'));
+        } else if (trimmed.startsWith('FAILED:')) {
+          const parts = trimmed.split(':');
+          const stage = parts[1] || 'unknown';
+          const url = parts[2] || '';
+          const errorMsg = parts.slice(3).join(':') || 'Unknown error';
+          // Insert failure record asynchronously (don't block)
+          insertFailure({ job_id: jobId, url, stage, error_message: errorMsg });
+          emitProgress(jobId, 'item_failed', `${stage}:${url}`);
         }
-        if (line.trim()) console.log(`  [PY] ${line.trim()}`);
+
+        if (trimmed) console.log(`  [PY] ${trimmed}`);
       }
     });
 
@@ -61,82 +97,225 @@ function runPython(scriptPath: string, args: string[]): Promise<string> {
     });
 
     proc.on('close', (code) => {
+      activeProcesses.delete(jobId);
       if (code === 0) resolve(stdout);
-      else reject(new Error(`Script exited with code ${code}: ${stderr}`));
+      else reject(new Error(`Script exited with code ${code}: ${stderr.slice(0, 500)}`));
     });
 
-    proc.on('error', (err) => reject(err));
+    proc.on('error', (err) => {
+      activeProcesses.delete(jobId);
+      reject(err);
+    });
   });
+
+  return { promise, proc };
+}
+
+/**
+ * Cancel a running scrape job by killing its Python process.
+ */
+export async function cancelScrapeJob(jobId: string): Promise<void> {
+  const proc = activeProcesses.get(jobId);
+  if (proc) {
+    // Kill the process tree
+    if (process.platform === 'win32') {
+      try {
+        spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
+      } catch {}
+    } else {
+      try {
+        proc.kill('SIGTERM');
+      } catch {}
+    }
+    activeProcesses.delete(jobId);
+  }
+
+  await updateJob(jobId, {
+    status: 'failed',
+    error: 'Cancelled by user',
+    completed_at: new Date().toISOString(),
+  });
+  emitProgress(jobId, 'failed', 'Cancelled by user');
+}
+
+/**
+ * Get all active process entries (for SIGTERM cleanup).
+ */
+export function getActiveProcesses(): Map<string, ChildProcess> {
+  return activeProcesses;
+}
+
+/**
+ * Deduplicate leads against existing DB records.
+ * Returns filtered list with already-scraped profiles removed.
+ */
+async function deduplicateLeads(
+  leads: Array<{ trustpilot_url?: string; [key: string]: unknown }>,
+): Promise<{ filtered: typeof leads; skippedCount: number }> {
+  const urls = leads
+    .map((l) => l.trustpilot_url)
+    .filter((u): u is string => !!u);
+
+  if (urls.length === 0) return { filtered: leads, skippedCount: 0 };
+
+  const existing = new Set<string>();
+  const supabase = getSupabase();
+
+  // Query in chunks of 100 to avoid payload limits
+  for (let i = 0; i < urls.length; i += 100) {
+    const chunk = urls.slice(i, i + 100);
+    const { data } = await supabase
+      .from('leads')
+      .select('trustpilot_url')
+      .in('trustpilot_url', chunk);
+    if (data) {
+      for (const row of data) {
+        existing.add(row.trustpilot_url);
+      }
+    }
+  }
+
+  const filtered = leads.filter((l) => !l.trustpilot_url || !existing.has(l.trustpilot_url));
+  return { filtered, skippedCount: leads.length - filtered.length };
 }
 
 export async function runScrapeJob(params: ScrapeParams): Promise<void> {
-  const { jobId, country, category, minRating, maxRating, enrich, verify } = params;
+  const { jobId, country, category, minRating, maxRating, enrich, verify, forceRescrape } = params;
   const tmpDir = path.resolve(config.projectRoot, '.tmp');
+  let failedCount = 0;
 
   try {
     await updateJob(jobId, { status: 'running', started_at: new Date().toISOString() });
-    scrapeEvents.emit('progress', { jobId, stage: 'started', detail: '' });
+    emitProgress(jobId, 'started', '');
 
     // Step 1: Category scrape
     const rawOutput = path.join(tmpDir, `${jobId}_raw.json`);
-    await runPython('tools/scraper/scrape_category.py', [
+    const { promise: categoryPromise } = runPython(jobId, 'tools/scraper/scrape_category.py', [
       '--country', country,
       '--category', category,
       '--min-rating', String(minRating),
       '--max-rating', String(maxRating),
       '--output', rawOutput,
     ]);
+    await categoryPromise;
 
-    // Update found count from raw results
+    // Read raw results and update found count
+    let rawData: Array<Record<string, unknown>> = [];
     try {
-      const fs = await import('fs');
-      const rawData = JSON.parse(fs.readFileSync(rawOutput, 'utf-8'));
+      rawData = JSON.parse(fs.readFileSync(rawOutput, 'utf-8'));
       await updateJob(jobId, { total_found: rawData.length });
-      scrapeEvents.emit('progress', { jobId, stage: 'category_done', detail: String(rawData.length) });
-    } catch {}
+      emitProgress(jobId, 'category_done', String(rawData.length));
+    } catch (err) {
+      console.error(`Failed to read raw output for job ${jobId}:`, err);
+      emitProgress(jobId, 'category_done', '0');
+    }
 
-    // Step 2: Profile scrape (always captures screenshots)
+    // Step 2: Deduplication (unless forceRescrape)
+    let leadsToScrape = rawData;
+    let skippedCount = 0;
+
+    if (!forceRescrape && rawData.length > 0) {
+      emitProgress(jobId, 'dedup_start', String(rawData.length));
+      const dedup = await deduplicateLeads(rawData);
+      leadsToScrape = dedup.filtered;
+      skippedCount = dedup.skippedCount;
+      await updateJob(jobId, { total_skipped: skippedCount });
+      emitProgress(jobId, 'dedup_done', `${skippedCount}/${rawData.length}`);
+
+      if (leadsToScrape.length === 0) {
+        await updateJob(jobId, {
+          status: 'completed',
+          total_scraped: 0,
+          completed_at: new Date().toISOString(),
+        });
+        emitProgress(jobId, 'completed', `All ${rawData.length} profiles already in database`);
+        return;
+      }
+
+      // Write deduped list for profile scraper
+      const dedupedOutput = path.join(tmpDir, `${jobId}_deduped.json`);
+      fs.writeFileSync(dedupedOutput, JSON.stringify(leadsToScrape, null, 2));
+    }
+
+    // Step 3: Profile scrape
+    const profileInput = !forceRescrape && skippedCount > 0
+      ? path.join(tmpDir, `${jobId}_deduped.json`)
+      : rawOutput;
     const enrichedOutput = path.join(tmpDir, `${jobId}_enriched.json`);
     const screenshotsDir = path.join(tmpDir, 'screenshots');
-    await runPython('tools/scraper/scrape_profile.py', [
-      '--input', rawOutput,
+
+    const { promise: profilePromise } = runPython(jobId, 'tools/scraper/scrape_profile.py', [
+      '--input', profileInput,
       '--output', enrichedOutput,
       '--screenshots-dir', screenshotsDir,
     ]);
+    await profilePromise;
 
-    // Step 3: Website enrichment (optional) — only runs on leads missing an email
+    // Step 4: Checkpoint — upsert profile results immediately
+    emitProgress(jobId, 'checkpoint_save', 'Saving profile data...');
+    const { promise: checkpointPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
+      '--input', enrichedOutput,
+    ]);
+    await checkpointPromise;
+    emitProgress(jobId, 'checkpoint_done', 'Profile data saved');
+
+    // Step 5: Website enrichment (optional)
     if (enrich) {
-      scrapeEvents.emit('progress', { jobId, stage: 'enrich_start', detail: '' });
-      await runPython('tools/scraper/scrape_website.py', [
+      emitProgress(jobId, 'enrich_start', '');
+      const { promise: enrichPromise } = runPython(jobId, 'tools/scraper/scrape_website.py', [
         '--input', enrichedOutput,
         '--output', enrichedOutput,
         '--parallel', '3',
       ]);
+      await enrichPromise;
+
+      // Step 6: Final upsert with enriched emails
+      emitProgress(jobId, 'final_save', 'Saving enriched data...');
+      const { promise: finalUpsertPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
+        '--input', enrichedOutput,
+      ]);
+      await finalUpsertPromise;
     }
 
-    // Step 4: Save to Supabase
-    await runPython('tools/db/upsert_leads.py', [
-      '--input', enrichedOutput,
-    ]);
-
-    // Count enriched results
+    // Count final results
     let totalScraped = 0;
     try {
-      const fs = await import('fs');
       const enrichedData = JSON.parse(fs.readFileSync(enrichedOutput, 'utf-8'));
       totalScraped = enrichedData.length;
-    } catch {}
+    } catch (err) {
+      console.error(`Failed to read enriched output for job ${jobId}:`, err);
+    }
+
+    // Count failures from DB
+    try {
+      const supabase = getSupabase();
+      const { count } = await supabase
+        .from('scrape_failures')
+        .select('*', { count: 'exact', head: true })
+        .eq('job_id', jobId)
+        .eq('resolved', false);
+      failedCount = count || 0;
+    } catch (err) {
+      console.error(`Failed to count failures for job ${jobId}:`, err);
+    }
 
     await updateJob(jobId, {
       status: 'completed',
       total_scraped: totalScraped,
+      total_failed: failedCount,
       completed_at: new Date().toISOString(),
     });
-    scrapeEvents.emit('progress', { jobId, stage: 'completed', detail: '' });
+    emitProgress(jobId, 'completed', '');
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await updateJob(jobId, { status: 'failed', error: message });
-    scrapeEvents.emit('progress', { jobId, stage: 'failed', detail: message });
+    console.error(`Scrape job ${jobId} failed:`, message);
+    await updateJob(jobId, {
+      status: 'failed',
+      error: message.slice(0, 500),
+      total_failed: failedCount,
+      completed_at: new Date().toISOString(),
+    });
+    emitProgress(jobId, 'failed', message.slice(0, 200));
   }
 }

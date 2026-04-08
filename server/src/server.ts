@@ -73,6 +73,19 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Orphan reset error:', e instanceof Error ? e.message : e);
   }
 
+  // Reset any orphaned 'running' scrape jobs to 'failed' on startup
+  try {
+    const { getSupabase } = await import('./lib/supabase.js');
+    const { error } = await getSupabase()
+      .from('scrape_jobs')
+      .update({ status: 'failed', error: 'Server restarted during job' })
+      .eq('status', 'running');
+    if (error) console.warn('[Startup] Failed to reset orphaned scrape jobs:', error.message);
+    else console.log('[Startup] Reset any orphaned running scrape jobs to failed');
+  } catch (e) {
+    console.error('[Startup] Scrape job orphan reset error:', e instanceof Error ? e.message : e);
+  }
+
   // Start Gmail reply tracking poll (every 5 minutes) when in gmail mode
   if (config.emailMode === 'gmail') {
     const REPLY_CHECK_INTERVAL = 5 * 60 * 1000;
@@ -90,9 +103,27 @@ const server = app.listen(config.port, async () => {
 });
 
 // Graceful shutdown — Cloud Run sends SIGTERM before killing the instance.
-// Mark any running scrape jobs as failed so the UI doesn't show them stuck.
+// Kill active Python processes and mark running jobs as failed.
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received — marking running jobs as failed and shutting down');
+  console.log('SIGTERM received — killing active scrapers and shutting down');
+
+  // Kill all active Python scraper processes
+  try {
+    const { getActiveProcesses } = await import('./services/scrape-runner.js');
+    for (const [jobId, proc] of getActiveProcesses()) {
+      console.log(`  Killing scraper process for job ${jobId} (PID ${proc.pid})`);
+      try {
+        if (process.platform === 'win32') {
+          const { spawn } = await import('child_process');
+          spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
+        } else {
+          proc.kill('SIGTERM');
+        }
+      } catch {}
+    }
+  } catch {}
+
+  // Mark all running scrape jobs as failed in DB
   try {
     const { getSupabase } = await import('./lib/supabase.js');
     const supabase = getSupabase();

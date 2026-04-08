@@ -53,10 +53,14 @@ def upsert_leads(leads: list[dict]) -> int:
 
     # Upsert in batches of 25 to avoid payload limits and timeouts
     count = 0
+    failed_count = 0
     batch_size = 25
+    total_batches = (len(rows) + batch_size - 1) // batch_size
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
+        batch_num = i // batch_size + 1
         # Retry up to 3 times per batch
+        batch_ok = False
         for attempt in range(3):
             try:
                 result = (
@@ -66,18 +70,23 @@ def upsert_leads(leads: list[dict]) -> int:
                 )
                 batch_count = len(result.data) if result.data else 0
                 count += batch_count
-                print(f"  Batch {i // batch_size + 1}: upserted {batch_count} leads")
+                print(f"  Batch {batch_num}: upserted {batch_count} leads")
+                batch_ok = True
                 break
             except Exception as e:
                 if attempt < 2:
                     import time
-                    print(f"  Batch {i // batch_size + 1}: retry {attempt + 1} after error: {e}")
+                    print(f"  Batch {batch_num}: retry {attempt + 1} after error: {e}")
                     time.sleep(2)
                 else:
-                    print(f"  Batch {i // batch_size + 1}: FAILED after 3 attempts: {e}")
-                    raise
+                    error_msg = str(e).replace('\n', ' ')[:200]
+                    print(f"FAILED:upsert:batch_{batch_num}:{error_msg}")
+                    failed_count += len(batch)
 
-    print(f"Upserted {count} leads into Supabase.")
+        print(f"PROGRESS:upsert_progress:{batch_num}/{total_batches}")
+
+    print(f"Upserted {count} leads into Supabase. Failed: {failed_count}")
+    print(f"PROGRESS:upsert_done:{count}/{count + failed_count}")
     return count
 
 

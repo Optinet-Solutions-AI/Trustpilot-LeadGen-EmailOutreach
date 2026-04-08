@@ -132,7 +132,7 @@ async def scrape_website_email(page, website_url: str) -> str | None:
     return deliverable[0]
 
 
-async def _enrich_batch(context, batch: list[tuple[int, dict]], results_dict: dict, total: int):
+async def _enrich_batch(context, batch: list[tuple[int, dict]], results_dict: dict, failed_list: list, total: int):
     """Enrich a batch of leads using a single browser tab."""
     page = await context.new_page()
     try:
@@ -148,9 +148,12 @@ async def _enrich_batch(context, batch: list[tuple[int, dict]], results_dict: di
                 else:
                     print(f"    No email found")
             except Exception as e:
-                print(f"    Error: {e}")
+                error_msg = str(e).replace('\n', ' ')[:200]
+                print(f"FAILED:website:{website_url or 'unknown'}:{error_msg}")
+                failed_list.append(website_url or 'unknown')
 
             results_dict[idx] = lead
+            print(f"PROGRESS:enrich_progress:{idx + 1}/{total}")
 
             if i < len(batch) - 1:
                 await human_delay(1.0, 2.5)
@@ -194,6 +197,7 @@ async def enrich_websites(
 
     browser, context, _ = await launch_browser()
     results_dict: dict[int, dict] = dict(already_has_email)
+    failed_list: list[str] = []
 
     try:
         # Split into batches for parallel tabs
@@ -206,7 +210,7 @@ async def enrich_websites(
         print(f"Starting enrichment with {len(batches)} parallel tabs...\n")
 
         tasks = [
-            _enrich_batch(context, batch, results_dict, total_to_enrich)
+            _enrich_batch(context, batch, results_dict, failed_list, total_to_enrich)
             for batch in batches
         ]
         await asyncio.gather(*tasks)
@@ -218,7 +222,7 @@ async def enrich_websites(
     enriched_out = [results_dict[i] for i in range(len(leads)) if i in results_dict]
 
     found_count = sum(1 for l in enriched_out if l.get('website_email'))
-    print(f"\nEnrichment complete: {found_count} new emails found out of {total_to_enrich} attempted.")
+    print(f"\nEnrichment complete: {found_count} new emails found out of {total_to_enrich} attempted. Failed: {len(failed_list)}")
     print(f"PROGRESS:enrich_done:{found_count}")
 
     if progress_callback:

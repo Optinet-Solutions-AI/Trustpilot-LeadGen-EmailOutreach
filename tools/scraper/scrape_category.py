@@ -126,6 +126,8 @@ async def scrape_category(
             if page_ratings:
                 print(f"  Page rating range: {lowest_on_page}-{highest_on_page}")
 
+            print(f"PROGRESS:category_progress:{page_num}:{len(results)}")
+
             # Smart skip: if all companies on page are above max_rating, jump ahead
             if page_results == [] and lowest_on_page is not None and lowest_on_page > max_rating:
                 consecutive_above += 1

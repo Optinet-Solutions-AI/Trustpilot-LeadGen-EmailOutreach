@@ -7,7 +7,10 @@ import ScrapeProgress from '../components/ScrapeProgress';
 import type { ScrapeParams } from '../types/scrape';
 
 export default function Scrape() {
-  const { status, progress, error, jobs, startScrape, fetchJobs } = useScrape();
+  const {
+    jobId, status, progress, error, jobs, failedCount,
+    startScrape, cancelJob, retryFailed, fetchJobs,
+  } = useScrape();
 
   useEffect(() => { fetchJobs(); }, [fetchJobs]);
 
@@ -19,7 +22,15 @@ export default function Scrape() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Scrape Trustpilot</h1>
       <ScrapeForm onSubmit={handleSubmit} loading={status === 'running'} />
-      <ScrapeProgress status={status as 'running' | 'completed' | 'failed' | null} progress={progress} error={error} />
+      <ScrapeProgress
+        status={status as 'running' | 'completed' | 'failed' | null}
+        progress={progress}
+        error={error}
+        failedCount={failedCount}
+        jobId={jobId}
+        onCancel={jobId ? () => cancelJob(jobId) : undefined}
+        onRetryFailed={jobId ? () => retryFailed(jobId) : undefined}
+      />
 
       {/* Recent Jobs */}
       {jobs.length > 0 && (
@@ -33,6 +44,9 @@ export default function Scrape() {
                 <th className="text-left py-2">Rating</th>
                 <th className="text-left py-2">Status</th>
                 <th className="text-right py-2">Found</th>
+                <th className="text-right py-2">Scraped</th>
+                <th className="text-right py-2">Skipped</th>
+                <th className="text-right py-2">Failed</th>
                 <th className="text-right py-2">Date</th>
               </tr>
             </thead>
@@ -51,6 +65,9 @@ export default function Scrape() {
                     }`}>{job.status}</span>
                   </td>
                   <td className="text-right py-2">{job.total_found}</td>
+                  <td className="text-right py-2">{job.total_scraped}</td>
+                  <td className="text-right py-2 text-gray-400">{job.total_skipped || 0}</td>
+                  <td className="text-right py-2 text-red-500">{job.total_failed || 0}</td>
                   <td className="text-right py-2 text-gray-500">
                     {new Date(job.created_at).toLocaleDateString()}
                   </td>
