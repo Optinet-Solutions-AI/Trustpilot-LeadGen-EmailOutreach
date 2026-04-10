@@ -134,12 +134,18 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     const subject = renderAndSpin(campaign.template_subject, lead);
     const html    = renderAndSpin(campaign.template_body, lead);
 
-    // Screenshot — same resolution logic as the production send route
-    const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
-    const screenshotPath = campaign.include_screenshot && lead.screenshot_path
-      ? path.resolve(screenshotsDir, path.basename(String(lead.screenshot_path)))
-      : undefined;
-    const validScreenshotPath = screenshotPath && fs.existsSync(screenshotPath) ? screenshotPath : undefined;
+    // Screenshot — resolve from URL (Supabase Storage) or local file
+    const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
+    let validScreenshotPath: string | undefined;
+    if (campaign.include_screenshot && leadScreenshot) {
+      if (leadScreenshot.startsWith('http')) {
+        validScreenshotPath = leadScreenshot; // Supabase Storage URL — fetched by email sender
+      } else {
+        const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
+        const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshot));
+        if (fs.existsSync(localPath)) validScreenshotPath = localPath;
+      }
+    }
 
     // Override recipient + inject [TEST FLIGHT] banner — never touches the real lead's inbox
     const transformed = applyTestMode(
@@ -216,14 +222,17 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       })
       .map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => {
         const lead = cl.leads as Record<string, unknown>;
-        const screenshotPath = campaign.include_screenshot && lead.screenshot_path
-          ? path.resolve(screenshotsDir, path.basename(String(lead.screenshot_path)))
-          : undefined;
-
-        // Only include screenshot if file actually exists
-        const validScreenshotPath = screenshotPath && fs.existsSync(screenshotPath)
-          ? screenshotPath
-          : undefined;
+        // Screenshot — resolve from URL (Supabase Storage) or local file
+        const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
+        let validScreenshotPath: string | undefined;
+        if (campaign.include_screenshot && leadScreenshotPath) {
+          if (leadScreenshotPath.startsWith('http')) {
+            validScreenshotPath = leadScreenshotPath;
+          } else {
+            const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
+            if (fs.existsSync(localPath)) validScreenshotPath = localPath;
+          }
+        }
 
         return {
           campaignLeadId: cl.id,

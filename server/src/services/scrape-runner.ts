@@ -112,6 +112,69 @@ function runPython(
 }
 
 /**
+ * Upload screenshots from local .tmp/screenshots/ to Supabase Storage,
+ * then update each lead's screenshot_path to the public URL.
+ * This ensures screenshots persist across Cloud Run deployments.
+ */
+async function uploadScreenshotsToStorage(screenshotsDir: string, enrichedOutput: string): Promise<void> {
+  try {
+    if (!fs.existsSync(screenshotsDir)) return;
+
+    const supabase = getSupabase();
+    const BUCKET = 'screenshots';
+
+    // Ensure bucket exists (idempotent — ignores "already exists" errors)
+    await supabase.storage.createBucket(BUCKET, { public: true }).catch(() => {});
+
+    // Read enriched leads to map filenames → lead trustpilot_urls
+    let leads: Array<{ trustpilot_url?: string; screenshot_path?: string }> = [];
+    try {
+      leads = JSON.parse(fs.readFileSync(enrichedOutput, 'utf-8'));
+    } catch { return; }
+
+    const files = fs.readdirSync(screenshotsDir).filter((f) => f.endsWith('.png'));
+    if (files.length === 0) return;
+
+    console.log(`[Screenshots] Uploading ${files.length} screenshots to Supabase Storage...`);
+
+    for (const filename of files) {
+      const filePath = path.join(screenshotsDir, filename);
+      const fileBuffer = fs.readFileSync(filePath);
+
+      const { error } = await supabase.storage
+        .from(BUCKET)
+        .upload(filename, fileBuffer, { contentType: 'image/png', upsert: true });
+
+      if (error) {
+        console.warn(`[Screenshots] Failed to upload ${filename}: ${error.message}`);
+        continue;
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(filename);
+      const publicUrl = urlData?.publicUrl;
+      if (!publicUrl) continue;
+
+      // Find matching lead and update screenshot_path in DB
+      const matchingLead = leads.find((l) =>
+        l.screenshot_path && path.basename(l.screenshot_path) === filename
+      );
+      if (matchingLead?.trustpilot_url) {
+        await supabase
+          .from('leads')
+          .update({ screenshot_path: publicUrl })
+          .eq('trustpilot_url', matchingLead.trustpilot_url);
+      }
+    }
+
+    console.log(`[Screenshots] Upload complete — ${files.length} files`);
+  } catch (err) {
+    // Non-fatal — screenshots are nice-to-have, don't fail the scrape job
+    console.error('[Screenshots] Upload error (non-fatal):', err);
+  }
+}
+
+/**
  * Cancel a running scrape job by killing its Python process.
  */
 export async function cancelScrapeJob(jobId: string): Promise<void> {
@@ -258,6 +321,9 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
     ]);
     await checkpointPromise;
     emitProgress(jobId, 'checkpoint_done', 'Profile data saved');
+
+    // Step 4b: Upload screenshots to Supabase Storage (persists across deploys)
+    await uploadScreenshotsToStorage(screenshotsDir, enrichedOutput);
 
     // Step 5: Website enrichment (optional)
     if (enrich) {

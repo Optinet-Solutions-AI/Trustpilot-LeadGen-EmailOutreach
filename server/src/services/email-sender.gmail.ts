@@ -58,7 +58,7 @@ export async function sendEmail(
       ? `"${config.gmail.fromName}" <${config.gmail.fromEmail}>`
       : config.gmail.fromEmail;
 
-    // Build attachments array if screenshot is available
+    // Build attachments array if screenshot is available (local file or URL)
     const attachments: Array<{
       filename: string;
       content: Buffer;
@@ -68,16 +68,31 @@ export async function sendEmail(
 
     let bodyHtml = html;
 
-    if (options.screenshotPath && fs.existsSync(options.screenshotPath)) {
-      const screenshotBuffer = fs.readFileSync(options.screenshotPath);
-      attachments.push({
-        filename: 'trustpilot-profile.png',
-        content: screenshotBuffer,
-        contentType: 'image/png',
-        cid: 'trustpilot-screenshot',
-      });
-      // Append inline image reference to HTML body
-      bodyHtml = `${html}\n<br/><img src="cid:trustpilot-screenshot" alt="Your Trustpilot Profile" style="max-width:600px;border:1px solid #e5e7eb;border-radius:8px;" />`;
+    if (options.screenshotPath) {
+      let screenshotBuffer: Buffer | null = null;
+
+      if (options.screenshotPath.startsWith('http')) {
+        // Fetch from Supabase Storage URL
+        try {
+          const res = await fetch(options.screenshotPath);
+          if (res.ok) screenshotBuffer = Buffer.from(await res.arrayBuffer());
+        } catch (err) {
+          console.warn('[Gmail] Failed to fetch screenshot from URL:', err);
+        }
+      } else if (fs.existsSync(options.screenshotPath)) {
+        // Read from local filesystem
+        screenshotBuffer = fs.readFileSync(options.screenshotPath);
+      }
+
+      if (screenshotBuffer) {
+        attachments.push({
+          filename: 'trustpilot-profile.png',
+          content: screenshotBuffer,
+          contentType: 'image/png',
+          cid: 'trustpilot-screenshot',
+        });
+        bodyHtml = `${html}\n<br/><img src="cid:trustpilot-screenshot" alt="Your Trustpilot Profile" style="max-width:600px;border:1px solid #e5e7eb;border-radius:8px;" />`;
+      }
     }
 
     // Domain-aligned Message-ID improves DKIM/SPF authentication
