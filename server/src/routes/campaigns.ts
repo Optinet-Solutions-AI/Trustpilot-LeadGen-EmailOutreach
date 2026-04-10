@@ -118,6 +118,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // POST /api/campaigns/:id/test-flight — send an exact replica to a test address using real lead data
 // Mandatory pre-flight gate before the user is allowed to blast a live campaign.
 // Uses the EXACT same rendering + screenshot logic as production; does NOT update DB or fire the async sender.
+// When EMAIL_PLATFORM=instantly, sends via Instantly (jordi@optiratesolutions.com) instead of Gmail.
 router.post('/:id/test-flight', async (req: Request, res: Response) => {
   try {
     const campaignId = param(req.params.id);
@@ -149,15 +150,74 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     const lead = firstPendingLead.leads as Record<string, unknown>;
 
     // Render with real lead data — identical to how production emails are built
-    const subject = renderAndSpin(campaign.template_subject, lead);
-    const html    = renderAndSpin(campaign.template_body, lead);
+    const renderedSubject = renderAndSpin(campaign.template_subject, lead);
+    const renderedHtml    = renderAndSpin(campaign.template_body, lead);
 
-    // Screenshot — resolve from URL (Supabase Storage) or local file
+    // Screenshot handling
     const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
+    let screenshotUrl: string | undefined;
+    if (campaign.include_screenshot && leadScreenshot?.startsWith('http')) {
+      screenshotUrl = leadScreenshot;
+    }
+
+    // ── Platform mode: send test via Instantly ────────────────────────
+    if (isPlatformEnabled()) {
+      const platform = getEmailPlatform();
+      const testCampaignName = `[TEST FLIGHT] ${campaign.name} ${Date.now()}`;
+
+      // Build body with screenshot embedded if applicable
+      let testBody = renderedHtml;
+      if (screenshotUrl) {
+        testBody += `<br/><img src="${screenshotUrl}" alt="Trustpilot Profile" style="max-width:600px;border-radius:8px;margin-top:16px;" />`;
+      }
+      const testSubject = `[TEST] ${renderedSubject}`;
+
+      // Create a temporary 1-lead campaign on Instantly
+      const tempCampaign = await platform.createCampaign({
+        name: testCampaignName,
+        sequences: [{ subject: '{{custom_subject}}', body: '{{custom_body}}' }],
+        stopOnReply: false,
+        trackOpens: false,
+      });
+
+      // Add the test recipient as the single lead
+      await platform.addLeads(tempCampaign.platformCampaignId, [{
+        email: testEmail,
+        companyName: String(lead.company_name || ''),
+        variables: {
+          custom_subject: testSubject,
+          custom_body: testBody,
+        },
+      }]);
+
+      // Activate — Instantly will send it within the next sending window
+      await platform.activateCampaign(tempCampaign.platformCampaignId);
+
+      // Schedule cleanup: delete the temp campaign after 30 minutes
+      setTimeout(async () => {
+        try { await platform.deleteCampaign(tempCampaign.platformCampaignId); } catch {}
+      }, 30 * 60 * 1000);
+
+      console.log(`[TestFlight] Sent via ${platform.name} to ${testEmail} (temp campaign ${tempCampaign.platformCampaignId})`);
+
+      res.json({
+        success: true,
+        data: {
+          sentTo: testEmail,
+          leadUsed: String(lead.company_name || 'Unknown'),
+          originalEmail: firstPendingLead.email_used,
+          platform: platform.name,
+          note: `Queued via ${platform.name} — arrives within a few minutes depending on your sending schedule.`,
+        },
+      });
+      return;
+    }
+
+    // ── Direct mode: send via Gmail ───────────────────────────────────
     let validScreenshotPath: string | undefined;
     if (campaign.include_screenshot && leadScreenshot) {
       if (leadScreenshot.startsWith('http')) {
-        validScreenshotPath = leadScreenshot; // Supabase Storage URL — fetched by email sender
+        validScreenshotPath = leadScreenshot;
       } else {
         const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
         const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshot));
@@ -165,14 +225,12 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       }
     }
 
-    // Override recipient + inject [TEST FLIGHT] banner — never touches the real lead's inbox
     const transformed = applyTestMode(
-      { to: firstPendingLead.email_used as string, subject, html },
-      true,       // force test mode on
-      testEmail,  // override with caller-supplied address
+      { to: firstPendingLead.email_used as string, subject: renderedSubject, html: renderedHtml },
+      true,
+      testEmail,
     );
 
-    // Send synchronously — we need to know immediately if it succeeded before unlocking the live send
     const result = await sendEmail(
       transformed.to,
       transformed.subject,

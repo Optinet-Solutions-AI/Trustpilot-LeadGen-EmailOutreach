@@ -12,6 +12,8 @@ interface TestResult {
   sentTo: string;
   leadUsed: string;
   originalEmail: string;
+  platform?: string;
+  note?: string;
 }
 
 interface Props {
@@ -202,7 +204,9 @@ export default function TestFlightModal({
             <div className="bg-green-50 border border-green-200 rounded-xl p-4 space-y-2">
               <div className="flex items-center gap-2 text-green-700">
                 <CheckCircle size={16} />
-                <p className="text-sm font-semibold">Test email delivered successfully</p>
+                <p className="text-sm font-semibold">
+                  {result.platform ? `Queued via ${result.platform}` : 'Test email delivered successfully'}
+                </p>
               </div>
               <div className="text-xs text-green-700 space-y-1 pl-6">
                 <div className="flex items-center gap-1.5">
@@ -217,7 +221,9 @@ export default function TestFlightModal({
             </div>
 
             <p className="text-sm text-gray-600">
-              Check your inbox now. Verify the subject, body, personalisation tokens, and screenshot all look correct.
+              {result.note
+                ? result.note + ' Verify the subject, body, tokens, and screenshot look correct before proceeding.'
+                : 'Check your inbox now. Verify the subject, body, personalisation tokens, and screenshot all look correct.'}
             </p>
 
             {/* Primary: Proceed to live */}
