@@ -2,14 +2,14 @@ swagger: "2.0"
 info:
   title: trustpilot-api
   description: Trustpilot LeadGen API Gateway proxy to Cloud Run
-  version: "1.1.0"
+  version: "1.2.0"
 schemes:
   - https
 produces:
   - application/json
 x-google-backend:
-  address: https://trustpilot-api-pmj2zcippq-uc.a.run.app
-  jwt_audience: https://trustpilot-api-pmj2zcippq-uc.a.run.app
+  address: https://trustpilot-crm-281469818025.us-central1.run.app
+  jwt_audience: https://trustpilot-crm-281469818025.us-central1.run.app
   protocol: h2
 paths:
   /api/health:
@@ -313,6 +313,44 @@ paths:
           name: id
           required: true
           type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/sync:
+    post:
+      operationId: syncCampaignStats
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/{id}/steps:
+    get:
+      operationId: getCampaignSteps
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/platform-status:
+    get:
+      operationId: getPlatformStatus
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/webhooks/email-platform:
+    post:
+      operationId: emailPlatformWebhook
+      security: []
       responses:
         "200":
           description: OK
