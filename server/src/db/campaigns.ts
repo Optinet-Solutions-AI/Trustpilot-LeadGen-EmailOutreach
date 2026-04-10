@@ -4,15 +4,17 @@ export async function getCampaigns() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('campaigns')
-    .select('*, campaign_leads(count)')
+    .select('*, campaign_leads(count), campaign_steps(count)')
     .order('created_at', { ascending: false });
   if (error) throw new Error(error.message);
-  // Flatten the nested count into a simple lead_count field
+  // Flatten the nested counts into simple fields
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data || []).map((c: any) => ({
     ...c,
     lead_count: c.campaign_leads?.[0]?.count ?? 0,
+    step_count: c.campaign_steps?.[0]?.count ?? 0,
     campaign_leads: undefined,
+    campaign_steps: undefined,
   }));
 }
 

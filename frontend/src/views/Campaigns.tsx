@@ -17,6 +17,7 @@ export default function Campaigns() {
     campaigns, loading, fetchCampaigns, createCampaign, sendCampaign,
     cancelCampaign, deleteCampaign, getCampaignLeads, checkReplies,
     getRateLimit, duplicateCampaign, previewRecipients, testFlightSend,
+    syncStats, getPlatformStatus, getCampaignSteps,
   } = useCampaigns();
   const { status: sendStatus, sent, failed, total, subscribe, reset } = useCampaignProgress();
 
@@ -34,8 +35,11 @@ export default function Campaigns() {
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [platformInfo, setPlatformInfo] = useState<{ enabled: boolean; platform: string } | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
+  useEffect(() => { getPlatformStatus().then(setPlatformInfo).catch(() => {}); }, [getPlatformStatus]);
 
   // Auto-reconnect SSE if a campaign is already sending
   useEffect(() => {
@@ -66,9 +70,10 @@ export default function Campaigns() {
     setTimeout(() => setNotification(null), 6000);
   };
 
-  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[] }) => {
+  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[]; followUpSteps?: Array<{ delayDays: number; subject: string; body: string }> }) => {
     const campaign = await createCampaign(data);
-    notify('success', `Campaign "${campaign.name}" created with ${data.leadIds.length} lead${data.leadIds.length !== 1 ? 's' : ''}.`);
+    const stepsMsg = data.followUpSteps?.length ? ` + ${data.followUpSteps.length} follow-up(s)` : '';
+    notify('success', `Campaign "${campaign.name}" created with ${data.leadIds.length} lead${data.leadIds.length !== 1 ? 's' : ''}${stepsMsg}.`);
     fetchCampaigns();
   };
 
@@ -143,6 +148,26 @@ export default function Campaigns() {
     }
   };
 
+  const handleSyncStats = async () => {
+    setSyncing(true);
+    try {
+      // Sync all platform campaigns that are currently sending
+      const platformCampaigns = campaigns.filter((c) => c.platform_campaign_id && (c.status === 'sending' || c.status === 'active'));
+      for (const c of platformCampaigns) {
+        await syncStats(c.id);
+      }
+      if (platformCampaigns.length === 0) {
+        notify('warning', 'No active platform campaigns to sync.');
+      } else {
+        notify('success', `Synced stats for ${platformCampaigns.length} campaign(s).`);
+      }
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const isSending = sendStatus === 'sending' || sendStatus === 'connecting';
 
   const notifColors = {
@@ -162,6 +187,13 @@ export default function Campaigns() {
             <div className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5">
               {rateLimit.hourlyRemaining}/hr · {rateLimit.dailyRemaining}/day left
             </div>
+          )}
+          {platformInfo?.enabled && (
+            <button onClick={handleSyncStats} disabled={syncing}
+              className="inline-flex items-center gap-1.5 border border-indigo-300 text-indigo-600 px-3 py-1.5 rounded-lg text-sm hover:bg-indigo-50 disabled:opacity-50 transition-colors">
+              <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+              Sync Stats
+            </button>
           )}
           <button onClick={handleCheckReplies} disabled={checkingReplies}
             className="inline-flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 py-1.5 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50 transition-colors">
@@ -287,6 +319,7 @@ export default function Campaigns() {
           campaign={detailCampaign}
           onClose={() => setDetailCampaign(null)}
           fetchLeads={getCampaignLeads}
+          fetchSteps={getCampaignSteps}
           onDuplicate={handleDuplicate}
         />
       )}

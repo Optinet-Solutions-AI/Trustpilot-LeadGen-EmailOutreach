@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
+import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
 import { createNote } from '../db/notes.js';
 import { renderAndSpin } from '../services/template-engine.js';
 import { runCampaignSend, cancelCampaign, campaignEvents } from '../services/campaign-sender.js';
@@ -8,6 +9,9 @@ import { applyTestMode } from '../services/test-mode.js';
 import { sendEmail } from '../services/email-sender.js';
 import { rateLimiter } from '../services/rate-limiter.js';
 import { config } from '../config.js';
+import { isPlatformEnabled, getEmailPlatform } from '../services/email-platform/index.js';
+import { pushCampaignToPlatform } from '../services/platform-campaign-sender.js';
+import { syncSingleCampaign } from '../services/platform-sync.js';
 import fs from 'fs';
 
 const router = Router();
@@ -27,7 +31,7 @@ router.get('/', async (_req: Request, res: Response) => {
 // POST /api/campaigns
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds, filterCountry, filterCategory } = req.body;
+    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds, filterCountry, filterCategory, followUpSteps } = req.body;
     if (!name || !templateSubject || !templateBody) {
       res.status(400).json({ success: false, error: 'name, templateSubject, and templateBody are required' });
       return;
@@ -41,6 +45,19 @@ router.post('/', async (req: Request, res: Response) => {
       filter_country: filterCountry || undefined,
       filter_category: filterCategory || undefined,
     });
+
+    // Save follow-up steps if provided (step 1 = initial email from campaign template)
+    if (Array.isArray(followUpSteps) && followUpSteps.length > 0) {
+      // Step 1 is the campaign's main template (already stored on campaigns table).
+      // followUpSteps contains step 2, 3, 4... — the actual follow-ups.
+      const stepsToInsert = followUpSteps.map((s: { delayDays: number; subject: string; body: string }, i: number) => ({
+        step_number: i + 2,  // starts at 2 (step 1 = campaign template)
+        delay_days: s.delayDays || 3,
+        template_subject: s.subject,
+        template_body: s.body,
+      }));
+      await createCampaignSteps(campaign.id, stepsToInsert);
+    }
 
     if (leadIds && leadIds.length > 0) {
       await addLeadsToCampaign(campaign.id, leadIds);
@@ -183,9 +200,60 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
 });
 
 // POST /api/campaigns/:id/cancel — request stop of a running campaign
-router.post('/:id/cancel', (req: Request, res: Response) => {
-  cancelCampaign(param(req.params.id));
+router.post('/:id/cancel', async (req: Request, res: Response) => {
+  const campaignId = param(req.params.id);
+
+  if (isPlatformEnabled()) {
+    // Platform mode: pause the campaign on the platform
+    try {
+      const campaigns = await getCampaigns();
+      const campaign = campaigns.find((c: { id: string }) => c.id === campaignId);
+      if (campaign?.platform_campaign_id) {
+        const platform = getEmailPlatform();
+        await platform.pauseCampaign(campaign.platform_campaign_id);
+        await updateCampaign(campaignId, { status: 'draft' });
+        res.json({ success: true, data: { message: `Campaign paused on ${platform.name}.` } });
+        return;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ success: false, error: `Failed to pause on platform: ${message}` });
+      return;
+    }
+  }
+
+  // Direct mode: in-memory cancel
+  cancelCampaign(campaignId);
   res.json({ success: true, data: { message: 'Cancel requested — will stop before next email.' } });
+});
+
+// POST /api/campaigns/:id/sync — trigger on-demand stats sync for platform campaigns
+router.post('/:id/sync', async (req: Request, res: Response) => {
+  try {
+    const campaignId = param(req.params.id);
+    await syncSingleCampaign(campaignId);
+    const stats = await getCampaignStats(campaignId);
+    res.json({ success: true, data: stats });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/campaigns/platform-status — check if a platform is configured and healthy
+router.get('/platform-status', async (_req: Request, res: Response) => {
+  if (!isPlatformEnabled()) {
+    res.json({ success: true, data: { enabled: false, platform: 'none' } });
+    return;
+  }
+  try {
+    const platform = getEmailPlatform();
+    const health = await platform.testConnection();
+    res.json({ success: true, data: { enabled: true, platform: platform.name, ...health } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.json({ success: true, data: { enabled: true, platform: config.emailPlatform, ok: false, error: message } });
+  }
 });
 
 // POST /api/campaigns/:id/send — fire-and-forget async send
@@ -207,22 +275,64 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       return;
     }
 
-    const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
-
     // Deduplication: collect emails already successfully sent in ANY campaign
     const alreadySent = await getSentEmails();
 
-    // Build email list for async sender
-    const emails = campaignLeads
-      .filter((cl: { email_used: string | null; status: string }) => {
-        if (!cl.email_used || cl.status !== 'pending') return false;
-        // Skip already-sent emails (cross-campaign dedup)
-        if (alreadySent.has(cl.email_used)) return false;
-        return true;
-      })
+    // Filter to pending leads with valid, unsent emails
+    const pendingLeads = campaignLeads.filter((cl: { email_used: string | null; status: string }) => {
+      if (!cl.email_used || cl.status !== 'pending') return false;
+      if (alreadySent.has(cl.email_used)) return false;
+      return true;
+    });
+
+    if (pendingLeads.length === 0) {
+      res.status(400).json({ success: false, error: 'No pending leads with valid emails in this campaign' });
+      return;
+    }
+
+    // ─── Platform mode: push to Instantly/Smartlead ───────────────
+    if (isPlatformEnabled()) {
+      const leadsToSend = limit && Number(limit) > 0 ? pendingLeads.slice(0, Number(limit)) : pendingLeads;
+
+      // Push campaign to platform (async but we await the initial setup)
+      const result = await pushCampaignToPlatform({
+        campaignId,
+        campaignName: campaign.name,
+        campaign: {
+          template_subject: campaign.template_subject,
+          template_body: campaign.template_body,
+          include_screenshot: campaign.include_screenshot,
+        },
+        campaignLeads: leadsToSend.map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => ({
+          id: cl.id,
+          lead_id: cl.lead_id,
+          email_used: cl.email_used,
+          leads: cl.leads as Record<string, unknown>,
+        })),
+      });
+
+      res.json({
+        success: true,
+        data: {
+          campaignId,
+          mode: 'platform',
+          platform: getEmailPlatform().name,
+          platformCampaignId: result.platformCampaignId,
+          leadsQueued: result.leadsAdded,
+          leadsSkipped: result.leadsSkipped,
+          errors: result.errors.length,
+          message: `Campaign pushed to ${getEmailPlatform().name}: ${result.leadsAdded} leads queued. Stats sync automatically.`,
+        },
+      });
+      return;
+    }
+
+    // ─── Direct mode: send via Gmail/mock one-by-one ──────────────
+    const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
+
+    const emails = pendingLeads
       .map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => {
         const lead = cl.leads as Record<string, unknown>;
-        // Screenshot — resolve from URL (Supabase Storage) or local file
         const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
         let validScreenshotPath: string | undefined;
         if (campaign.include_screenshot && leadScreenshotPath) {
@@ -244,14 +354,7 @@ router.post('/:id/send', async (req: Request, res: Response) => {
         };
       });
 
-    if (emails.length === 0) {
-      res.status(400).json({ success: false, error: 'No pending leads with valid emails in this campaign' });
-      return;
-    }
-
-    // Optional limit — e.g. send only 1 lead for a quick test
     const emailsToSend = limit && Number(limit) > 0 ? emails.slice(0, Number(limit)) : emails;
-
     const isTestMode = testMode === true || config.testMode.enabled;
 
     // Fire and forget — respond immediately
@@ -267,9 +370,10 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       success: true,
       data: {
         campaignId,
+        mode: 'direct',
         emailCount: emailsToSend.length,
         testMode: isTestMode,
-        message: `Campaign send started for ${emails.length} emails. Monitor progress via SSE.`,
+        message: `Campaign send started for ${emailsToSend.length} emails. Monitor progress via SSE.`,
       },
     });
   } catch (err) {
@@ -353,8 +457,35 @@ router.post('/:id/leads', async (req: Request, res: Response) => {
 // POST /api/campaigns/:id/duplicate — create a copy of an existing campaign
 router.post('/:id/duplicate', async (req: Request, res: Response) => {
   try {
-    const campaign = await duplicateCampaign(param(req.params.id));
+    const sourceId = param(req.params.id);
+    const campaign = await duplicateCampaign(sourceId);
+
+    // Copy follow-up steps from the source campaign
+    const steps = await getCampaignSteps(sourceId);
+    if (steps.length > 0) {
+      await createCampaignSteps(
+        campaign.id,
+        steps.map((s) => ({
+          step_number: s.step_number,
+          delay_days: s.delay_days,
+          template_subject: s.template_subject,
+          template_body: s.template_body,
+        }))
+      );
+    }
+
     res.json({ success: true, data: campaign });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/campaigns/:id/steps — get follow-up steps for a campaign
+router.get('/:id/steps', async (req: Request, res: Response) => {
+  try {
+    const steps = await getCampaignSteps(param(req.params.id));
+    res.json({ success: true, data: steps });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

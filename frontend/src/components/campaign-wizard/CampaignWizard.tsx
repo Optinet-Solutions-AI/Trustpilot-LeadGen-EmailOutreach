@@ -3,8 +3,10 @@ import { X, ArrowLeft, ArrowRight } from 'lucide-react';
 import WizardStepper from './WizardStepper';
 import StepSetup from './StepSetup';
 import StepTemplate from './StepTemplate';
+import StepFollowUps from './StepFollowUps';
 import StepRecipients from './StepRecipients';
 import StepReview from './StepReview';
+import type { FollowUpStepInput } from '../../types/campaign';
 
 const DEFAULT_SUBJECT = '{Your Trustpilot rating needs attention|A quick note about your online reputation|Trustpilot improvement opportunity}, {{company_name}}';
 
@@ -29,6 +31,7 @@ interface Props {
     templateBody: string;
     includeScreenshot: boolean;
     leadIds: string[];
+    followUpSteps?: FollowUpStepInput[];
   }) => Promise<void>;
 }
 
@@ -43,17 +46,20 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [body, setBody] = useState(DEFAULT_BODY);
   const [includeScreenshot, setIncludeScreenshot] = useState(true);
+  const [followUpSteps, setFollowUpSteps] = useState<FollowUpStepInput[]>([]);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
 
   const completedSteps = new Set<number>();
   if (name.trim()) completedSteps.add(0);
   if (subject.trim() && body.trim()) completedSteps.add(1);
-  if (selectedLeadIds.length > 0) completedSteps.add(2);
+  completedSteps.add(2); // follow-ups are always optional / valid
+  if (selectedLeadIds.length > 0) completedSteps.add(3);
 
   const canProceed = () => {
     if (step === 0) return name.trim().length > 0;
     if (step === 1) return subject.trim().length > 0 && body.trim().length > 0;
-    if (step === 2) return selectedLeadIds.length > 0;
+    if (step === 2) return true; // follow-ups are optional
+    if (step === 3) return selectedLeadIds.length > 0;
     return true;
   };
 
@@ -66,6 +72,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
         templateBody: body,
         includeScreenshot,
         leadIds: selectedLeadIds,
+        followUpSteps: followUpSteps.length > 0 ? followUpSteps : undefined,
       });
       onClose();
     } catch {
@@ -126,6 +133,12 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             />
           )}
           {step === 2 && (
+            <StepFollowUps
+              steps={followUpSteps}
+              onChange={setFollowUpSteps}
+            />
+          )}
+          {step === 3 && (
             <StepRecipients
               filterCountry={filterCountry}
               filterCategory={filterCategory}
@@ -133,7 +146,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
               onSelectionChange={setSelectedLeadIds}
             />
           )}
-          {step === 3 && (
+          {step === 4 && (
             <StepReview
               name={name}
               subject={subject}
@@ -142,6 +155,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
               filterCountry={filterCountry}
               filterCategory={filterCategory}
               recipientCount={selectedLeadIds.length}
+              followUpCount={followUpSteps.length}
               saving={saving}
               onSubmit={handleSubmit}
             />
@@ -158,7 +172,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             {step === 0 ? 'Cancel' : 'Back'}
           </button>
 
-          {step < 3 ? (
+          {step < 4 ? (
             <button
               onClick={() => setStep(step + 1)}
               disabled={!canProceed()}

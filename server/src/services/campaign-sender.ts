@@ -11,6 +11,7 @@ import { sendEmail } from './email-sender.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
+import { getCampaignSteps } from '../db/campaign-steps.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
@@ -149,6 +150,24 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
         console.log(`[Campaign] Waiting ${Math.round(delay / 1000)}s before next send...`);
         await sleep(delay);
       }
+    }
+
+    // Schedule follow-up steps for leads that were successfully sent
+    try {
+      const steps = await getCampaignSteps(campaignId);
+      const nextStep = steps.find((s) => s.step_number === 2); // first follow-up
+      if (nextStep && sent > 0) {
+        const nextStepAt = new Date(Date.now() + nextStep.delay_days * 24 * 60 * 60 * 1000).toISOString();
+        const supabaseForSteps = getSupabase();
+        await supabaseForSteps
+          .from('campaign_leads')
+          .update({ current_step: 1, next_step_at: nextStepAt })
+          .eq('campaign_id', campaignId)
+          .eq('status', 'sent');
+        console.log(`[Campaign] Scheduled ${sent} leads for follow-up step 2 in ${nextStep.delay_days} days`);
+      }
+    } catch (stepErr) {
+      console.warn('[Campaign] Failed to schedule follow-ups:', stepErr instanceof Error ? stepErr.message : stepErr);
     }
 
     // Update campaign totals and status

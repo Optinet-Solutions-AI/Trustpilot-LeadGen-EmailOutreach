@@ -10,6 +10,8 @@ export const config = {
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   emailMode: (process.env.EMAIL_MODE || 'mock') as 'mock' | 'gmail',
+  /** Third-party email platform: none = use direct emailMode, mock/instantly/smartlead = use platform adapter */
+  emailPlatform: (process.env.EMAIL_PLATFORM || 'none') as 'none' | 'mock' | 'instantly' | 'smartlead',
   // On Linux/Cloud Run use system python3; on Windows dev use local venv
   pythonPath: process.env.PYTHON_PATH || (process.platform === 'win32' ? '.venv/Scripts/python.exe' : '/usr/bin/python3'),
   projectRoot: path.resolve(__dirname, '..', '..'),
@@ -33,4 +35,16 @@ export const config = {
     minDelay: +(process.env.EMAIL_MIN_DELAY ?? '240000'),  // 4 minutes
     maxDelay: +(process.env.EMAIL_MAX_DELAY ?? '540000'),  // 9 minutes
   },
+
+  // ── Third-party email platforms ──────────────────────────────────
+
+  instantly: {
+    apiKey: process.env.INSTANTLY_API_KEY || '',
+    webhookSecret: process.env.INSTANTLY_WEBHOOK_SECRET || '',
+    sendingAccounts: (process.env.INSTANTLY_SENDING_ACCOUNTS || '').split(',').filter(Boolean),
+    syncInterval: +(process.env.INSTANTLY_SYNC_INTERVAL ?? '120000'), // 2 minutes
+  },
+
+  /** Public URL for webhook callbacks (e.g. https://your-app.run.app) */
+  webhookBaseUrl: process.env.WEBHOOK_BASE_URL || '',
 };

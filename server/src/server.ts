@@ -14,6 +14,7 @@ import notesRoutes from './routes/notes.js';
 import followUpsRoutes from './routes/follow-ups.js';
 import analyticsRoutes from './routes/analytics.js';
 import gmailRoutes from './routes/gmail.js';
+import webhookRoutes from './routes/webhooks.js';
 
 const app = express();
 
@@ -28,6 +29,10 @@ app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions)); // Explicitly handle all preflight requests
 
 app.use(express.json());
+
+// Webhook routes — BEFORE auth middleware (external platforms need to reach these)
+app.use('/api/webhooks', webhookRoutes);
+
 app.use(authMiddleware);
 
 // Routes
@@ -93,6 +98,30 @@ const server = app.listen(config.port, async () => {
     }
   } catch (e) {
     console.error('[Startup] Scrape job orphan reset error:', e instanceof Error ? e.message : e);
+  }
+
+  // Start email platform sync job (polling for campaign stats)
+  if (config.emailPlatform !== 'none') {
+    const syncInterval = config.emailPlatform === 'instantly'
+      ? config.instantly.syncInterval
+      : 120_000; // default 2 minutes
+    setInterval(async () => {
+      try {
+        const { syncAllActiveCampaigns } = await import('./services/platform-sync.js');
+        await syncAllActiveCampaigns();
+      } catch (e) {
+        console.error('[PlatformSync] Poll error:', e instanceof Error ? e.message : e);
+      }
+    }, syncInterval);
+    console.log(`Email platform: ${config.emailPlatform} (sync every ${syncInterval / 1000}s)`);
+  }
+
+  // Start sequence scheduler for follow-up emails (direct/Gmail mode only)
+  try {
+    const { startSequenceScheduler } = await import('./services/sequence-scheduler.js');
+    startSequenceScheduler();
+  } catch (e) {
+    console.error('[Startup] Sequence scheduler error:', e instanceof Error ? e.message : e);
   }
 
   // Start Gmail reply tracking poll (every 5 minutes) when in gmail mode

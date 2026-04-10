@@ -1,4 +1,4 @@
-import { Mail, Users, ImageIcon, Send } from 'lucide-react';
+import { Mail, Users, ImageIcon, Send, Clock } from 'lucide-react';
 import { COUNTRIES, CATEGORIES } from './StepSetup';
 
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
   filterCountry: string;
   filterCategory: string;
   recipientCount: number;
+  followUpCount?: number;
   saving: boolean;
   onSubmit: () => void;
 }
@@ -16,7 +17,7 @@ interface Props {
 export default function StepReview({
   name, subject, body, includeScreenshot,
   filterCountry, filterCategory, recipientCount,
-  saving, onSubmit,
+  followUpCount = 0, saving, onSubmit,
 }: Props) {
   const countryName = COUNTRIES.find((c) => c.code === filterCountry)?.name || 'All Countries';
   const categoryName = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
@@ -63,6 +64,22 @@ export default function StepReview({
           <p className="text-xs text-gray-500 mb-1">Body Preview</p>
           <p className="text-sm text-gray-600">{bodyPreview}{body.length > 150 ? '...' : ''}</p>
         </div>
+
+        {/* Follow-ups */}
+        {followUpCount > 0 && (
+          <div className="px-5 py-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Clock size={14} className="text-blue-500" />
+              <p className="text-xs text-gray-500">Follow-up Sequence</p>
+            </div>
+            <p className="text-sm text-gray-800">
+              {followUpCount} follow-up email{followUpCount !== 1 ? 's' : ''} configured
+            </p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Leads who don't reply will receive follow-ups automatically
+            </p>
+          </div>
+        )}
 
         {/* Screenshot */}
         {includeScreenshot && (

@@ -1,5 +1,5 @@
 import {
-  Loader2, Trash2, Copy, Rocket, CheckCircle, StopCircle, ImageIcon, MoreHorizontal,
+  Loader2, Trash2, Copy, Rocket, CheckCircle, StopCircle, ImageIcon, MoreHorizontal, Clock,
 } from 'lucide-react';
 import { useState } from 'react';
 import type { Campaign } from '../types/campaign';
@@ -18,8 +18,10 @@ interface Props {
 const STATUS_STYLES: Record<string, string> = {
   draft:     'bg-gray-100 text-gray-600',
   sending:   'bg-blue-100 text-blue-700',
+  active:    'bg-blue-100 text-blue-700',
   sent:      'bg-green-100 text-green-700',
   completed: 'bg-purple-100 text-purple-700',
+  paused:    'bg-yellow-100 text-yellow-700',
 };
 
 export default function CampaignCard({
@@ -46,12 +48,19 @@ export default function CampaignCard({
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-sm transition-shadow">
 
-      {/* Top row: status badge + date */}
+      {/* Top row: status badge + platform badge + date */}
       <div className="flex items-center justify-between mb-2">
-        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLES[c.status] ?? STATUS_STYLES.draft}`}>
-          {isThisSending && <Loader2 size={10} className="animate-spin" />}
-          {c.status}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLES[c.status] ?? STATUS_STYLES.draft}`}>
+            {isThisSending && <Loader2 size={10} className="animate-spin" />}
+            {c.status}
+          </span>
+          {c.email_platform && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">
+              via {c.email_platform}
+            </span>
+          )}
+        </div>
         <span className="text-xs text-gray-400">{new Date(c.created_at).toLocaleDateString()}</span>
       </div>
 
@@ -68,6 +77,14 @@ export default function CampaignCard({
         <p className="text-xs text-gray-400 mt-1 truncate">
           {c.template_subject}
         </p>
+      )}
+
+      {/* Follow-up sequence badge */}
+      {(c.step_count ?? 0) > 0 && (
+        <div className="flex items-center gap-1 mt-1.5 text-xs text-blue-500">
+          <Clock size={11} />
+          <span>{c.step_count} follow-up{c.step_count !== 1 ? 's' : ''}</span>
+        </div>
       )}
 
       {/* Metrics row */}
@@ -94,8 +111,8 @@ export default function CampaignCard({
         )}
       </div>
 
-      {/* Live send progress bar */}
-      {isThisSending && sendProgress && sendProgress.total > 0 && (
+      {/* Live send progress bar — direct mode (SSE-based) */}
+      {isThisSending && !c.platform_campaign_id && sendProgress && sendProgress.total > 0 && (
         <div className="mt-3">
           <div className="flex justify-between text-xs text-blue-600 mb-1">
             <span>{sendProgress.sent + sendProgress.failed} / {sendProgress.total}</span>
@@ -105,6 +122,22 @@ export default function CampaignCard({
             <div
               className="bg-blue-600 h-1.5 rounded-full transition-all"
               style={{ width: `${Math.round(((sendProgress.sent + sendProgress.failed) / sendProgress.total) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Platform mode progress — stats-based (no SSE) */}
+      {isThisSending && c.platform_campaign_id && c.total_sent > 0 && (
+        <div className="mt-3">
+          <div className="flex justify-between text-xs text-indigo-600 mb-1">
+            <span>Sending via {c.email_platform || 'platform'}</span>
+            <span>{c.total_sent} sent / {c.lead_count} total</span>
+          </div>
+          <div className="w-full bg-indigo-100 rounded-full h-1.5">
+            <div
+              className="bg-indigo-500 h-1.5 rounded-full transition-all"
+              style={{ width: `${Math.min(100, Math.round((c.total_sent / Math.max(c.lead_count, 1)) * 100))}%` }}
             />
           </div>
         </div>

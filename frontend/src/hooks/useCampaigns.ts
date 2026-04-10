@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import api from '../api/client';
-import type { Campaign } from '../types/campaign';
+import type { Campaign, CampaignStep as CampaignStepType } from '../types/campaign';
 
 export function useCampaigns() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -27,6 +27,7 @@ export function useCampaigns() {
     leadIds?: string[];
     filterCountry?: string;
     filterCategory?: string;
+    followUpSteps?: Array<{ delayDays: number; subject: string; body: string }>;
   }) => {
     const res = await api.post('/campaigns', data);
     setCampaigns((prev) => [res.data.data, ...prev]);
@@ -107,5 +108,25 @@ export function useCampaigns() {
     return res.data.data as { count: number; sample: Array<{ id: string; company_name: string; primary_email: string; star_rating: number }> };
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend };
+  /** Trigger on-demand stats sync for platform-managed campaigns */
+  const syncStats = useCallback(async (campaignId: string) => {
+    const res = await api.post(`/campaigns/${campaignId}/sync`);
+    // Refresh campaign list to pick up updated stats
+    await fetchCampaigns();
+    return res.data.data as { pending: number; sent: number; opened: number; replied: number; bounced: number };
+  }, [fetchCampaigns]);
+
+  /** Check if a third-party email platform is configured */
+  const getPlatformStatus = useCallback(async () => {
+    const res = await api.get('/campaigns/platform-status');
+    return res.data.data as { enabled: boolean; platform: string; ok?: boolean; error?: string };
+  }, []);
+
+  /** Fetch follow-up steps for a campaign */
+  const getCampaignSteps = useCallback(async (campaignId: string) => {
+    const res = await api.get(`/campaigns/${campaignId}/steps`);
+    return res.data.data as CampaignStepType[];
+  }, []);
+
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps };
 }

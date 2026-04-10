@@ -14,10 +14,18 @@ interface CampaignLead {
   leads: { company_name: string; star_rating: number; country: string; category: string } | null;
 }
 
+interface CampaignStep {
+  id: string;
+  step_number: number;
+  delay_days: number;
+  template_subject: string;
+}
+
 interface Props {
   campaign: Campaign;
   onClose: () => void;
   fetchLeads: (id: string) => Promise<CampaignLead[]>;
+  fetchSteps?: (id: string) => Promise<CampaignStep[]>;
   onDuplicate?: (campaignId: string) => Promise<void>;
 }
 
@@ -29,8 +37,9 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.
   bounced: { label: 'Bounced',  color: 'bg-red-100 text-red-600',     icon: <AlertCircle size={11} /> },
 };
 
-export default function CampaignDetail({ campaign, onClose, fetchLeads, onDuplicate }: Props) {
+export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSteps, onDuplicate }: Props) {
   const [leads, setLeads] = useState<CampaignLead[]>([]);
+  const [steps, setSteps] = useState<CampaignStep[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
   const [expandedReply, setExpandedReply] = useState<string | null>(null);
@@ -41,7 +50,10 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, onDuplic
     fetchLeads(campaign.id)
       .then(setLeads)
       .finally(() => setLoading(false));
-  }, [campaign.id, fetchLeads]);
+    if (fetchSteps) {
+      fetchSteps(campaign.id).then(setSteps).catch(() => {});
+    }
+  }, [campaign.id, fetchLeads, fetchSteps]);
 
   const counts = leads.reduce((acc, l) => {
     acc[l.status] = (acc[l.status] || 0) + 1;
@@ -126,6 +138,27 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, onDuplic
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {/* Follow-up sequence info */}
+        {steps.length > 0 && (
+          <div className="px-6 pt-3">
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+              <p className="text-xs font-medium text-blue-700 mb-2 flex items-center gap-1.5">
+                <Clock size={12} /> Follow-up Sequence ({steps.length} step{steps.length !== 1 ? 's' : ''})
+              </p>
+              <div className="space-y-1">
+                {steps.map((s) => (
+                  <div key={s.id} className="flex items-center gap-2 text-xs text-blue-600">
+                    <span className="w-5 h-5 rounded-full bg-blue-200 text-blue-700 flex items-center justify-center text-[10px] font-bold">
+                      {s.step_number}
+                    </span>
+                    <span>After {s.delay_days} day{s.delay_days !== 1 ? 's' : ''}: {s.template_subject.slice(0, 60)}{s.template_subject.length > 60 ? '...' : ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
