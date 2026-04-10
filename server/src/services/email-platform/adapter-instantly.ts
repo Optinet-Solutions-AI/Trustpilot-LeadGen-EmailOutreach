@@ -142,9 +142,14 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
       })),
     };
 
-    // Attach sending accounts if provided
-    if (this.sendingAccounts.length > 0) {
-      payload.email_list = this.sendingAccounts;
+    // Attach sending accounts — params override takes priority over config-level default.
+    // Pass sendingAccounts: [] explicitly to skip email_list and let Instantly use
+    // all connected accounts (useful for test flights).
+    const accounts = params.sendingAccounts !== undefined
+      ? params.sendingAccounts
+      : this.sendingAccounts;
+    if (accounts.length > 0) {
+      payload.email_list = accounts;
     }
 
     // Campaign settings
@@ -299,10 +304,36 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
 
   // ── Health ──────────────────────────────────────────────────────
 
-  async testConnection(): Promise<{ ok: boolean; error?: string }> {
+  async testConnection(): Promise<{ ok: boolean; error?: string; accounts?: Array<{ email: string; status: string }> }> {
     try {
-      await this.request('GET', '/accounts');
-      return { ok: true };
+      const result = await this.request<{
+        items?: Array<{ email: string; status?: string; warmup_status?: string }>;
+      }>('GET', '/accounts?limit=50');
+
+      const accounts = (result.items ?? []).map((a) => ({
+        email: a.email,
+        status: a.status ?? 'unknown',
+      }));
+
+      const hasActive = accounts.some((a) => a.status === 'active' || a.status === '1');
+
+      if (accounts.length === 0) {
+        return {
+          ok: false,
+          error: 'No email accounts connected to your Instantly workspace. Go to Instantly → Email Accounts → Connect Account.',
+          accounts: [],
+        };
+      }
+
+      if (!hasActive) {
+        return {
+          ok: false,
+          error: `${accounts.length} account(s) found but none are active. Check Instantly → Email Accounts.`,
+          accounts,
+        };
+      }
+
+      return { ok: true, accounts };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

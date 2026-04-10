@@ -108,5 +108,5 @@ export interface EmailPlatformAdapter {
   getLeadStatuses(platformCampaignId: string, cursor?: string): Promise<PlatformLeadStatusPage>;
 
   // Health
-  testConnection(): Promise<{ ok: boolean; error?: string }>;
+  testConnection(): Promise<{ ok: boolean; error?: string; accounts?: Array<{ email: string; status: string }> }>;
 }

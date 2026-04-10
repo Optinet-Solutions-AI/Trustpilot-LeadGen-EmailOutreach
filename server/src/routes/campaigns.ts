@@ -173,17 +173,20 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       const testSubject = `[TEST] ${renderedSubject}`;
 
       // Create a temporary 1-lead campaign on Instantly.
-      // Use an all-day/all-week schedule so the test sends IMMEDIATELY regardless of the hour.
+      // sendingAccounts: [] → skip email_list so Instantly uses ALL connected accounts
+      //   (avoids failure if INSTANTLY_SENDING_ACCOUNTS points to an unconnected account).
+      // Schedule: 00:00–23:59 all days → sends immediately regardless of time.
       const tempCampaign = await platform.createCampaign({
         name: testCampaignName,
         sequences: [{ subject: '{{custom_subject}}', body: '{{custom_body}}' }],
         stopOnReply: false,
         trackOpens: false,
+        sendingAccounts: [],  // use any connected account
         schedule: {
-          timezone: 'America/Detroit',   // Valid Instantly timezone (EST/EDT)
+          timezone: 'America/Detroit',
           startHour: '00:00',
           endHour: '23:59',
-          days: [0, 1, 2, 3, 4, 5, 6],  // All 7 days — sends immediately
+          days: [0, 1, 2, 3, 4, 5, 6],
           dailyLimit: 10,
         },
       });
