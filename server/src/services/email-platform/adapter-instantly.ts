@@ -150,14 +150,27 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
     if (params.stopOnReply !== undefined) payload.stop_on_reply = params.stopOnReply;
     if (params.trackOpens !== undefined) payload.track_opens = params.trackOpens;
 
-    if (params.schedule) {
-      payload.sending_schedule = {
-        timezone: params.schedule.timezone,
-        days: params.schedule.days,
-        start_hour: params.schedule.startHour,
-        end_hour: params.schedule.endHour,
-      };
-    }
+    // campaign_schedule is required by Instantly v2 API — always include it
+    const sched = params.schedule;
+    payload.campaign_schedule = {
+      schedules: [{
+        name: 'Default',
+        timing: {
+          from: sched?.startHour ?? '09:00',
+          to:   sched?.endHour   ?? '17:00',
+        },
+        days: {
+          sunday:    (sched?.days ?? [1,2,3,4,5]).includes(0),
+          monday:    (sched?.days ?? [1,2,3,4,5]).includes(1),
+          tuesday:   (sched?.days ?? [1,2,3,4,5]).includes(2),
+          wednesday: (sched?.days ?? [1,2,3,4,5]).includes(3),
+          thursday:  (sched?.days ?? [1,2,3,4,5]).includes(4),
+          friday:    (sched?.days ?? [1,2,3,4,5]).includes(5),
+          saturday:  (sched?.days ?? [1,2,3,4,5]).includes(6),
+        },
+        timezone: sched?.timezone ?? 'America/New_York',
+      }],
+    };
 
     const result = await this.request<{ id: string; status: string }>('POST', '/campaigns', payload);
     console.log(`[Instantly] Created campaign "${params.name}" → ${result.id}`);
