@@ -312,8 +312,23 @@ router.post('/:id/sync', async (req: Request, res: Response) => {
 
 // GET /api/campaigns/platform-status — check if a platform is configured and healthy
 router.get('/platform-status', async (_req: Request, res: Response) => {
+  // Brevo uses EMAIL_MODE, not EMAIL_PLATFORM — handle it separately
+  if (config.emailMode === 'brevo') {
+    const hasKey = !!config.brevo.apiKey;
+    res.json({
+      success: true,
+      data: {
+        enabled: true,
+        platform: 'Brevo',
+        ok: hasKey,
+        error: hasKey ? undefined : 'BREVO_API_KEY is not set',
+      },
+    });
+    return;
+  }
+
   if (!isPlatformEnabled()) {
-    res.json({ success: true, data: { enabled: false, platform: 'none' } });
+    res.json({ success: true, data: { enabled: false, platform: config.emailMode === 'gmail' ? 'Gmail' : 'none' } });
     return;
   }
   try {

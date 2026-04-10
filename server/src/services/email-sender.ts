@@ -1,6 +1,10 @@
 /**
  * Email sender facade.
- * Routes to mock or Gmail sender based on EMAIL_MODE env var.
+ * Routes to mock, Gmail, or Brevo sender based on EMAIL_MODE env var.
+ *   EMAIL_MODE=mock   → console logs only, no real sends
+ *   EMAIL_MODE=gmail  → Gmail API via OAuth2
+ *   EMAIL_MODE=brevo  → Brevo transactional API (recommended)
+ *
  * NOTE: test-mode transform is applied upstream in campaign-sender.ts — do NOT re-apply here.
  */
 
@@ -18,7 +22,12 @@ export async function sendEmail(
     return sendGmail(to, subject, html, options);
   }
 
-  // Mock mode
+  if (config.emailMode === 'brevo') {
+    const { sendEmail: sendBrevo } = await import('./email-sender.brevo.js');
+    return sendBrevo(to, subject, html, options);
+  }
+
+  // Mock mode — logs to console, never hits any email API
   const { sendEmail: sendMock } = await import('./email-sender.mock.js');
   const success = await sendMock(to, subject, html);
   return { success };
@@ -32,6 +41,12 @@ export async function sendCampaignEmails(
     const { sendCampaignEmails: sendGmail } = await import('./email-sender.gmail.js');
     return sendGmail(campaignId, emails);
   }
+
+  if (config.emailMode === 'brevo') {
+    const { sendCampaignEmails: sendBrevo } = await import('./email-sender.brevo.js');
+    return sendBrevo(campaignId, emails);
+  }
+
   const { sendCampaignEmails: sendMock } = await import('./email-sender.mock.js');
   return sendMock(campaignId, emails);
 }

@@ -9,7 +9,7 @@ export const config = {
   apiSecretKey: process.env.API_SECRET_KEY || '',
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
-  emailMode: (process.env.EMAIL_MODE || 'mock') as 'mock' | 'gmail',
+  emailMode: (process.env.EMAIL_MODE || 'mock') as 'mock' | 'gmail' | 'brevo',
   /** Third-party email platform: none = use direct emailMode, mock/instantly/smartlead = use platform adapter */
   emailPlatform: (process.env.EMAIL_PLATFORM || 'none') as 'none' | 'mock' | 'instantly' | 'smartlead',
   // On Linux/Cloud Run use system python3; on Windows dev use local venv
@@ -43,6 +43,11 @@ export const config = {
     webhookSecret: process.env.INSTANTLY_WEBHOOK_SECRET || '',
     sendingAccounts: (process.env.INSTANTLY_SENDING_ACCOUNTS || '').split(',').filter(Boolean),
     syncInterval: +(process.env.INSTANTLY_SYNC_INTERVAL ?? '120000'), // 2 minutes
+  },
+
+  brevo: {
+    apiKey:    process.env.BREVO_API_KEY || '',
+    fromEmail: process.env.EMAIL_FROM || '',  // e.g. jordi@optiratesolutions.com
   },
 
   /** Public URL for webhook callbacks (e.g. https://your-app.run.app) */
