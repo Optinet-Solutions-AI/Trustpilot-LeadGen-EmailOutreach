@@ -25,6 +25,7 @@ export interface PlatformCampaignParams {
     days: number[];       // 0=Sun … 6=Sat
     startHour: string;    // "09:00"
     endHour: string;      // "17:00"
+    dailyLimit?: number;
   };
 }
 

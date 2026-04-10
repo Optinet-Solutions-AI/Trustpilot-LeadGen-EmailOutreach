@@ -168,7 +168,7 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
           friday:    (sched?.days ?? [1,2,3,4,5]).includes(5),
           saturday:  (sched?.days ?? [1,2,3,4,5]).includes(6),
         },
-        timezone: sched?.timezone ?? 'America/New_York',
+        timezone: mapTimezone(sched?.timezone),
       }],
     };
 
@@ -308,6 +308,41 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Maps common IANA timezones to the specific subset Instantly v2 accepts.
+ * Instantly uses a whitelist — many standard IANA zones are rejected.
+ * Docs: https://developer.instantly.ai/api/v2/campaign/createcampaign
+ */
+const INSTANTLY_TIMEZONE_MAP: Record<string, string> = {
+  // US — these standard IANA names are NOT in Instantly's enum
+  'America/New_York':      'America/Detroit',     // Both EST/EDT
+  'America/Los_Angeles':   'America/Boise',       // Close: Mountain vs Pacific (no Pacific in enum)
+  'America/Denver':        'America/Boise',       // Both Mountain
+  'America/Phoenix':       'America/Boise',       // Arizona = MST
+  // Europe — London/Berlin/Amsterdam/Paris not in enum
+  'Europe/London':         'Europe/Belfast',      // Both GMT/BST
+  'Europe/Berlin':         'Europe/Belgrade',     // Both CET/CEST
+  'Europe/Amsterdam':      'Europe/Belgrade',     // Both CET/CEST
+  'Europe/Paris':          'Europe/Belgrade',     // Both CET/CEST
+  'Europe/Rome':           'Europe/Belgrade',
+  'Europe/Madrid':         'Europe/Belgrade',
+  // Asia — Manila & Singapore not in enum
+  'Asia/Manila':           'Asia/Hong_Kong',      // Both UTC+8
+  'Asia/Singapore':        'Asia/Brunei',         // Both UTC+8
+  'Asia/Tokyo':            'Asia/Taipei',         // Close: JST (UTC+9) vs CST (UTC+8)
+  // Australia
+  'Australia/Sydney':      'Australia/Melbourne', // Both AEST/AEDT
+  'Australia/Brisbane':    'Australia/Brisbane',  // Already valid
+  // UTC variants
+  'UTC':                   'Africa/Abidjan',      // Africa/Abidjan = UTC+0, no DST
+  'Etc/UTC':               'Africa/Abidjan',
+};
+
+function mapTimezone(tz?: string): string {
+  if (!tz) return 'America/Detroit';
+  return INSTANTLY_TIMEZONE_MAP[tz] ?? tz;
+}
 
 function mapInstantlyStatus(status?: string): 'active' | 'completed' | 'replied' | 'bounced' | 'unsubscribed' | 'paused' | 'sent' | 'opened' {
   switch (status?.toLowerCase()) {

@@ -39,17 +39,24 @@ export const CATEGORIES = [
   { slug: 'travel_vacation', name: 'Travel & Vacation' },
 ];
 
+// Only timezones confirmed in Instantly's allowed enum (not all IANA zones are accepted).
+// Ref: https://developer.instantly.ai/api/v2/campaign/createcampaign
 export const TIMEZONES = [
-  { value: 'America/New_York',     label: 'Eastern (EST/EDT)' },
-  { value: 'America/Chicago',      label: 'Central (CST/CDT)' },
-  { value: 'America/Denver',       label: 'Mountain (MST/MDT)' },
-  { value: 'America/Los_Angeles',  label: 'Pacific (PST/PDT)' },
-  { value: 'Europe/London',        label: 'London (GMT/BST)' },
-  { value: 'Europe/Berlin',        label: 'Central Europe (CET/CEST)' },
-  { value: 'Europe/Amsterdam',     label: 'Amsterdam (CET/CEST)' },
-  { value: 'Asia/Manila',          label: 'Manila (PHT)' },
-  { value: 'Australia/Sydney',     label: 'Sydney (AEST/AEDT)' },
-  { value: 'Asia/Singapore',       label: 'Singapore (SGT)' },
+  { value: 'America/Detroit',      label: 'US Eastern — New York, Miami (EST/EDT)' },
+  { value: 'America/Chicago',      label: 'US Central — Chicago, Dallas (CST/CDT)' },
+  { value: 'America/Boise',        label: 'US Mountain — Denver, Phoenix (MST/MDT)' },
+  { value: 'America/Anchorage',    label: 'US Alaska (AKST/AKDT)' },
+  { value: 'America/Bogota',       label: 'Colombia / Lima (UTC-5, no DST)' },
+  { value: 'America/Sao_Paulo',    label: 'Brazil / Buenos Aires (UTC-3)' },
+  { value: 'Europe/Belfast',       label: 'UK / Ireland — London, Dublin (GMT/BST)' },
+  { value: 'Europe/Belgrade',      label: 'Central Europe — Paris, Berlin, Amsterdam (CET/CEST)' },
+  { value: 'Europe/Bucharest',     label: 'Eastern Europe — Athens, Kyiv (EET/EEST)' },
+  { value: 'Asia/Dubai',           label: 'Gulf — Dubai, Abu Dhabi (UTC+4)' },
+  { value: 'Asia/Kolkata',         label: 'India (IST, UTC+5:30)' },
+  { value: 'Asia/Hong_Kong',       label: 'Philippines / Hong Kong (UTC+8)' },
+  { value: 'Asia/Brunei',          label: 'Singapore / Malaysia (UTC+8)' },
+  { value: 'Australia/Melbourne',  label: 'Sydney / Melbourne (AEST/AEDT)' },
+  { value: 'Pacific/Auckland',     label: 'New Zealand (NZST/NZDT)' },
 ];
 
 export const HOURS = [
@@ -69,7 +76,7 @@ export interface SendingSchedule {
 }
 
 export const DEFAULT_SCHEDULE: SendingSchedule = {
-  timezone: 'America/New_York',
+  timezone: 'America/Detroit',  // US Eastern — valid in Instantly's timezone enum
   startHour: '09:00',
   endHour: '17:00',
   days: [1, 2, 3, 4, 5],  // Mon–Fri
@@ -162,9 +169,11 @@ export default function StepSetup({ name, filterCountry, filterCategory, schedul
           <label className="text-sm font-semibold text-gray-700">Sending Schedule</label>
           <span className="text-xs text-gray-400 font-normal">(Instantly platform)</span>
         </div>
-        <p className="text-xs text-gray-500 mb-4">
-          Instantly will only send emails within this window. Outside hours, emails queue and send on the next available slot.
-        </p>
+        <div className="text-xs text-gray-500 mb-4 space-y-1.5">
+          <p>Instantly sends emails from your configured accounts within this window only. Outside these hours they queue and go out at the next opening.</p>
+          <p className="text-blue-600 font-medium">💡 How it works: Instantly spreads your daily limit evenly across the window. Example: 50 emails/day between 9:00–17:00 = roughly 1 email every 10 minutes.</p>
+          <p className="text-green-600 font-medium">✓ Test flights always send immediately — they bypass this schedule entirely.</p>
+        </div>
 
         <div className="space-y-4">
           {/* Timezone */}
@@ -239,7 +248,10 @@ export default function StepSetup({ name, filterCountry, filterCategory, schedul
               onChange={(e) => updateSchedule({ dailyLimit: Number(e.target.value) })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
             />
-            <p className="text-xs text-gray-400 mt-1">Keep low (20–50) during warmup. Increase gradually after 2–4 weeks.</p>
+            <p className="text-xs text-gray-400 mt-1">
+              Warmup guide: Week 1 → 20/day · Week 2 → 50/day · Week 3+ → 100+/day.
+              Start low to protect your sender reputation.
+            </p>
           </div>
         </div>
       </div>
