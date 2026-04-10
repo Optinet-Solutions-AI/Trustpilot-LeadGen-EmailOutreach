@@ -156,31 +156,93 @@ Create a campaign and optionally assign leads.
 ```json
 {
   "name": "Germany Casino Outreach",
-  "template_subject": "Your Trustpilot score needs attention",
-  "template_body": "<p>Hi {{company_name}}, ...</p>",
+  "templateSubject": "Your Trustpilot score needs attention",
+  "templateBody": "<p>Hi {{company_name}}, ...</p>",
+  "includeScreenshot": true,
   "filterCountry": "DE",
-  "filterCategory": "casino"
+  "filterCategory": "casino",
+  "followUpSteps": [
+    { "delayDays": 3, "subject": "Following up...", "body": "<p>...</p>" }
+  ],
+  "sendingSchedule": {
+    "timezone": "America/Detroit",
+    "startHour": "09:00",
+    "endHour": "17:00",
+    "days": [1, 2, 3, 4, 5],
+    "dailyLimit": 50
+  }
 }
 ```
 
-If `filterCountry` or `filterCategory` are set, all leads matching that filter with a non-null `primary_email` are auto-added.  
+If `filterCountry` or `filterCategory` are set, all matching leads with a `primary_email` are auto-added.  
 If `leadIds: ["uuid", ...]` is provided instead, those specific leads are added.
 
 ### `PATCH /api/campaigns/:id`
-Update campaign name, template, or status.
+Update campaign fields.
+
+### `DELETE /api/campaigns/:id`
+Delete campaign and all its campaign_leads.
 
 ### `POST /api/campaigns/:id/leads`
 Add leads to an existing campaign.
 
 **Body:** `{ "leadIds": ["uuid", ...] }` OR `{ "filterCountry": "DE", "filterCategory": "casino" }`
 
-### `POST /api/campaigns/:id/send`
-Send campaign emails to all pending leads.
+### `GET /api/campaigns/:id/leads`
+List all campaign_leads with status and lead metadata.
 
-In `EMAIL_MODE=mock`: logs to console, updates DB, no real emails sent.
+### `GET /api/campaigns/:id/steps`
+List follow-up steps for a campaign.
+
+### `POST /api/campaigns/:id/send`
+Send campaign. Branches based on `EMAIL_PLATFORM` env var:
+- `EMAIL_PLATFORM=instantly` → pushes entire campaign to Instantly (creates campaign, adds leads, activates)
+- `EMAIL_PLATFORM=none` → sends one-by-one via Gmail with rate limiting
+
+**Body (Gmail mode only):** `{ "testMode": false, "testEmail": "...", "limit": 10 }`
+
+### `POST /api/campaigns/:id/test-flight`
+Send a test email using real lead data. **Mandatory before live send.**
+
+- Platform mode: creates a temporary 1-lead Instantly campaign with all-day schedule, auto-deletes after 30 min
+- Direct mode: sends via Gmail with TEST MODE banner
+
+**Body:** `{ "testEmail": "you@example.com" }`
+
+**Response:** `{ "sentTo": "...", "leadUsed": "...", "originalEmail": "...", "platform": "Instantly" }`
+
+### `POST /api/campaigns/:id/cancel`
+Cancel a running campaign.
+- Platform mode: pauses the Instantly campaign
+- Direct mode: stops before next email
+
+### `POST /api/campaigns/:id/duplicate`
+Duplicate a campaign (copies template + steps + schedule, resets status to draft).
+
+### `POST /api/campaigns/:id/sync`
+Trigger an on-demand stats sync from Instantly (updates sent/opened/replied/bounced).
 
 ### `GET /api/campaigns/:id/stats`
 Performance metrics: sent, opened, replied, bounced counts.
+
+### `GET /api/campaigns/platform-status`
+Check if a third-party platform is configured and healthy.
+
+**Response:** `{ "enabled": true, "platform": "Instantly", "ok": true, "accounts": [{ "email": "jordi@...", "status": "active" }] }`
+
+### `GET /api/campaigns/preview-recipients`
+Preview how many leads would be added with given filters.
+
+**Query:** `?country=DE&category=casino`
+
+---
+
+## Webhooks
+
+### `POST /api/webhooks/email-platform`
+Receives real-time events from the email platform (Instantly webhooks).
+- No auth middleware (webhook secret validated internally)
+- Updates `campaign_leads` status + creates activity notes immediately
 
 ---
 

@@ -2,180 +2,142 @@
 
 ## Architecture
 
-- **Frontend** → Vercel (static React build)
-- **API Gateway** → Google Cloud API Gateway (public HTTPS endpoint: `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev`)
-- **API + Scrapers** → Google Cloud Run (private, only accessible via API Gateway)
-- **Database** → Supabase (already cloud-hosted)
+- **Frontend** → Vercel (React/Vite SPA, auto-deploy on push to `main`)
+- **API + Scrapers** → Google Cloud Run (`trustpilot-crm`, us-central1)
+- **Database** → Supabase (cloud-hosted PostgreSQL)
+- **Email Platform** → Instantly.ai (third-party, configured via env vars)
 
-> **Why API Gateway?** The `optinetsolutions.com` GCP org has an IAM policy (`iam.allowedPolicyMemberDomains`) that blocks granting `allUsers` direct invoker access to Cloud Run. API Gateway sits in front of Cloud Run: it accepts public HTTPS traffic, then authenticates to Cloud Run using a dedicated service account (`trustpilot-gateway-sa`). This satisfies the org policy while keeping the API publicly accessible.
-
----
-
-## 1. Prerequisites
-
-- Google Cloud project: `trustpilot-leadgen`
-- Vercel account connected to GitHub
-- Supabase project with schema applied (`supabase/migrations/001_initial_schema.sql`)
-- GitHub repo with code pushed
+**Service URL:** `https://trustpilot-crm-281469818025.us-central1.run.app`  
+**Frontend URL:** `https://trustpilot-lead-gen-email-outreach.vercel.app`
 
 ---
 
-## 2. Deploy API to Google Cloud Run
+## 1. Deploy API to Google Cloud Run
 
-### Build and push the Docker image
-
-```bash
-# Authenticate
-gcloud auth login
-gcloud config set project trustpilot-leadgen
-
-# Build and submit to Cloud Build (builds in cloud, no local Docker needed)
-gcloud builds submit \
-  --tag gcr.io/trustpilot-leadgen/trustpilot-api \
-  --timeout=20m
-```
-
-### Deploy to Cloud Run
+**Source-based deploy — no local Docker needed:**
 
 ```bash
-gcloud run deploy trustpilot-api \
-  --image us-central1-docker.pkg.dev/trustpilot-leadgen/trustpilot/api:latest \
-  --platform managed \
-  --region us-central1 \
-  --no-allow-unauthenticated \
-  --memory 2Gi \
-  --cpu 2 \
-  --timeout 3600 \
-  --concurrency 10 \
-  --set-env-vars "\
-SUPABASE_URL=https://your-project.supabase.co,\
-SUPABASE_SERVICE_ROLE_KEY=your-key,\
-API_SECRET_KEY=your-secret,\
-EMAIL_MODE=mock,\
-PLAYWRIGHT_HEADLESS=true,\
-PYTHON_PATH=/usr/bin/python3"
+powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"
 ```
 
-**Important Cloud Run settings:**
-- `--no-allow-unauthenticated` — Cloud Run is private; traffic comes only from API Gateway
-- Memory: minimum 2Gi (Playwright Chromium needs headroom)
-- Timeout: 3600s (scrape jobs can take 10-30 min)
-- Concurrency: 10 (low — each scrape spawns a browser)
+This builds in Cloud Build using the repo's `Dockerfile` and deploys atomically.
 
-### API Gateway (already deployed — no action needed)
-
-The API Gateway is live at: `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev`
-
-- **Managed API:** `trustpilot-managed-api`
-- **Config:** `trustpilot-config-v1`
-- **Gateway:** `trustpilot-gateway` (us-central1)
-- **Service Account:** `trustpilot-gateway-sa@trustpilot-leadgen.iam.gserviceaccount.com`
-
-If you need to update the gateway spec (e.g. add new routes):
+**Update env vars only (no code rebuild):**
 
 ```bash
-# Create new config version
-gcloud api-gateway api-configs create trustpilot-config-v2 \
-  --api=trustpilot-managed-api \
-  --openapi-spec=path/to/api-gateway-spec.yaml \
-  --backend-auth-service-account=trustpilot-gateway-sa@trustpilot-leadgen.iam.gserviceaccount.com \
-  --project=trustpilot-leadgen
-
-# Update gateway to new config
-gcloud api-gateway gateways update trustpilot-gateway \
-  --api=trustpilot-managed-api \
-  --api-config=trustpilot-config-v2 \
-  --location=us-central1 \
-  --project=trustpilot-leadgen
+powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --update-env-vars 'KEY=VALUE' --quiet"
 ```
+
+> ⚠️ Never use `--env-vars-file` — it replaces ALL env vars and wipes credentials.
 
 ---
 
-## 3. Deploy Frontend to Vercel
+## 2. Deploy Frontend to Vercel
 
-### Setup
+**Automatic** — every `git push origin main` triggers a Vercel build and deploy. No manual action needed.
 
-1. Go to [vercel.com](https://vercel.com) → New Project → Import from GitHub
-2. Select your repo
-3. **Framework Preset:** Vite
-4. **Root Directory:** `frontend`
-5. **Build Command:** `npm run build`
-6. **Output Directory:** `dist`
-
-### Environment Variables (Vercel Dashboard)
+Env vars must be set in the **Vercel Dashboard** (they're baked into the build):
 
 | Variable | Value |
 |----------|-------|
-| `NEXT_PUBLIC_API_BASE_URL` | `https://trustpilot-gateway-3lazv1k9.uc.gateway.dev` (API Gateway URL) |
-| `NEXT_PUBLIC_API_SECRET_KEY` | Your `API_SECRET_KEY` value (same as set on Cloud Run) |
-| `NEXT_PUBLIC_GEMINI_API_KEY` | Your Google Gemini API key |
+| `VITE_API_BASE_URL` | `https://trustpilot-crm-281469818025.us-central1.run.app` |
+| `VITE_API_SECRET_KEY` | Value of `API_SECRET_KEY` on Cloud Run |
+| `VITE_GEMINI_API_KEY` | Google Gemini API key |
 
 ---
 
-## 4. Supabase Setup
-
-Run this once in Supabase SQL Editor:
-
-```sql
--- Run the full migration file:
--- supabase/migrations/001_initial_schema.sql
-```
-
-Enable Row Level Security if needed (currently using service role key which bypasses RLS).
-
----
-
-## 5. Switching to Live Email Mode
-
-Once ready to send real emails:
-
-1. Get a Resend API key at resend.com
-2. Get a ZeroBounce key at zerobounce.net
-3. Update Cloud Run env vars:
+## 3. Standard Workflow
 
 ```bash
-gcloud run services update trustpilot-api \
-  --region us-central1 \
-  --update-env-vars "\
-EMAIL_MODE=live,\
-RESEND_API_KEY=re_your-key,\
-ZEROBOUNCE_API_KEY=your-key,\
-EMAIL_FROM=outreach@yourdomain.com"
+# 1. Make code changes
+git add <files>
+git commit -m "your message"
+git push origin main          # Vercel auto-deploys frontend
+
+# 2. Deploy backend
+powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"
+```
+
+Deployment takes ~3-5 minutes. Watch for the final line:
+```
+Service [trustpilot-crm] revision [trustpilot-crm-XXXXX] has been deployed and is serving 100 percent of traffic.
 ```
 
 ---
 
-## 6. Local Development
+## 4. Cloud Run Environment Variables
+
+Current env vars set on `trustpilot-crm`:
+
+| Variable | Purpose |
+|----------|---------|
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key |
+| `EMAIL_MODE` | `gmail` or `mock` (fallback for test flights) |
+| `EMAIL_PLATFORM` | `instantly`, `none`, or `mock` |
+| `INSTANTLY_API_KEY` | Instantly.ai API key |
+| `INSTANTLY_SENDING_ACCOUNTS` | Comma-separated sending emails (e.g. `jordi@optiratesolutions.com`) |
+| `INSTANTLY_SYNC_INTERVAL` | Stats poll interval ms (default: 120000) |
+| `GOOGLE_CLIENT_ID` | Gmail OAuth2 client ID |
+| `GOOGLE_CLIENT_SECRET` | Gmail OAuth2 client secret |
+| `GOOGLE_REFRESH_TOKEN` | Gmail OAuth2 refresh token |
+| `EMAIL_FROM` | Sender address for Gmail fallback |
+| `EMAIL_FROM_NAME` | Display name (e.g. `OptiRate`) |
+| `EMAIL_TEST_MODE` | `true` = redirect all Gmail sends to `TEST_EMAIL_ADDRESS` |
+| `TEST_EMAIL_ADDRESS` | Safe address for Gmail test redirects |
+| `EMAIL_DAILY_CAP` | Max emails/day via Gmail (default: 50) |
+| `EMAIL_HOURLY_CAP` | Max emails/hour via Gmail (default: 20) |
+| `PLAYWRIGHT_HEADLESS` | `true` in production |
+| `PYTHON_PATH` | `/usr/bin/python3` |
+
+---
+
+## 5. Supabase Migrations
+
+Run these in order in the **Supabase SQL Editor**:
+
+```
+supabase/migrations/001_initial_schema.sql    ← core 6 tables
+supabase/migrations/002_*.sql                 ← indexes + triggers
+supabase/migrations/003_gmail_tracking.sql    ← gmail_message_id, gmail_thread_id
+supabase/migrations/004_screenshot.sql        ← screenshot_path on leads
+supabase/migrations/005_spintax.sql           ← template engine updates
+supabase/migrations/006_email_platform.sql    ← platform_campaign_id, email_platform on campaigns
+supabase/migrations/007_campaign_steps.sql    ← follow-up steps table
+supabase/migrations/008_sending_schedule.sql  ← sending_schedule jsonb on campaigns
+```
+
+> **Migration 008** may still need to be run:
+> ```sql
+> ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;
+> ```
+
+---
+
+## 6. Instantly.ai DNS Setup (Required Before Sending)
+
+Before `jordi@optiratesolutions.com` can send through Instantly, add these records in **Dreamhost DNS** for `optiratesolutions.com`:
+
+| Type | Name | Value |
+|------|------|-------|
+| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:jordi@optiratesolutions.com` |
+| TXT | `selector._domainkey` | Copy from Instantly → Email Accounts → click the account |
+| TXT | `@` | `v=spf1 include:spf.instantlyapp.com ~all` |
+
+DNS propagation: 15–60 minutes. Instantly will show green status once all 3 are detected.
+
+---
+
+## 7. Local Development
 
 ```bash
 # Terminal 1 — Frontend
 cd frontend && npm run dev     # http://localhost:5173
 
 # Terminal 2 — API
-cd server && npm run dev          # http://localhost:3001
+cd server && npm run dev       # http://localhost:3001
 
-# Terminal 3 — Test a scrape manually
-.venv/Scripts/python.exe tools/scraper/scrape_category.py \
-  --country DE --category casino --max-rating 3.5 \
-  --output .tmp/test_raw.json
-```
-
----
-
-## 7. Re-deploy After Changes
-
-```bash
-# Rebuild and redeploy API
-gcloud builds submit \
-  --tag us-central1-docker.pkg.dev/trustpilot-leadgen/trustpilot/api:latest \
-  --region us-central1
-
-gcloud run deploy trustpilot-api \
-  --image us-central1-docker.pkg.dev/trustpilot-leadgen/trustpilot/api:latest \
-  --region us-central1 \
-  --no-allow-unauthenticated
-
-# Frontend re-deploys automatically via Vercel GitHub integration on push
-
-# API Gateway only needs updating if routes change — see section 2 above
+# Type-check (run before deploying)
+cd server && npx tsc --noEmit
+cd frontend && npx tsc --noEmit
 ```

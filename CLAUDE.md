@@ -2,15 +2,18 @@
 
 ## Project Overview
 
-A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized outreach campaigns. Built on the WAT framework (Workflows → Agents → Tools).
+A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via Instantly.ai. Built on the WAT framework (Workflows → Agents → Tools).
 
-- **Frontend:** React + Vite + Tailwind CSS (port 5173)
-- **Backend / API:** Node.js (Express) with TypeScript (port 3001)
-- **Database:** Supabase (PostgreSQL)
+**Business purpose:** Sell reputation management services to companies with poor Trustpilot ratings. Brand: **OptiRate** / optiratesolutions.com. Sending account: jordi@optiratesolutions.com.
+
+- **Frontend:** React + Vite + Tailwind CSS (port 5173) — deployed on Vercel
+- **Backend / API:** Node.js (Express) with TypeScript (port 3001) — deployed on Google Cloud Run (`trustpilot-crm`)
+- **Database:** Supabase (PostgreSQL, 8 tables)
+- **Email Platform:** Instantly.ai v2 API (`EMAIL_PLATFORM=instantly`) — handles warmup, rotation, pacing
+- **Email Fallback:** Gmail API via OAuth2 (`EMAIL_MODE=gmail`) — test flights when platform unavailable
 - **Scraper Tools:** Python + Playwright (headless Chromium) + playwright-stealth
-- **Email Send:** Gmail API via OAuth2 (`EMAIL_MODE=gmail`) with async rate-limited sending
 - **Email Verify:** ZeroBounce (mock mode available)
-- **Deployed:** Frontend on Vercel (auto-deploy), Backend on Google Cloud Run
+- **AI:** Google Gemini API (template generation)
 
 ---
 
@@ -33,9 +36,13 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
    ↓
 8. User manages leads in Table or Kanban pipeline view
    ↓
-9. User creates campaign with email template → adds leads → sends
+9. User creates campaign (5-step wizard: setup → template → follow-ups → recipients → review)
    ↓
-10. CRM tracks: status changes, notes, follow-ups, campaign analytics
+10. MANDATORY: Test flight → sends 1 email via Instantly to verify format/content
+    ↓
+11. Live send → pushes entire campaign to Instantly → Instantly handles sending from jordi@
+    ↓
+12. Stats sync every 2min: opens, replies, bounces → CRM dashboard updates automatically
 ```
 
 ---
@@ -52,27 +59,31 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
               ▼
 ┌──────────────────────────────┐
 │   API Layer (Brain)          │  Express + TypeScript
-│   Routes, DB CRUD, Mock      │──────► Supabase (6 tables)
-│   Services, Job Orchestration│◄──────
-└─────────────┬────────────────┘
-              │ child_process.spawn()
-      ┌───────┴────────┐
-      ▼                ▼
-┌───────────┐    ┌─────────────┐
-│ Python    │    │ Mock Email  │
-│ Scrapers  │    │  Services   │
-│ Playwright│    │ (verify +   │
-│ + Stealth │    │  send)      │
-└───────────┘    └─────────────┘
+│   Routes, DB CRUD,           │──────► Supabase (8 tables)
+│   Services, Orchestration    │◄──────
+└──────┬───────────────┬───────┘
+       │               │
+       ▼               ▼
+┌───────────┐    ┌─────────────────────────┐
+│ Python    │    │ Email Platform Layer     │
+│ Scrapers  │    │ adapter-instantly.ts     │
+│ Playwright│    │ → Instantly.ai v2 API    │
+│ + Stealth │    │   (create, add, activate)│
+└───────────┘    └─────────────────────────┘
+                          ↑ sync every 2 min
+                 ┌─────────────────────────┐
+                 │ platform-sync.ts        │
+                 │ updates campaign_leads  │
+                 └─────────────────────────┘
 ```
 
 ### Golden Rules
 1. **Frontend is DUMB** — display data and fire actions only; zero business logic
 2. **API is the BRAIN** — all scraping orchestration, filtering, and enrichment logic
-3. **Database is the MEMORY** — Supabase is the single source of truth (6 tables)
+3. **Database is the MEMORY** — Supabase is the single source of truth
 4. **Tools are atomic** — each Python script does one job; API orchestrates them
-5. **No hardcoded data** — country lists, categories, and templates are loaded dynamically
-6. **Mock-first** — email services start as mocks (`EMAIL_MODE=mock`); real APIs added later
+5. **Adapter pattern for email** — swap providers by changing `EMAIL_PLATFORM` env var
+6. **Test flight first** — NEVER send a live campaign without a successful test flight
 
 ---
 
@@ -81,145 +92,125 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
 ```
 trustpilot-leadgen/
 │
-├── CLAUDE.md                          ← This file
+├── CLAUDE.md                          ← This file (source of truth)
 ├── .env                               ← All secrets (never commit)
 ├── .env.example                       ← Template for .env
-├── .gitignore
-├── .claudeignore
 │
 ├── supabase/
 │   └── migrations/
-│       └── 001_initial_schema.sql     ← 6 tables: leads, campaigns, campaign_leads,
-│                                         lead_notes, scrape_jobs, follow_ups
+│       ├── 001_initial_schema.sql     ← 6 core tables
+│       ├── 006_email_platform.sql     ← platform_campaign_id, email_platform on campaigns
+│       ├── 007_campaign_steps.sql     ← follow-up steps table
+│       └── 008_sending_schedule.sql   ← sending_schedule jsonb on campaigns
 │
 ├── tools/                             ← Python scripts (WAT execution layer)
 │   ├── scraper/
-│   │   ├── browser_utils.py           ← Playwright + stealth, popup dismiss, delays
-│   │   ├── scrape_category.py         ← Paginates Trustpilot category, filters by rating
-│   │   ├── scrape_profile.py          ← Visits /review/<slug>, extracts contacts
-│   │   └── scrape_website.py          ← Visits company website, finds email
-│   ├── email/
-│   │   ├── verify_email.py            ← [Phase 5] ZeroBounce integration
-│   │   └── send_campaign.py           ← [Phase 5] Resend integration
+│   │   ├── browser_utils.py
+│   │   ├── scrape_category.py
+│   │   ├── scrape_profile.py
+│   │   └── scrape_website.py
 │   └── db/
-│       ├── supabase_client.py         ← Shared PostgREST client
-│       └── upsert_leads.py            ← Saves/updates leads in Supabase
+│       ├── supabase_client.py
+│       └── upsert_leads.py
 │
 ├── server/                            ← Express + TypeScript backend
-│   ├── package.json
-│   ├── tsconfig.json
 │   └── src/
-│       ├── server.ts                  ← Entry point (port 3001)
-│       ├── config.ts                  ← Env loading
-│       ├── lib/
-│       │   └── supabase.ts            ← Supabase JS client singleton
-│       ├── middleware/
-│       │   ├── auth.ts                ← API key validation
-│       │   └── errorHandler.ts
-│       ├── db/                        ← Supabase CRUD operations
+│       ├── server.ts                  ← Entry point (port 3001), starts sync interval
+│       ├── config.ts                  ← Env loading (emailPlatform, instantly.*, etc.)
+│       ├── db/
+│       │   ├── campaigns.ts           ← includes sending_schedule, platform_campaign_id
+│       │   ├── campaign-steps.ts      ← follow-up steps CRUD
 │       │   ├── leads.ts
-│       │   ├── campaigns.ts
 │       │   ├── notes.ts
 │       │   ├── scrape-jobs.ts
 │       │   └── follow-ups.ts
 │       ├── routes/
-│       │   ├── scrape.ts              ← POST /api/scrape + SSE status
-│       │   ├── leads.ts               ← CRUD + bulk ops
-│       │   ├── campaigns.ts           ← CRUD + send
-│       │   ├── verify.ts              ← POST /api/verify
-│       │   ├── notes.ts               ← Activity timeline
-│       │   ├── follow-ups.ts          ← Reminders
-│       │   └── analytics.ts           ← Dashboard aggregates
+│       │   ├── campaigns.ts           ← send, test-flight, sync, platform-status, duplicate
+│       │   ├── webhooks.ts            ← POST /api/webhooks/email-platform
+│       │   ├── scrape.ts
+│       │   ├── leads.ts
+│       │   ├── verify.ts
+│       │   ├── notes.ts
+│       │   ├── follow-ups.ts
+│       │   └── analytics.ts
 │       └── services/
-│           ├── scrape-runner.ts        ← Spawns Python scrapers, SSE progress
-│           ├── template-engine.ts      ← {{token}} replacement
-│           ├── email-verifier.mock.ts  ← Mock: always returns valid
-│           └── email-sender.mock.ts    ← Mock: logs + updates DB
+│           ├── email-platform/
+│           │   ├── types.ts           ← EmailPlatformAdapter interface
+│           │   ├── index.ts           ← factory: getEmailPlatform()
+│           │   ├── adapter-instantly.ts ← Instantly v2 implementation
+│           │   ├── adapter-mock.ts    ← console-log mock
+│           │   └── webhook-parser.ts  ← normalizes webhook payloads
+│           ├── platform-campaign-sender.ts ← pushCampaignToPlatform()
+│           ├── platform-sync.ts       ← background polling job (every 2min)
+│           ├── campaign-sender.ts     ← Gmail one-by-one (legacy/fallback)
+│           ├── email-sender.ts        ← Gmail/mock facade
+│           ├── template-engine.ts     ← {{token}} + {spintax|} rendering
+│           ├── test-mode.ts           ← TEST MODE banner interceptor
+│           └── rate-limiter.ts        ← hourly/daily caps for Gmail
 │
-├── frontend/                          ← React + Vite + Tailwind
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── vite.config.ts                 ← Proxy /api to localhost:3001
-│   ├── index.html
+├── frontend/
 │   └── src/
-│       ├── main.tsx
-│       ├── App.tsx                    ← Router: 6 pages
-│       ├── api/
-│       │   └── client.ts             ← Axios with auth header
-│       ├── types/
-│       │   ├── lead.ts               ← Lead, LeadNote, FollowUp
-│       │   ├── campaign.ts           ← Campaign, CampaignLead
-│       │   ├── scrape.ts             ← ScrapeParams, ScrapeJob
-│       │   └── api.ts                ← ApiResponse<T>
-│       ├── hooks/
-│       │   ├── useLeads.ts           ← CRUD + filtering + pagination
-│       │   ├── useScrape.ts          ← SSE progress subscription
-│       │   ├── useCampaigns.ts       ← Campaign CRUD + send
-│       │   ├── useNotes.ts           ← Activity log per lead
-│       │   ├── useFollowUps.ts       ← Reminders CRUD
-│       │   └── useAnalytics.ts       ← Dashboard aggregates
 │       ├── components/
-│       │   ├── Layout.tsx + Sidebar.tsx
-│       │   ├── ScrapeForm.tsx         ← Country, category, rating inputs
-│       │   ├── ScrapeProgress.tsx     ← SSE live progress
-│       │   ├── LeadsTable.tsx         ← Sortable, filterable, bulk actions
-│       │   ├── LeadPipeline.tsx       ← Kanban drag-and-drop
-│       │   ├── CampaignBuilder.tsx    ← Template editor + preview
-│       │   ├── ActivityTimeline.tsx   ← Per-lead event log
-│       │   ├── NoteEditor.tsx         ← Add notes
-│       │   ├── FollowUpScheduler.tsx  ← Schedule reminders
-│       │   ├── StatusBadge.tsx        ← Colored status chips
-│       │   └── StatsRow.tsx           ← Dashboard stat cards
-│       ├── pages/
-│       │   ├── Dashboard.tsx          ← Overview + follow-ups + campaign stats
-│       │   ├── Scrape.tsx             ← Scrape form + progress + job history
-│       │   ├── Leads.tsx              ← Table/Kanban toggle + filters
-│       │   ├── LeadDetail.tsx         ← Single lead + timeline + follow-ups
-│       │   ├── Campaigns.tsx          ← Builder + campaign list
-│       │   └── Analytics.tsx          ← Charts (recharts)
-│       └── styles/
-│           └── index.css              ← Tailwind import
-│
-├── workflows/                         ← WAT Markdown SOPs
-│   └── scrape_trustpilot.md
+│       │   ├── campaign-wizard/
+│       │   │   ├── CampaignWizard.tsx ← 5-step wizard orchestrator
+│       │   │   ├── StepSetup.tsx      ← name, filters, sending schedule
+│       │   │   ├── StepTemplate.tsx   ← subject, body, spintax, screenshot
+│       │   │   ├── StepFollowUps.tsx  ← follow-up steps
+│       │   │   ├── StepRecipients.tsx ← lead selection
+│       │   │   └── StepReview.tsx     ← summary before create
+│       │   ├── TestFlightModal.tsx    ← pre-flight gate (mandatory)
+│       │   └── [other components]
+│       ├── hooks/
+│       │   ├── useCampaigns.ts        ← all campaign API calls incl. testFlightSend, syncStats
+│       │   └── [other hooks]
+│       └── views/
+│           └── Campaigns.tsx          ← main campaigns page
 │
 ├── docs/
-├── skills/
-├── scripts/
-└── .tmp/                              ← Intermediate scrape data (gitignored)
+│   ├── architecture.md
+│   ├── api-reference.md
+│   ├── deployment.md                  ← current deploy commands
+│   ├── database.md
+│   ├── scraper-guide.md
+│   └── frontend-components.md
+│
+└── workflows/
+    └── scrape_trustpilot.md
 ```
 
 ---
 
 ## Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key (never expose to client) |
-| `ZEROBOUNCE_API_KEY` | Email verification API key (blank = mock mode) |
-| `EMAIL_FROM` | Sender Gmail address (e.g. axeldray5@gmail.com) |
-| `EMAIL_FROM_NAME` | Sender display name (e.g. OptiRate) |
-| `EMAIL_MODE` | `mock` or `gmail` (default: mock) |
-| `GOOGLE_CLIENT_ID` | Gmail OAuth2 client ID |
-| `GOOGLE_CLIENT_SECRET` | Gmail OAuth2 client secret |
-| `GOOGLE_REFRESH_TOKEN` | Gmail OAuth2 refresh token (get via `node scripts/gmail-auth-setup.js`) |
-| `EMAIL_TEST_MODE` | `true` = redirect all sends to TEST_EMAIL_ADDRESS |
-| `TEST_EMAIL_ADDRESS` | Safe email for test sends |
-| `EMAIL_DAILY_CAP` | Max emails per day (default: 50) |
-| `EMAIL_HOURLY_CAP` | Max emails per hour (default: 20) |
-| `EMAIL_MIN_DELAY` | Min ms between sends (default: 30000) |
-| `EMAIL_MAX_DELAY` | Max ms between sends (default: 90000) |
-| `PLAYWRIGHT_HEADLESS` | `true` in production, `false` for debugging |
-| `PYTHON_PATH` | Path to Python executable (default: `.venv/Scripts/python.exe`) |
-| `NEXT_PUBLIC_API_BASE_URL` | Frontend → API base URL (NEXT_PUBLIC_ prefix for Next.js) |
-| `NEXT_PUBLIC_GEMINI_API_KEY` | Gemini API key for AI email template generation |
-| `API_SECRET_KEY` | Internal API auth (blank = no auth in dev) |
-| `PORT` | API port (default: 3001) |
+| Variable | Purpose | Current Value |
+|----------|---------|---------------|
+| `SUPABASE_URL` | Supabase project URL | set |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key | set |
+| `EMAIL_PLATFORM` | `instantly` / `none` / `mock` | `instantly` |
+| `INSTANTLY_API_KEY` | Instantly.ai API key | set |
+| `INSTANTLY_SENDING_ACCOUNTS` | Comma-separated sending emails | `jordi@optiratesolutions.com` |
+| `INSTANTLY_SYNC_INTERVAL` | Stats poll interval ms | `120000` |
+| `INSTANTLY_WEBHOOK_SECRET` | Webhook signature secret | not set (optional) |
+| `EMAIL_MODE` | `gmail` or `mock` (fallback) | `gmail` |
+| `GOOGLE_CLIENT_ID` | Gmail OAuth2 client ID | set |
+| `GOOGLE_CLIENT_SECRET` | Gmail OAuth2 client secret | set |
+| `GOOGLE_REFRESH_TOKEN` | Gmail OAuth2 refresh token | set |
+| `EMAIL_FROM` | Gmail sender address | `axeldray5@gmail.com` |
+| `EMAIL_FROM_NAME` | Display name | `OptiRate` |
+| `EMAIL_TEST_MODE` | `true` = redirect Gmail to TEST_EMAIL | `true` |
+| `TEST_EMAIL_ADDRESS` | Gmail test redirect target | set |
+| `EMAIL_DAILY_CAP` | Gmail daily limit | `50` |
+| `EMAIL_HOURLY_CAP` | Gmail hourly limit | `20` |
+| `EMAIL_MIN_DELAY` | Gmail min ms between sends | `30000` |
+| `EMAIL_MAX_DELAY` | Gmail max ms between sends | `90000` |
+| `PLAYWRIGHT_HEADLESS` | Headless browser in prod | `true` |
+| `PYTHON_PATH` | Python executable | `/usr/bin/python3` |
+| `API_SECRET_KEY` | Internal API auth | set |
+| `PORT` | API port | `3001` |
 
 ---
 
-## Database Schema (Supabase — 6 Tables)
+## Database Schema (Supabase — 8 Tables)
 
 ### `leads`
 | Column | Type | Notes |
@@ -228,121 +219,83 @@ trustpilot-leadgen/
 | `company_name` | text | |
 | `trustpilot_url` | text UNIQUE | |
 | `website_url` | text | |
-| `trustpilot_email` | text | Email from Trustpilot |
-| `website_email` | text | Email from company website |
+| `trustpilot_email` | text | |
+| `website_email` | text | |
 | `primary_email` | text | Resolved: website > trustpilot |
 | `phone` | text | |
 | `country` | text | |
 | `category` | text | |
 | `star_rating` | real | |
+| `screenshot_path` | text | Public Supabase Storage URL |
 | `email_verified` | boolean | |
 | `verification_status` | text | `valid`/`invalid`/`catch-all`/`unknown` |
 | `outreach_status` | text | `new`/`contacted`/`replied`/`converted`/`lost` |
-| `lead_source` | text | Default: `trustpilot_scrape` |
-| `scraped_at` | timestamptz | |
-| `contacted_at` | timestamptz | |
-| `created_at` | timestamptz | Auto |
-| `updated_at` | timestamptz | Auto-trigger |
 
 ### `campaigns`
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | uuid PK | |
 | `name` | text | |
-| `template_subject` | text | |
-| `template_body` | text | Supports `{{company_name}}`, `{{website_url}}`, etc. |
-| `status` | text | `draft`/`sent`/`completed` |
-| `total_sent/opened/replied/bounced` | int | Aggregate counts |
-| `sent_at` | timestamptz | |
-| `created_at` | timestamptz | |
+| `template_subject` | text | Supports `{{token}}` and `{spintax\|variants}` |
+| `template_body` | text | HTML, supports tokens + spintax |
+| `include_screenshot` | boolean | Embeds screenshot from lead.screenshot_path |
+| `status` | text | `draft`/`sending`/`sent`/`completed`/`failed` |
+| `platform_campaign_id` | text | Instantly campaign ID (set after send) |
+| `email_platform` | text | e.g. `instantly` (set after send) |
+| `sending_schedule` | jsonb | `{timezone, startHour, endHour, days[], dailyLimit}` |
+| `total_sent/opened/replied/bounced` | int | Synced from platform |
 
 ### `campaign_leads`
 | Column | Type | Notes |
 |--------|------|-------|
-| `campaign_id` + `lead_id` | uuid UNIQUE pair | |
+| `campaign_id` + `lead_id` | uuid pair UNIQUE | |
 | `email_used` | text | |
 | `status` | text | `pending`/`sent`/`opened`/`replied`/`bounced` |
-| Timestamps per event | | |
 
-### `lead_notes`
+### `campaign_steps`
 | Column | Type | Notes |
 |--------|------|-------|
-| `lead_id` | uuid FK | |
-| `type` | text | `note`/`status_change`/`email_sent`/`verification`/etc. |
-| `content` | text | |
-| `metadata` | jsonb | Flexible (old_status, campaign_id, etc.) |
+| `campaign_id` | uuid FK | |
+| `step_number` | int | 2, 3, ... (step 1 is the main campaign template) |
+| `delay_days` | int | Days after previous step |
+| `template_subject` | text | |
+| `template_body` | text | |
 
-### `scrape_jobs`
-| Column | Type | Notes |
-|--------|------|-------|
-| Params: country, category, rating range | | |
-| `status` | text | `pending`/`running`/`completed`/`failed` |
-| Progress: total_found/scraped/enriched/verified | int | |
-
-### `follow_ups`
-| Column | Type | Notes |
-|--------|------|-------|
-| `lead_id` | uuid FK | |
-| `due_date` | timestamptz | |
-| `note` | text | |
-| `completed` | boolean | |
+### `lead_notes` / `scrape_jobs` / `follow_ups`
+Same as before — see `supabase/migrations/001_initial_schema.sql`.
 
 ---
 
-## CRM Features
+## Email Platform — Instantly.ai
 
-### Lead Pipeline (Kanban)
-- 5 columns: New → Contacted → Replied → Converted → Lost
-- Drag-and-drop to change status (auto-logs activity)
-- Toggle between Table and Pipeline views
+### Send flow
+1. Spintax + tokens rendered locally per lead (Instantly doesn't support spintax)
+2. Campaign created on Instantly with `{{custom_subject}}` / `{{custom_body}}` template
+3. Leads added in bulk with pre-rendered content as custom variables
+4. Campaign activated → Instantly handles sending, pacing, rotation
+5. Stats polled every 2min → updates campaign_leads in Supabase
 
-### Activity Timeline
-- Per-lead chronological log of all events
-- Auto-created on: status changes, email sends, verifications
-- Manual notes via NoteEditor
+### Test flight
+Creates a temporary 1-lead Instantly campaign with all-day schedule (00:00–23:59, all days) so it sends immediately regardless of the configured sending window. Auto-deleted after 30 minutes.
 
-### Follow-Up Reminders
-- Schedule per-lead with date + note
-- Dashboard widget shows upcoming/overdue
-- Mark as complete
+### Instantly API v2 — Critical Gotchas
 
-### Campaign Analytics
-- Per-campaign: sent/opened/replied/bounced
-- Dashboard: leads by status (pie), by country (bar)
-- Campaign comparison charts (recharts)
+| Issue | Details |
+|-------|---------|
+| `campaign_schedule` REQUIRED | Always include it, even with no custom schedule |
+| Timezone whitelist | NOT all IANA zones accepted. Use `mapTimezone()` helper. Invalid: `America/New_York`, `UTC`, `Europe/London`, `Asia/Manila`. Valid: `America/Detroit`, `Europe/Belfast`, `Europe/Belgrade`, `Asia/Hong_Kong` |
+| `delay` on every step | Each step needs `delay` (int, days). First step: `delay: 0`. Was incorrectly `wait_days`. |
+| No Content-Type on empty body | `/campaigns/:id/activate` and `/pause` are bodyless POSTs. Don't send `Content-Type: application/json` with no body — 400 error. |
+| `email_list` must be connected | Specifies which accounts to use. If those accounts have DNS errors or are disconnected, campaign activates but never sends. Pass `[]` to use all connected accounts. |
 
----
+### DNS Requirements (BLOCKING until done)
+`jordi@optiratesolutions.com` currently has **DNS Error** in Instantly (DKIM + DMARC not found). Add in Dreamhost DNS for `optiratesolutions.com`:
 
-## Email Modes
-
-| Mode | Behavior |
-|------|----------|
-| `EMAIL_MODE=mock` | Sending logs to console only — never hits Gmail API |
-| `EMAIL_MODE=gmail` | Real Gmail API sends via OAuth2 refresh token |
-| `EMAIL_TEST_MODE=true` | Redirects ALL sends to `TEST_EMAIL_ADDRESS` (safe test) |
-
-**Gmail account:** axeldray5@gmail.com. New account — keep sends ≤10/day until warmed up.
-**Personal email filter:** Built-in — auto-skips @gmail.com, @yahoo.com, @hotmail.com, @outlook.com, @live.com, @icloud.com, @aol.com, @protonmail.com for B2B sends.
-**Deduplication:** Built-in — won't resend to an email already sent in any prior campaign.
-
----
-
-## Email Deliverability Checklist
-
-Before sending any live campaign, ensure the following:
-
-### Automatic (built into the sending engine)
-- **Multipart MIME** — every email includes both HTML and plain-text parts (`multipart/alternative`). Plain text is auto-generated from HTML.
-- **List-Unsubscribe header** — `mailto:` link injected automatically (Gmail/Yahoo requirement since Feb 2024). Also includes `List-Unsubscribe-Post` for one-click compliance.
-- **Domain-aligned Message-ID** — uses sender's domain for DKIM/SPF authentication alignment.
-- **Human-like pacing** — default 4-9 minute randomized delays between sends (configurable via `EMAIL_MIN_DELAY` / `EMAIL_MAX_DELAY`).
-
-### Manual (user responsibility)
-- **Spintax in templates** — use `{option1|option2|option3}` syntax in both subject and body. Each email gets a unique random combination, avoiding bulk-mail fingerprinting. Example: `{Hi|Hello|Hey} {{company_name}}, {I noticed|we noticed} your {rating|score|Trustpilot profile}...`
-- **Warmup schedule** — Week 1: 5-10/day. Week 2: 10-20/day. Week 3: 20-30/day. Week 4+: up to 50/day. Never jump to high volume on a new account.
-- **SPF/DKIM/DMARC** — if using a custom domain, configure all three DNS records. Gmail handles this automatically for @gmail.com addresses.
-- **Test flight first** — always send a test flight (`POST /api/campaigns/:id/test-flight`) before any live campaign. Check rendering in Gmail, Outlook, and Apple Mail. View "Show original" to verify headers.
-- **Unsubscribe handling** — the `List-Unsubscribe` mailto link goes to the sender inbox. Manually check for unsubscribe replies and remove those leads from future campaigns.
+| Type | Name | Value |
+|------|------|-------|
+| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:jordi@optiratesolutions.com` |
+| TXT | `selector._domainkey` | Copy from Instantly → Email Accounts → click the account |
+| TXT | `@` | `v=spf1 include:spf.instantlyapp.com ~all` |
 
 ---
 
@@ -350,49 +303,82 @@ Before sending any live campaign, ensure the following:
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/scrape` | POST | Start scrape job (async, fire-and-forget) |
-| `/api/scrape` | GET | List recent jobs |
-| `/api/scrape/:id/status` | GET (SSE) | Live progress stream |
+| `/api/scrape` | POST | Start scrape job |
+| `/api/scrape` | GET | List jobs |
+| `/api/scrape/:id/status` | GET SSE | Live progress |
 | `/api/leads` | GET | Paginated + filterable |
-| `/api/leads/:id` | GET/PATCH/DELETE | Single lead CRUD |
+| `/api/leads/:id` | GET/PATCH/DELETE | Single lead |
 | `/api/leads/bulk` | PATCH | Bulk update |
 | `/api/leads/:id/notes` | GET/POST | Activity timeline |
 | `/api/leads/:id/follow-ups` | GET/POST | Reminders |
 | `/api/follow-ups` | GET | Upcoming (dashboard) |
 | `/api/follow-ups/:id/complete` | PATCH | Mark done |
 | `/api/verify` | POST | Batch email verification |
-| `/api/campaigns` | GET/POST | Campaign list + create |
-| `/api/campaigns/:id` | PATCH/DELETE | Update or delete campaign |
-| `/api/campaigns/:id/send` | POST | Start async send (body: testMode, testEmail, limit) |
-| `/api/campaigns/:id/cancel` | POST | Cancel a running send (stops before next email) |
-| `/api/campaigns/:id/send/status` | GET (SSE) | Live send progress stream |
-| `/api/campaigns/:id/stats` | GET | Performance metrics |
+| `/api/campaigns` | GET/POST | List + create |
+| `/api/campaigns/:id` | PATCH/DELETE | Update or delete |
+| `/api/campaigns/:id/send` | POST | Push to Instantly or send via Gmail |
+| `/api/campaigns/:id/test-flight` | POST | Mandatory pre-send test (body: `{testEmail}`) |
+| `/api/campaigns/:id/cancel` | POST | Pause/cancel campaign |
+| `/api/campaigns/:id/duplicate` | POST | Clone campaign |
+| `/api/campaigns/:id/sync` | POST | On-demand stats sync from platform |
+| `/api/campaigns/:id/stats` | GET | Sent/opened/replied/bounced |
 | `/api/campaigns/:id/leads` | GET/POST | List or add leads |
-| `/api/campaigns/rate-limit` | GET | Email rate limit status |
-| `/api/gmail/check-replies` | POST | Manually trigger reply scan |
+| `/api/campaigns/:id/steps` | GET | Follow-up steps |
+| `/api/campaigns/platform-status` | GET | Platform health + connected accounts |
+| `/api/campaigns/preview-recipients` | GET | Count leads matching filters |
+| `/api/campaigns/rate-limit` | GET | Gmail rate limit status |
+| `/api/gmail/check-replies` | POST | Manually scan for replies |
+| `/api/webhooks/email-platform` | POST | Incoming platform webhooks |
 | `/api/analytics` | GET | Dashboard aggregates |
 
 All routes return: `{ success: true, data: {...} }` or `{ success: false, error: "message" }`
 
 ---
 
+## Deployment
+
+### Backend (Cloud Run)
+```bash
+powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"
+```
+
+### Env var update only (no rebuild)
+```bash
+powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --update-env-vars 'KEY=VALUE' --quiet"
+```
+
+### Frontend
+Auto-deploys on `git push origin main`. No manual action needed.
+
+### Full workflow
+```bash
+git add <files> && git commit -m "..." && git push origin main
+# then run Cloud Run deploy command above
+```
+
+See `docs/deployment.md` for complete reference.
+
+---
+
 ## What Should NOT Change
 
-- [ ] Supabase schema (unless explicitly requested)
-- [ ] `.env` variable names
-- [ ] API route shapes — frontend depends on exact response structure
-- [ ] Lead `outreach_status` enum: `new`/`contacted`/`replied`/`converted`/`lost`
-- [ ] `campaign_leads.status` enum: `pending`/`sent`/`opened`/`replied`/`bounced`
+- Supabase schema (unless explicitly requested and migration written)
+- `.env` variable names
+- API route shapes — frontend depends on exact response structure
+- Lead `outreach_status` enum: `new`/`contacted`/`replied`/`converted`/`lost`
+- `campaign_leads.status` enum: `pending`/`sent`/`opened`/`replied`/`bounced`
+- `EmailPlatformAdapter` interface in `types.ts` — all adapters must implement it exactly
 
 ---
 
 ## Known Constraints
 
-- Trustpilot blocks aggressive scrapers — use 2-5s randomized delays between requests
-- Playwright required (not `requests`) — Trustpilot pages are JS-rendered
-- ZeroBounce free tier: 100 credits/month — deduplicate before batching
-- Resend free tier: 3,000 emails/month
-- Supabase free: 500MB, 50k rows — sufficient for MVP
+- Trustpilot blocks aggressive scrapers — use 2-5s randomized delays
+- Playwright required — Trustpilot pages are JS-rendered
+- ZeroBounce free tier: 100 credits/month
+- Instantly.ai: only specific IANA timezones accepted (use `mapTimezone()` helper)
+- jordi@optiratesolutions.com has DNS Error in Instantly — no emails send until DKIM/DMARC added
+- Warmup: start at 20 emails/day, increase gradually over 4 weeks
 
 ---
 
@@ -400,17 +386,19 @@ All routes return: `{ success: true, data: {...} }` or `{ success: false, error:
 
 ### Do
 - One script = one responsibility
-- All async scraping operations have retry logic (max 3 attempts)
-- Log every scrape run with timestamp, params, and result count
+- All async operations have retry logic (max 3 attempts)
+- Log every API call with timestamp and result
 - Frontend hooks handle `loading`, `error`, and `data` states
 - Auto-log activity on status changes and email events
+- Type-check before deploying: `npx tsc --noEmit` in both `/server` and `/frontend`
 
 ### Don't
 - Don't call Trustpilot from the frontend — always go through the API
-- Don't store emails in localStorage or any client-side state
-- Don't skip email verification before sending campaigns (in live mode)
+- Don't store emails or API keys in client-side state
+- Don't skip the test flight before a live campaign
 - Don't commit `.env`, `credentials.json`, or `token.json`
-- Don't hardcode country or category lists — load from config
+- Don't hardcode timezone strings — use the TIMEZONES list in StepSetup.tsx (only Instantly-valid values)
+- Don't send `Content-Type: application/json` on bodyless requests to Instantly
 
 ---
 
@@ -420,17 +408,8 @@ All routes return: `{ success: true, data: {...} }` or `{ success: false, error:
 |------|---------|
 | Start frontend | `cd frontend && npm run dev` (port 5173) |
 | Start API | `cd server && npm run dev` (port 3001) |
-| Start both | Run both commands above in separate terminals |
-| Run scraper | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country US --category casino --max-rating 3.5` |
 | Type-check API | `cd server && npx tsc --noEmit` |
 | Type-check frontend | `cd frontend && npx tsc --noEmit` |
-| Setup Supabase | Run `supabase/migrations/001_initial_schema.sql` in Supabase SQL editor |
-
----
-
-## Summary
-
-**What this project is:** Automated lead generation and CRM targeting low-rated Trustpilot companies, with enrichment, email verification, pipeline management, and outreach campaigns.
-**Main rule:** Frontend is dumb — all scraping, enrichment, verification, and sending logic lives in the API and Python tools layer.
-**Never break:** Supabase schema, API response shapes, lead/campaign status enums, `.env` variable names.
-**Always do:** Use mock mode first, verify emails before live campaigns, 2-5s delays between scrape requests.
+| Deploy backend | `powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"` |
+| Run scraper manually | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country DE --category casino --max-rating 3.5` |
+| Run migration 008 | `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;` (Supabase SQL editor) |

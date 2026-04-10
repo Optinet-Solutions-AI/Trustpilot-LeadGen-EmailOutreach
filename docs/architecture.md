@@ -2,31 +2,38 @@
 
 ## Overview
 
-A full-stack lead generation and CRM. Scrapes low-rated companies from Trustpilot, enriches contact data, manages a pipeline, and sends outreach campaigns.
+A full-stack lead generation CRM targeting low-rated Trustpilot companies. Scrapes contacts, enriches data, manages a pipeline, and runs personalized cold outreach campaigns through Instantly.ai.
+
+**Business purpose:** Sell reputation management services (brand: OptiRate / optiratesolutions.com) to companies with poor Trustpilot ratings.
+
+---
 
 ## Stack
 
-| Layer | Technology | Port |
-|-------|-----------|------|
-| Frontend | React 19 + Vite + Tailwind CSS | 5173 (dev) |
-| API | Node.js + Express 5 + TypeScript | 3001 (dev) / 8080 (Cloud Run) |
-| Database | Supabase (PostgreSQL via PostgREST) | hosted |
-| Scrapers | Python 3.11 + Playwright (async) | subprocess |
-| Email Send | Resend (mock-first) | — |
-| Email Verify | ZeroBounce (mock-first) | — |
-| AI Features | Google Gemini API | — |
+| Layer | Technology | Notes |
+|-------|-----------|-------|
+| Frontend | React 19 + Vite + Tailwind CSS | Port 5173 dev / Vercel prod |
+| API | Node.js + Express 5 + TypeScript | Port 3001 dev / Cloud Run prod |
+| Database | Supabase (PostgreSQL) | 8 tables |
+| Scrapers | Python 3 + Playwright + stealth | Spawned as child_process |
+| Email Platform | Instantly.ai v2 API | Handles warmup, rotation, pacing |
+| Email Fallback | Gmail API via OAuth2 | Test flights + legacy sends |
+| Email Verify | ZeroBounce | Mock available |
+| AI | Google Gemini API | Template generation |
+
+---
 
 ## Request Flow
 
 ```
 Browser → Vercel (React SPA)
-  → VITE_API_BASE_URL (Cloud Run)
-    → Express routes
-      → Supabase (reads/writes)
-      → child_process.spawn(python)
-        → Playwright browser
-        → PostgREST (writes leads)
+  → VITE_API_BASE_URL → Cloud Run (Express)
+    ├── Supabase (reads/writes)
+    ├── child_process.spawn(python) → Playwright → Trustpilot
+    └── Instantly.ai API → sends from jordi@optiratesolutions.com
 ```
+
+---
 
 ## WAT Framework
 
@@ -40,59 +47,84 @@ Browser → Vercel (React SPA)
 2. **API is the BRAIN** — all orchestration, filtering, enrichment logic
 3. **Database is the MEMORY** — Supabase is single source of truth
 4. **Tools are atomic** — each Python script does exactly one job
-5. **Mock-first** — all external APIs start as mocks; switch via `EMAIL_MODE=live`
+5. **Mock-first** — external APIs start as mocks; switch via env var
 
-## Data Flow: Scrape → Lead → Campaign
+---
+
+## Data Flow: Scrape → Lead → Campaign → Send
 
 ```
-1. POST /api/scrape  →  creates scrape_jobs row  →  spawns Python
-2. scrape_category.py  →  paginates Trustpilot, filters by rating
-3. scrape_profile.py   →  visits /review/<slug>, extracts contacts
-4. scrape_website.py   →  visits company site, finds best email (optional)
-5. upsert_leads.py     →  saves all to Supabase leads table
-6. SSE stream          →  API emits PROGRESS events to frontend
-7. User manages leads  →  Kanban drag-drop, notes, follow-ups
-8. User creates campaign → template + country/category filter
-9. POST /api/campaigns/:id/send → template-engine + email-sender
-10. Analytics           →  track sent/opened/replied/bounced
+1. POST /api/scrape
+   → creates scrape_jobs row
+   → spawns: scrape_category.py → scrape_profile.py → scrape_website.py
+   → upsert_leads.py saves to Supabase
+   → SSE stream pushes PROGRESS events to browser
+
+2. User creates campaign in wizard (5 steps)
+   → name + filters + sending schedule
+   → email template (subject + body, spintax supported)
+   → follow-up steps
+   → recipient selection (by country/category or explicit IDs)
+   → stored in campaigns + campaign_leads + campaign_steps
+
+3. Test flight (mandatory before live send)
+   → POST /campaigns/:id/test-flight
+   → renders template with real lead data
+   → creates temp Instantly campaign (all-day schedule, any account)
+   → activates → email sent from jordi@optiratesolutions.com
+   → temp campaign auto-deleted after 30 min
+
+4. Live send
+   → POST /campaigns/:id/send
+   → pushCampaignToPlatform()
+   → renders spintax per lead locally
+   → creates Instantly campaign with template vars {{custom_subject}} / {{custom_body}}
+   → addLeads() uploads all leads in batches of 1000
+   → activateCampaign() → Instantly handles pacing, rotation, warmup
+
+5. Stats sync (every 2 min)
+   → platform-sync.ts polls Instantly analytics
+   → updates campaigns totals + campaign_leads status
+   → creates activity notes for opens/replies/bounces
 ```
+
+---
+
+## Email Platform Adapter Pattern
+
+```
+EMAIL_PLATFORM=none       → Gmail one-by-one (legacy, campaign-sender.ts)
+EMAIL_PLATFORM=mock       → Console-log mock (adapter-mock.ts)
+EMAIL_PLATFORM=instantly  → Instantly.ai v2 (adapter-instantly.ts)
+```
+
+All adapters implement `EmailPlatformAdapter` (`email-platform/types.ts`). Swap providers by changing one env var. The adapter layer is in `server/src/services/email-platform/`.
+
+---
+
+## Database Schema (8 Tables)
+
+| Table | Purpose |
+|-------|---------|
+| `leads` | Scraped companies with contact info, outreach status |
+| `campaigns` | Campaign config, template, status, platform_campaign_id, sending_schedule |
+| `campaign_leads` | Per-lead send status: pending/sent/opened/replied/bounced |
+| `campaign_steps` | Follow-up email sequence steps |
+| `lead_notes` | Activity timeline (notes, status changes, email events) |
+| `scrape_jobs` | Scrape job history + progress |
+| `follow_ups` | Per-lead reminders with due dates |
+| *(schema)* | Supabase internal |
+
+---
 
 ## Deployment Architecture
 
 ```
-┌─────────────────────────────────┐
-│  Vercel (Frontend)              │  React static build
-│  VITE_API_BASE_URL=<cloud_run>  │
-└─────────────┬───────────────────┘
-              │ HTTPS
-              ▼
-┌─────────────────────────────────┐
-│  Google Cloud Run               │  Single container
-│  - Node.js API (Express)        │  Node 20 + Python 3.11
-│  - Python scrapers (subprocess) │  + Playwright Chromium
-│  - Supabase JS client           │
-└─────────────┬───────────────────┘
-              │
-              ▼
-┌─────────────────────────────────┐
-│  Supabase                       │  PostgreSQL + PostgREST
-│  6 tables, auto-timestamps      │  Cloud-hosted, free tier
-└─────────────────────────────────┘
+GitHub (main branch)
+  ├── Vercel — frontend auto-deploy on push
+  └── Google Cloud Run — manual deploy via gcloud CLI
+        Service: trustpilot-crm (us-central1)
+        URL: https://trustpilot-crm-281469818025.us-central1.run.app
 ```
 
-## Environment Variables
-
-| Variable | Used By | Purpose |
-|----------|---------|---------|
-| `SUPABASE_URL` | API + Python | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | API + Python | Server-side DB access |
-| `ZEROBOUNCE_API_KEY` | API | Email verification |
-| `RESEND_API_KEY` | API | Email sending |
-| `EMAIL_FROM` | API | Sender address |
-| `EMAIL_MODE` | API | `mock` or `live` |
-| `PLAYWRIGHT_HEADLESS` | Python | `true` in prod |
-| `PYTHON_PATH` | API | Python binary path |
-| `API_SECRET_KEY` | API | Auth middleware |
-| `PORT` | API | HTTP port (8080 Cloud Run) |
-| `VITE_API_BASE_URL` | Frontend build | API base URL |
-| `VITE_GEMINI_API_KEY` | Frontend build | Gemini AI features |
+See [deployment.md](deployment.md) for exact commands.
