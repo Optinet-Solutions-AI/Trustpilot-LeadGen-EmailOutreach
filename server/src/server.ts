@@ -68,12 +68,15 @@ const server = app.listen(config.port, async () => {
   // This happens when Cloud Run kills the old instance mid-send and deploys a new one.
   try {
     const { getSupabase } = await import('./lib/supabase.js');
+    // Only reset Gmail/direct campaigns — platform campaigns (platform_campaign_id IS NOT NULL)
+    // are still being handled by Instantly and should stay as 'sending'.
     const { error } = await getSupabase()
       .from('campaigns')
       .update({ status: 'draft' })
-      .eq('status', 'sending');
+      .eq('status', 'sending')
+      .is('platform_campaign_id', null);
     if (error) console.warn('[Startup] Failed to reset orphaned campaigns:', error.message);
-    else console.log('[Startup] Reset any orphaned sending campaigns to draft');
+    else console.log('[Startup] Reset orphaned direct-send campaigns to draft (platform campaigns untouched)');
   } catch (e) {
     console.error('[Startup] Orphan reset error:', e instanceof Error ? e.message : e);
   }
