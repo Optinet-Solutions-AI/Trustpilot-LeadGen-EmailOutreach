@@ -133,17 +133,28 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
             safe_slug = slug.replace('/', '_').replace('\\', '_')
             screenshot_path = os.path.join(screenshots_dir, f"{safe_slug}.png")
 
-            # Try to screenshot just the profile info grid (name + rating + contact)
-            profile_section = await page.query_selector(
-                '[class*="businessInfoGrid"], [class*="businessUnit"], [class*="summary"]'
-            )
-            if profile_section:
-                await profile_section.screenshot(path=screenshot_path)
-            else:
-                # Fallback: clip to top 500px of page
+            # Try progressively tighter selectors for the hero card only
+            # (company name + stars + rating number + review bars)
+            hero_selectors = [
+                # Trustpilot's hero/header section (above "Company details")
+                '[class*="heroBusinessInfo"]',
+                '[class*="businessUnitHeader"]',
+                '[class*="businessSummary"]',
+                'header[class*="business"]',
+            ]
+            captured = False
+            for sel in hero_selectors:
+                section = await page.query_selector(sel)
+                if section:
+                    await section.screenshot(path=screenshot_path)
+                    captured = True
+                    break
+
+            if not captured:
+                # Fallback: clip to top portion only — hero card is ~350px tall
                 await page.screenshot(
                     path=screenshot_path,
-                    clip={'x': 0, 'y': 0, 'width': 1280, 'height': 500},
+                    clip={'x': 0, 'y': 0, 'width': 1280, 'height': 350},
                 )
         except Exception as e:
             # Last fallback: viewport screenshot
