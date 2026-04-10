@@ -1,8 +1,32 @@
 import { useState } from 'react';
-import { Plus, ImageIcon, Sparkles } from 'lucide-react';
+import { Plus, ImageIcon, Sparkles, Shuffle, ChevronDown, ChevronUp } from 'lucide-react';
 import { generateEmailTemplate } from '../../lib/gemini';
 
 const TOKENS = ['{{company_name}}', '{{website_url}}', '{{star_rating}}', '{{category}}', '{{country}}'];
+
+const SPINTAX_EXAMPLES = [
+  { label: 'Greeting', snippet: '{Hi|Hello|Hey}' },
+  { label: 'Opening', snippet: '{We noticed|I came across|Our team spotted}' },
+  { label: 'CTA', snippet: '{Would you be open to|Could we schedule|How about}' },
+  { label: 'Closing', snippet: '{Best regards|Kind regards|Best}' },
+];
+
+/**
+ * Resolves spintax {option1|option2|option3} for preview rendering.
+ * Picks one random option per group (client-side preview only).
+ */
+function resolveSpintaxPreview(text: string): string {
+  let result = text;
+  let max = 50;
+  while (max-- > 0) {
+    const match = result.match(/\{([^{}]+)\}/);
+    if (!match) break;
+    const options = match[1].split('|');
+    const chosen = options[Math.floor(Math.random() * options.length)];
+    result = result.replace(match[0], chosen);
+  }
+  return result;
+}
 
 interface Props {
   subject: string;
@@ -16,6 +40,8 @@ interface Props {
 export default function StepTemplate({ subject, body, includeScreenshot, filterCountry, filterCategory, onChange }: Props) {
   const [generating, setGenerating] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [showSpintaxGuide, setShowSpintaxGuide] = useState(false);
+  const [previewSeed, setPreviewSeed] = useState(0);
 
   const handleGenerateWithAI = async () => {
     setGenerating(true);
@@ -38,7 +64,17 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
     else onChange({ body: body + token });
   };
 
-  const preview = body
+  const insertSpintax = (snippet: string, field: 'subject' | 'body') => {
+    if (field === 'subject') onChange({ subject: subject + snippet });
+    else onChange({ body: body + snippet });
+  };
+
+  // Resolve spintax for preview — re-randomizes when previewSeed changes
+  const resolvedBody = resolveSpintaxPreview(body);
+  const resolvedSubject = resolveSpintaxPreview(subject);
+  void previewSeed; // trigger re-render on seed change
+
+  const preview = resolvedBody
     .replace(/<[^>]+>/g, '')
     .replace(/\{\{company_name\}\}/g, 'Acme Corp')
     .replace(/\{\{website_url\}\}/g, 'acme.com')
@@ -48,11 +84,51 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+  const subjectPreview = resolvedSubject
+    .replace(/\{\{company_name\}\}/g, 'Acme Corp')
+    .replace(/\{\{star_rating\}\}/g, '2.5')
+    .replace(/\{\{category\}\}/g, 'casino')
+    .replace(/\{\{country\}\}/g, 'DE')
+    .replace(/\{\{website_url\}\}/g, 'acme.com');
+
+  // Count spintax groups in the template
+  const spintaxCount = (body.match(/\{[^{}]+\}/g) || []).length + (subject.match(/\{[^{}]+\}/g) || []).length;
+
   return (
     <div className="space-y-5">
       <div>
         <h3 className="text-lg font-semibold mb-1">Email Template</h3>
-        <p className="text-sm text-gray-500">Compose your outreach email. Use tokens to personalize for each lead.</p>
+        <p className="text-sm text-gray-500">Compose your outreach email. Use tokens to personalize and spintax for unique variations.</p>
+      </div>
+
+      {/* Spintax Guide (collapsible) */}
+      <div className="border border-amber-200 bg-amber-50 rounded-xl overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setShowSpintaxGuide(!showSpintaxGuide)}
+          className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-amber-800 hover:bg-amber-100 transition-colors"
+        >
+          <span className="flex items-center gap-2">
+            <Shuffle size={14} />
+            Spintax Guide — {spintaxCount} variation{spintaxCount !== 1 ? 's' : ''} in template
+          </span>
+          {showSpintaxGuide ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+        {showSpintaxGuide && (
+          <div className="px-4 pb-3 text-xs text-amber-700 space-y-2 border-t border-amber-200 pt-3">
+            <p>
+              <strong>Spintax</strong> creates unique email variations to avoid spam filters.
+              Wrap alternatives in curly braces separated by pipes:
+            </p>
+            <code className="block bg-white/60 rounded px-3 py-2 text-amber-900 font-mono">
+              {'{Hi|Hello|Hey}'} {'{{company_name}}'}, {'{we noticed|I came across}'} your {'{rating|score}'}.
+            </code>
+            <p>Each email randomly picks one option per group, creating thousands of unique combinations.</p>
+            <p className="text-amber-600">
+              <strong>Tip:</strong> More spintax groups = more unique emails = better deliverability. Aim for 5+ groups.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -65,6 +141,13 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
                 <button key={t} type="button" onClick={() => insertToken(t, 'subject')}
                   className="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-0.5 rounded transition-colors">
                   <Plus size={9} className="inline mr-0.5" />{t}
+                </button>
+              ))}
+              <span className="text-gray-300 mx-0.5">|</span>
+              {SPINTAX_EXAMPLES.slice(0, 2).map((s) => (
+                <button key={s.label} type="button" onClick={() => insertSpintax(s.snippet, 'subject')}
+                  className="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-2 py-0.5 rounded border border-amber-200 transition-colors">
+                  <Shuffle size={9} className="inline mr-0.5" />{s.label}
                 </button>
               ))}
             </div>
@@ -97,6 +180,13 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
                   <Plus size={9} className="inline mr-0.5" />{t}
                 </button>
               ))}
+              <span className="text-gray-300 mx-0.5">|</span>
+              {SPINTAX_EXAMPLES.map((s) => (
+                <button key={s.label} type="button" onClick={() => insertSpintax(s.snippet, 'body')}
+                  className="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-2 py-0.5 rounded border border-amber-200 transition-colors">
+                  <Shuffle size={9} className="inline mr-0.5" />{s.label}
+                </button>
+              ))}
             </div>
             <textarea
               value={body}
@@ -126,17 +216,24 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
 
         {/* Preview */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Preview (sample data)</label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-sm font-medium text-gray-700">Preview (sample data)</label>
+            {spintaxCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setPreviewSeed(previewSeed + 1)}
+                className="flex items-center gap-1 text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-2.5 py-1 rounded-lg border border-amber-200 transition-colors"
+              >
+                <Shuffle size={11} />
+                Randomize
+              </button>
+            )}
+          </div>
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
             <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl">
               <p className="text-xs text-gray-500">To: contact@acme.com</p>
               <p className="text-sm font-medium text-gray-800 mt-0.5">
-                {subject
-                  .replace(/\{\{company_name\}\}/g, 'Acme Corp')
-                  .replace(/\{\{star_rating\}\}/g, '2.5')
-                  .replace(/\{\{category\}\}/g, 'casino')
-                  .replace(/\{\{country\}\}/g, 'DE')
-                  .replace(/\{\{website_url\}\}/g, 'acme.com')}
+                {subjectPreview}
               </p>
             </div>
             <div className="p-4 text-sm text-gray-700 whitespace-pre-wrap max-h-[400px] overflow-y-auto">
@@ -151,6 +248,12 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
               )}
             </div>
           </div>
+          {spintaxCount > 0 && (
+            <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
+              <Shuffle size={11} />
+              {spintaxCount} spintax group{spintaxCount !== 1 ? 's' : ''} detected — click "Randomize" to preview different variations
+            </p>
+          )}
         </div>
       </div>
     </div>

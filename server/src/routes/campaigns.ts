@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
-import { renderTemplate } from '../services/template-engine.js';
+import { renderAndSpin } from '../services/template-engine.js';
 import { runCampaignSend, cancelCampaign, campaignEvents } from '../services/campaign-sender.js';
 import { applyTestMode } from '../services/test-mode.js';
 import { sendEmail } from '../services/email-sender.js';
@@ -131,8 +131,8 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     const lead = firstPendingLead.leads as Record<string, unknown>;
 
     // Render with real lead data — identical to how production emails are built
-    const subject = renderTemplate(campaign.template_subject, lead);
-    const html    = renderTemplate(campaign.template_body, lead);
+    const subject = renderAndSpin(campaign.template_subject, lead);
+    const html    = renderAndSpin(campaign.template_body, lead);
 
     // Screenshot — same resolution logic as the production send route
     const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
@@ -229,8 +229,8 @@ router.post('/:id/send', async (req: Request, res: Response) => {
           campaignLeadId: cl.id,
           leadId: cl.lead_id,
           to: cl.email_used,
-          subject: renderTemplate(campaign.template_subject, lead),
-          html: renderTemplate(campaign.template_body, lead),
+          subject: renderAndSpin(campaign.template_subject, lead),
+          html: renderAndSpin(campaign.template_body, lead),
           screenshotPath: validScreenshotPath,
         };
       });

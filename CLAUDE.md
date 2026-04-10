@@ -327,6 +327,25 @@ trustpilot-leadgen/
 
 ---
 
+## Email Deliverability Checklist
+
+Before sending any live campaign, ensure the following:
+
+### Automatic (built into the sending engine)
+- **Multipart MIME** — every email includes both HTML and plain-text parts (`multipart/alternative`). Plain text is auto-generated from HTML.
+- **List-Unsubscribe header** — `mailto:` link injected automatically (Gmail/Yahoo requirement since Feb 2024). Also includes `List-Unsubscribe-Post` for one-click compliance.
+- **Domain-aligned Message-ID** — uses sender's domain for DKIM/SPF authentication alignment.
+- **Human-like pacing** — default 4-9 minute randomized delays between sends (configurable via `EMAIL_MIN_DELAY` / `EMAIL_MAX_DELAY`).
+
+### Manual (user responsibility)
+- **Spintax in templates** — use `{option1|option2|option3}` syntax in both subject and body. Each email gets a unique random combination, avoiding bulk-mail fingerprinting. Example: `{Hi|Hello|Hey} {{company_name}}, {I noticed|we noticed} your {rating|score|Trustpilot profile}...`
+- **Warmup schedule** — Week 1: 5-10/day. Week 2: 10-20/day. Week 3: 20-30/day. Week 4+: up to 50/day. Never jump to high volume on a new account.
+- **SPF/DKIM/DMARC** — if using a custom domain, configure all three DNS records. Gmail handles this automatically for @gmail.com addresses.
+- **Test flight first** — always send a test flight (`POST /api/campaigns/:id/test-flight`) before any live campaign. Check rendering in Gmail, Outlook, and Apple Mail. View "Show original" to verify headers.
+- **Unsubscribe handling** — the `List-Unsubscribe` mailto link goes to the sender inbox. Manually check for unsubscribe replies and remove those leads from future campaigns.
+
+---
+
 ## API Routes
 
 | Route | Method | Purpose |

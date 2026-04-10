@@ -1,13 +1,38 @@
 /**
  * Gmail API email sender.
  * Uses nodemailer MailComposer for MIME construction, Gmail API for delivery.
+ * Builds multipart/alternative (HTML + plain text) with deliverability headers.
  * Activated when EMAIL_MODE=gmail in .env
  */
 
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
+import crypto from 'crypto';
 import { getGmailClient } from './gmail-client.js';
 import { config } from '../config.js';
 import fs from 'fs';
+
+/**
+ * Strips HTML to plain text for the multipart/alternative text part.
+ * Handles common patterns used in email templates.
+ */
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<\/tr>/gi, '\n')
+    .replace(/<a\s[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\/a>/gi, '$2 ($1)')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
 export interface SendEmailOptions {
   screenshotPath?: string;
@@ -55,12 +80,21 @@ export async function sendEmail(
       bodyHtml = `${html}\n<br/><img src="cid:trustpilot-screenshot" alt="Your Trustpilot Profile" style="max-width:600px;border:1px solid #e5e7eb;border-radius:8px;" />`;
     }
 
+    // Domain-aligned Message-ID improves DKIM/SPF authentication
+    const senderDomain = config.gmail.fromEmail.split('@')[1] || 'gmail.com';
+
     const mailOptions: Record<string, unknown> = {
       from,
       to,
       subject,
       html: bodyHtml,
+      text: htmlToPlainText(bodyHtml),
       attachments,
+      messageId: `<${crypto.randomUUID()}@${senderDomain}>`,
+      headers: {
+        'List-Unsubscribe': `<mailto:${config.gmail.fromEmail}?subject=unsubscribe>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
     };
 
     // Build raw MIME message with nodemailer MailComposer

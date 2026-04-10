@@ -1,6 +1,9 @@
 /**
- * Simple template engine — replaces {{token}} placeholders with lead data.
+ * Template engine — replaces {{token}} placeholders with lead data,
+ * then resolves {spintax|variations} for unique email content.
  */
+
+import { resolveSpintax } from './spintax.js';
 
 interface LeadData {
   company_name?: string;
@@ -28,4 +31,14 @@ export function renderTemplate(template: string, lead: LeadData): string {
     const resolver = TOKEN_MAP[token];
     return resolver ? resolver(lead) : match;
   });
+}
+
+/**
+ * Full pipeline: token replacement first, then spintax resolution.
+ * Order matters — {{tokens}} must resolve before spintax picks alternatives.
+ * Usage in templates: "{Hi|Hello} {{company_name}}, {I noticed|I saw} your {profile|page}..."
+ */
+export function renderAndSpin(template: string, lead: LeadData): string {
+  const tokenResolved = renderTemplate(template, lead);
+  return resolveSpintax(tokenResolved);
 }

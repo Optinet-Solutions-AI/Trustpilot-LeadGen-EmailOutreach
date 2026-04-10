@@ -6,18 +6,18 @@ import StepTemplate from './StepTemplate';
 import StepRecipients from './StepRecipients';
 import StepReview from './StepReview';
 
-const DEFAULT_SUBJECT = 'Your Trustpilot rating needs attention, {{company_name}}';
+const DEFAULT_SUBJECT = '{Your Trustpilot rating needs attention|A quick note about your online reputation|Trustpilot improvement opportunity}, {{company_name}}';
 
-const DEFAULT_BODY = `<p>Hi,</p>
+const DEFAULT_BODY = `<p>{Hi|Hello|Hey},</p>
 
-<p>We recently noticed your brand's Trustpilot score isn't where it should be, with a relatively low overall rating (see details below). Our team can help you improve your Trustpilot score by boosting positive visibility, achieving a green rating, and enhancing your brand's credibility and trustworthy online image.</p>
+<p>{We recently noticed|I came across|Our team spotted} your brand's Trustpilot {score|rating|profile} {isn't where it should be|could use some improvement|has room for growth}, with a {relatively low|below-average} overall rating (see details below). {Our team can help you|We specialize in helping businesses} {improve your|boost your|strengthen your} Trustpilot score by {boosting positive visibility|increasing positive review volume}, {achieving a green rating|reaching a higher star rating}, and {enhancing your brand's credibility and trustworthy online image|building stronger customer trust online}.</p>
 
 <p><strong>{{company_name}}</strong><br>
 Trustpilot Rating: {{star_rating}} ★</p>
 
-<p>Would you be open to a quick chat to see how we can clean up your Trustpilot presence and strengthen your online reputation?</p>
+<p>{Would you be open to a quick chat|Could we schedule a brief call|Would a short conversation work for you} to {see how we can|discuss how to|explore ways to} {clean up your Trustpilot presence|improve your online reputation|boost your review profile} and {strengthen your online reputation|drive more customer trust}?</p>
 
-<p>Best regards,<br>
+<p>{Best regards|Kind regards|Best},<br>
 OptiRate</p>
 <p>www.optiratesolutions.com</p>`;
 

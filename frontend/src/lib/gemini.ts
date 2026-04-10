@@ -44,11 +44,18 @@ Requirements:
 - Open with a specific observation about their Trustpilot situation
 - Mention the concrete impact (lost customers, lower trust, less revenue)
 - Offer a clear, low-commitment CTA (quick call, no obligation)
-- Close with OptiRate brand: "Best regards,<br>OptiRate<br>www.optiratesolutions.com"
+- Close with OptiRate brand: "{Best regards|Kind regards|Best},<br>OptiRate<br>www.optiratesolutions.com"
 - Use these exact placeholder tokens where appropriate:
   - {{company_name}} — company name
   - {{star_rating}} — their current star rating
   - {{review_count}} — number of reviews
+- IMPORTANT: Use spintax variations throughout the email using {option1|option2|option3} syntax.
+  This creates unique versions of each email to avoid spam filters. Examples:
+  - "{Hi|Hello|Hey} there" — randomly picks one greeting per email
+  - "{We noticed|I came across|Our team spotted}" — varies the opening
+  - "{Would you be open to|Could we schedule|How about}" — varies the CTA
+  Include at least 5-8 spintax groups spread across the email for good variation.
+  Do NOT put spintax inside {{token}} placeholders — those are data tokens.
 - Output ONLY the HTML body content (no <html>, <head>, <body> tags)
 - Use only <p>, <strong>, <br> tags — keep it email-safe
 - Do NOT include a subject line

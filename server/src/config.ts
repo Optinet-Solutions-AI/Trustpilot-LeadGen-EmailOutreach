@@ -28,9 +28,9 @@ export const config = {
   },
 
   rateLimits: {
-    dailyCap: +(process.env.EMAIL_DAILY_CAP ?? '50'),
-    hourlyCap: +(process.env.EMAIL_HOURLY_CAP ?? '20'),
-    minDelay: +(process.env.EMAIL_MIN_DELAY ?? '30000'),
-    maxDelay: +(process.env.EMAIL_MAX_DELAY ?? '90000'),
+    dailyCap: +(process.env.EMAIL_DAILY_CAP ?? '20'),
+    hourlyCap: +(process.env.EMAIL_HOURLY_CAP ?? '10'),
+    minDelay: +(process.env.EMAIL_MIN_DELAY ?? '240000'),  // 4 minutes
+    maxDelay: +(process.env.EMAIL_MAX_DELAY ?? '540000'),  // 9 minutes
   },
 };
