@@ -131,11 +131,11 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
       sequences: params.sequences.map((seq, i) => ({
         steps: [{
           type: 'email',
+          delay: i === 0 ? 0 : (seq.delayDays ?? 1),  // Required on every step; 0 = send immediately
           variants: [{
             subject: seq.subject,
             body: seq.body,
           }],
-          ...(i > 0 && seq.delayDays ? { wait_days: seq.delayDays } : {}),
         }],
       })),
     };
