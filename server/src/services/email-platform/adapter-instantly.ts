@@ -82,7 +82,9 @@ export class InstantlyAdapter implements EmailPlatformAdapter {
       const url = `${BASE_URL}${path}`;
       const headers: Record<string, string> = {
         'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
+        // Only set Content-Type when there is a body — Instantly rejects
+        // "Content-Type: application/json" on bodyless requests (e.g. activate/pause).
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       };
 
       try {
