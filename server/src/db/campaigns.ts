@@ -25,6 +25,7 @@ export async function createCampaign(campaign: {
   include_screenshot?: boolean;
   filter_country?: string;
   filter_category?: string;
+  sending_schedule?: Record<string, unknown> | null;
 }) {
   const supabase = getSupabase();
   const { data, error } = await supabase.from('campaigns').insert(campaign).select().single();
@@ -171,6 +172,7 @@ export async function duplicateCampaign(sourceId: string) {
     include_screenshot: source.include_screenshot,
     filter_country: source.filter_country || undefined,
     filter_category: source.filter_category || undefined,
+    sending_schedule: source.sending_schedule || undefined,
   });
 
   // Re-populate leads using the same filters

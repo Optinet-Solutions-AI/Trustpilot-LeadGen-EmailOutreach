@@ -28,6 +28,13 @@ export function useCampaigns() {
     filterCountry?: string;
     filterCategory?: string;
     followUpSteps?: Array<{ delayDays: number; subject: string; body: string }>;
+    sendingSchedule?: {
+      timezone: string;
+      startHour: string;
+      endHour: string;
+      days: number[];
+      dailyLimit: number;
+    };
   }) => {
     const res = await api.post('/campaigns', data);
     setCampaigns((prev) => [res.data.data, ...prev]);

@@ -7,6 +7,7 @@ import StepFollowUps from './StepFollowUps';
 import StepRecipients from './StepRecipients';
 import StepReview from './StepReview';
 import type { FollowUpStepInput } from '../../types/campaign';
+import { DEFAULT_SCHEDULE, type SendingSchedule } from './StepSetup';
 
 const DEFAULT_SUBJECT = '{Your Trustpilot rating needs attention|A quick note about your online reputation|Trustpilot improvement opportunity}, {{company_name}}';
 
@@ -32,6 +33,7 @@ interface Props {
     includeScreenshot: boolean;
     leadIds: string[];
     followUpSteps?: FollowUpStepInput[];
+    sendingSchedule?: SendingSchedule;
   }) => Promise<void>;
 }
 
@@ -43,6 +45,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
   const [name, setName] = useState('');
   const [filterCountry, setFilterCountry] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
+  const [schedule, setSchedule] = useState<SendingSchedule>(DEFAULT_SCHEDULE);
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [body, setBody] = useState(DEFAULT_BODY);
   const [includeScreenshot, setIncludeScreenshot] = useState(true);
@@ -73,6 +76,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
         includeScreenshot,
         leadIds: selectedLeadIds,
         followUpSteps: followUpSteps.length > 0 ? followUpSteps : undefined,
+        sendingSchedule: schedule,
       });
       onClose();
     } catch {
@@ -111,10 +115,12 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
               name={name}
               filterCountry={filterCountry}
               filterCategory={filterCategory}
+              schedule={schedule}
               onChange={(patch) => {
                 if (patch.name !== undefined) setName(patch.name);
                 if (patch.filterCountry !== undefined) setFilterCountry(patch.filterCountry);
                 if (patch.filterCategory !== undefined) setFilterCategory(patch.filterCategory);
+                if (patch.schedule !== undefined) setSchedule(patch.schedule);
               }}
             />
           )}

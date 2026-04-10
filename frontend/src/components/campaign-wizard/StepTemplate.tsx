@@ -69,27 +69,29 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
     else onChange({ body: body + snippet });
   };
 
-  // Resolve spintax for preview — re-randomizes when previewSeed changes
-  const resolvedBody = resolveSpintaxPreview(body);
-  const resolvedSubject = resolveSpintaxPreview(subject);
-  void previewSeed; // trigger re-render on seed change
+  // Build preview: tokens FIRST, then spintax — must match server render order (renderAndSpin)
+  // If spintax runs first, {{company_name}} gets eaten because the inner {company_name} matches the regex
+  const sampleData: Record<string, string> = {
+    company_name: 'Acme Corp',
+    website_url: 'acme.com',
+    star_rating: '2.5',
+    category: 'casino',
+    country: 'DE',
+  };
+
+  const applyTokens = (text: string) =>
+    text.replace(/\{\{(\w+)\}\}/g, (_, key) => sampleData[key] ?? `{{${key}}}`);
+
+  // previewSeed in the expression ensures a fresh random roll each time Randomize is clicked
+  const resolvedBody = resolveSpintaxPreview(applyTokens(body) + (previewSeed < 0 ? '' : ''));
+  const resolvedSubject = resolveSpintaxPreview(applyTokens(subject) + (previewSeed < 0 ? '' : ''));
 
   const preview = resolvedBody
     .replace(/<[^>]+>/g, '')
-    .replace(/\{\{company_name\}\}/g, 'Acme Corp')
-    .replace(/\{\{website_url\}\}/g, 'acme.com')
-    .replace(/\{\{star_rating\}\}/g, '2.5')
-    .replace(/\{\{category\}\}/g, 'casino')
-    .replace(/\{\{country\}\}/g, 'DE')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  const subjectPreview = resolvedSubject
-    .replace(/\{\{company_name\}\}/g, 'Acme Corp')
-    .replace(/\{\{star_rating\}\}/g, '2.5')
-    .replace(/\{\{category\}\}/g, 'casino')
-    .replace(/\{\{country\}\}/g, 'DE')
-    .replace(/\{\{website_url\}\}/g, 'acme.com');
+  const subjectPreview = resolvedSubject;
 
   // Count spintax groups in the template
   const spintaxCount = (body.match(/\{[^{}]+\}/g) || []).length + (subject.match(/\{[^{}]+\}/g) || []).length;

@@ -26,6 +26,13 @@ export interface PlatformSendParams {
     template_subject: string;
     template_body: string;
     include_screenshot?: boolean;
+    sending_schedule?: {
+      timezone: string;
+      startHour: string;
+      endHour: string;
+      days: number[];
+      dailyLimit: number;
+    } | null;
   };
   campaignLeads: Array<{
     id: string;           // campaign_lead ID
@@ -63,11 +70,19 @@ export async function pushCampaignToPlatform(params: PlatformSendParams): Promis
       })),
     ];
 
+    const schedule = campaign.sending_schedule;
     const platformCampaign = await platform.createCampaign({
       name: campaignName,
       sequences,
       stopOnReply: true,
       trackOpens: true,
+      dailyLimit: schedule?.dailyLimit,
+      schedule: schedule ? {
+        timezone: schedule.timezone,
+        days: schedule.days,
+        startHour: schedule.startHour,
+        endHour: schedule.endHour,
+      } : undefined,
     });
 
     // Store platform campaign ID

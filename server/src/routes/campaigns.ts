@@ -31,7 +31,7 @@ router.get('/', async (_req: Request, res: Response) => {
 // POST /api/campaigns
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds, filterCountry, filterCategory, followUpSteps } = req.body;
+    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds, filterCountry, filterCategory, followUpSteps, sendingSchedule } = req.body;
     if (!name || !templateSubject || !templateBody) {
       res.status(400).json({ success: false, error: 'name, templateSubject, and templateBody are required' });
       return;
@@ -44,6 +44,7 @@ router.post('/', async (req: Request, res: Response) => {
       include_screenshot: includeScreenshot,
       filter_country: filterCountry || undefined,
       filter_category: filterCategory || undefined,
+      sending_schedule: sendingSchedule || null,
     });
 
     // Save follow-up steps if provided (step 1 = initial email from campaign template)
@@ -302,6 +303,7 @@ router.post('/:id/send', async (req: Request, res: Response) => {
           template_subject: campaign.template_subject,
           template_body: campaign.template_body,
           include_screenshot: campaign.include_screenshot,
+          sending_schedule: campaign.sending_schedule ?? null,
         },
         campaignLeads: leadsToSend.map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => ({
           id: cl.id,
