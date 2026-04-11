@@ -163,6 +163,18 @@ export default function Campaigns() {
 
   const isSending = sendStatus === 'sending' || sendStatus === 'connecting';
 
+  // Full-page wizard — replaces the entire content area
+  if (showWizard) {
+    return (
+      <div className="flex flex-col" style={{ height: 'calc(100vh - 4rem)' }}>
+        <CampaignWizard
+          onClose={() => setShowWizard(false)}
+          onCreate={handleCreate}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="px-10 py-10 space-y-8">
 
@@ -334,14 +346,6 @@ export default function Campaigns() {
           </div>
         )}
       </div>
-
-      {/* Wizard modal */}
-      {showWizard && (
-        <CampaignWizard
-          onClose={() => setShowWizard(false)}
-          onCreate={handleCreate}
-        />
-      )}
 
       {/* Campaign detail modal */}
       {detailCampaign && (
