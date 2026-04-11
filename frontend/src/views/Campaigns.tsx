@@ -7,9 +7,7 @@ import CampaignCard from '../components/CampaignCard';
 import CampaignDetail from '../components/CampaignDetail';
 import CampaignWizard from '../components/campaign-wizard/CampaignWizard';
 import TestFlightModal from '../components/TestFlightModal';
-import {
-  RefreshCw, Loader2, Plus, StopCircle, AlertTriangle, CheckCircle,
-} from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import type { Campaign } from '../types/campaign';
 
 export default function Campaigns() {
@@ -25,7 +23,6 @@ export default function Campaigns() {
   const [showWizard, setShowWizard] = useState(false);
   const [detailCampaign, setDetailCampaign] = useState<Campaign | null>(null);
 
-  // Test Flight gate — mandatory before live send
   const [testFlightCampaignId, setTestFlightCampaignId] = useState<string | null>(null);
   const testFlightCampaign = campaigns.find((c) => c.id === testFlightCampaignId);
 
@@ -41,7 +38,6 @@ export default function Campaigns() {
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
   useEffect(() => { getPlatformStatus().then(setPlatformInfo).catch(() => {}); }, [getPlatformStatus]);
 
-  // Auto-reconnect SSE if a campaign is already sending
   useEffect(() => {
     if (campaigns.length === 0) return;
     const sendingCampaign = campaigns.find((c) => c.status === 'sending');
@@ -77,12 +73,10 @@ export default function Campaigns() {
     fetchCampaigns();
   };
 
-  // Test Flight: send 1 authentic test email synchronously (backend validates & sends)
   const handleTestFlightSend = async (campaignId: string, testEmail: string) => {
     return testFlightSend(campaignId, testEmail);
   };
 
-  // Live send — called only after the Test Flight gate is passed
   const handleLiveSend = async (campaignId: string) => {
     try {
       reset();
@@ -151,7 +145,6 @@ export default function Campaigns() {
   const handleSyncStats = async () => {
     setSyncing(true);
     try {
-      // Sync all platform campaigns that are currently sending
       const platformCampaigns = campaigns.filter((c) => c.platform_campaign_id && (c.status === 'sending' || c.status === 'active'));
       for (const c of platformCampaigns) {
         await syncStats(c.id);
@@ -170,120 +163,157 @@ export default function Campaigns() {
 
   const isSending = sendStatus === 'sending' || sendStatus === 'connecting';
 
-  const notifColors = {
-    success: 'bg-green-50 text-green-800 border-green-200',
-    error: 'bg-red-50 text-red-800 border-red-200',
-    warning: 'bg-yellow-50 text-yellow-800 border-yellow-200',
-  };
-
   return (
-    <div className="space-y-5">
+    <div className="px-10 py-10 space-y-8">
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Campaigns</h1>
-        <div className="flex items-center gap-2">
+      <div className="flex justify-between items-end">
+        <div>
+          <h2
+            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            Campaign <span className="text-[#b0004a]">Wizard</span>
+          </h2>
+          <p className="text-secondary font-medium mt-1">
+            Build, test, and launch personalized outreach campaigns.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
           {rateLimit && (
-            <div className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5">
+            <div className="text-xs font-semibold text-secondary bg-surface-container rounded-lg px-3 py-2">
               {rateLimit.hourlyRemaining}/hr · {rateLimit.dailyRemaining}/day left
             </div>
           )}
           {platformInfo?.enabled && (
-            <button onClick={handleSyncStats} disabled={syncing}
-              className="inline-flex items-center gap-1.5 border border-indigo-300 text-indigo-600 px-3 py-1.5 rounded-lg text-sm hover:bg-indigo-50 disabled:opacity-50 transition-colors">
-              <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+            <button
+              onClick={handleSyncStats}
+              disabled={syncing}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container disabled:opacity-50 transition-colors"
+            >
+              <span className={`material-symbols-outlined text-[16px] ${syncing ? 'animate-spin' : ''}`}>sync</span>
               Sync Stats
             </button>
           )}
-          <button onClick={handleCheckReplies} disabled={checkingReplies}
-            className="inline-flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 py-1.5 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50 transition-colors">
-            <RefreshCw size={13} className={checkingReplies ? 'animate-spin' : ''} />
+          <button
+            onClick={handleCheckReplies}
+            disabled={checkingReplies}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container disabled:opacity-50 transition-colors"
+          >
+            <span className={`material-symbols-outlined text-[16px] ${checkingReplies ? 'animate-spin' : ''}`}>refresh</span>
             Check Replies
           </button>
           <button
             onClick={() => setShowWizard(true)}
-            className="inline-flex items-center gap-1.5 bg-gray-900 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors">
-            <Plus size={14} /> New Campaign
+            className="flex items-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
+          >
+            <span className="material-symbols-outlined text-[18px]">add_circle</span>
+            New Campaign
           </button>
         </div>
       </div>
 
       {/* Notifications */}
       {notification && (
-        <div className={`px-4 py-3 rounded-lg text-sm font-medium border ${notifColors[notification.type]}`}>
+        <div className={`px-4 py-3 rounded-xl text-sm font-medium border ${
+          notification.type === 'success' ? 'bg-[#8ff9a8]/20 text-[#006630] border-[#006630]/20' :
+          notification.type === 'error'   ? 'bg-[#ffd9de] text-[#b0004a] border-[#b0004a]/20' :
+                                            'bg-amber-50 text-amber-800 border-amber-200'
+        }`}>
           {notification.message}
         </div>
       )}
       {repliesMsg && (
-        <div className="px-4 py-3 rounded-lg text-sm bg-blue-50 text-blue-800 border border-blue-200">
+        <div className="px-4 py-3 rounded-xl text-sm font-medium bg-blue-50 text-blue-800 border border-blue-200">
           {repliesMsg}
         </div>
       )}
 
       {/* Active send progress banner */}
       {activeCampaignId && isSending && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2 text-sm font-medium text-blue-700">
-              <Loader2 size={15} className="animate-spin" /> Sending campaign...
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-5 border-l-4 border-[#b0004a]">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-on-surface">
+              <Loader2 size={15} className="animate-spin text-[#b0004a]" />
+              Sending campaign...
             </div>
             <button
               onClick={handleCancel}
               disabled={cancelling}
-              className="inline-flex items-center gap-1.5 border border-red-300 text-red-600 bg-white px-3 py-1 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
-              <StopCircle size={13} />
+              className="flex items-center gap-1.5 border border-[#b0004a]/30 text-[#b0004a] bg-white px-3 py-1 rounded-lg text-xs font-bold hover:bg-[#b0004a]/5 disabled:opacity-50 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[14px]">stop_circle</span>
               {cancelling ? 'Stopping...' : 'Cancel Send'}
             </button>
           </div>
           {total > 0 && (
             <div>
-              <div className="flex justify-between text-xs text-blue-600 mb-1">
+              <div className="flex justify-between text-xs text-secondary mb-1.5">
                 <span>{sent + failed} / {total} processed</span>
-                <span>{sent} sent{failed > 0 ? `, ${failed} failed` : ''}</span>
+                <span className="font-bold">{sent} sent{failed > 0 ? `, ${failed} failed` : ''}</span>
               </div>
-              <div className="w-full bg-blue-200 rounded-full h-1.5">
-                <div className="bg-blue-600 h-1.5 rounded-full transition-all"
-                  style={{ width: `${Math.round(((sent + failed) / total) * 100)}%` }} />
+              <div className="w-full bg-slate-100 rounded-full h-1.5">
+                <div
+                  className="primary-gradient h-1.5 rounded-full transition-all"
+                  style={{ width: `${Math.round(((sent + failed) / total) * 100)}%` }}
+                />
               </div>
             </div>
           )}
-          <p className="text-xs text-blue-500 mt-2">
+          <p className="text-xs text-secondary mt-2">
             Emails sent with 30-90s delays. You can leave this page — sending continues in background.
           </p>
         </div>
       )}
 
       {activeCampaignId && sendStatus === 'completed' && (
-        <div className="p-3 bg-green-50 border border-green-200 rounded-xl flex items-center gap-2 text-green-700 text-sm">
-          <CheckCircle size={15} />
+        <div className="p-4 bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl flex items-center gap-2 text-[#006630] text-sm font-bold">
+          <span className="material-symbols-outlined text-[18px]">check_circle</span>
           Campaign sent: {sent} emails delivered{failed > 0 ? `, ${failed} failed` : ''}.
         </div>
       )}
 
       {activeCampaignId && sendStatus === 'cancelled' && !isSending && (
-        <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-xl flex items-center gap-2 text-yellow-700 text-sm">
-          <AlertTriangle size={15} />
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2 text-amber-800 text-sm font-bold">
+          <span className="material-symbols-outlined text-[18px]">warning</span>
           Cancelled — {sent} emails were sent before stopping.
         </div>
       )}
 
       {/* Campaign list */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-gray-800">All Campaigns</h2>
-          {loading && <Loader2 size={14} className="animate-spin text-gray-400" />}
+        <div className="flex items-center justify-between mb-4">
+          <h3
+            className="text-lg font-extrabold text-on-surface"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            All Campaigns
+          </h3>
+          {loading && <Loader2 size={14} className="animate-spin text-secondary" />}
         </div>
 
         {campaigns.length === 0 && !loading ? (
-          <div className="bg-white rounded-xl border border-gray-200 py-16 text-center">
-            <p className="text-gray-400 text-sm mb-3">No campaigns yet.</p>
-            <button onClick={() => setShowWizard(true)}
-              className="inline-flex items-center gap-1.5 text-sm text-gray-600 border border-gray-300 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors">
-              <Plus size={14} /> Create your first campaign
+          <div className="bg-surface-container-lowest rounded-xl ambient-shadow py-16 text-center">
+            <div className="w-16 h-16 rounded-full bg-[#ffd9de] flex items-center justify-center mx-auto mb-4">
+              <span className="material-symbols-outlined text-[#b0004a] text-[28px]">magic_button</span>
+            </div>
+            <p
+              className="text-on-surface font-bold mb-1"
+              style={{ fontFamily: 'Manrope, sans-serif' }}
+            >
+              No campaigns yet
+            </p>
+            <p className="text-secondary text-sm mb-4">Create your first campaign to start outreach.</p>
+            <button
+              onClick={() => setShowWizard(true)}
+              className="inline-flex items-center gap-2 text-sm font-bold primary-gradient text-on-primary px-5 py-2.5 rounded-lg ambient-shadow hover:scale-[1.02] transition-transform"
+            >
+              <span className="material-symbols-outlined text-[16px]">add_circle</span>
+              Create your first campaign
             </button>
           </div>
         ) : (
-          <div className="grid gap-3">
+          <div className="grid gap-4">
             {campaigns.map((c) => (
               <CampaignCard
                 key={c.id}
@@ -324,7 +354,7 @@ export default function Campaigns() {
         />
       )}
 
-      {/* Mandatory Test Flight gate — must pass before live send is unlocked */}
+      {/* Mandatory Test Flight gate */}
       {testFlightCampaignId && testFlightCampaign && (
         <TestFlightModal
           campaignName={testFlightCampaign.name}

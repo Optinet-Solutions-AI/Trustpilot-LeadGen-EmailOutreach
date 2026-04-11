@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink, Mail, Phone, Star, Tag, X, Plus, Send } from 'lucide-react';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
@@ -38,6 +37,7 @@ export default function LeadDetail() {
     const res = await api.patch(`/leads/${id}`, { tags: newTags });
     setLead(res.data.data);
   };
+
   const { notes, fetchNotes, addNote } = useNotes(id || '');
   const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id);
 
@@ -48,7 +48,12 @@ export default function LeadDetail() {
     fetchFollowUps();
   }, [id, fetchNotes, fetchFollowUps]);
 
-  if (!lead) return <div className="text-gray-400 text-center py-12">Loading...</div>;
+  if (!lead) return (
+    <div className="flex items-center justify-center h-64 text-secondary gap-2">
+      <span className="material-symbols-outlined text-[#b0004a] text-[20px]" style={{ animation: 'spin 1s linear infinite' }}>progress_activity</span>
+      Loading lead...
+    </div>
+  );
 
   const handleStatusChange = async (status: LeadStatus) => {
     const res = await api.patch(`/leads/${id}`, { outreach_status: status });
@@ -57,93 +62,105 @@ export default function LeadDetail() {
   };
 
   return (
-    <div className="space-y-6">
-      <button onClick={() => router.push('/leads')}
-        className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-        <ArrowLeft size={14} /> Back to leads
+    <div className="px-10 py-10 space-y-8">
+
+      {/* Back button */}
+      <button
+        onClick={() => router.push('/leads')}
+        className="flex items-center gap-2 text-sm font-semibold text-secondary hover:text-on-surface transition-colors"
+      >
+        <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+        Back to Lead Matrix
       </button>
 
-      {/* Lead Info */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-bold">{lead.company_name}</h1>
-            {lead.website_url && (
-              <a href={lead.website_url} target="_blank" rel="noopener noreferrer"
-                className="text-sm text-blue-500 hover:underline inline-flex items-center gap-1 mt-1">
-                {lead.website_url} <ExternalLink size={12} />
-              </a>
-            )}
+      {/* Lead Info Card */}
+      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+        <div className="flex items-start justify-between mb-6">
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 rounded-xl bg-[#ffd9de] flex items-center justify-center flex-shrink-0">
+              <span className="material-symbols-outlined text-[#b0004a] text-[24px]">business</span>
+            </div>
+            <div>
+              <h1
+                className="text-2xl font-extrabold text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                {lead.company_name}
+              </h1>
+              {lead.website_url && (
+                <a
+                  href={lead.website_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-[#b0004a] hover:underline inline-flex items-center gap-1 mt-0.5"
+                >
+                  {lead.website_url}
+                  <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                </a>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {lead.primary_email && (
               <button
                 onClick={() => setQuickSendOpen(true)}
-                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700"
+                className="flex items-center gap-2 px-4 py-2.5 primary-gradient text-on-primary rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform"
               >
-                <Send size={13} /> Send Email
+                <span className="material-symbols-outlined text-[16px]">send</span>
+                Send Email
               </button>
             )}
-            <select value={lead.outreach_status} onChange={(e) => handleStatusChange(e.target.value as LeadStatus)}
-              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm">
+            <select
+              value={lead.outreach_status}
+              onChange={(e) => handleStatusChange(e.target.value as LeadStatus)}
+              className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
+            >
               {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-sm">
-          <div>
-            <span className="text-gray-500">Email</span>
-            <p className="font-medium flex items-center gap-1">
-              <Mail size={12} /> {lead.primary_email || '-'}
-            </p>
-          </div>
-          <div>
-            <span className="text-gray-500">Phone</span>
-            <p className="font-medium flex items-center gap-1">
-              <Phone size={12} /> {lead.phone || '-'}
-            </p>
-          </div>
-          <div>
-            <span className="text-gray-500">Rating</span>
-            <p className="font-medium flex items-center gap-1">
-              <Star size={12} /> {lead.star_rating?.toFixed(1) || '-'}
-            </p>
-          </div>
-          <div>
-            <span className="text-gray-500">Status</span>
-            <p><StatusBadge status={lead.outreach_status} /></p>
-          </div>
-          <div>
-            <span className="text-gray-500">Country</span>
-            <p className="font-medium">{lead.country || '-'}</p>
-          </div>
-          <div>
-            <span className="text-gray-500">Category</span>
-            <p className="font-medium">{lead.category || '-'}</p>
-          </div>
-          <div>
-            <span className="text-gray-500">Verified</span>
-            <p className="font-medium">{lead.email_verified ? 'Yes' : 'No'} ({lead.verification_status})</p>
-          </div>
-          <div>
-            <span className="text-gray-500">Scraped</span>
-            <p className="font-medium">{lead.scraped_at ? new Date(lead.scraped_at).toLocaleDateString() : '-'}</p>
-          </div>
+        {/* Stats grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: 'Email', value: lead.primary_email || '—', icon: 'alternate_email' },
+            { label: 'Phone', value: lead.phone || '—', icon: 'phone' },
+            { label: 'Rating', value: lead.star_rating ? `${lead.star_rating.toFixed(1)} ★` : '—', icon: 'star' },
+            { label: 'Status', value: null, icon: 'flag', badge: lead.outreach_status },
+            { label: 'Country', value: lead.country || '—', icon: 'location_on' },
+            { label: 'Category', value: lead.category || '—', icon: 'category' },
+            { label: 'Verified', value: `${lead.email_verified ? 'Yes' : 'No'} (${lead.verification_status || 'unknown'})`, icon: 'verified' },
+            { label: 'Scraped', value: lead.scraped_at ? new Date(lead.scraped_at).toLocaleDateString() : '—', icon: 'calendar_today' },
+          ].map(({ label, value, icon, badge }) => (
+            <div key={label} className="bg-surface-container rounded-xl p-4">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="material-symbols-outlined text-secondary text-[14px]">{icon}</span>
+                <span className="text-xs font-bold text-secondary uppercase tracking-wide">{label}</span>
+              </div>
+              {badge ? (
+                <StatusBadge status={badge as LeadStatus} />
+              ) : (
+                <p className="text-sm font-semibold text-on-surface truncate">{value}</p>
+              )}
+            </div>
+          ))}
         </div>
 
         {/* Tags */}
-        <div className="mt-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Tag size={13} className="text-gray-400" />
-            <span className="text-sm font-medium text-gray-700">Tags</span>
+        <div className="mt-6 pt-6 border-t border-slate-100">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="material-symbols-outlined text-secondary text-[16px]">label</span>
+            <span className="text-sm font-bold text-on-surface">Tags</span>
           </div>
           <div className="flex flex-wrap gap-2 items-center">
             {(lead.tags || []).map((tag) => (
-              <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded-full">
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 text-xs bg-[#ffd9de] text-[#b0004a] px-3 py-1.5 rounded-full font-bold"
+              >
                 {tag}
-                <button onClick={() => handleRemoveTag(tag)} className="hover:text-violet-900">
-                  <X size={10} />
+                <button onClick={() => handleRemoveTag(tag)} className="hover:text-[#7a0033] ml-0.5">
+                  <span className="material-symbols-outlined text-[12px]">close</span>
                 </button>
               </span>
             ))}
@@ -154,25 +171,30 @@ export default function LeadDetail() {
                 onChange={(e) => setTagInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddTag(); } }}
                 placeholder="Add tag…"
-                className="text-xs border border-gray-300 rounded-full px-3 py-1 w-28 focus:outline-none focus:border-violet-400"
+                className="text-xs bg-surface-container rounded-full px-3 py-1.5 w-28 focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 border-0"
               />
-              <button onClick={handleAddTag}
-                className="text-xs text-violet-600 hover:text-violet-800 p-1">
-                <Plus size={13} />
+              <button
+                onClick={handleAddTag}
+                className="p-1.5 rounded-full hover:bg-[#ffd9de] text-[#b0004a] transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">add</span>
               </button>
             </div>
           </div>
         </div>
 
-        {/* Trustpilot Profile Screenshot */}
+        {/* Screenshot */}
         {lead.screenshot_path && (
-          <div className="mt-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-2">Trustpilot Profile Screenshot</h3>
-            <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <div className="mt-6 pt-6 border-t border-slate-100">
+            <h3 className="text-sm font-bold text-on-surface mb-3 flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px] text-secondary">screenshot</span>
+              Trustpilot Profile Screenshot
+            </h3>
+            <div className="rounded-xl overflow-hidden border border-slate-100">
               <img
                 src={`/api/screenshots/${lead.screenshot_path.split(/[/\\]/).pop()}`}
                 alt={`Trustpilot profile of ${lead.company_name}`}
-                className="w-full max-h-[400px] object-contain bg-gray-50"
+                className="w-full max-h-[400px] object-contain bg-surface-container"
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
               />
             </div>
@@ -193,10 +215,17 @@ export default function LeadDetail() {
         />
       )}
 
+      {/* Activity + Follow-ups */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Activity Timeline */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5">
-          <h2 className="font-semibold mb-3">Activity</h2>
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <h2
+            className="text-lg font-extrabold text-on-surface mb-4 flex items-center gap-2"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            <span className="material-symbols-outlined text-[#b0004a] text-[20px]">history</span>
+            Activity
+          </h2>
           <NoteEditor onSubmit={async (content) => { await addNote(content); }} />
           <div className="mt-4">
             <ActivityTimeline notes={notes} />
@@ -204,25 +233,36 @@ export default function LeadDetail() {
         </div>
 
         {/* Follow-ups */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5">
-          <h2 className="font-semibold mb-3">Follow-ups</h2>
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <h2
+            className="text-lg font-extrabold text-on-surface mb-4 flex items-center gap-2"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            <span className="material-symbols-outlined text-[#b0004a] text-[20px]">schedule</span>
+            Follow-ups
+          </h2>
           <FollowUpScheduler onSchedule={async (date, note) => { await createFollowUp(date, note); }} />
           <div className="mt-4 space-y-2">
             {followUps.map((fu) => (
-              <div key={fu.id} className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm">
+              <div key={fu.id} className="flex items-center justify-between p-3 bg-surface-container rounded-xl text-sm">
                 <div>
-                  <p className={fu.completed ? 'line-through text-gray-400' : ''}>
+                  <p className={`font-semibold ${fu.completed ? 'line-through text-secondary' : 'text-on-surface'}`}>
                     {new Date(fu.due_date).toLocaleDateString()} — {fu.note || 'No note'}
                   </p>
                 </div>
                 {!fu.completed && (
-                  <button onClick={() => completeFollowUp(fu.id)}
-                    className="text-xs text-green-600 hover:underline">Done</button>
+                  <button
+                    onClick={() => completeFollowUp(fu.id)}
+                    className="text-xs font-bold text-[#006630] hover:underline flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">check_circle</span>
+                    Done
+                  </button>
                 )}
               </div>
             ))}
             {followUps.length === 0 && (
-              <p className="text-sm text-gray-400 text-center py-2">No follow-ups scheduled</p>
+              <p className="text-sm text-secondary text-center py-4">No follow-ups scheduled</p>
             )}
           </div>
         </div>

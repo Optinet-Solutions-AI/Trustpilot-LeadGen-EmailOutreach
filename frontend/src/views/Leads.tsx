@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
 import LeadsTable from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
-import { LayoutList, Columns3, Search, ShieldCheck, Globe, Mail } from 'lucide-react';
 import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
 import QuickSendModal from '../components/QuickSendModal';
@@ -25,7 +24,6 @@ const COUNTRIES = [
 
 const CATEGORIES = [
   { slug: '', name: 'All Categories' },
-  // Gambling
   { slug: 'gambling', name: 'Gambling (all)' },
   { slug: 'casino', name: 'Casino' },
   { slug: 'online_casino_or_bookmaker', name: 'Online Casino / Bookmaker' },
@@ -40,17 +38,14 @@ const CATEGORIES = [
   { slug: 'lottery_retailer', name: 'Lottery Retailer' },
   { slug: 'lottery_shop', name: 'Lottery Shop' },
   { slug: 'gambling_instructor', name: 'Gambling Instructor' },
-  // Gaming
   { slug: 'gaming', name: 'Gaming (all)' },
   { slug: 'gaming_service_provider', name: 'Gaming Service Provider' },
   { slug: 'bingo_hall', name: 'Bingo Hall' },
   { slug: 'video_game_store', name: 'Video Game Store' },
   { slug: 'game_store', name: 'Game Store' },
-  // Finance
   { slug: 'bank', name: 'Bank' },
   { slug: 'insurance_agency', name: 'Insurance Agency' },
   { slug: 'money_transfer_service', name: 'Money Transfer' },
-  // Other
   { slug: 'electronics_technology', name: 'Electronics & Technology' },
   { slug: 'travel_vacation', name: 'Travel & Vacation' },
 ];
@@ -60,7 +55,6 @@ export default function Leads() {
   const router = useRouter();
 
   const [view, setView] = useState<View>(() => {
-    // Guard against SSR — localStorage is only available in the browser
     if (typeof window === 'undefined') return 'table';
     return (localStorage.getItem('leads_view') as View) || 'table';
   });
@@ -135,8 +129,8 @@ export default function Leads() {
     setEnriching(true);
     try {
       const res = await api.post('/enrich', { leadIds: selectedIds });
-      const { total, message } = res.data.data;
-      notify('success', message || `Enrichment started for ${total} leads — refresh in a few minutes`);
+      const { total: t, message } = res.data.data;
+      notify('success', message || `Enrichment started for ${t} leads — refresh in a few minutes`);
       loadLeads();
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Enrichment failed');
@@ -146,97 +140,151 @@ export default function Leads() {
   };
 
   return (
-    <div className="space-y-4">
-      {notification && (
-        <div className={`px-4 py-3 rounded-md text-sm font-medium ${
-          notification.type === 'success'
-            ? 'bg-green-50 text-green-800 border border-green-200'
-            : 'bg-red-50 text-red-800 border border-red-200'
-        }`}>
-          {notification.message}
-        </div>
-      )}
+    <div className="px-10 py-10 space-y-8">
 
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Leads</h1>
-        <div className="flex items-center gap-2">
+      {/* Header */}
+      <div className="flex justify-between items-end">
+        <div>
+          <h2
+            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            Lead <span className="text-[#b0004a]">Matrix</span>
+          </h2>
+          <p className="text-secondary font-medium mt-1">
+            {total > 0 ? `${total} leads` : 'No leads yet'} — manage your outreach pipeline.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
           {selectedIds.length > 0 && (
             <>
-              <button onClick={handleBulkEnrich} disabled={enriching || verifying}
-                className="inline-flex items-center gap-1 bg-emerald-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-emerald-700 disabled:opacity-50">
-                <Globe size={14} /> {enriching ? 'Enriching...' : `Enrich (${selectedIds.length})`}
+              <button
+                onClick={handleBulkEnrich}
+                disabled={enriching || verifying}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#006630]/30 text-[#006630] text-sm font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">language</span>
+                {enriching ? 'Enriching...' : `Enrich (${selectedIds.length})`}
               </button>
-              <button onClick={handleBulkVerify} disabled={verifying || enriching}
-                className="inline-flex items-center gap-1 bg-cyan-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-cyan-700 disabled:opacity-50">
-                <ShieldCheck size={14} /> {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
+              <button
+                onClick={handleBulkVerify}
+                disabled={verifying || enriching}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-300 text-blue-700 text-sm font-bold hover:bg-blue-50 disabled:opacity-50 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">verified_user</span>
+                {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
               </button>
-              <button onClick={() => setQuickSendOpen(true)} disabled={verifying || enriching}
-                className="inline-flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
-                <Mail size={14} /> Send Email ({selectedIds.length})
+              <button
+                onClick={() => setQuickSendOpen(true)}
+                disabled={verifying || enriching}
+                className="flex items-center gap-2 px-4 py-2 primary-gradient text-on-primary rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[16px]">send</span>
+                Send ({selectedIds.length})
               </button>
             </>
           )}
-          <div className="flex border border-gray-300 rounded-md overflow-hidden">
-            <button onClick={() => handleViewChange('table')}
-              className={`p-2 ${view === 'table' ? 'bg-gray-100' : 'bg-white hover:bg-gray-50'}`}>
-              <LayoutList size={16} />
+          {/* View toggle */}
+          <div className="flex bg-surface-container-high rounded-lg p-1 gap-1">
+            <button
+              onClick={() => handleViewChange('table')}
+              className={`p-2 rounded-md transition-all ${view === 'table' ? 'bg-white ambient-shadow text-[#b0004a]' : 'text-secondary hover:text-on-surface'}`}
+            >
+              <span className="material-symbols-outlined text-[18px]">table_rows</span>
             </button>
-            <button onClick={() => handleViewChange('pipeline')}
-              className={`p-2 ${view === 'pipeline' ? 'bg-gray-100' : 'bg-white hover:bg-gray-50'}`}>
-              <Columns3 size={16} />
+            <button
+              onClick={() => handleViewChange('pipeline')}
+              className={`p-2 rounded-md transition-all ${view === 'pipeline' ? 'bg-white ambient-shadow text-[#b0004a]' : 'text-secondary hover:text-on-surface'}`}
+            >
+              <span className="material-symbols-outlined text-[18px]">view_kanban</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input type="text" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            placeholder="Search companies..."
-            className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-md text-sm" />
+      {/* Notification */}
+      {notification && (
+        <div className={`px-4 py-3 rounded-xl text-sm font-medium border ${
+          notification.type === 'success'
+            ? 'bg-[#8ff9a8]/20 text-[#006630] border-[#006630]/20'
+            : 'bg-[#ffd9de] text-[#b0004a] border-[#b0004a]/20'
+        }`}>
+          {notification.message}
         </div>
-        <select value={countryFilter} onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
-          className="border border-gray-300 rounded-md px-3 py-2 text-sm">
-          {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
-        </select>
-        <select value={categoryFilter} onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
-          className="border border-gray-300 rounded-md px-3 py-2 text-sm">
-          {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
-        </select>
-        <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-          className="border border-gray-300 rounded-md px-3 py-2 text-sm">
-          <option value="">All statuses</option>
-          <option value="new">New</option>
-          <option value="contacted">Contacted</option>
-          <option value="replied">Replied</option>
-          <option value="converted">Converted</option>
-          <option value="lost">Lost</option>
-        </select>
+      )}
+
+      {/* Filters */}
+      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-5">
+        <div className="flex gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[200px]">
+            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[18px]">search</span>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              placeholder="Search companies..."
+              className="w-full pl-10 pr-3 py-2.5 bg-surface-container rounded-lg text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            />
+          </div>
+          <select
+            value={countryFilter}
+            onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
+            className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          >
+            {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+          </select>
+          <select
+            value={categoryFilter}
+            onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
+            className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          >
+            {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+            className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          >
+            <option value="">All statuses</option>
+            <option value="new">New</option>
+            <option value="contacted">Contacted</option>
+            <option value="replied">Replied</option>
+            <option value="converted">Converted</option>
+            <option value="lost">Lost</option>
+          </select>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-48 text-gray-400">Loading leads...</div>
-      ) : view === 'table' ? (
-        <LeadsTable
-          leads={leads} total={total} page={page} totalPages={totalPages}
-          onPageChange={setPage}
-          onStatusChange={handleStatusChange}
-          onDelete={(id) => deleteLead(id)}
-          onSelect={setSelectedIds}
-          onLeadClick={(id) => router.push(`/leads/${id}`)}
-          sortBy={sortBy}
-          sortDir={sortDir}
-          onSortChange={toggleSort}
-        />
-      ) : (
-        <LeadPipeline
-          leads={leads}
-          onStatusChange={handleStatusChange}
-          onLeadClick={(id) => router.push(`/leads/${id}`)}
-        />
-      )}
+      {/* Content */}
+      <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
+        {loading ? (
+          <div className="flex items-center justify-center h-48 gap-2 text-secondary">
+            <span className="material-symbols-outlined text-[#b0004a] text-[20px]" style={{ animation: 'spin 1s linear infinite' }}>progress_activity</span>
+            Loading leads...
+          </div>
+        ) : view === 'table' ? (
+          <LeadsTable
+            leads={leads}
+            total={total}
+            page={page}
+            totalPages={totalPages}
+            onPageChange={setPage}
+            onStatusChange={handleStatusChange}
+            onDelete={(id) => deleteLead(id)}
+            onSelect={setSelectedIds}
+            onLeadClick={(id) => router.push(`/leads/${id}`)}
+            sortBy={sortBy}
+            sortDir={sortDir}
+            onSortChange={toggleSort}
+          />
+        ) : (
+          <LeadPipeline
+            leads={leads}
+            onStatusChange={handleStatusChange}
+            onLeadClick={(id) => router.push(`/leads/${id}`)}
+          />
+        )}
+      </div>
 
       {quickSendOpen && (
         <QuickSendModal
