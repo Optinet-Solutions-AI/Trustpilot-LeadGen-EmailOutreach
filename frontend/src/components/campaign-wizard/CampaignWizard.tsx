@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { X, ArrowLeft, ArrowRight } from 'lucide-react';
 import WizardStepper from './WizardStepper';
 import StepSetup from './StepSetup';
 import StepTemplate from './StepTemplate';
@@ -41,7 +40,6 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
 
-  // Wizard state
   const [name, setName] = useState('');
   const [filterCountry, setFilterCountry] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
@@ -55,13 +53,13 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
   const completedSteps = new Set<number>();
   if (name.trim()) completedSteps.add(0);
   if (subject.trim() && body.trim()) completedSteps.add(1);
-  completedSteps.add(2); // follow-ups are always optional / valid
+  completedSteps.add(2);
   if (selectedLeadIds.length > 0) completedSteps.add(3);
 
   const canProceed = () => {
     if (step === 0) return name.trim().length > 0;
     if (step === 1) return subject.trim().length > 0 && body.trim().length > 0;
-    if (step === 2) return true; // follow-ups are optional
+    if (step === 2) return true;
     if (step === 3) return selectedLeadIds.length > 0;
     return true;
   };
@@ -84,24 +82,37 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
     }
   };
 
-  // Close on Escape
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-surface-container-lowest rounded-2xl ambient-shadow w-full max-w-3xl max-h-[90vh] flex flex-col border border-slate-100">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h2 className="text-lg font-bold">New Campaign</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-            <X size={20} />
+        <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl primary-gradient flex items-center justify-center">
+              <span className="material-symbols-outlined text-on-primary text-[18px]">magic_button</span>
+            </div>
+            <div>
+              <h2
+                className="text-lg font-extrabold text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                New Campaign
+              </h2>
+              <p className="text-xs text-secondary">Step {step + 1} of 5</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 text-secondary hover:text-on-surface rounded-lg hover:bg-surface-container transition-colors"
+          >
+            <span className="material-symbols-outlined text-[20px]">close</span>
           </button>
         </div>
 
@@ -139,10 +150,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             />
           )}
           {step === 2 && (
-            <StepFollowUps
-              steps={followUpSteps}
-              onChange={setFollowUpSteps}
-            />
+            <StepFollowUps steps={followUpSteps} onChange={setFollowUpSteps} />
           )}
           {step === 3 && (
             <StepRecipients
@@ -168,13 +176,13 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
           )}
         </div>
 
-        {/* Footer navigation */}
-        <div className="flex items-center justify-between px-6 py-4 border-t bg-gray-50 rounded-b-2xl">
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-surface-container rounded-b-2xl">
           <button
             onClick={() => step > 0 ? setStep(step - 1) : onClose()}
-            className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+            className="flex items-center gap-2 text-sm font-bold text-secondary hover:text-on-surface transition-colors"
           >
-            <ArrowLeft size={14} />
+            <span className="material-symbols-outlined text-[18px]">arrow_back</span>
             {step === 0 ? 'Cancel' : 'Back'}
           </button>
 
@@ -182,12 +190,13 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             <button
               onClick={() => setStep(step + 1)}
               disabled={!canProceed()}
-              className="flex items-center gap-1.5 bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40 transition-colors"
+              className="flex items-center gap-2 primary-gradient text-on-primary px-5 py-2.5 rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] disabled:opacity-40 disabled:scale-100 transition-transform"
             >
-              Next <ArrowRight size={14} />
+              Next
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
             </button>
           ) : (
-            <div /> // Submit button is in StepReview
+            <div />
           )}
         </div>
       </div>

@@ -1,5 +1,4 @@
 import { useState, useRef } from 'react';
-import { ExternalLink, Mail, Trash2, ShieldCheck, ShieldX, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import type { Lead, LeadStatus } from '../types/lead';
 
 interface Props {
@@ -27,7 +26,6 @@ const COL_LABELS: Record<ColKey, string> = {
   email: 'Email', rating: 'Rating', tags: 'Tags', status: 'Status',
 };
 
-// undefined = not sortable
 const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
   company: 'company_name',
   category: 'category',
@@ -43,7 +41,6 @@ function loadColOrder(): ColKey[] {
     const stored = localStorage.getItem(COL_STORAGE_KEY);
     if (stored) {
       const parsed: ColKey[] = JSON.parse(stored);
-      // Ensure all default cols present, add missing ones at end
       const valid = parsed.filter((c) => DEFAULT_COLS.includes(c));
       const missing = DEFAULT_COLS.filter((c) => !valid.includes(c));
       return [...valid, ...missing];
@@ -111,19 +108,17 @@ export default function LeadsTable({
         onDragOver={(e) => handleDragOver(col, e)}
         onDrop={() => handleDrop(col)}
         onDragEnd={handleDragEnd}
-        className={`text-left px-2 py-2 font-medium text-gray-600 text-xs whitespace-nowrap select-none cursor-grab border-r border-gray-100 last:border-r-0 ${isDragTarget ? 'bg-blue-100' : ''}`}
+        className={`text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary select-none cursor-grab whitespace-nowrap ${isDragTarget ? 'bg-[#ffd9de]' : ''}`}
       >
         <span
-          className={`inline-flex items-center gap-0.5 ${sortKey ? 'cursor-pointer hover:text-gray-900' : ''}`}
+          className={`inline-flex items-center gap-1 ${sortKey ? 'cursor-pointer hover:text-on-surface' : ''}`}
           onClick={sortKey ? () => onSortChange(sortKey) : undefined}
         >
           {COL_LABELS[col]}
           {sortKey && (
-            active
-              ? sortDir === 'asc'
-                ? <ChevronUp size={11} className="text-blue-500 shrink-0" />
-                : <ChevronDown size={11} className="text-blue-500 shrink-0" />
-              : <ChevronsUpDown size={11} className="text-gray-300 shrink-0" />
+            <span className={`material-symbols-outlined text-[14px] ${active ? 'text-[#b0004a]' : 'text-slate-300'}`}>
+              {active ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+            </span>
           )}
         </span>
       </th>
@@ -134,70 +129,86 @@ export default function LeadsTable({
     switch (col) {
       case 'company':
         return (
-          <td key={col} className="px-2 py-1.5 max-w-[220px]">
+          <td key={col} className="px-4 py-3 max-w-[220px]">
             {lead.trustpilot_url ? (
-              <a href={lead.trustpilot_url} target="_blank" rel="noopener noreferrer"
+              <a
+                href={lead.trustpilot_url}
+                target="_blank"
+                rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="font-medium text-indigo-600 hover:text-indigo-800 hover:underline inline-flex items-center gap-0.5 text-xs leading-tight">
+                className="font-bold text-[#b0004a] hover:underline inline-flex items-center gap-1 text-sm leading-tight"
+              >
                 <span className="truncate max-w-[190px]">{lead.company_name}</span>
-                <ExternalLink size={9} className="shrink-0" />
+                <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
               </a>
             ) : (
-              <span className="font-medium text-gray-900 text-xs">{lead.company_name}</span>
+              <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
             )}
             {lead.website_url && (
-              <a href={lead.website_url} target="_blank" rel="noopener noreferrer"
+              <a
+                href={lead.website_url}
+                target="_blank"
+                rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="block text-xs text-blue-400 hover:underline truncate max-w-[200px] mt-0.5">
+                className="block text-xs text-secondary hover:text-[#b0004a] truncate max-w-[200px] mt-0.5"
+              >
                 {lead.website_url.replace(/^https?:\/\//, '').slice(0, 30)}
               </a>
             )}
           </td>
         );
       case 'country':
-        return <td key={col} className="px-2 py-1.5 text-xs text-gray-500 w-16">{lead.country || '-'}</td>;
+        return <td key={col} className="px-4 py-3 text-sm text-secondary w-16">{lead.country || '—'}</td>;
       case 'category':
         return (
-          <td key={col} className="px-2 py-1.5">
+          <td key={col} className="px-4 py-3">
             {lead.category
-              ? <span className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full whitespace-nowrap">{lead.category.replace(/_/g, ' ')}</span>
-              : <span className="text-gray-300 text-xs">-</span>}
+              ? <span className="text-xs bg-surface-container text-secondary px-2.5 py-1 rounded-full font-semibold whitespace-nowrap">{lead.category.replace(/_/g, ' ')}</span>
+              : <span className="text-slate-300 text-xs">—</span>}
           </td>
         );
       case 'email':
         return (
-          <td key={col} className="px-2 py-1.5">
+          <td key={col} className="px-4 py-3">
             {lead.primary_email ? (
-              <span className="inline-flex items-center gap-1 text-xs text-gray-700">
-                <Mail size={11} className="shrink-0" />
+              <span className="inline-flex items-center gap-1.5 text-sm text-on-surface">
+                <span className="material-symbols-outlined text-[14px] text-secondary shrink-0">alternate_email</span>
                 <span className="truncate max-w-[160px]">{lead.primary_email}</span>
                 {lead.email_verified
-                  ? <ShieldCheck size={11} className="text-green-500 shrink-0" />
+                  ? <span className="material-symbols-outlined text-[14px] text-[#006630] shrink-0">verified</span>
                   : lead.verification_status === 'invalid'
-                  ? <ShieldX size={11} className="text-red-400 shrink-0" />
+                  ? <span className="material-symbols-outlined text-[14px] text-error shrink-0">gpp_bad</span>
                   : null}
               </span>
-            ) : <span className="text-gray-300 text-xs">-</span>}
+            ) : <span className="text-slate-300 text-sm">—</span>}
           </td>
         );
       case 'rating':
-        return <td key={col} className="px-2 py-1.5 text-xs font-medium text-gray-700 w-14">{lead.star_rating != null ? lead.star_rating.toFixed(1) : '-'}</td>;
+        return (
+          <td key={col} className="px-4 py-3 w-16">
+            {lead.star_rating != null
+              ? <span className="text-sm font-bold text-[#b0004a]">{lead.star_rating.toFixed(1)} ★</span>
+              : <span className="text-slate-300 text-sm">—</span>}
+          </td>
+        );
       case 'tags':
         return (
-          <td key={col} className="px-2 py-1.5">
-            <div className="flex flex-wrap gap-0.5">
+          <td key={col} className="px-4 py-3">
+            <div className="flex flex-wrap gap-1">
               {(lead.tags || []).map((tag) => (
-                <span key={tag} className="text-xs bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full">{tag}</span>
+                <span key={tag} className="text-xs bg-[#ffd9de] text-[#b0004a] px-2 py-0.5 rounded-full font-semibold">{tag}</span>
               ))}
             </div>
           </td>
         );
       case 'status':
         return (
-          <td key={col} className="px-2 py-1.5 w-28" onClick={(e) => e.stopPropagation()}>
-            <select value={lead.outreach_status}
+          <td key={col} className="px-4 py-3 w-32" onClick={(e) => e.stopPropagation()}>
+            <select
+              value={lead.outreach_status}
               onChange={(e) => onStatusChange(lead.id, e.target.value as LeadStatus)}
-              className="text-xs border border-gray-200 rounded px-1.5 py-0.5 w-full">
+              className="text-xs bg-surface-container rounded-lg px-2 py-1.5 border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold w-full"
+            >
               {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </td>
@@ -208,50 +219,75 @@ export default function LeadsTable({
   };
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden text-left">
+    <div className="overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead className="bg-gray-50 border-b border-gray-200">
+        <table className="w-full text-sm">
+          <thead className="bg-surface-container border-b border-slate-100">
             <tr>
-              <th className="w-7 px-2 py-2">
-                <input type="checkbox" checked={selected.size === leads.length && leads.length > 0}
-                  onChange={toggleAll} className="rounded border-gray-300 w-3 h-3" />
+              <th className="w-10 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={selected.size === leads.length && leads.length > 0}
+                  onChange={toggleAll}
+                  className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                />
               </th>
               {columns.map(renderHeader)}
-              <th className="w-10 px-2 py-2" />
+              <th className="w-12 px-4 py-3" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-slate-50">
             {leads.map((lead) => (
-              <tr key={lead.id} className="hover:bg-gray-50 cursor-pointer"
-                onClick={() => onLeadClick(lead.id)}>
-                <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-                  <input type="checkbox" checked={selected.has(lead.id)}
-                    onChange={() => toggleSelect(lead.id)} className="rounded border-gray-300 w-3 h-3" />
+              <tr
+                key={lead.id}
+                className="hover:bg-surface-container-low cursor-pointer transition-colors"
+                onClick={() => onLeadClick(lead.id)}
+              >
+                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(lead.id)}
+                    onChange={() => toggleSelect(lead.id)}
+                    className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                  />
                 </td>
                 {columns.map((col) => renderCell(col, lead))}
-                <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => onDelete(lead.id)}
-                    className="text-gray-300 hover:text-red-500 p-0.5">
-                    <Trash2 size={13} />
+                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    onClick={() => onDelete(lead.id)}
+                    className="text-slate-300 hover:text-error p-1 rounded-lg hover:bg-red-50 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">delete</span>
                   </button>
                 </td>
               </tr>
             ))}
             {leads.length === 0 && (
-              <tr><td colSpan={columns.length + 2} className="p-8 text-center text-gray-400">No leads found</td></tr>
+              <tr>
+                <td colSpan={columns.length + 2} className="p-12 text-center text-secondary">
+                  <span className="material-symbols-outlined text-[32px] text-slate-200 block mb-2">search_off</span>
+                  No leads found
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
       </div>
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-3 py-2 border-t border-gray-200 bg-gray-50">
-          <span className="text-xs text-gray-500">{total} leads total</span>
+        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-surface-container">
+          <span className="text-xs font-semibold text-secondary">{total} leads total</span>
           <div className="flex gap-1">
             {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => i + 1).map((p) => (
-              <button key={p} onClick={() => onPageChange(p)}
-                className={`px-2 py-0.5 text-xs rounded ${p === page ? 'bg-blue-600 text-white' : 'bg-white border border-gray-300 hover:bg-gray-50'}`}>
+              <button
+                key={p}
+                onClick={() => onPageChange(p)}
+                className={`px-2.5 py-1 text-xs rounded-lg font-bold transition-colors ${
+                  p === page
+                    ? 'primary-gradient text-on-primary'
+                    : 'bg-white border border-slate-200 text-secondary hover:bg-surface-container'
+                }`}
+              >
                 {p}
               </button>
             ))}

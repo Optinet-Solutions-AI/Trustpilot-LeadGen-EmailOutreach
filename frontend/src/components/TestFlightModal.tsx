@@ -1,10 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import {
-  X, Rocket, Send, Loader2, CheckCircle, AlertTriangle,
-  Mail, Building2, ArrowRight, XCircle,
-} from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
 type Phase = 'preflight' | 'sending' | 'success' | 'error';
 
@@ -25,26 +22,18 @@ interface Props {
 }
 
 export default function TestFlightModal({
-  campaignName,
-  recipientCount,
-  onTestFlightSend,
-  onProceedLive,
-  onClose,
+  campaignName, recipientCount, onTestFlightSend, onProceedLive, onClose,
 }: Props) {
   const [phase, setPhase] = useState<Phase>('preflight');
-  const [testEmail, setTestEmail] = useState(
-    () => localStorage.getItem('testFlightEmail') || ''
-  );
+  const [testEmail, setTestEmail] = useState(() => localStorage.getItem('testFlightEmail') || '');
   const [result, setResult] = useState<TestResult | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus the email input when the modal opens
   useEffect(() => {
     if (phase === 'preflight') inputRef.current?.focus();
   }, [phase]);
 
-  // Block Escape while in success phase — force a deliberate choice
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && phase !== 'success') onClose();
@@ -68,70 +57,64 @@ export default function TestFlightModal({
     }
   };
 
-  const handleProceed = () => {
-    onProceedLive();
-    onClose();
-  };
-
-  const handleRetry = () => {
-    setPhase('preflight');
-    setErrorMsg('');
-    setResult(null);
-  };
+  const handleProceed = () => { onProceedLive(); onClose(); };
+  const handleRetry = () => { setPhase('preflight'); setErrorMsg(''); setResult(null); };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-surface-container-lowest rounded-2xl ambient-shadow w-full max-w-md overflow-hidden border border-slate-100">
 
-        {/* ── Header ── */}
-        <div className="bg-gradient-to-r from-indigo-600 to-blue-600 px-6 py-5 text-white">
+        {/* Header */}
+        <div className="primary-gradient px-6 py-5 text-on-primary">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <Rocket size={20} />
-              <h2 className="text-lg font-bold">Test Flight Required</h2>
+              <span className="material-symbols-outlined text-[22px]">rocket_launch</span>
+              <h2 className="text-lg font-extrabold" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                Test Flight Required
+              </h2>
             </div>
             {phase !== 'success' && (
-              <button onClick={onClose} className="text-white/60 hover:text-white transition-colors">
-                <X size={18} />
+              <button onClick={onClose} className="text-white/60 hover:text-white transition-colors p-1">
+                <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             )}
           </div>
-          <p className="text-sm text-indigo-100 mt-1.5">
-            You must send and review a test email before blasting to live prospects.
+          <p className="text-sm text-white/80 mt-1.5">
+            Send and review a test email before blasting to live prospects.
           </p>
         </div>
 
-        {/* ── Campaign info bar ── */}
-        <div className="flex items-center gap-3 px-6 py-3 bg-gray-50 border-b text-sm">
-          <Building2 size={14} className="text-gray-400 shrink-0" />
-          <span className="text-gray-700 font-medium truncate">{campaignName}</span>
-          <span className="ml-auto text-xs text-gray-400 shrink-0">{recipientCount} leads</span>
+        {/* Campaign info bar */}
+        <div className="flex items-center gap-3 px-6 py-3 bg-surface-container border-b border-slate-100 text-sm">
+          <span className="material-symbols-outlined text-[16px] text-secondary shrink-0">business</span>
+          <span className="text-on-surface font-bold truncate">{campaignName}</span>
+          <span className="ml-auto text-xs font-bold text-secondary shrink-0">{recipientCount} leads</span>
         </div>
 
-        {/* ── Phase: Pre-flight (enter email) ── */}
+        {/* Phase: Pre-flight */}
         {phase === 'preflight' && (
           <div className="px-6 py-6 space-y-5">
             {/* Step indicator */}
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1.5">
-                <div className="w-6 h-6 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center">1</div>
-                <span className="text-sm font-semibold text-indigo-700">Send Test Email</span>
+                <div className="w-6 h-6 rounded-full primary-gradient text-on-primary text-xs font-bold flex items-center justify-center">1</div>
+                <span className="text-sm font-bold text-[#b0004a]">Send Test Email</span>
               </div>
-              <div className="flex-1 h-px bg-gray-200 mx-2" />
+              <div className="flex-1 h-px bg-slate-100 mx-2" />
               <div className="flex items-center gap-1.5 opacity-40">
-                <div className="w-6 h-6 rounded-full bg-gray-200 text-gray-500 text-xs font-bold flex items-center justify-center">2</div>
-                <span className="text-sm font-medium text-gray-400">Proceed Live</span>
+                <div className="w-6 h-6 rounded-full bg-surface-container-high text-secondary text-xs font-bold flex items-center justify-center">2</div>
+                <span className="text-sm font-semibold text-secondary">Proceed Live</span>
               </div>
             </div>
 
-            <div>
-              <p className="text-sm text-gray-600 mb-4">
-                A single email will be sent to your test address using{' '}
-                <span className="font-semibold text-gray-800">real lead data</span> from your campaign,
-                so you see exactly what your prospects will receive.
-              </p>
+            <p className="text-sm text-secondary">
+              A single email will be sent to your test address using{' '}
+              <span className="font-bold text-on-surface">real lead data</span> from your campaign,
+              so you see exactly what your prospects will receive.
+            </p>
 
-              <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+            <div>
+              <label className="block text-sm font-bold text-on-surface mb-1.5">
                 Your test email address
               </label>
               <input
@@ -141,10 +124,10 @@ export default function TestFlightModal({
                 onChange={(e) => setTestEmail(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendTest()}
                 placeholder="you@yourcompany.com"
-                className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
               />
-              <p className="text-xs text-gray-400 mt-1.5">
-                The email will include a <span className="font-medium text-yellow-600">⚠ TEST MODE</span> banner
+              <p className="text-xs text-secondary mt-1.5">
+                The email will include a <span className="font-bold text-amber-600">⚠ TEST MODE</span> banner
                 showing the real recipient it was redirected from.
               </p>
             </div>
@@ -152,18 +135,17 @@ export default function TestFlightModal({
             <button
               onClick={handleSendTest}
               disabled={!testEmail.trim() || !testEmail.includes('@')}
-              className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="w-full flex items-center justify-center gap-2 primary-gradient text-on-primary px-5 py-3 rounded-xl text-sm font-bold ambient-shadow hover:scale-[1.01] disabled:opacity-40 disabled:cursor-not-allowed disabled:scale-100 transition-transform"
             >
-              <Send size={15} />
+              <span className="material-symbols-outlined text-[18px]">send</span>
               Send Test Email
             </button>
 
-            {/* Locked production send — visually shows it's blocked */}
-            <div className="rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-4 py-3">
-              <div className="flex items-center gap-2 text-gray-400">
-                <AlertTriangle size={14} />
-                <p className="text-xs font-medium">
-                  <span className="text-gray-500 font-semibold">Send to {recipientCount} live prospects</span>
+            <div className="rounded-xl border-2 border-dashed border-slate-200 bg-surface-container px-4 py-3">
+              <div className="flex items-center gap-2 text-secondary">
+                <span className="material-symbols-outlined text-[16px]">lock</span>
+                <p className="text-xs font-semibold">
+                  <span className="text-on-surface font-bold">Send to {recipientCount} live prospects</span>
                   {' '}— locked until test email is confirmed
                 </p>
               </div>
@@ -171,107 +153,106 @@ export default function TestFlightModal({
           </div>
         )}
 
-        {/* ── Phase: Sending ── */}
+        {/* Phase: Sending */}
         {phase === 'sending' && (
           <div className="px-6 py-12 flex flex-col items-center gap-4 text-center">
-            <Loader2 size={36} className="animate-spin text-indigo-600" />
+            <Loader2 size={36} className="animate-spin text-[#b0004a]" />
             <div>
-              <p className="text-sm font-semibold text-gray-800">Sending test email...</p>
-              <p className="text-xs text-gray-500 mt-1">Delivering to {testEmail}</p>
+              <p className="text-sm font-bold text-on-surface">Sending test email...</p>
+              <p className="text-xs text-secondary mt-1">Delivering to {testEmail}</p>
             </div>
           </div>
         )}
 
-        {/* ── Phase: Success — Test Sent, unlock Proceed ── */}
+        {/* Phase: Success */}
         {phase === 'success' && result && (
           <div className="px-6 py-6 space-y-5">
-            {/* Step indicator — step 1 done */}
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1.5">
-                <div className="w-6 h-6 rounded-full bg-green-500 text-white text-xs font-bold flex items-center justify-center">
-                  <CheckCircle size={13} />
+                <div className="w-6 h-6 rounded-full bg-[#006630] text-white flex items-center justify-center">
+                  <span className="material-symbols-outlined text-[14px]">check</span>
                 </div>
-                <span className="text-sm font-semibold text-green-700">Test Sent</span>
+                <span className="text-sm font-bold text-[#006630]">Test Sent</span>
               </div>
-              <div className="flex-1 h-px bg-green-300 mx-2" />
+              <div className="flex-1 h-px bg-[#006630]/30 mx-2" />
               <div className="flex items-center gap-1.5">
-                <div className="w-6 h-6 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center">2</div>
-                <span className="text-sm font-semibold text-indigo-700">Proceed Live</span>
+                <div className="w-6 h-6 rounded-full primary-gradient text-on-primary text-xs font-bold flex items-center justify-center">2</div>
+                <span className="text-sm font-bold text-[#b0004a]">Proceed Live</span>
               </div>
             </div>
 
-            {/* Delivery confirmation card */}
-            <div className="bg-green-50 border border-green-200 rounded-xl p-4 space-y-2">
-              <div className="flex items-center gap-2 text-green-700">
-                <CheckCircle size={16} />
-                <p className="text-sm font-semibold">
+            <div className="bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-4 space-y-2">
+              <div className="flex items-center gap-2 text-[#006630]">
+                <span className="material-symbols-outlined text-[18px]">check_circle</span>
+                <p className="text-sm font-bold">
                   {result.platform ? `Queued via ${result.platform}` : 'Test email delivered successfully'}
                 </p>
               </div>
-              <div className="text-xs text-green-700 space-y-1 pl-6">
+              <div className="text-xs text-[#006630] space-y-1 pl-7">
                 <div className="flex items-center gap-1.5">
-                  <Mail size={11} />
-                  <span>Sent to: <span className="font-medium">{result.sentTo}</span></span>
+                  <span className="material-symbols-outlined text-[12px]">alternate_email</span>
+                  <span>Sent to: <span className="font-bold">{result.sentTo}</span></span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <Building2 size={11} />
-                  <span>Used data from: <span className="font-medium">{result.leadUsed}</span></span>
+                  <span className="material-symbols-outlined text-[12px]">business</span>
+                  <span>Used data from: <span className="font-bold">{result.leadUsed}</span></span>
                 </div>
               </div>
             </div>
 
-            <p className="text-sm text-gray-600">
+            <p className="text-sm text-secondary">
               {result.note
                 ? result.note + ' Verify the subject, body, tokens, and screenshot look correct before proceeding.'
-                : 'Check your inbox now. Verify the subject, body, personalisation tokens, and screenshot all look correct.'}
+                : 'Check your inbox now. Verify subject, body, personalisation tokens, and screenshot all look correct.'}
             </p>
 
-            {/* Primary: Proceed to live */}
             <button
               onClick={handleProceed}
-              className="w-full flex items-center justify-center gap-2 bg-green-600 text-white px-5 py-3.5 rounded-xl text-sm font-bold hover:bg-green-700 transition-colors shadow-sm"
+              className="w-full flex items-center justify-center gap-2 bg-[#006630] text-white px-5 py-3.5 rounded-xl text-sm font-bold hover:bg-[#004d24] transition-colors ambient-shadow"
             >
-              <ArrowRight size={16} />
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
               Test looks good — Send to {recipientCount} live prospects
             </button>
 
-            {/* Secondary: Cancel */}
             <button
               onClick={onClose}
-              className="w-full flex items-center justify-center gap-2 border border-gray-300 text-gray-600 px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+              className="w-full flex items-center justify-center gap-2 border border-slate-200 text-secondary px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-surface-container transition-colors"
             >
-              <XCircle size={14} />
-              Something's wrong — Cancel & Edit
+              <span className="material-symbols-outlined text-[16px]">cancel</span>
+              Something&apos;s wrong — Cancel & Edit
             </button>
           </div>
         )}
 
-        {/* ── Phase: Error ── */}
+        {/* Phase: Error */}
         {phase === 'error' && (
           <div className="px-6 py-6 space-y-5">
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+            <div className="bg-[#ffd9de] border border-[#b0004a]/20 rounded-xl p-4">
               <div className="flex items-start gap-3">
-                <AlertTriangle size={18} className="text-red-500 shrink-0 mt-0.5" />
+                <span className="material-symbols-outlined text-[20px] text-[#b0004a] shrink-0 mt-0.5">error</span>
                 <div>
-                  <p className="text-sm font-semibold text-red-800">Test email failed</p>
-                  <p className="text-xs text-red-600 mt-1">{errorMsg}</p>
+                  <p className="text-sm font-bold text-[#b0004a]">Test email failed</p>
+                  <p className="text-xs text-[#b0004a]/80 mt-1">{errorMsg}</p>
                 </div>
               </div>
             </div>
 
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-secondary">
               The live campaign is still locked. Fix the issue above and try the test again.
             </p>
 
             <button
               onClick={handleRetry}
-              className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors"
+              className="w-full flex items-center justify-center gap-2 primary-gradient text-on-primary px-5 py-3 rounded-xl text-sm font-bold ambient-shadow hover:scale-[1.01] transition-transform"
             >
+              <span className="material-symbols-outlined text-[16px]">refresh</span>
               Retry Test Email
             </button>
 
-            <button onClick={onClose}
-              className="w-full text-sm text-gray-500 hover:text-gray-700 transition-colors py-1">
+            <button
+              onClick={onClose}
+              className="w-full text-sm text-secondary hover:text-on-surface transition-colors py-1 font-semibold"
+            >
               Cancel
             </button>
           </div>

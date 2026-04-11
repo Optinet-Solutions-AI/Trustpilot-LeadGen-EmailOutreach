@@ -1,6 +1,4 @@
-import {
-  Loader2, Trash2, Copy, Rocket, CheckCircle, StopCircle, ImageIcon, MoreHorizontal, Clock,
-} from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import type { Campaign } from '../types/campaign';
 
@@ -8,20 +6,21 @@ interface Props {
   campaign: Campaign;
   isSending: boolean;
   sendProgress: { sent: number; failed: number; total: number } | null;
-  onLaunch: (campaignId: string) => void;   // opens mandatory Test Flight flow
+  onLaunch: (campaignId: string) => void;
   onDuplicate: (campaignId: string) => Promise<void>;
   onDelete: (campaignId: string, name: string) => Promise<void>;
   onViewDetail: (campaign: Campaign) => void;
   deletingId: string | null;
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  draft:     'bg-gray-100 text-gray-600',
-  sending:   'bg-blue-100 text-blue-700',
-  active:    'bg-blue-100 text-blue-700',
-  sent:      'bg-green-100 text-green-700',
-  completed: 'bg-purple-100 text-purple-700',
-  paused:    'bg-yellow-100 text-yellow-700',
+const STATUS_CONFIG: Record<string, { label: string; classes: string; dot: string }> = {
+  draft:     { label: 'Draft',     classes: 'bg-surface-container-high text-secondary',        dot: 'bg-slate-400' },
+  sending:   { label: 'Sending',   classes: 'bg-blue-50 text-blue-700',                        dot: 'bg-blue-500' },
+  active:    { label: 'Active',    classes: 'bg-blue-50 text-blue-700',                        dot: 'bg-blue-500' },
+  sent:      { label: 'Sent',      classes: 'bg-[#8ff9a8]/30 text-[#006630]',                  dot: 'bg-[#006630]' },
+  completed: { label: 'Completed', classes: 'bg-[#8ff9a8]/30 text-[#006630]',                  dot: 'bg-[#006630]' },
+  paused:    { label: 'Paused',    classes: 'bg-amber-50 text-amber-700',                       dot: 'bg-amber-500' },
+  failed:    { label: 'Failed',    classes: 'bg-[#ffd9de] text-[#b0004a]',                     dot: 'bg-[#b0004a]' },
 };
 
 export default function CampaignCard({
@@ -31,9 +30,10 @@ export default function CampaignCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
 
-  const hasLeads    = (c.lead_count ?? 0) > 0;
-  const canLaunch   = c.status === 'draft' && hasLeads && !isSending;
+  const hasLeads      = (c.lead_count ?? 0) > 0;
+  const canLaunch     = c.status === 'draft' && hasLeads && !isSending;
   const isThisSending = c.status === 'sending';
+  const sc            = STATUS_CONFIG[c.status] ?? STATUS_CONFIG.draft;
 
   const replyRate = c.total_sent > 0
     ? ((c.total_replied / c.total_sent) * 100).toFixed(1)
@@ -46,97 +46,116 @@ export default function CampaignCard({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-sm transition-shadow">
+    <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 hover:shadow-lg transition-all border border-slate-50">
 
-      {/* Top row: status badge + platform badge + date */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLES[c.status] ?? STATUS_STYLES.draft}`}>
-            {isThisSending && <Loader2 size={10} className="animate-spin" />}
-            {c.status}
+      {/* Top row */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${sc.classes}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${sc.dot} ${isThisSending ? 'animate-pulse' : ''}`} />
+            {isThisSending ? <Loader2 size={10} className="animate-spin" /> : null}
+            {sc.label}
           </span>
           {c.email_platform && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold bg-surface-container text-secondary">
               via {c.email_platform}
             </span>
           )}
         </div>
-        <span className="text-xs text-gray-400">{new Date(c.created_at).toLocaleDateString()}</span>
+        <span className="text-xs text-secondary font-medium">{new Date(c.created_at).toLocaleDateString()}</span>
       </div>
 
-      {/* Campaign name — clickable to open detail */}
-      <button onClick={() => onViewDetail(c)} className="text-left w-full group">
-        <h3 className="text-sm font-semibold text-gray-900 group-hover:text-blue-600 transition-colors flex items-center gap-1.5">
+      {/* Campaign name */}
+      <button onClick={() => onViewDetail(c)} className="text-left w-full group mb-1">
+        <h3
+          className="text-base font-extrabold text-on-surface group-hover:text-[#b0004a] transition-colors flex items-center gap-2"
+          style={{ fontFamily: 'Manrope, sans-serif' }}
+        >
           {c.name}
-          {c.include_screenshot && <ImageIcon size={12} className="text-blue-400" />}
+          {c.include_screenshot && (
+            <span className="material-symbols-outlined text-[14px] text-secondary">image</span>
+          )}
         </h3>
       </button>
 
       {/* Subject preview */}
       {c.template_subject && (
-        <p className="text-xs text-gray-400 mt-1 truncate">
-          {c.template_subject}
-        </p>
+        <p className="text-sm text-secondary truncate mb-2">{c.template_subject}</p>
       )}
 
-      {/* Follow-up sequence badge */}
+      {/* Follow-up badge */}
       {(c.step_count ?? 0) > 0 && (
-        <div className="flex items-center gap-1 mt-1.5 text-xs text-blue-500">
-          <Clock size={11} />
-          <span>{c.step_count} follow-up{c.step_count !== 1 ? 's' : ''}</span>
+        <div className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full mb-3">
+          <span className="material-symbols-outlined text-[13px]">schedule_send</span>
+          {c.step_count} follow-up{c.step_count !== 1 ? 's' : ''}
         </div>
       )}
 
-      {/* Metrics row */}
-      <div className="flex items-center gap-4 mt-3 text-xs">
-        <span className={`${hasLeads ? 'text-gray-600' : 'text-red-400'}`}>
-          <span className="font-semibold">{c.lead_count ?? 0}</span> leads
-          {!hasLeads && c.status === 'draft' && <span className="ml-1 italic">⚠ none assigned</span>}
-        </span>
+      {/* Metrics */}
+      <div className="flex items-center gap-5 my-3">
+        <div className="text-center">
+          <p className={`text-lg font-extrabold ${hasLeads ? 'text-on-surface' : 'text-error'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>
+            {c.lead_count ?? 0}
+          </p>
+          <p className="text-xs text-secondary font-medium">leads</p>
+        </div>
         {c.total_sent > 0 && (
           <>
-            <span className="text-blue-600">
-              <span className="font-semibold">{c.total_sent}</span> sent
-            </span>
-            <span className="text-green-600">
-              <span className="font-semibold">{c.total_replied}</span> replied
-              <span className="text-gray-400 ml-0.5">({replyRate}%)</span>
-            </span>
+            <div className="w-px h-8 bg-slate-100" />
+            <div className="text-center">
+              <p className="text-lg font-extrabold text-blue-600" style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_sent}</p>
+              <p className="text-xs text-secondary font-medium">sent</p>
+            </div>
+            <div className="w-px h-8 bg-slate-100" />
+            <div className="text-center">
+              <p className="text-lg font-extrabold text-[#006630]" style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_replied}</p>
+              <p className="text-xs text-secondary font-medium">replied ({replyRate}%)</p>
+            </div>
             {c.total_bounced > 0 && (
-              <span className="text-red-500">
-                <span className="font-semibold">{c.total_bounced}</span> bounced
-              </span>
+              <>
+                <div className="w-px h-8 bg-slate-100" />
+                <div className="text-center">
+                  <p className="text-lg font-extrabold text-error" style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_bounced}</p>
+                  <p className="text-xs text-secondary font-medium">bounced</p>
+                </div>
+              </>
             )}
           </>
         )}
+        {!hasLeads && c.status === 'draft' && (
+          <span className="text-xs font-bold text-amber-600 flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px]">warning</span>
+            No leads assigned
+          </span>
+        )}
       </div>
 
-      {/* Live send progress bar — direct mode (SSE-based) */}
+      {/* Progress bar — direct Gmail mode */}
       {isThisSending && !c.platform_campaign_id && sendProgress && sendProgress.total > 0 && (
-        <div className="mt-3">
-          <div className="flex justify-between text-xs text-blue-600 mb-1">
+        <div className="mb-4">
+          <div className="flex justify-between text-xs font-semibold text-secondary mb-1.5">
             <span>{sendProgress.sent + sendProgress.failed} / {sendProgress.total}</span>
             <span>{sendProgress.sent} sent{sendProgress.failed > 0 ? `, ${sendProgress.failed} failed` : ''}</span>
           </div>
-          <div className="w-full bg-blue-100 rounded-full h-1.5">
+          <div className="w-full bg-slate-100 rounded-full h-1.5">
             <div
-              className="bg-blue-600 h-1.5 rounded-full transition-all"
+              className="primary-gradient h-1.5 rounded-full transition-all"
               style={{ width: `${Math.round(((sendProgress.sent + sendProgress.failed) / sendProgress.total) * 100)}%` }}
             />
           </div>
         </div>
       )}
 
-      {/* Platform mode progress — stats-based (no SSE) */}
+      {/* Progress bar — platform mode */}
       {isThisSending && c.platform_campaign_id && c.total_sent > 0 && (
-        <div className="mt-3">
-          <div className="flex justify-between text-xs text-indigo-600 mb-1">
+        <div className="mb-4">
+          <div className="flex justify-between text-xs font-semibold text-secondary mb-1.5">
             <span>Sending via {c.email_platform || 'platform'}</span>
-            <span>{c.total_sent} sent / {c.lead_count} total</span>
+            <span>{c.total_sent} / {c.lead_count}</span>
           </div>
-          <div className="w-full bg-indigo-100 rounded-full h-1.5">
+          <div className="w-full bg-slate-100 rounded-full h-1.5">
             <div
-              className="bg-indigo-500 h-1.5 rounded-full transition-all"
+              className="primary-gradient h-1.5 rounded-full transition-all"
               style={{ width: `${Math.min(100, Math.round((c.total_sent / Math.max(c.lead_count, 1)) * 100))}%` }}
             />
           </div>
@@ -144,30 +163,27 @@ export default function CampaignCard({
       )}
 
       {/* Action bar */}
-      <div className="flex items-center gap-2 mt-4 pt-3 border-t border-gray-100">
-
-        {/* Primary launch button — only on sendable draft campaigns */}
+      <div className="flex items-center gap-3 pt-4 border-t border-slate-50">
         {canLaunch && (
           <button
             onClick={() => onLaunch(c.id)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 primary-gradient text-on-primary rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform"
           >
-            <Rocket size={13} />
+            <span className="material-symbols-outlined text-[16px]">rocket_launch</span>
             Launch Campaign
           </button>
         )}
 
-        {/* Sending state */}
         {isThisSending && (
-          <span className="text-xs text-blue-500 flex items-center gap-1">
-            <Loader2 size={11} className="animate-spin" /> Sending…
+          <span className="text-sm font-bold text-blue-600 flex items-center gap-1.5">
+            <Loader2 size={13} className="animate-spin" /> Sending…
           </span>
         )}
 
-        {/* Completed state */}
         {(c.status === 'sent' || c.status === 'completed') && (
-          <span className="text-xs text-green-600 flex items-center gap-1">
-            <CheckCircle size={11} /> Completed
+          <span className="text-sm font-bold text-[#006630] flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-[16px]">check_circle</span>
+            Completed
           </span>
         )}
 
@@ -175,35 +191,38 @@ export default function CampaignCard({
         <div className="ml-auto relative">
           <button
             onClick={() => setMenuOpen(!menuOpen)}
-            className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+            className="p-2 text-secondary hover:text-on-surface rounded-lg hover:bg-surface-container transition-colors"
           >
-            <MoreHorizontal size={16} />
+            <span className="material-symbols-outlined text-[18px]">more_horiz</span>
           </button>
 
           {menuOpen && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 top-full mt-1 z-20 bg-white rounded-xl shadow-lg border border-gray-200 py-1 w-40">
+              <div className="absolute right-0 top-full mt-1 z-20 bg-surface-container-lowest rounded-xl ambient-shadow border border-slate-100 py-1 w-44">
                 <button
                   onClick={() => { onViewDetail(c); setMenuOpen(false); }}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 transition-colors"
                 >
-                  <StopCircle size={13} /> View Details
+                  <span className="material-symbols-outlined text-[16px] text-secondary">open_in_new</span>
+                  View Details
                 </button>
                 <button
                   onClick={handleDuplicate}
                   disabled={duplicating}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                  className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 disabled:opacity-50 transition-colors"
                 >
-                  <Copy size={13} /> {duplicating ? 'Duplicating…' : 'Duplicate'}
+                  <span className="material-symbols-outlined text-[16px] text-secondary">content_copy</span>
+                  {duplicating ? 'Duplicating…' : 'Duplicate'}
                 </button>
                 {!isThisSending && (
                   <button
                     onClick={() => { onDelete(c.id, c.name); setMenuOpen(false); }}
                     disabled={deletingId === c.id}
-                    className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50"
+                    className="w-full text-left px-4 py-2 text-sm font-bold text-error hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 transition-colors"
                   >
-                    <Trash2 size={13} /> {deletingId === c.id ? 'Deleting…' : 'Delete'}
+                    <span className="material-symbols-outlined text-[16px]">delete</span>
+                    {deletingId === c.id ? 'Deleting…' : 'Delete'}
                   </button>
                 )}
               </div>

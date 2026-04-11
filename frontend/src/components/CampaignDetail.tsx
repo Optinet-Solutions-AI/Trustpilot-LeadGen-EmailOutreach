@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Loader2, Mail, CheckCircle, AlertCircle, Clock, MessageSquare, Copy, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import type { Campaign } from '../types/campaign';
 
 interface CampaignLead {
@@ -29,12 +29,12 @@ interface Props {
   onDuplicate?: (campaignId: string) => Promise<void>;
 }
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
-  pending: { label: 'Pending',  color: 'bg-gray-100 text-gray-600',   icon: <Clock size={11} /> },
-  sent:    { label: 'Sent',     color: 'bg-blue-100 text-blue-700',   icon: <Mail size={11} /> },
-  opened:  { label: 'Opened',   color: 'bg-purple-100 text-purple-700', icon: <CheckCircle size={11} /> },
-  replied: { label: 'Replied',  color: 'bg-green-100 text-green-700', icon: <MessageSquare size={11} /> },
-  bounced: { label: 'Bounced',  color: 'bg-red-100 text-red-600',     icon: <AlertCircle size={11} /> },
+const STATUS_CONFIG: Record<string, { label: string; classes: string; icon: string }> = {
+  pending: { label: 'Pending', classes: 'bg-surface-container-high text-secondary',   icon: 'schedule' },
+  sent:    { label: 'Sent',    classes: 'bg-blue-50 text-blue-700',                   icon: 'send' },
+  opened:  { label: 'Opened',  classes: 'bg-[#ffd9de] text-[#b0004a]',               icon: 'drafts' },
+  replied: { label: 'Replied', classes: 'bg-[#8ff9a8]/30 text-[#006630]',            icon: 'reply' },
+  bounced: { label: 'Bounced', classes: 'bg-red-50 text-error',                      icon: 'unsubscribe' },
 };
 
 export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSteps, onDuplicate }: Props) {
@@ -47,12 +47,8 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
   const [duplicating, setDuplicating] = useState(false);
 
   useEffect(() => {
-    fetchLeads(campaign.id)
-      .then(setLeads)
-      .finally(() => setLoading(false));
-    if (fetchSteps) {
-      fetchSteps(campaign.id).then(setSteps).catch(() => {});
-    }
+    fetchLeads(campaign.id).then(setLeads).finally(() => setLoading(false));
+    if (fetchSteps) fetchSteps(campaign.id).then(setSteps).catch(() => {});
   }, [campaign.id, fetchLeads, fetchSteps]);
 
   const counts = leads.reduce((acc, l) => {
@@ -69,71 +65,78 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
   const handleDuplicate = async () => {
     if (!onDuplicate) return;
     setDuplicating(true);
-    try {
-      await onDuplicate(campaign.id);
-      onClose();
-    } finally {
-      setDuplicating(false);
-    }
+    try { await onDuplicate(campaign.id); onClose(); } finally { setDuplicating(false); }
+  };
+
+  const statusClasses: Record<string, string> = {
+    sent:      'bg-[#8ff9a8]/20 text-[#006630]',
+    sending:   'bg-blue-50 text-blue-700',
+    completed: 'bg-[#8ff9a8]/20 text-[#006630]',
+    draft:     'bg-surface-container-high text-secondary',
+    failed:    'bg-[#ffd9de] text-[#b0004a]',
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col">
+      <div className="bg-surface-container-lowest rounded-2xl ambient-shadow w-full max-w-4xl max-h-[85vh] flex flex-col border border-slate-100">
 
         {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b">
+        <div className="flex items-start justify-between px-6 py-5 border-b border-slate-100">
           <div>
-            <h2 className="text-lg font-bold">{campaign.name}</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Created {new Date(campaign.created_at).toLocaleDateString()} ·{' '}
-              <span className={`font-medium ${
-                campaign.status === 'sent' ? 'text-green-600' :
-                campaign.status === 'sending' ? 'text-blue-600' : 'text-gray-600'
-              }`}>{campaign.status}</span>
+            <h2
+              className="text-xl font-extrabold text-on-surface"
+              style={{ fontFamily: 'Manrope, sans-serif' }}
+            >
+              {campaign.name}
+            </h2>
+            <p className="text-xs text-secondary mt-0.5 flex items-center gap-2">
+              Created {new Date(campaign.created_at).toLocaleDateString()}
+              <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${statusClasses[campaign.status] || 'bg-surface-container-high text-secondary'}`}>
+                {campaign.status}
+              </span>
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 mt-0.5">
-            <X size={20} />
+          <button onClick={onClose} className="p-2 text-secondary hover:text-on-surface rounded-lg hover:bg-surface-container transition-colors">
+            <span className="material-symbols-outlined text-[20px]">close</span>
           </button>
         </div>
 
-        {/* Stats bar with rates */}
-        <div className="grid grid-cols-5 divide-x border-b text-center text-sm">
+        {/* Stats bar */}
+        <div className="grid grid-cols-5 divide-x divide-slate-100 border-b border-slate-100">
           {[
-            { label: 'Total Leads', value: leads.length, sub: null, color: 'text-gray-900' },
-            { label: 'Sent',        value: totalSent,     sub: null, color: 'text-blue-600' },
-            { label: 'Replied',     value: counts.replied || 0,  sub: `${replyRate}%`, color: 'text-green-600' },
-            { label: 'Bounced',     value: counts.bounced || 0,  sub: `${bounceRate}%`, color: 'text-red-600' },
-            { label: 'Pending',     value: counts.pending || 0,  sub: null, color: 'text-gray-500' },
+            { label: 'Total Leads', value: leads.length,         sub: null,           color: 'text-on-surface' },
+            { label: 'Sent',        value: totalSent,            sub: null,           color: 'text-blue-600' },
+            { label: 'Replied',     value: counts.replied || 0,  sub: `${replyRate}%`, color: 'text-[#006630]' },
+            { label: 'Bounced',     value: counts.bounced || 0,  sub: `${bounceRate}%`, color: 'text-error' },
+            { label: 'Pending',     value: counts.pending || 0,  sub: null,           color: 'text-secondary' },
           ].map((s) => (
-            <div key={s.label} className="py-3 px-2">
-              <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
-              <p className="text-xs text-gray-500">
+            <div key={s.label} className="py-4 px-4 text-center">
+              <p className={`text-2xl font-extrabold ${s.color}`} style={{ fontFamily: 'Manrope, sans-serif' }}>{s.value}</p>
+              <p className="text-xs text-secondary font-medium mt-0.5">
                 {s.label}
-                {s.sub && <span className="ml-1 font-medium">({s.sub})</span>}
+                {s.sub && <span className="ml-1 font-bold text-on-surface">({s.sub})</span>}
               </p>
             </div>
           ))}
         </div>
 
-        {/* Template preview toggle */}
+        {/* Template toggle */}
         {campaign.template_subject && (
-          <div className="px-6 pt-3">
+          <div className="px-6 pt-4">
             <button
               onClick={() => setShowTemplate(!showTemplate)}
-              className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              className="flex items-center gap-1.5 text-xs font-bold text-secondary hover:text-on-surface transition-colors"
             >
-              {showTemplate ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              <span className="material-symbols-outlined text-[16px]">{showTemplate ? 'expand_less' : 'expand_more'}</span>
               {showTemplate ? 'Hide Template' : 'View Template'}
             </button>
             {showTemplate && (
-              <div className="mt-2 bg-gray-50 rounded-xl border border-gray-200 p-4 text-sm">
-                <p className="text-xs text-gray-500 mb-1">Subject:</p>
-                <p className="font-medium text-gray-800 mb-3">{campaign.template_subject}</p>
-                <p className="text-xs text-gray-500 mb-1">Body:</p>
+              <div className="mt-3 bg-surface-container rounded-xl p-4 text-sm">
+                <p className="text-xs font-bold text-secondary uppercase tracking-wider mb-1">Subject</p>
+                <p className="font-bold text-on-surface mb-3">{campaign.template_subject}</p>
+                <p className="text-xs font-bold text-secondary uppercase tracking-wider mb-1">Body</p>
                 <div
-                  className="text-gray-700 text-xs prose prose-sm max-w-none"
+                  className="text-secondary text-xs prose prose-sm max-w-none"
                   dangerouslySetInnerHTML={{ __html: campaign.template_body || '' }}
                 />
               </div>
@@ -141,17 +144,18 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
           </div>
         )}
 
-        {/* Follow-up sequence info */}
+        {/* Follow-up sequence */}
         {steps.length > 0 && (
-          <div className="px-6 pt-3">
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
-              <p className="text-xs font-medium text-blue-700 mb-2 flex items-center gap-1.5">
-                <Clock size={12} /> Follow-up Sequence ({steps.length} step{steps.length !== 1 ? 's' : ''})
+          <div className="px-6 pt-4">
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
+              <p className="text-xs font-bold text-blue-700 mb-3 flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[14px]">schedule_send</span>
+                Follow-up Sequence ({steps.length} step{steps.length !== 1 ? 's' : ''})
               </p>
-              <div className="space-y-1">
+              <div className="space-y-2">
                 {steps.map((s) => (
-                  <div key={s.id} className="flex items-center gap-2 text-xs text-blue-600">
-                    <span className="w-5 h-5 rounded-full bg-blue-200 text-blue-700 flex items-center justify-center text-[10px] font-bold">
+                  <div key={s.id} className="flex items-center gap-2.5 text-xs text-blue-700">
+                    <span className="w-5 h-5 rounded-full bg-blue-200 text-blue-700 flex items-center justify-center text-[10px] font-bold shrink-0">
                       {s.step_number}
                     </span>
                     <span>After {s.delay_days} day{s.delay_days !== 1 ? 's' : ''}: {s.template_subject.slice(0, 60)}{s.template_subject.length > 60 ? '...' : ''}</span>
@@ -163,12 +167,17 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
         )}
 
         {/* Filter tabs */}
-        <div className="flex gap-1 px-6 pt-3 pb-1 flex-wrap">
+        <div className="flex gap-2 px-6 pt-4 pb-2 flex-wrap">
           {['all', 'pending', 'sent', 'replied', 'bounced'].map((f) => (
-            <button key={f} onClick={() => setFilter(f)}
-              className={`px-3 py-1 rounded-full text-xs font-medium capitalize transition-colors ${
-                filter === f ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}>
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 rounded-full text-xs font-bold capitalize transition-colors ${
+                filter === f
+                  ? 'primary-gradient text-on-primary'
+                  : 'bg-surface-container text-secondary hover:bg-surface-container-high'
+              }`}
+            >
               {f === 'all' ? `All (${leads.length})` : `${f} (${counts[f] || 0})`}
             </button>
           ))}
@@ -177,21 +186,18 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
         {/* Lead list */}
         <div className="flex-1 overflow-y-auto px-6 py-2">
           {loading ? (
-            <div className="flex items-center justify-center py-12 text-gray-400 gap-2">
-              <Loader2 size={16} className="animate-spin" /> Loading leads...
+            <div className="flex items-center justify-center py-12 text-secondary gap-2">
+              <Loader2 size={16} className="animate-spin text-[#b0004a]" /> Loading leads...
             </div>
           ) : filtered.length === 0 ? (
-            <p className="text-center py-8 text-gray-400 text-sm">No leads in this filter.</p>
+            <p className="text-center py-8 text-secondary text-sm">No leads in this filter.</p>
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs text-gray-500 border-b">
-                  <th className="py-2 font-medium">Company</th>
-                  <th className="py-2 font-medium">Country</th>
-                  <th className="py-2 font-medium">Email</th>
-                  <th className="py-2 font-medium">Rating</th>
-                  <th className="py-2 font-medium">Status</th>
-                  <th className="py-2 font-medium text-right">Sent At</th>
+                <tr className="text-left border-b border-slate-100">
+                  {['Company', 'Country', 'Email', 'Rating', 'Status', 'Sent At'].map((h) => (
+                    <th key={h} className={`py-3 text-xs font-bold uppercase tracking-wider text-secondary ${h === 'Sent At' ? 'text-right' : ''}`}>{h}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -202,39 +208,41 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                     <>
                       <tr
                         key={l.id}
-                        className={`border-b hover:bg-gray-50 ${hasReply ? 'cursor-pointer' : ''}`}
+                        className={`border-b border-slate-50 hover:bg-surface-container-low transition-colors ${hasReply ? 'cursor-pointer' : ''}`}
                         onClick={() => hasReply && setExpandedReply(expandedReply === l.id ? null : l.id)}
                       >
-                        <td className="py-2 font-medium text-gray-800">
+                        <td className="py-3 font-bold text-on-surface">
                           {l.leads?.company_name || '—'}
                           {hasReply && (
-                            <span className="ml-1.5 text-green-500">
-                              {expandedReply === l.id ? <ChevronUp size={11} className="inline" /> : <ChevronDown size={11} className="inline" />}
+                            <span className="ml-1.5 material-symbols-outlined text-[14px] text-[#006630] align-middle">
+                              {expandedReply === l.id ? 'expand_less' : 'expand_more'}
                             </span>
                           )}
                         </td>
-                        <td className="py-2 text-gray-500 text-xs">{l.leads?.country || '—'}</td>
-                        <td className="py-2 text-gray-500 text-xs">{l.email_used || '—'}</td>
-                        <td className="py-2 text-gray-600">
+                        <td className="py-3 text-secondary text-xs">{l.leads?.country || '—'}</td>
+                        <td className="py-3 text-secondary text-xs">{l.email_used || '—'}</td>
+                        <td className="py-3 font-bold text-[#b0004a] text-xs">
                           {l.leads?.star_rating ? `${l.leads.star_rating} ★` : '—'}
                         </td>
-                        <td className="py-2">
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${st.color}`}>
-                            {st.icon} {st.label}
+                        <td className="py-3">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${st.classes}`}>
+                            <span className="material-symbols-outlined text-[12px]">{st.icon}</span>
+                            {st.label}
                           </span>
                         </td>
-                        <td className="py-2 text-right text-xs text-gray-400">
+                        <td className="py-3 text-right text-xs text-secondary">
                           {l.sent_at ? new Date(l.sent_at).toLocaleString() : '—'}
                         </td>
                       </tr>
                       {hasReply && expandedReply === l.id && (
                         <tr key={`${l.id}-reply`}>
                           <td colSpan={6} className="py-2 px-4">
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-xs text-green-800">
-                              <p className="font-medium mb-1 flex items-center gap-1">
-                                <MessageSquare size={11} /> Reply snippet:
+                            <div className="bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-3 text-xs text-[#006630]">
+                              <p className="font-bold mb-1 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[13px]">reply</span>
+                                Reply snippet:
                               </p>
-                              <p className="text-green-700">{l.reply_snippet}</p>
+                              <p>{l.reply_snippet}</p>
                             </div>
                           </td>
                         </tr>
@@ -248,18 +256,18 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t px-6 py-3 bg-gray-50 rounded-b-2xl">
-          <p className="text-xs text-gray-500">
-            <strong className="text-gray-700">Workflow:</strong>{' '}
-            Draft → Test Send → Live Send → Check Replies → Follow up
+        <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4 bg-surface-container rounded-b-2xl">
+          <p className="text-xs text-secondary">
+            <span className="font-bold text-on-surface">Workflow:</span>{' '}
+            Draft → Test Flight → Live Send → Check Replies → Follow up
           </p>
           {onDuplicate && (
             <button
               onClick={handleDuplicate}
               disabled={duplicating}
-              className="inline-flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-gray-100 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-2 border border-slate-200 text-secondary px-4 py-2 rounded-lg text-xs font-bold hover:bg-surface-container-high disabled:opacity-50 transition-colors"
             >
-              <Copy size={12} />
+              <span className="material-symbols-outlined text-[14px]">content_copy</span>
               {duplicating ? 'Duplicating...' : 'Duplicate Campaign'}
             </button>
           )}
