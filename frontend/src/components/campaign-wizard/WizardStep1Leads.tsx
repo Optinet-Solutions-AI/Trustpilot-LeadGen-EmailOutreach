@@ -1,0 +1,406 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { Loader2 } from 'lucide-react';
+import api from '../../api/client';
+import { COUNTRIES, CATEGORIES } from './scheduleConfig';
+
+interface PickerLead {
+  id: string;
+  company_name: string;
+  primary_email: string | null;
+  star_rating: number | null;
+  outreach_status: string;
+  country: string | null;
+  category: string | null;
+}
+
+interface Props {
+  filterCountry: string;
+  filterCategory: string;
+  selectedLeadIds: string[];
+  maxLeads: number;
+  onFilterCountryChange: (v: string) => void;
+  onFilterCategoryChange: (v: string) => void;
+  onSelectionChange: (ids: string[]) => void;
+  onMaxLeadsChange: (n: number) => void;
+}
+
+const LIMIT = 50;
+
+export default function WizardStep1Leads({
+  filterCountry, filterCategory, selectedLeadIds, maxLeads,
+  onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onMaxLeadsChange,
+}: Props) {
+  const [leads, setLeads]         = useState<PickerLead[]>([]);
+  const [total, setTotal]         = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [loading, setLoading]     = useState(false);
+  const [page, setPage]           = useState(1);
+  const [search, setSearch]       = useState('');
+  const [debSearch, setDebSearch] = useState('');
+  const [sortBy, setSortBy]       = useState('star_rating');
+  const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('asc');
+  const [rotation, setRotation]   = useState<'oldest' | 'random'>('oldest');
+
+  useEffect(() => {
+    const t = setTimeout(() => { setDebSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const fetchLeads = useCallback(async () => {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams();
+      if (filterCountry) p.set('country', filterCountry);
+      if (filterCategory) p.set('category', filterCategory);
+      if (debSearch) p.set('search', debSearch);
+      p.set('page', String(page));
+      p.set('limit', String(LIMIT));
+      p.set('sortBy', sortBy);
+      p.set('sortDir', sortDir);
+      const res = await api.get(`/leads?${p}`);
+      setLeads(res.data.data);
+      setTotal(res.data.total);
+      setTotalPages(res.data.totalPages);
+    } catch {
+      setLeads([]); setTotal(0); setTotalPages(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [filterCountry, filterCategory, debSearch, page, sortBy, sortDir]);
+
+  useEffect(() => { fetchLeads(); }, [fetchLeads]);
+
+  const toggleLead = (id: string) => {
+    if (selectedLeadIds.includes(id)) onSelectionChange(selectedLeadIds.filter((x) => x !== id));
+    else onSelectionChange([...selectedLeadIds, id]);
+  };
+
+  const pageIds = leads.map((l) => l.id);
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
+  const togglePage = () => {
+    if (allPageSelected) onSelectionChange(selectedLeadIds.filter((id) => !pageIds.includes(id)));
+    else onSelectionChange([...selectedLeadIds, ...pageIds.filter((id) => !selectedLeadIds.includes(id))]);
+  };
+
+  const toggleSort = (col: string) => {
+    if (col === sortBy) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
+    else { setSortBy(col); setSortDir('asc'); }
+    setPage(1);
+  };
+
+  // Health score: % of leads with valid email
+  const healthPct = total > 0
+    ? Math.round((leads.filter((l) => l.primary_email).length / leads.length) * 100)
+    : 0;
+
+  const categoryLabel = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
+  const countryLabel  = COUNTRIES.find((c) => c.code === filterCountry)?.name  || 'All Countries';
+  const listLabel     = [countryLabel !== 'All Countries' ? countryLabel : '', categoryLabel !== 'All Categories' ? categoryLabel : '']
+    .filter(Boolean).join(' · ') || 'All Leads';
+
+  return (
+    <div className="max-w-4xl mx-auto px-6 py-10">
+
+      {/* Headline */}
+      <div className="text-center mb-10">
+        <h1 className="text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
+          Where should we find your leads?
+        </h1>
+        <p className="text-secondary text-sm">
+          Build your outreach list by selecting from your existing Lead Matrix,
+          uploading a file, or entering them manually.
+        </p>
+      </div>
+
+      {/* Source selection cards */}
+      <div className="grid grid-cols-3 gap-4 mb-8">
+        {/* Lead Matrix — selected (our only active source) */}
+        <div className="bg-white rounded-2xl p-6 border-2 border-[#b0004a] cursor-pointer flex flex-col items-center text-center ambient-shadow">
+          <div className="w-12 h-12 rounded-full bg-[#ffd9de] flex items-center justify-center mb-4">
+            <span className="material-symbols-outlined text-[#b0004a] text-[22px]">database</span>
+          </div>
+          <h3 className="font-bold text-on-surface mb-1" style={{ fontFamily: 'Manrope, sans-serif' }}>Lead Matrix</h3>
+          <p className="text-xs text-secondary leading-relaxed mb-4">
+            Choose from your pre-scraped, verified lists and saved searches in the system.
+          </p>
+          <button className="text-xs font-extrabold text-[#b0004a] uppercase tracking-wider flex items-center gap-1 hover:gap-2 transition-all">
+            Browse Lists
+            <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+          </button>
+        </div>
+
+        {/* Import Leads — disabled */}
+        <div className="bg-white rounded-2xl p-6 border border-slate-100 cursor-not-allowed opacity-50 flex flex-col items-center text-center">
+          <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-4">
+            <span className="material-symbols-outlined text-secondary text-[22px]">upload_file</span>
+          </div>
+          <h3 className="font-bold text-on-surface mb-1" style={{ fontFamily: 'Manrope, sans-serif' }}>Import Leads</h3>
+          <p className="text-xs text-secondary leading-relaxed mb-4">
+            Upload a CSV, Excel, or Google Sheets file containing your target contact information.
+          </p>
+          <button className="text-xs font-extrabold text-secondary uppercase tracking-wider flex items-center gap-1">
+            Select File
+            <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+          </button>
+        </div>
+
+        {/* Add Manually — disabled */}
+        <div className="bg-white rounded-2xl p-6 border border-slate-100 cursor-not-allowed opacity-50 flex flex-col items-center text-center">
+          <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-4">
+            <span className="material-symbols-outlined text-secondary text-[22px]">edit_note</span>
+          </div>
+          <h3 className="font-bold text-on-surface mb-1" style={{ fontFamily: 'Manrope, sans-serif' }}>Add Manually</h3>
+          <p className="text-xs text-secondary leading-relaxed mb-4">
+            Quickly paste a list of email addresses or fill in a simple form for direct entry.
+          </p>
+          <button className="text-xs font-extrabold text-secondary uppercase tracking-wider flex items-center gap-1">
+            Open Editor
+            <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Configuration panel */}
+      <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden mb-6">
+        {/* Panel header */}
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100">
+          <div className="w-7 h-7 rounded-full primary-gradient flex items-center justify-center flex-shrink-0">
+            <span className="material-symbols-outlined text-on-primary text-[14px]">info</span>
+          </div>
+          <div>
+            <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+              Configuration: Lead Matrix
+            </p>
+            <p className="text-xs text-secondary">
+              You currently have {total.toLocaleString()} verified leads available.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-6 p-6">
+          {/* Left: filters + controls */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
+                Select Target List
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={filterCountry}
+                  onChange={(e) => { onFilterCountryChange(e.target.value); setPage(1); }}
+                  className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                >
+                  {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                </select>
+                <select
+                  value={filterCategory}
+                  onChange={(e) => { onFilterCategoryChange(e.target.value); setPage(1); }}
+                  className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                >
+                  {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+                </select>
+              </div>
+              <p className="text-xs text-secondary mt-1.5 flex items-center gap-1">
+                <span className="material-symbols-outlined text-[12px]">filter_alt</span>
+                {listLabel} — {total.toLocaleString()} leads found
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
+                  Max Leads to Import
+                </label>
+                <input
+                  type="number"
+                  value={maxLeads}
+                  min={1}
+                  max={5000}
+                  onChange={(e) => onMaxLeadsChange(Number(e.target.value))}
+                  className="w-full bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
+                  Lead Rotation
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setRotation('oldest')}
+                    className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
+                      rotation === 'oldest' ? 'primary-gradient text-on-primary ambient-shadow' : 'bg-surface-container text-secondary hover:bg-surface-container-high'
+                    }`}
+                  >
+                    Oldest First
+                  </button>
+                  <button
+                    onClick={() => setRotation('random')}
+                    className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
+                      rotation === 'random' ? 'primary-gradient text-on-primary ambient-shadow' : 'bg-surface-container text-secondary hover:bg-surface-container-high'
+                    }`}
+                  >
+                    Random
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: List Health Insight */}
+          <div className="bg-surface-container rounded-xl p-4">
+            <p className="text-xs font-extrabold text-on-surface uppercase tracking-wider mb-4">List Health Insight</p>
+            <div>
+              <div className="flex justify-between text-xs font-semibold mb-1.5">
+                <span className="text-secondary">Verified &amp; Reachable</span>
+                <span className="font-extrabold text-[#006630]">{healthPct}%</span>
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-700"
+                  style={{ width: `${healthPct}%`, background: 'linear-gradient(90deg, #006630, #00a050)' }}
+                />
+              </div>
+              <p className="text-[10px] text-secondary mt-2">
+                This list has been cleaned recently. Bouncing risk is minimal (estimated &lt;2%).
+              </p>
+            </div>
+            <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
+              <div className="text-center">
+                <p className="text-xl font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>{total.toLocaleString()}</p>
+                <p className="text-[10px] text-secondary font-semibold uppercase tracking-wider">Total Leads</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xl font-extrabold text-[#b0004a]" style={{ fontFamily: 'Manrope, sans-serif' }}>{selectedLeadIds.length.toLocaleString()}</p>
+                <p className="text-[10px] text-secondary font-semibold uppercase tracking-wider">Selected</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Lead table */}
+      <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
+        {/* Table toolbar */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-surface-container">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[17px]">search</span>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search companies..."
+                className="bg-white rounded-xl pl-9 pr-4 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none w-56"
+              />
+            </div>
+            {selectedLeadIds.length > 0 && (
+              <span className="text-xs font-bold bg-[#ffd9de] text-[#b0004a] px-3 py-1.5 rounded-full">
+                {selectedLeadIds.length} selected
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {leads.length > 0 && (
+              <button onClick={togglePage} className="text-xs font-bold text-[#b0004a] hover:underline">
+                {allPageSelected ? 'Deselect page' : 'Select page'}
+              </button>
+            )}
+            {selectedLeadIds.length > 0 && (
+              <button onClick={() => onSelectionChange([])} className="text-xs font-bold text-secondary hover:text-error">
+                Clear all
+              </button>
+            )}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12 gap-2 text-secondary">
+            <Loader2 size={16} className="animate-spin text-[#b0004a]" /> Loading leads...
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-100 text-left bg-surface-container">
+                <th className="w-10 px-4 py-3">
+                  <input type="checkbox" checked={allPageSelected} onChange={togglePage}
+                    className="rounded border-slate-300 accent-[#b0004a] w-3.5 h-3.5" />
+                </th>
+                {[
+                  { label: 'Company', col: 'company_name' },
+                  { label: 'Email',   col: 'primary_email' },
+                  { label: 'Country', col: null },
+                  { label: 'Rating',  col: 'star_rating' },
+                  { label: 'Status',  col: null },
+                ].map(({ label, col }) => (
+                  <th
+                    key={label}
+                    onClick={() => col && toggleSort(col)}
+                    className={`px-4 py-3 text-xs font-extrabold uppercase tracking-wider text-secondary ${col ? 'cursor-pointer hover:text-on-surface select-none' : ''}`}
+                  >
+                    {label}
+                    {col && (
+                      <span className={`material-symbols-outlined text-[13px] ml-0.5 align-middle ${sortBy === col ? 'text-[#b0004a]' : 'text-slate-200'}`}>
+                        {sortBy === col ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+                      </span>
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {leads.map((lead) => {
+                const sel = selectedLeadIds.includes(lead.id);
+                return (
+                  <tr
+                    key={lead.id}
+                    onClick={() => toggleLead(lead.id)}
+                    className={`cursor-pointer transition-colors ${sel ? 'bg-[#ffd9de]/20' : 'hover:bg-surface-container-low'}`}
+                  >
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={sel} onChange={() => toggleLead(lead.id)}
+                        className="rounded border-slate-300 accent-[#b0004a] w-3.5 h-3.5" />
+                    </td>
+                    <td className="px-4 py-3 font-bold text-on-surface">{lead.company_name}</td>
+                    <td className="px-4 py-3 text-secondary text-xs">{lead.primary_email || <span className="text-slate-300">—</span>}</td>
+                    <td className="px-4 py-3 text-secondary text-xs">{lead.country || '—'}</td>
+                    <td className="px-4 py-3 font-bold text-[#b0004a] text-xs">{lead.star_rating != null ? `${lead.star_rating} ★` : '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className="text-[10px] font-bold bg-surface-container text-secondary px-2 py-0.5 rounded-full capitalize">
+                        {lead.outreach_status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {leads.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-12 text-center text-secondary text-sm">No leads found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between px-5 py-3 border-t border-slate-100 bg-surface-container text-xs">
+            <span className="font-semibold text-secondary">
+              {((page - 1) * LIMIT) + 1}–{Math.min(page * LIMIT, total)} of {total.toLocaleString()}
+            </span>
+            <div className="flex items-center gap-1">
+              <button disabled={page === 1} onClick={() => setPage((p) => p - 1)}
+                className="p-1.5 rounded-lg bg-white border border-slate-100 disabled:opacity-40 hover:bg-surface-container transition-colors">
+                <span className="material-symbols-outlined text-[16px]">chevron_left</span>
+              </button>
+              <span className="px-3 font-bold text-secondary">Page {page} of {totalPages}</span>
+              <button disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}
+                className="p-1.5 rounded-lg bg-white border border-slate-100 disabled:opacity-40 hover:bg-surface-container transition-colors">
+                <span className="material-symbols-outlined text-[16px]">chevron_right</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
