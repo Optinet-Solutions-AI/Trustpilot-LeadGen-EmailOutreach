@@ -27,6 +27,12 @@ export function getEmailPlatform(): EmailPlatformAdapter {
       _adapter = new MockPlatformAdapter();
       break;
     }
+    case 'none': {
+      // Personal email / test phase — platform disabled, Gmail handles sending
+      const { MockPlatformAdapter } = require('./adapter-mock.js');
+      _adapter = new MockPlatformAdapter();
+      break;
+    }
     default:
       throw new Error(
         `Unknown EMAIL_PLATFORM: "${config.emailPlatform}". ` +

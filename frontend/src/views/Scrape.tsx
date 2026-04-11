@@ -14,67 +14,181 @@ export default function Scrape() {
 
   useEffect(() => { fetchJobs(); }, [fetchJobs]);
 
-  const handleSubmit = (params: ScrapeParams) => {
-    startScrape(params);
-  };
+  const handleSubmit = (params: ScrapeParams) => startScrape(params);
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Scrape Trustpilot</h1>
-      <ScrapeForm onSubmit={handleSubmit} loading={status === 'running'} />
-      <ScrapeProgress
-        status={status as 'running' | 'completed' | 'failed' | null}
-        progress={progress}
-        error={error}
-        failedCount={failedCount}
-        jobId={jobId}
-        onCancel={jobId ? () => cancelJob(jobId) : undefined}
-        onRetryFailed={jobId ? () => retryFailed(jobId) : undefined}
-      />
+    <div className="px-10 py-10 space-y-8">
+      {/* Header */}
+      <div className="flex justify-between items-end">
+        <div>
+          <h2
+            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            Lead Scraping <span className="text-[#b0004a]">Dashboard</span>
+          </h2>
+          <p className="text-secondary mt-1 font-medium">
+            Configure and execute high-performance lead extraction from Trustpilot.
+          </p>
+        </div>
+        <span className="px-3 py-1.5 bg-[#ffd9de] text-[#b0004a] text-[10px] font-black rounded-full uppercase tracking-wide">
+          Powered by Cloud Run
+        </span>
+      </div>
 
-      {/* Recent Jobs */}
+      {/* Main Grid */}
+      <div className="grid grid-cols-12 gap-6">
+        {/* Scrape Config */}
+        <div className="col-span-8 bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+          <div className="flex items-center justify-between mb-8">
+            <h3
+              className="text-xl font-extrabold text-on-surface"
+              style={{ fontFamily: 'Manrope, sans-serif' }}
+            >
+              Scrape Trustpilot
+            </h3>
+            <span className={`flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full ${
+              status === 'running'
+                ? 'bg-[#ffd9de] text-[#b0004a]'
+                : status === 'completed'
+                  ? 'bg-[#8ff9a8]/30 text-[#006630]'
+                  : 'bg-surface-container text-secondary'
+            }`}>
+              {status === 'running' && (
+                <span className="w-1.5 h-1.5 rounded-full bg-[#b0004a] animate-pulse inline-block" />
+              )}
+              {status === 'running' ? 'Running' : status === 'completed' ? 'Completed' : 'Ready'}
+            </span>
+          </div>
+          <ScrapeForm onSubmit={handleSubmit} loading={status === 'running'} />
+        </div>
+
+        {/* Stats Panel */}
+        <div className="col-span-4 space-y-4">
+          {/* Total scraped */}
+          <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+            <div className="flex items-center justify-between mb-4">
+              <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
+                group
+              </span>
+            </div>
+            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Total Jobs Run</p>
+            <h4
+              className="text-2xl font-black text-on-surface mt-1"
+              style={{ fontFamily: 'Manrope, sans-serif' }}
+            >
+              {jobs.length}
+            </h4>
+          </div>
+
+          {/* Last job */}
+          {jobs.length > 0 && (
+            <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+              <div className="flex items-center justify-between mb-4">
+                <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
+                  history
+                </span>
+              </div>
+              <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Last Scrape</p>
+              <h4
+                className="text-base font-black text-on-surface mt-1"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                {jobs[0].category} — {jobs[0].country}
+              </h4>
+              <p className="text-xs text-secondary mt-1">{jobs[0].total_found} leads found</p>
+            </div>
+          )}
+
+          {/* Cloud status */}
+          <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2 h-2 rounded-full bg-[#006630] inline-block" />
+              <span className="text-xs font-bold text-[#006630] uppercase tracking-wide">Infrastructure Online</span>
+            </div>
+            <p className="text-xs text-secondary">Cloud Run container is ready to accept scrape jobs.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Progress */}
+      {(status || error) && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+          <h3
+            className="text-lg font-bold text-on-surface mb-4"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            Scrape Progress
+          </h3>
+          <ScrapeProgress
+            status={status as 'running' | 'completed' | 'failed' | null}
+            progress={progress}
+            error={error}
+            failedCount={failedCount}
+            jobId={jobId}
+            onCancel={jobId ? () => cancelJob(jobId) : undefined}
+            onRetryFailed={jobId ? () => retryFailed(jobId) : undefined}
+          />
+        </div>
+      )}
+
+      {/* Recent Jobs Table */}
       {jobs.length > 0 && (
-        <div className="bg-white rounded-lg border border-gray-200 p-5">
-          <h2 className="font-semibold mb-3">Recent Scrape Jobs</h2>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b">
-                <th className="text-left py-2">Category</th>
-                <th className="text-left py-2">Country</th>
-                <th className="text-left py-2">Rating</th>
-                <th className="text-left py-2">Status</th>
-                <th className="text-right py-2">Found</th>
-                <th className="text-right py-2">Scraped</th>
-                <th className="text-right py-2">Skipped</th>
-                <th className="text-right py-2">Failed</th>
-                <th className="text-right py-2">Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((job) => (
-                <tr key={job.id} className="border-b">
-                  <td className="py-2">{job.category}</td>
-                  <td className="py-2">{job.country}</td>
-                  <td className="py-2">{job.min_rating}-{job.max_rating}</td>
-                  <td className="py-2">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                      job.status === 'completed' ? 'bg-green-100 text-green-700' :
-                      job.status === 'running' ? 'bg-blue-100 text-blue-700' :
-                      job.status === 'failed' ? 'bg-red-100 text-red-700' :
-                      'bg-gray-100 text-gray-700'
-                    }`}>{job.status}</span>
-                  </td>
-                  <td className="text-right py-2">{job.total_found}</td>
-                  <td className="text-right py-2">{job.total_scraped}</td>
-                  <td className="text-right py-2 text-gray-400">{job.total_skipped || 0}</td>
-                  <td className="text-right py-2 text-red-500">{job.total_failed || 0}</td>
-                  <td className="text-right py-2 text-gray-500">
-                    {new Date(job.created_at).toLocaleDateString()}
-                  </td>
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
+          <div className="px-8 py-6 border-b border-slate-50 flex justify-between items-center">
+            <h3
+              className="font-bold text-on-surface"
+              style={{ fontFamily: 'Manrope, sans-serif' }}
+            >
+              Recent Scrape Jobs
+            </h3>
+            <span className="text-xs text-secondary font-medium">
+              Showing {jobs.length} job{jobs.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50/50">
+                  {['Category', 'Country', 'Rating', 'Status', 'Found', 'Scraped', 'Failed', 'Date'].map((h) => (
+                    <th
+                      key={h}
+                      className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {jobs.map((job) => (
+                  <tr key={job.id} className="hover:bg-surface-container/40 transition-colors">
+                    <td className="px-6 py-4 font-bold text-sm text-on-surface">{job.category}</td>
+                    <td className="px-6 py-4 text-sm text-secondary">{job.country}</td>
+                    <td className="px-6 py-4 text-sm text-secondary">{job.min_rating}–{job.max_rating}★</td>
+                    <td className="px-6 py-4">
+                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${
+                        job.status === 'completed' ? 'bg-[#8ff9a8]/30 text-[#006630]' :
+                        job.status === 'running'   ? 'bg-[#ffd9de] text-[#b0004a]' :
+                        job.status === 'failed'    ? 'bg-error-container text-error' :
+                        'bg-surface-container text-secondary'
+                      }`}>
+                        {job.status}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-sm font-medium">{job.total_found}</td>
+                    <td className="px-6 py-4 text-sm font-medium">{job.total_scraped}</td>
+                    <td className={`px-6 py-4 text-sm font-medium ${job.total_failed ? 'text-error' : 'text-secondary'}`}>
+                      {job.total_failed || 0}
+                    </td>
+                    <td className="px-6 py-4 text-xs text-secondary">
+                      {new Date(job.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
