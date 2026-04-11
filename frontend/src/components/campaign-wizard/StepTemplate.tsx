@@ -41,11 +41,11 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
     setGenerating(true);
     setAiError('');
     try {
-      const html = await generateEmailTemplate({
+      const result = await generateEmailTemplate({
         country: filterCountry || undefined,
         category: filterCategory || undefined,
       });
-      onChange({ body: html });
+      onChange({ subject: result.subject, body: result.body });
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'AI generation failed.');
     } finally {

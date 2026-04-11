@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { FollowUpStepInput } from '../../types/campaign';
+import { generateEmailTemplate, domainToCompanyName } from '../../lib/gemini';
 
 interface Props {
   subject: string;
@@ -9,6 +10,7 @@ interface Props {
   includeScreenshot: boolean;
   filterCountry: string;
   filterCategory: string;
+  manualEmails?: string[];
   followUpSteps: FollowUpStepInput[];
   onSubjectChange: (v: string) => void;
   onBodyChange: (v: string) => void;
@@ -29,11 +31,36 @@ const SPINTAX_EXAMPLES = [
 ];
 
 export default function WizardStep2Sequence({
-  subject, body, includeScreenshot, followUpSteps,
+  subject, body, includeScreenshot, filterCountry, filterCategory, manualEmails, followUpSteps,
   onSubjectChange, onBodyChange, onIncludeScreenshotChange, onFollowUpStepsChange,
 }: Props) {
   const [activeStep, setActiveStep] = useState<'intro' | number>('intro');
   const [previewMode, setPreviewMode] = useState<'raw' | 'preview'>('raw');
+  const [generating, setGenerating] = useState(false);
+  const [aiError, setAiError] = useState('');
+
+  // Infer preview company name from first manual email domain
+  const firstEmailDomain = manualEmails?.[0]?.includes('@') ? manualEmails[0].split('@')[1] : undefined;
+  const previewCompanyName = firstEmailDomain ? domainToCompanyName(firstEmailDomain) : 'Acme Corp';
+
+  const handleGenerateWithAI = async () => {
+    setGenerating(true);
+    setAiError('');
+    try {
+      const result = await generateEmailTemplate({
+        country: filterCountry || undefined,
+        category: filterCategory || undefined,
+        emailDomain: firstEmailDomain,
+        manualMode: !!(manualEmails && manualEmails.length > 0),
+      });
+      onSubjectChange(result.subject);
+      onBodyChange(result.body);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'AI generation failed.');
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const addFollowUp = () => {
     const newStep: FollowUpStepInput = {
@@ -61,8 +88,6 @@ export default function WizardStep2Sequence({
     else onBodyChange(body + token);
   };
 
-  const bodyPreview = body.replace(/<[^>]+>/g, '').slice(0, 400);
-
   const activeSubject = activeStep === 'intro' ? subject : followUpSteps[activeStep as number]?.subject ?? '';
   const activeBody    = activeStep === 'intro' ? body    : followUpSteps[activeStep as number]?.body ?? '';
   const setActiveSubject = (v: string) => {
@@ -73,6 +98,18 @@ export default function WizardStep2Sequence({
     if (activeStep === 'intro') onBodyChange(v);
     else updateFollowUp(activeStep as number, 'body', v);
   };
+
+  // Apply preview tokens so the panel shows a realistic sample
+  const applyPreviewTokens = (text: string) =>
+    text
+      .replace(/\{\{company_name\}\}/g, previewCompanyName)
+      .replace(/\{\{star_rating\}\}/g, '2.5')
+      .replace(/\{\{review_count\}\}/g, '47')
+      .replace(/\{\{country\}\}/g, filterCountry || 'US')
+      .replace(/\{\{website\}\}/g, firstEmailDomain || 'example.com');
+
+  const bodyPreview = applyPreviewTokens(body).replace(/<[^>]+>/g, '').slice(0, 400);
+  const subjectPreview = applyPreviewTokens(activeSubject);
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
@@ -155,7 +192,17 @@ export default function WizardStep2Sequence({
                   </p>
                 </div>
               </div>
-              {activeStep !== 'intro' && (
+              {activeStep === 'intro' ? (
+                <button
+                  type="button"
+                  onClick={handleGenerateWithAI}
+                  disabled={generating}
+                  className="flex items-center gap-1.5 bg-[#ffd9de] text-[#b0004a] px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#b0004a] hover:text-white transition-colors disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[14px]">auto_awesome</span>
+                  {generating ? 'Generating...' : 'Generate with AI'}
+                </button>
+              ) : (
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2">
                     <label className="text-xs font-bold text-secondary">Delay (days)</label>
@@ -180,6 +227,13 @@ export default function WizardStep2Sequence({
             </div>
 
             <div className="p-6 space-y-4">
+              {/* AI error */}
+              {aiError && (
+                <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700">
+                  <span className="material-symbols-outlined text-[14px] flex-shrink-0 mt-0.5">error</span>
+                  {aiError}
+                </div>
+              )}
               {/* Subject line */}
               <div>
                 <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
@@ -313,10 +367,16 @@ export default function WizardStep2Sequence({
               <p className="text-xs font-extrabold text-on-surface uppercase tracking-wider">Dynamic Preview</p>
             </div>
             <div className="p-4">
+              {firstEmailDomain && (
+                <div className="flex items-center gap-1.5 text-[10px] text-[#b0004a] bg-[#ffd9de]/40 rounded-lg px-3 py-1.5 mb-3">
+                  <span className="material-symbols-outlined text-[12px]">person</span>
+                  Sample recipient: <strong>{previewCompanyName}</strong> ({firstEmailDomain})
+                </div>
+              )}
               <div className="bg-surface-container rounded-xl p-3 mb-3">
                 <p className="text-[10px] font-bold text-secondary uppercase tracking-wider mb-1">Subject</p>
                 <p className="text-xs font-semibold text-on-surface leading-relaxed break-all">
-                  {activeSubject || <span className="text-slate-300">No subject yet</span>}
+                  {subjectPreview || <span className="text-slate-300">No subject yet</span>}
                 </p>
               </div>
               <div className="bg-surface-container rounded-xl p-3">
@@ -326,7 +386,7 @@ export default function WizardStep2Sequence({
                 </p>
               </div>
               <p className="text-[10px] text-secondary mt-2 text-center">
-                Tokens and spintax will be resolved per lead at send time
+                Tokens and spintax resolved per lead at send time
               </p>
             </div>
           </div>

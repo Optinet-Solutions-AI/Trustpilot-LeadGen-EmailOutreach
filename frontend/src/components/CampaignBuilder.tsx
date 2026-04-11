@@ -88,11 +88,11 @@ export default function CampaignBuilder({ onSubmit }: Props) {
     setGenerating(true);
     setAiError('');
     try {
-      const html = await generateEmailTemplate({
+      const result = await generateEmailTemplate({
         country: filterCountry || undefined,
         category: filterCategory || undefined,
       });
-      setBody(html);
+      setBody(result.body);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'AI generation failed. Try again.');
     } finally {

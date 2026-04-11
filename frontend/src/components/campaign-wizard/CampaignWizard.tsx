@@ -181,6 +181,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             includeScreenshot={includeScreenshot}
             filterCountry={filterCountry}
             filterCategory={filterCategory}
+            manualEmails={manualEmails}
             followUpSteps={followUpSteps}
             onSubjectChange={setSubject}
             onBodyChange={setBody}
