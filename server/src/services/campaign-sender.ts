@@ -44,9 +44,31 @@ export interface CampaignSendParams {
   testEmailOverride?: string;
 }
 
-function randomDelay() {
+/**
+ * Dynamic delay that varies with position in the session.
+ * Early emails get longer delays to establish a natural sending pattern.
+ * Adds ±30% jitter to avoid detectable intervals.
+ */
+function dynamicDelay(emailIndex: number): number {
   const { minDelay, maxDelay } = config.rateLimits;
-  return Math.floor(Math.random() * (maxDelay - minDelay) + minDelay);
+
+  // Base delay scales down as session progresses (emails 1-5 are slowest)
+  let base: number;
+  if (emailIndex < 5) {
+    // First 5 emails: use the full configured range (typically 2-7 min)
+    base = maxDelay;
+  } else if (emailIndex < 15) {
+    // Emails 6-15: middle range
+    base = (minDelay + maxDelay) / 2;
+  } else {
+    // Emails 16+: standard minimum range
+    base = minDelay;
+  }
+
+  // Add ±30% jitter so no two sends are exactly the same interval
+  const jitter = base * 0.3;
+  const delay = base + (Math.random() * jitter * 2 - jitter);
+  return Math.max(minDelay, Math.floor(delay));
 }
 
 function sleep(ms: number) {
@@ -144,10 +166,10 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
         console.warn(`[Campaign] Failed ${i + 1}/${total}: ${email.to} — ${result.error}`);
       }
 
-      // Randomized delay between sends (skip delay after last email)
+      // Dynamic delay between sends — longer early in session, shorter later (skip after last email)
       if (i < emails.length - 1) {
-        const delay = randomDelay();
-        console.log(`[Campaign] Waiting ${Math.round(delay / 1000)}s before next send...`);
+        const delay = dynamicDelay(i);
+        console.log(`[Campaign] Waiting ${Math.round(delay / 1000)}s before next send (email ${i + 1}/${emails.length})...`);
         await sleep(delay);
       }
     }

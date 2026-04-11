@@ -1,18 +1,24 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useScrape } from '../hooks/useScrape';
 import ScrapeForm from '../components/ScrapeForm';
 import ScrapeProgress from '../components/ScrapeProgress';
 import type { ScrapeParams } from '../types/scrape';
+import api from '../api/client';
 
 export default function Scrape() {
   const {
     jobId, status, progress, error, jobs, failedCount,
     startScrape, cancelJob, retryFailed, fetchJobs,
   } = useScrape();
+  const [apiReady, setApiReady] = useState<boolean | null>(null);
 
   useEffect(() => { fetchJobs(); }, [fetchJobs]);
+
+  useEffect(() => {
+    api.get('/health').then(() => setApiReady(true)).catch(() => setApiReady(false));
+  }, []);
 
   const handleSubmit = (params: ScrapeParams) => startScrape(params);
 
@@ -103,10 +109,22 @@ export default function Scrape() {
           {/* Cloud status */}
           <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
             <div className="flex items-center gap-2 mb-2">
-              <span className="w-2 h-2 rounded-full bg-[#006630] inline-block" />
-              <span className="text-xs font-bold text-[#006630] uppercase tracking-wide">Infrastructure Online</span>
+              <span className={`w-2 h-2 rounded-full inline-block ${
+                apiReady === null ? 'bg-slate-300 animate-pulse' :
+                apiReady ? 'bg-[#006630]' : 'bg-[#b0004a]'
+              }`} />
+              <span className={`text-xs font-bold uppercase tracking-wide ${
+                apiReady === null ? 'text-secondary' :
+                apiReady ? 'text-[#006630]' : 'text-[#b0004a]'
+              }`}>
+                Infrastructure {apiReady === null ? 'Checking…' : apiReady ? 'Online' : 'Offline'}
+              </span>
             </div>
-            <p className="text-xs text-secondary">Cloud Run container is ready to accept scrape jobs.</p>
+            <p className="text-xs text-secondary">
+              {apiReady === false
+                ? 'Cannot reach the API server. Check your connection.'
+                : 'Cloud Run container is ready to accept scrape jobs.'}
+            </p>
           </div>
         </div>
       </div>

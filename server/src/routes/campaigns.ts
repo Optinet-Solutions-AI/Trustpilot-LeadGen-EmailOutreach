@@ -29,6 +29,51 @@ router.get('/', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/campaigns/config/mode — expose app mode flags to the frontend
+router.get('/config/mode', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    data: {
+      manualLeadsOnly: config.manualLeadsOnly,
+      testMode: config.testMode.enabled,
+      emailPlatform: config.emailPlatform,
+      emailMode: config.emailMode,
+    },
+  });
+});
+
+// GET /api/campaigns/email-accounts — current sender account info for the Email Accounts page
+router.get('/email-accounts', (_req: Request, res: Response) => {
+  const status = rateLimiter.getStatus();
+  const providerLabel =
+    config.emailPlatform !== 'none' ? config.emailPlatform :
+    config.emailMode === 'gmail' ? 'Gmail (Personal)' :
+    config.emailMode === 'brevo' ? 'Brevo' : 'Mock';
+
+  res.json({
+    success: true,
+    data: {
+      accounts: [
+        {
+          email: config.gmail.fromEmail || config.brevo.fromEmail || 'Not configured',
+          provider: providerLabel,
+          status: 'active',
+          dailySent: status.dailyCount,
+          dailyCap: status.dailyCap,
+          hourlyCap: status.hourlyCap,
+          warmupDay: rateLimiter.getWarmupStatus().day,
+          warmupStatus: config.testMode.enabled
+            ? `Day ${rateLimiter.getWarmupStatus().day} — Test Phase`
+            : `Day ${rateLimiter.getWarmupStatus().day} — ${rateLimiter.getWarmupStatus().phase}`,
+        },
+      ],
+      platform: config.emailPlatform,
+      testMode: config.testMode.enabled,
+      manualLeadsOnly: config.manualLeadsOnly,
+    },
+  });
+});
+
 // POST /api/campaigns
 router.post('/', async (req: Request, res: Response) => {
   try {
@@ -43,6 +88,17 @@ router.post('/', async (req: Request, res: Response) => {
         leadIds = [...new Set([...leadIds, ...manualIds])];
       }
     }
+
+    // Manual-only mode: block filter-based assignment and scraped lead IDs
+    if (config.manualLeadsOnly) {
+      if (leadIds.length === 0) {
+        res.status(400).json({ success: false, error: 'Manual-only mode active: add email addresses in the "Add Manually" tab.' });
+        return;
+      }
+      // All leadIds must come from manual upsert (trustpilot_url starts with 'manual:')
+      // This is enforced at send-time as well, so creation is allowed but filter assignment is skipped
+    }
+
     if (!name || !templateSubject || !templateBody) {
       res.status(400).json({ success: false, error: 'name, templateSubject, and templateBody are required' });
       return;
@@ -60,10 +116,8 @@ router.post('/', async (req: Request, res: Response) => {
 
     // Save follow-up steps if provided (step 1 = initial email from campaign template)
     if (Array.isArray(followUpSteps) && followUpSteps.length > 0) {
-      // Step 1 is the campaign's main template (already stored on campaigns table).
-      // followUpSteps contains step 2, 3, 4... — the actual follow-ups.
       const stepsToInsert = followUpSteps.map((s: { delayDays: number; subject: string; body: string }, i: number) => ({
-        step_number: i + 2,  // starts at 2 (step 1 = campaign template)
+        step_number: i + 2,
         delay_days: s.delayDays || 3,
         template_subject: s.subject,
         template_body: s.body,
@@ -73,8 +127,8 @@ router.post('/', async (req: Request, res: Response) => {
 
     if (leadIds && leadIds.length > 0) {
       await addLeadsToCampaign(campaign.id, leadIds);
-    } else {
-      // Always run filter-based assignment — empty filters = all leads with a valid email
+    } else if (!config.manualLeadsOnly) {
+      // Filter-based assignment only when manual-only mode is OFF
       await addLeadsByFilter(campaign.id, { country: filterCountry, category: filterCategory });
     }
 
@@ -102,6 +156,11 @@ router.get('/preview-recipients', async (req: Request, res: Response) => {
 // GET /api/campaigns/rate-limit — email rate limit status
 router.get('/rate-limit', (_req: Request, res: Response) => {
   res.json({ success: true, data: rateLimiter.getStatus() });
+});
+
+// GET /api/campaigns/warmup-status — sender warmup progress
+router.get('/warmup-status', (_req: Request, res: Response) => {
+  res.json({ success: true, data: rateLimiter.getWarmupStatus() });
 });
 
 // PATCH /api/campaigns/:id
@@ -369,6 +428,18 @@ router.post('/:id/send', async (req: Request, res: Response) => {
     if (!campaign) {
       res.status(404).json({ success: false, error: 'Campaign not found' });
       return;
+    }
+
+    // Manual-only mode: verify all leads are manually-added (not scraped)
+    if (config.manualLeadsOnly) {
+      const hasScrapedLeads = campaignLeads.some((cl: { leads: Record<string, unknown> }) => {
+        const tUrl = cl.leads?.trustpilot_url ? String(cl.leads.trustpilot_url) : '';
+        return !tUrl.startsWith('manual:');
+      });
+      if (hasScrapedLeads) {
+        res.status(400).json({ success: false, error: 'Manual-only mode: this campaign contains scraped leads. Remove them or disable MANUAL_LEADS_ONLY.' });
+        return;
+      }
     }
 
     // Deduplication: collect emails already successfully sent in ANY campaign

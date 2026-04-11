@@ -70,7 +70,7 @@ export default function TestFlightModal({
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-[22px]">rocket_launch</span>
               <h2 className="text-lg font-extrabold" style={{ fontFamily: 'Manrope, sans-serif' }}>
-                Test Flight Required
+                Test Flight
               </h2>
             </div>
             {phase !== 'success' && (
@@ -141,15 +141,10 @@ export default function TestFlightModal({
               Send Test Email
             </button>
 
-            <div className="rounded-xl border-2 border-dashed border-slate-200 bg-surface-container px-4 py-3">
-              <div className="flex items-center gap-2 text-secondary">
-                <span className="material-symbols-outlined text-[16px]">lock</span>
-                <p className="text-xs font-semibold">
-                  <span className="text-on-surface font-bold">Send to {recipientCount} live prospects</span>
-                  {' '}— locked until test email is confirmed
-                </p>
-              </div>
-            </div>
+            <p className="text-xs text-secondary text-center">
+              After reviewing your test email, return here to send to{' '}
+              <span className="font-bold text-on-surface">{recipientCount} live prospect{recipientCount !== 1 ? 's' : ''}</span>.
+            </p>
           </div>
         )}
 
@@ -238,7 +233,7 @@ export default function TestFlightModal({
             </div>
 
             <p className="text-sm text-secondary">
-              The live campaign is still locked. Fix the issue above and try the test again.
+              Fix the issue above and try the test again.
             </p>
 
             <button

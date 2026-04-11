@@ -50,6 +50,9 @@ export const config = {
     fromEmail: process.env.EMAIL_FROM || '',  // e.g. jordi@optiratesolutions.com
   },
 
+  /** Restrict campaigns to manually-added leads only (safety for testing phase) */
+  manualLeadsOnly: process.env.MANUAL_LEADS_ONLY === 'true',
+
   /** Public URL for webhook callbacks (e.g. https://your-app.run.app) */
   webhookBaseUrl: process.env.WEBHOOK_BASE_URL || '',
 };

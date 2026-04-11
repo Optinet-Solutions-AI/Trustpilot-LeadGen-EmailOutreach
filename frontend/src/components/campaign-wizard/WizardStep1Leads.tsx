@@ -5,6 +5,13 @@ import { Loader2 } from 'lucide-react';
 import api from '../../api/client';
 import { COUNTRIES, CATEGORIES } from './scheduleConfig';
 
+interface AppMode {
+  manualLeadsOnly: boolean;
+  testMode: boolean;
+  emailPlatform: string;
+  emailMode: string;
+}
+
 interface PickerLead {
   id: string;
   company_name: string;
@@ -36,6 +43,9 @@ export default function WizardStep1Leads({
   filterCountry, filterCategory, selectedLeadIds, manualEmails, maxLeads,
   onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
 }: Props) {
+  const [appMode, setAppMode] = useState<AppMode | null>(null);
+  const [dynamicCountries, setDynamicCountries] = useState<string[]>([]);
+  const [dynamicCategories, setDynamicCategories] = useState<string[]>([]);
   const [sourceMode, setSourceMode] = useState<SourceMode>('matrix');
   const [manualInput, setManualInput] = useState(manualEmails.join('\n'));
   const [leads, setLeads]         = useState<PickerLead[]>([]);
@@ -48,6 +58,21 @@ export default function WizardStep1Leads({
   const [sortBy, setSortBy]       = useState('star_rating');
   const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('asc');
   const [rotation, setRotation]   = useState<'oldest' | 'random'>('oldest');
+
+  // Fetch app mode and dynamic filters on mount
+  useEffect(() => {
+    api.get('/campaigns/config/mode').then((res) => {
+      const mode: AppMode = res.data.data;
+      setAppMode(mode);
+      if (mode.manualLeadsOnly) setSourceMode('manual');
+    }).catch(() => { /* ignore — fall back to defaults */ });
+
+    api.get('/leads/filters').then((res) => {
+      const { countries, categories } = res.data.data;
+      if (countries?.length) setDynamicCountries(countries);
+      if (categories?.length) setDynamicCategories(categories);
+    }).catch(() => { /* fall back to static lists */ });
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => { setDebSearch(search); setPage(1); }, 300);
@@ -101,8 +126,16 @@ export default function WizardStep1Leads({
     ? Math.round((leads.filter((l) => l.primary_email).length / leads.length) * 100)
     : 0;
 
-  const categoryLabel = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
-  const countryLabel  = COUNTRIES.find((c) => c.code === filterCountry)?.name  || 'All Countries';
+  // Use dynamic lists if loaded, fall back to static
+  const countryOptions = dynamicCountries.length > 0
+    ? [{ code: '', name: 'All Countries' }, ...dynamicCountries.map((c) => ({ code: c, name: c }))]
+    : COUNTRIES;
+  const categoryOptions = dynamicCategories.length > 0
+    ? [{ slug: '', name: 'All Categories' }, ...dynamicCategories.map((c) => ({ slug: c, name: c }))]
+    : CATEGORIES;
+
+  const categoryLabel = categoryOptions.find((c) => c.slug === filterCategory)?.name || 'All Categories';
+  const countryLabel  = countryOptions.find((c) => c.code === filterCountry)?.name  || 'All Countries';
   const listLabel     = [countryLabel !== 'All Countries' ? countryLabel : '', categoryLabel !== 'All Categories' ? categoryLabel : '']
     .filter(Boolean).join(' · ') || 'All Leads';
 
@@ -120,26 +153,45 @@ export default function WizardStep1Leads({
         </p>
       </div>
 
+      {/* Testing-mode banner */}
+      {appMode?.manualLeadsOnly && (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 mb-6">
+          <span className="material-symbols-outlined text-amber-600 text-[20px] shrink-0 mt-0.5">science</span>
+          <p className="text-sm text-amber-700">
+            <span className="font-bold">Testing mode active</span> — only manually entered email addresses can be used as recipients. Scraped leads are locked until testing is complete.
+          </p>
+        </div>
+      )}
+
       {/* Source selection cards */}
       <div className="grid grid-cols-3 gap-4 mb-8">
         {/* Lead Matrix */}
         <div
-          onClick={() => setSourceMode('matrix')}
-          className={`bg-white rounded-2xl p-6 cursor-pointer flex flex-col items-center text-center transition-all ${
-            sourceMode === 'matrix' ? 'border-2 border-[#b0004a] ambient-shadow' : 'border border-slate-100 hover:border-slate-200'
+          onClick={() => !appMode?.manualLeadsOnly && setSourceMode('matrix')}
+          className={`relative group bg-white rounded-2xl p-6 flex flex-col items-center text-center transition-all ${
+            appMode?.manualLeadsOnly
+              ? 'border border-slate-100 opacity-40 cursor-not-allowed'
+              : sourceMode === 'matrix'
+                ? 'border-2 border-[#b0004a] ambient-shadow cursor-pointer'
+                : 'border border-slate-100 hover:border-slate-200 cursor-pointer'
           }`}
         >
-          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 ${sourceMode === 'matrix' ? 'bg-[#ffd9de]' : 'bg-slate-100'}`}>
-            <span className={`material-symbols-outlined text-[22px] ${sourceMode === 'matrix' ? 'text-[#b0004a]' : 'text-secondary'}`}>database</span>
+          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 ${sourceMode === 'matrix' && !appMode?.manualLeadsOnly ? 'bg-[#ffd9de]' : 'bg-slate-100'}`}>
+            <span className={`material-symbols-outlined text-[22px] ${sourceMode === 'matrix' && !appMode?.manualLeadsOnly ? 'text-[#b0004a]' : 'text-secondary'}`}>database</span>
           </div>
           <h3 className="font-bold text-on-surface mb-1" style={{ fontFamily: 'Manrope, sans-serif' }}>Lead Matrix</h3>
           <p className="text-xs text-secondary leading-relaxed mb-4">
             Choose from your pre-scraped, verified lists and saved searches in the system.
           </p>
-          <span className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-1 ${sourceMode === 'matrix' ? 'text-[#b0004a]' : 'text-secondary'}`}>
+          <span className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-1 ${sourceMode === 'matrix' && !appMode?.manualLeadsOnly ? 'text-[#b0004a]' : 'text-secondary'}`}>
             Browse Lists
             <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
           </span>
+          {appMode?.manualLeadsOnly && (
+            <div className="absolute -top-9 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+              Locked in testing mode
+            </div>
+          )}
         </div>
 
         {/* Import Leads — coming soon */}
@@ -273,14 +325,14 @@ export default function WizardStep1Leads({
                   onChange={(e) => { onFilterCountryChange(e.target.value); setPage(1); }}
                   className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
                 >
-                  {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                  {countryOptions.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
                 </select>
                 <select
                   value={filterCategory}
                   onChange={(e) => { onFilterCategoryChange(e.target.value); setPage(1); }}
                   className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
                 >
-                  {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+                  {categoryOptions.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
                 </select>
               </div>
               <p className="text-xs text-secondary mt-1.5 flex items-center gap-1">

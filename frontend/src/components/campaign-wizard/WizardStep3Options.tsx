@@ -81,7 +81,7 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                 Sending Schedule
               </p>
               <p className="text-xs text-secondary">
-                Instantly.ai will pace delivery within this window for best deliverability
+                Emails will be paced within this window for best deliverability
               </p>
             </div>
           </div>

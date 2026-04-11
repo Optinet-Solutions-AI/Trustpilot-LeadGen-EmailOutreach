@@ -101,6 +101,11 @@ export function useCampaigns() {
     return res.data.data as { sentTo: string; leadUsed: string; originalEmail: string; messageId?: string };
   }, []);
 
+  const getWarmupStatus = useCallback(async () => {
+    const res = await api.get('/campaigns/warmup-status');
+    return res.data.data as { day: number; currentCap: number; phase: string; lifetimeSent: number; isWarmedUp: boolean };
+  }, []);
+
   const duplicateCampaign = useCallback(async (campaignId: string) => {
     const res = await api.post(`/campaigns/${campaignId}/duplicate`);
     const newCampaign = res.data.data as Campaign;
@@ -136,5 +141,5 @@ export function useCampaigns() {
     return res.data.data as CampaignStepType[];
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps };
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus };
 }

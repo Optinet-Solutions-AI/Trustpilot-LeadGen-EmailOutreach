@@ -1,6 +1,8 @@
 import { useState, useCallback } from 'react';
 import api from '../api/client';
 
+export type AnalyticsPeriod = '7d' | '30d' | 'all';
+
 export interface AnalyticsData {
   totalLeads: number;
   totalVerified: number;
@@ -24,6 +26,7 @@ export interface AnalyticsData {
     total_found: number;
     created_at: string;
   }>;
+  period: AnalyticsPeriod;
 }
 
 export function useAnalytics() {
@@ -31,11 +34,11 @@ export function useAnalytics() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAnalytics = useCallback(async () => {
+  const fetchAnalytics = useCallback(async (period: AnalyticsPeriod = 'all') => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/analytics');
+      const res = await api.get(`/analytics?period=${period}`);
       setData(res.data.data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load analytics');

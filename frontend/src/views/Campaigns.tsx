@@ -15,7 +15,7 @@ export default function Campaigns() {
     campaigns, loading, fetchCampaigns, createCampaign, sendCampaign,
     cancelCampaign, deleteCampaign, getCampaignLeads, checkReplies,
     getRateLimit, duplicateCampaign, previewRecipients, testFlightSend,
-    syncStats, getPlatformStatus, getCampaignSteps,
+    syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus,
   } = useCampaigns();
   const { status: sendStatus, sent, failed, total, subscribe, reset } = useCampaignProgress();
 
@@ -26,9 +26,13 @@ export default function Campaigns() {
   const [testFlightCampaignId, setTestFlightCampaignId] = useState<string | null>(null);
   const testFlightCampaign = campaigns.find((c) => c.id === testFlightCampaignId);
 
+  const [launchChoiceId, setLaunchChoiceId] = useState<string | null>(null);
+  const launchChoiceCampaign = campaigns.find((c) => c.id === launchChoiceId);
+
   const [checkingReplies, setCheckingReplies] = useState(false);
   const [repliesMsg, setRepliesMsg] = useState('');
-  const [rateLimit, setRateLimit] = useState<{ hourlyRemaining: number; dailyRemaining: number; canSend: boolean } | null>(null);
+  const [rateLimit, setRateLimit] = useState<{ hourlyRemaining: number; dailyRemaining: number; dailyCap: number; canSend: boolean } | null>(null);
+  const [warmupStatus, setWarmupStatus] = useState<{ day: number; currentCap: number; phase: string } | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -50,7 +54,8 @@ export default function Campaigns() {
 
   useEffect(() => {
     getRateLimit().then(setRateLimit).catch(() => {});
-  }, [getRateLimit]);
+    getWarmupStatus().then(setWarmupStatus).catch(() => {});
+  }, [getRateLimit, getWarmupStatus]);
 
   useEffect(() => {
     if (sendStatus === 'completed' || sendStatus === 'failed' || sendStatus === 'cancelled') {
@@ -193,8 +198,11 @@ export default function Campaigns() {
         </div>
         <div className="flex items-center gap-3">
           {rateLimit && (
-            <div className="text-xs font-semibold text-secondary bg-surface-container rounded-lg px-3 py-2">
-              {rateLimit.hourlyRemaining}/hr · {rateLimit.dailyRemaining}/day left
+            <div className="text-xs font-semibold text-secondary bg-surface-container rounded-lg px-3 py-2 flex items-center gap-2">
+              {warmupStatus && (
+                <span className="text-[#b0004a] font-bold">Day {warmupStatus.day} ·</span>
+              )}
+              {rateLimit.hourlyRemaining}/hr · {rateLimit.dailyRemaining}/{rateLimit.dailyCap} left
             </div>
           )}
           {platformInfo?.enabled && (
@@ -336,7 +344,7 @@ export default function Campaigns() {
                     ? { sent, failed, total }
                     : null
                 }
-                onLaunch={(id) => setTestFlightCampaignId(id)}
+                onLaunch={(id) => setLaunchChoiceId(id)}
                 onDuplicate={handleDuplicate}
                 onDelete={handleDelete}
                 onViewDetail={setDetailCampaign}
@@ -358,7 +366,64 @@ export default function Campaigns() {
         />
       )}
 
-      {/* Mandatory Test Flight gate */}
+      {/* Launch choice — optional test flight or go live now */}
+      {launchChoiceId && launchChoiceCampaign && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-surface-container-lowest rounded-2xl ambient-shadow w-full max-w-sm overflow-hidden border border-slate-100">
+            <div className="primary-gradient px-6 py-5 text-on-primary">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="material-symbols-outlined text-[22px]">rocket_launch</span>
+                  <h2 className="text-lg font-extrabold" style={{ fontFamily: 'Manrope, sans-serif' }}>Launch Campaign</h2>
+                </div>
+                <button onClick={() => setLaunchChoiceId(null)} className="text-white/60 hover:text-white transition-colors p-1">
+                  <span className="material-symbols-outlined text-[20px]">close</span>
+                </button>
+              </div>
+              <p className="text-sm text-white/80 mt-1.5">
+                How would you like to launch <span className="font-bold">{launchChoiceCampaign.name}</span>?
+              </p>
+            </div>
+            <div className="px-6 py-6 space-y-3">
+              <button
+                onClick={() => {
+                  setTestFlightCampaignId(launchChoiceId);
+                  setLaunchChoiceId(null);
+                }}
+                className="w-full flex items-center gap-3 px-5 py-4 rounded-xl border-2 border-[#b0004a]/20 bg-[#ffd9de]/10 hover:bg-[#ffd9de]/20 text-left transition-colors group"
+              >
+                <div className="w-9 h-9 rounded-full primary-gradient flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-on-primary text-[18px]">science</span>
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-[#b0004a]">Send Test Email First</p>
+                  <p className="text-xs text-secondary mt-0.5">Preview with real lead data before going live</p>
+                </div>
+                <span className="material-symbols-outlined text-secondary text-[18px] ml-auto">arrow_forward</span>
+              </button>
+              <button
+                onClick={() => {
+                  if (!confirm(`Send campaign to ${launchChoiceCampaign.lead_count ?? 0} recipient(s) now without a test email?`)) return;
+                  handleLiveSend(launchChoiceId);
+                  setLaunchChoiceId(null);
+                }}
+                className="w-full flex items-center gap-3 px-5 py-4 rounded-xl border border-slate-200 bg-surface-container hover:bg-surface-container-high text-left transition-colors"
+              >
+                <div className="w-9 h-9 rounded-full bg-[#006630] flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-white text-[18px]">send</span>
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-on-surface">Go Live Now</p>
+                  <p className="text-xs text-secondary mt-0.5">Send to {launchChoiceCampaign.lead_count ?? 0} recipient(s) immediately</p>
+                </div>
+                <span className="material-symbols-outlined text-secondary text-[18px] ml-auto">arrow_forward</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Test Flight — optional pre-send check */}
       {testFlightCampaignId && testFlightCampaign && (
         <TestFlightModal
           campaignName={testFlightCampaign.name}

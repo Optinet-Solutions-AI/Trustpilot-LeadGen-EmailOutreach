@@ -1,5 +1,25 @@
 # CLAUDE.md — Trustpilot Lead Gen & CRM Email Outreach
 
+---
+
+## MANDATORY: Code Graph First (Every Single Task)
+
+**Before reading any file, for every task without exception:**
+
+1. Call `get_minimal_context(task="<describe the task in one sentence>")` from the `code-review-graph` MCP server
+2. Read only the files it returns — nothing else
+3. Then proceed with the task
+
+This applies to planning tasks (Opus), execution tasks (Sonnet), bug fixes, feature additions, refactors, and questions. No exceptions.
+
+**Why:** The graph reduces tokens 8x by finding the exact files relevant to the task. Reading files without checking the graph first wastes tokens and context.
+
+**If the MCP server is unavailable:** fall back to `node scripts/find-relevant.js "keyword" --show-lines` and read only those files.
+
+**If `scripts/find-relevant.js` does not exist**, create it immediately before proceeding — source code is in the template at `C:\Users\User\Desktop\CLAUDE CODE FILES\CLAUDE-TEMPLATE.md`.
+
+---
+
 ## Project Overview
 
 A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via Instantly.ai. Built on the WAT framework (Workflows → Agents → Tools).
@@ -413,3 +433,42 @@ See `docs/deployment.md` for complete reference.
 | Deploy backend | `powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"` |
 | Run scraper manually | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country DE --category casino --max-rating 3.5` |
 | Run migration 008 | `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;` (Supabase SQL editor) |
+
+<!-- code-review-graph MCP tools -->
+## MCP Tools: code-review-graph
+
+**IMPORTANT: This project has a knowledge graph. ALWAYS use the
+code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
+the codebase.** The graph is faster, cheaper (fewer tokens), and gives
+you structural context (callers, dependents, test coverage) that file
+scanning cannot.
+
+### When to use graph tools FIRST
+
+- **Exploring code**: `semantic_search_nodes` or `query_graph` instead of Grep
+- **Understanding impact**: `get_impact_radius` instead of manually tracing imports
+- **Code review**: `detect_changes` + `get_review_context` instead of reading entire files
+- **Finding relationships**: `query_graph` with callers_of/callees_of/imports_of/tests_for
+- **Architecture questions**: `get_architecture_overview` + `list_communities`
+
+Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
+
+### Key Tools
+
+| Tool | Use when |
+|------|----------|
+| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
+| `get_review_context` | Need source snippets for review — token-efficient |
+| `get_impact_radius` | Understanding blast radius of a change |
+| `get_affected_flows` | Finding which execution paths are impacted |
+| `query_graph` | Tracing callers, callees, imports, tests, dependencies |
+| `semantic_search_nodes` | Finding functions/classes by name or keyword |
+| `get_architecture_overview` | Understanding high-level codebase structure |
+| `refactor_tool` | Planning renames, finding dead code |
+
+### Workflow
+
+1. The graph auto-updates on file changes (via hooks).
+2. Use `detect_changes` for code review.
+3. Use `get_affected_flows` to understand impact.
+4. Use `query_graph` pattern="tests_for" to check coverage.

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useAnalytics } from '../hooks/useAnalytics';
+import { useEffect, useState } from 'react';
+import { useAnalytics, type AnalyticsPeriod } from '../hooks/useAnalytics';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -15,10 +15,17 @@ const STATUS_COLORS: Record<string, string> = {
   lost: '#ba1a1a',
 };
 
+const PERIOD_OPTIONS: { label: string; value: AnalyticsPeriod }[] = [
+  { label: '7 Days', value: '7d' },
+  { label: '30 Days', value: '30d' },
+  { label: 'All Time', value: 'all' },
+];
+
 export default function Analytics() {
   const { data, loading, fetchAnalytics } = useAnalytics();
+  const [period, setPeriod] = useState<AnalyticsPeriod>('all');
 
-  useEffect(() => { fetchAnalytics(); }, [fetchAnalytics]);
+  useEffect(() => { fetchAnalytics(period); }, [fetchAnalytics, period]);
 
   if (loading || !data) {
     return (
@@ -75,11 +82,12 @@ export default function Analytics() {
           <p className="text-secondary mt-1 font-medium">Visualizing campaign vitality and engagement metrics.</p>
         </div>
         <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg">
-          {['7 Days', '30 Days', 'All Time'].map((label, i) => (
+          {PERIOD_OPTIONS.map(({ label, value }) => (
             <button
-              key={label}
+              key={value}
+              onClick={() => setPeriod(value)}
               className={`px-4 py-2 rounded-md text-xs font-bold transition-all ${
-                i === 2 ? 'bg-white shadow-sm text-[#b0004a]' : 'text-secondary hover:bg-white/50'
+                period === value ? 'bg-white shadow-sm text-[#b0004a]' : 'text-secondary hover:bg-white/50'
               }`}
             >
               {label}

@@ -35,7 +35,7 @@ export default function Dashboard() {
             is set in Vercel.
           </p>
           <button
-            onClick={fetchAnalytics}
+            onClick={() => fetchAnalytics()}
             className="px-6 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm"
           >
             Retry

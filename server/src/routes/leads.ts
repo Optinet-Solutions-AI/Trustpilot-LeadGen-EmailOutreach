@@ -1,9 +1,27 @@
 import { Router, Request, Response } from 'express';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
+import { getSupabase } from '../lib/supabase.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
+
+// GET /api/leads/filters — distinct countries and categories for wizard dropdowns
+router.get('/filters', async (_req: Request, res: Response) => {
+  try {
+    const supabase = getSupabase();
+    const [{ data: countryRows }, { data: categoryRows }] = await Promise.all([
+      supabase.from('leads').select('country').not('primary_email', 'is', null).not('country', 'is', null),
+      supabase.from('leads').select('category').not('primary_email', 'is', null).not('category', 'is', null),
+    ]);
+    const countries = [...new Set((countryRows || []).map((r: { country: string }) => r.country).filter(Boolean))].sort();
+    const categories = [...new Set((categoryRows || []).map((r: { category: string }) => r.category).filter(Boolean))].sort();
+    res.json({ success: true, data: { countries, categories } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
 
 // GET /api/leads — paginated + filterable
 router.get('/', async (req: Request, res: Response) => {

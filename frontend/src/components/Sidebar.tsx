@@ -97,16 +97,17 @@ export default function Sidebar() {
 
       {/* Bottom Section */}
       <div className="mt-auto pt-6 space-y-1 border-t border-slate-100">
-        <a
-          href="#"
-          className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-500 text-sm font-medium hover:bg-slate-200/50 hover:text-slate-700 transition-colors"
+        <button
+          disabled
+          title="Coming soon"
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-slate-400 text-sm font-medium opacity-40 cursor-not-allowed"
           style={{ fontFamily: 'Manrope, sans-serif' }}
         >
           <span className="material-symbols-outlined text-[20px]">settings</span>
           Settings
-        </a>
+        </button>
         <a
-          href="#"
+          href="mailto:support@optinetsolutions.com"
           className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-500 text-sm font-medium hover:bg-slate-200/50 hover:text-slate-700 transition-colors"
           style={{ fontFamily: 'Manrope, sans-serif' }}
         >

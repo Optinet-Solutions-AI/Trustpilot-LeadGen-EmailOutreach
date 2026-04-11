@@ -9,20 +9,8 @@ import WizardStep4Launch from './WizardStep4Launch';
 import type { FollowUpStepInput } from '../../types/campaign';
 import { DEFAULT_SCHEDULE, type SendingSchedule } from './scheduleConfig';
 
-const DEFAULT_SUBJECT =
-  '{Your Trustpilot rating needs attention|A quick note about your online reputation|Trustpilot improvement opportunity}, {{company_name}}';
-
-const DEFAULT_BODY = `<p>{Hi|Hello|Hey},</p>
-
-<p>{We recently noticed|I came across|Our team spotted} your brand's Trustpilot {score|rating|profile} {isn't where it should be|could use some improvement|has room for growth}, with a {relatively low|below-average} overall rating. {Our team can help you|We specialize in helping businesses} {improve your|boost your|strengthen your} Trustpilot score by {boosting positive visibility|increasing positive review volume} and {achieving a green rating|reaching a higher star rating}.</p>
-
-<p><strong>{{company_name}}</strong><br>
-Trustpilot Rating: {{star_rating}} ★</p>
-
-<p>{Would you be open to a quick chat|Could we schedule a brief call} to {discuss how to improve your online reputation|boost your review profile}?</p>
-
-<p>{Best regards|Kind regards|Best},<br>
-OptiRate<br>www.optiratesolutions.com</p>`;
+const DEFAULT_SUBJECT = '';
+const DEFAULT_BODY = '';
 
 const STEPS = [
   { n: 1, label: 'Select Leads',  next: 'Continue to Sequence'  },
@@ -108,16 +96,28 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
               Campaigns
             </button>
             <span className="text-sm font-bold text-[#b0004a] border-b-2 border-[#b0004a] py-4">Wizard</span>
-            <button className="text-sm font-semibold text-secondary hover:text-on-surface transition-colors py-4">
+            <button
+              disabled
+              title="Coming soon"
+              className="text-sm font-semibold text-secondary py-4 opacity-40 cursor-not-allowed"
+            >
               Settings
             </button>
           </nav>
         </div>
         <div className="flex items-center gap-3">
-          <button className="p-2 rounded-full text-secondary hover:bg-surface-container transition-colors">
+          <button
+            disabled
+            title="Coming soon"
+            className="p-2 rounded-full text-secondary opacity-40 cursor-not-allowed"
+          >
             <span className="material-symbols-outlined text-[20px]">help_outline</span>
           </button>
-          <button className="p-2 rounded-full text-secondary hover:bg-surface-container transition-colors">
+          <button
+            disabled
+            title="Coming soon"
+            className="p-2 rounded-full text-secondary opacity-40 cursor-not-allowed"
+          >
             <span className="material-symbols-outlined text-[20px]">notifications</span>
           </button>
           <div className="w-8 h-8 rounded-full primary-gradient flex items-center justify-center">
