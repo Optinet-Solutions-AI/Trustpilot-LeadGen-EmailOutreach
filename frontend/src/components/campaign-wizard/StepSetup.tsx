@@ -1,4 +1,4 @@
-import { Users, Clock } from 'lucide-react';
+import { useState } from 'react';
 
 export const COUNTRIES = [
   { code: '', name: 'All Countries' },
@@ -39,8 +39,7 @@ export const CATEGORIES = [
   { slug: 'travel_vacation', name: 'Travel & Vacation' },
 ];
 
-// Only timezones confirmed in Instantly's allowed enum (not all IANA zones are accepted).
-// Ref: https://developer.instantly.ai/api/v2/campaign/createcampaign
+// Only timezones confirmed in Instantly's allowed enum
 export const TIMEZONES = [
   { value: 'America/Detroit',      label: 'US Eastern — New York, Miami (EST/EDT)' },
   { value: 'America/Chicago',      label: 'US Central — Chicago, Dallas (CST/CDT)' },
@@ -71,15 +70,15 @@ export interface SendingSchedule {
   timezone: string;
   startHour: string;
   endHour: string;
-  days: number[];     // 0=Sun…6=Sat
+  days: number[];
   dailyLimit: number;
 }
 
 export const DEFAULT_SCHEDULE: SendingSchedule = {
-  timezone: 'America/Detroit',  // US Eastern — valid in Instantly's timezone enum
+  timezone: 'America/Detroit',
   startHour: '09:00',
   endHour: '17:00',
-  days: [1, 2, 3, 4, 5],  // Mon–Fri
+  days: [1, 2, 3, 4, 5],
   dailyLimit: 50,
 };
 
@@ -92,6 +91,8 @@ interface Props {
 }
 
 export default function StepSetup({ name, filterCountry, filterCategory, schedule, onChange }: Props) {
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+
   const updateSchedule = (patch: Partial<SendingSchedule>) =>
     onChange({ schedule: { ...schedule, ...patch } });
 
@@ -101,6 +102,7 @@ export default function StepSetup({ name, filterCountry, filterCategory, schedul
       : [...schedule.days, day].sort();
     updateSchedule({ days });
   };
+
   const targetLabel = (() => {
     const parts: string[] = [];
     if (filterCountry) parts.push(COUNTRIES.find((c) => c.code === filterCountry)?.name || filterCountry);
@@ -109,151 +111,179 @@ export default function StepSetup({ name, filterCountry, filterCategory, schedul
   })();
 
   return (
-    <div className="space-y-6 max-w-xl mx-auto">
+    <div className="space-y-6">
+
+      {/* Section header */}
       <div>
-        <h3 className="text-lg font-semibold mb-1">Campaign Setup</h3>
-        <p className="text-sm text-gray-500">Name your campaign and choose your target audience.</p>
+        <h3
+          className="text-xl font-extrabold text-on-surface"
+          style={{ fontFamily: 'Manrope, sans-serif' }}
+        >
+          Campaign Setup
+        </h3>
+        <p className="text-sm text-secondary mt-0.5">Name your campaign and choose your target audience.</p>
       </div>
 
+      {/* Campaign Name */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1.5">Campaign Name</label>
+        <label className="block text-sm font-bold text-on-surface mb-2">Campaign Name</label>
         <input
           type="text"
           value={name}
           onChange={(e) => onChange({ name: e.target.value })}
           placeholder="Casino DE — April 2026"
-          className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           autoFocus
+          className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm font-medium border-0 focus:ring-2 focus:ring-[#b0004a]/25 focus:outline-none placeholder:text-slate-400"
         />
       </div>
 
-      <div className="p-5 bg-blue-50 rounded-xl border border-blue-100">
-        <div className="flex items-center gap-2 mb-3">
-          <Users size={16} className="text-blue-600" />
-          <label className="text-sm font-semibold text-blue-800">Target Audience</label>
+      {/* Target Audience */}
+      <div className="bg-surface-container rounded-xl p-5">
+        <div className="flex items-center gap-2.5 mb-1">
+          <div className="w-7 h-7 rounded-lg bg-[#ffd9de] flex items-center justify-center">
+            <span className="material-symbols-outlined text-[#b0004a] text-[15px]">group</span>
+          </div>
+          <p className="text-sm font-bold text-on-surface">Target Audience</p>
         </div>
-        <p className="text-xs text-blue-600 mb-4">
-          Used to pre-filter leads in Step 3 — you'll choose exactly which ones to include.
+        <p className="text-xs text-secondary mb-4 ml-9">
+          Used to pre-filter leads in Step 4 — you&apos;ll choose exactly which ones to include.
         </p>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Country</label>
+            <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Country</label>
             <select
               value={filterCountry}
               onChange={(e) => onChange({ filterCountry: e.target.value })}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500"
+              className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
               {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+            <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Category</label>
             <select
               value={filterCategory}
               onChange={(e) => onChange({ filterCategory: e.target.value })}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500"
+              className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
               {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
             </select>
           </div>
         </div>
-        <p className="text-xs text-blue-700 mt-3 font-medium">
-          Pre-filter for Step 3: {targetLabel}
+        <p className="text-xs text-secondary mt-3 flex items-center gap-1.5">
+          <span className="material-symbols-outlined text-[#b0004a] text-[14px]">filter_alt</span>
+          Pre-filter for Step 4: <span className="font-bold text-on-surface">{targetLabel}</span>
         </p>
       </div>
 
-      {/* Sending Schedule */}
-      <div className="p-5 bg-gray-50 rounded-xl border border-gray-200">
-        <div className="flex items-center gap-2 mb-3">
-          <Clock size={16} className="text-gray-500" />
-          <label className="text-sm font-semibold text-gray-700">Sending Schedule</label>
-          <span className="text-xs text-gray-400 font-normal">(Instantly platform)</span>
-        </div>
-        <div className="text-xs text-gray-500 mb-4 space-y-1.5">
-          <p>Instantly sends emails from your configured accounts within this window only. Outside these hours they queue and go out at the next opening.</p>
-          <p className="text-blue-600 font-medium">💡 How it works: Instantly spreads your daily limit evenly across the window. Example: 50 emails/day between 9:00–17:00 = roughly 1 email every 10 minutes.</p>
-          <p className="text-green-600 font-medium">✓ Test flights always send immediately — they bypass this schedule entirely.</p>
-        </div>
-
-        <div className="space-y-4">
-          {/* Timezone */}
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Timezone</label>
-            <select
-              value={schedule.timezone}
-              onChange={(e) => updateSchedule({ timezone: e.target.value })}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500"
-            >
-              {TIMEZONES.map((tz) => (
-                <option key={tz.value} value={tz.value}>{tz.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Sending hours */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Start Hour</label>
-              <select
-                value={schedule.startHour}
-                onChange={(e) => updateSchedule({ startHour: e.target.value })}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500"
-              >
-                {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
-              </select>
+      {/* Sending Schedule — collapsible */}
+      <div className="bg-surface-container rounded-xl overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setScheduleOpen(!scheduleOpen)}
+          className="w-full flex items-center justify-between px-5 py-4 hover:bg-surface-container-high transition-colors"
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-surface-container-high flex items-center justify-center">
+              <span className="material-symbols-outlined text-secondary text-[15px]">schedule</span>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">End Hour</label>
-              <select
-                value={schedule.endHour}
-                onChange={(e) => updateSchedule({ endHour: e.target.value })}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500"
-              >
-                {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
-              </select>
+            <div className="text-left">
+              <p className="text-sm font-bold text-on-surface">Sending Schedule</p>
+              <p className="text-xs text-secondary">
+                {schedule.startHour}–{schedule.endHour} · {schedule.days.length} days/week · {schedule.dailyLimit}/day
+              </p>
             </div>
           </div>
+          <span className="material-symbols-outlined text-secondary text-[20px]">
+            {scheduleOpen ? 'expand_less' : 'expand_more'}
+          </span>
+        </button>
 
-          {/* Days of week */}
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-2">Active Days</label>
-            <div className="flex gap-1.5">
-              {DAY_LABELS.map((label, day) => (
-                <button
-                  key={day}
-                  type="button"
-                  onClick={() => toggleDay(day)}
-                  className={`w-9 h-9 rounded-lg text-xs font-medium transition-colors ${
-                    schedule.days.includes(day)
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white border border-gray-300 text-gray-500 hover:bg-gray-50'
-                  }`}
+        {scheduleOpen && (
+          <div className="px-5 pb-5 border-t border-slate-100 space-y-5 pt-4">
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 space-y-1">
+              <p>Instantly sends emails within this window only. Outside these hours they queue for the next opening.</p>
+              <p className="font-semibold text-[#006630]">✓ Test flights always send immediately — they bypass this schedule.</p>
+            </div>
+
+            {/* Timezone */}
+            <div>
+              <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Timezone</label>
+              <select
+                value={schedule.timezone}
+                onChange={(e) => updateSchedule({ timezone: e.target.value })}
+                className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+              >
+                {TIMEZONES.map((tz) => (
+                  <option key={tz.value} value={tz.value}>{tz.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Hours */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Start Hour</label>
+                <select
+                  value={schedule.startHour}
+                  onChange={(e) => updateSchedule({ startHour: e.target.value })}
+                  className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
                 >
-                  {label}
-                </button>
-              ))}
+                  {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">End Hour</label>
+                <select
+                  value={schedule.endHour}
+                  onChange={(e) => updateSchedule({ endHour: e.target.value })}
+                  className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                >
+                  {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* Days */}
+            <div>
+              <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-2">Active Days</label>
+              <div className="flex gap-2">
+                {DAY_LABELS.map((label, day) => (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => toggleDay(day)}
+                    className={`w-9 h-9 rounded-lg text-xs font-bold transition-all ${
+                      schedule.days.includes(day)
+                        ? 'primary-gradient text-on-primary ambient-shadow scale-105'
+                        : 'bg-surface-container-lowest border border-slate-100 text-secondary hover:border-[#b0004a]/30'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Daily limit */}
+            <div>
+              <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">
+                Daily Email Limit <span className="normal-case font-normal">(per account)</span>
+              </label>
+              <input
+                type="number"
+                min={5}
+                max={500}
+                value={schedule.dailyLimit}
+                onChange={(e) => updateSchedule({ dailyLimit: Number(e.target.value) })}
+                className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+              />
+              <p className="text-xs text-secondary mt-1.5">
+                Warmup guide: Week 1 → 20/day · Week 2 → 50/day · Week 3+ → 100+/day
+              </p>
             </div>
           </div>
-
-          {/* Daily limit */}
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Daily Email Limit <span className="text-gray-400 font-normal">(per sending account)</span>
-            </label>
-            <input
-              type="number"
-              min={5}
-              max={500}
-              value={schedule.dailyLimit}
-              onChange={(e) => updateSchedule({ dailyLimit: Number(e.target.value) })}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              Warmup guide: Week 1 → 20/day · Week 2 → 50/day · Week 3+ → 100+/day.
-              Start low to protect your sender reputation.
-            </p>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Loader2, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import api from '../../api/client';
 
 interface PickerLead {
@@ -20,34 +20,6 @@ interface Props {
 const LIMIT = 50;
 type SortDir = 'asc' | 'desc';
 
-interface SortHeaderProps {
-  label: string;
-  col: string;
-  sortBy: string;
-  sortDir: SortDir;
-  onSort: (col: string) => void;
-  className?: string;
-}
-
-function SortHeader({ label, col, sortBy, sortDir, onSort, className = '' }: SortHeaderProps) {
-  const active = sortBy === col;
-  return (
-    <th
-      className={`px-3 py-2.5 font-medium cursor-pointer select-none hover:text-gray-900 whitespace-nowrap ${className}`}
-      onClick={() => onSort(col)}
-    >
-      <span className="inline-flex items-center gap-0.5">
-        {label}
-        {active
-          ? sortDir === 'asc'
-            ? <ChevronUp size={11} className="text-blue-500" />
-            : <ChevronDown size={11} className="text-blue-500" />
-          : <ChevronsUpDown size={11} className="text-gray-300" />}
-      </span>
-    </th>
-  );
-}
-
 export default function StepRecipients({ filterCountry, filterCategory, selectedLeadIds, onSelectionChange }: Props) {
   const [leads, setLeads] = useState<PickerLead[]>([]);
   const [total, setTotal] = useState(0);
@@ -65,12 +37,8 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   }, [search]);
 
   const toggleSort = (col: string) => {
-    if (col === sortBy) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortBy(col);
-      setSortDir('asc');
-    }
+    if (col === sortBy) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(col); setSortDir('asc'); }
     setPage(1);
   };
 
@@ -99,55 +67,74 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
   const toggleLead = (id: string) => {
-    if (selectedLeadIds.includes(id)) {
-      onSelectionChange(selectedLeadIds.filter((x) => x !== id));
-    } else {
-      onSelectionChange([...selectedLeadIds, id]);
-    }
+    if (selectedLeadIds.includes(id)) onSelectionChange(selectedLeadIds.filter((x) => x !== id));
+    else onSelectionChange([...selectedLeadIds, id]);
   };
 
   const pageIds = leads.map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
 
   const togglePage = () => {
-    if (allPageSelected) {
-      onSelectionChange(selectedLeadIds.filter((id) => !pageIds.includes(id)));
-    } else {
-      const toAdd = pageIds.filter((id) => !selectedLeadIds.includes(id));
-      onSelectionChange([...selectedLeadIds, ...toAdd]);
-    }
+    if (allPageSelected) onSelectionChange(selectedLeadIds.filter((id) => !pageIds.includes(id)));
+    else onSelectionChange([...selectedLeadIds, ...pageIds.filter((id) => !selectedLeadIds.includes(id))]);
   };
 
+  const SortIcon = ({ col }: { col: string }) => (
+    <span className={`material-symbols-outlined text-[13px] ml-0.5 ${sortBy === col ? 'text-[#b0004a]' : 'text-slate-300'}`}>
+      {sortBy === col ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+    </span>
+  );
+
   return (
-    <div className="space-y-3">
-      <div>
-        <h3 className="text-lg font-semibold mb-1">Select Recipients</h3>
-        <p className="text-sm text-gray-500">Choose which leads to include. Click column headers to sort.</p>
+    <div className="space-y-4">
+
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <h3
+            className="text-xl font-extrabold text-on-surface"
+            style={{ fontFamily: 'Manrope, sans-serif' }}
+          >
+            Select Recipients
+          </h3>
+          <p className="text-sm text-secondary mt-0.5">Choose which leads to include. Click headers to sort.</p>
+        </div>
+        {selectedLeadIds.length > 0 && (
+          <div className="flex items-center gap-2 bg-[#ffd9de] rounded-xl px-3 py-2">
+            <span className="material-symbols-outlined text-[#b0004a] text-[16px]">group</span>
+            <span className="text-sm font-extrabold text-[#b0004a]" style={{ fontFamily: 'Manrope, sans-serif' }}>
+              {selectedLeadIds.length} selected
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Search only */}
+      {/* Search + actions */}
       <div className="flex items-center gap-3">
         <div className="relative flex-1">
-          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[18px]">search</span>
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search companies..."
-            className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg text-sm"
+            className="w-full bg-surface-container rounded-xl pl-10 pr-4 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           />
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <span className={`font-medium ${selectedLeadIds.length > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
-            {selectedLeadIds.length} selected
-          </span>
+        <div className="flex items-center gap-2">
           {leads.length > 0 && (
-            <button onClick={togglePage} className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap">
+            <button
+              onClick={togglePage}
+              className="text-xs font-bold text-[#b0004a] hover:text-[#7a0033] whitespace-nowrap bg-[#ffd9de] px-3 py-2 rounded-lg transition-colors"
+            >
               {allPageSelected ? 'Deselect page' : 'Select page'}
             </button>
           )}
           {selectedLeadIds.length > 0 && (
-            <button onClick={() => onSelectionChange([])} className="text-xs text-red-500 hover:text-red-700 whitespace-nowrap">
+            <button
+              onClick={() => onSelectionChange([])}
+              className="text-xs font-bold text-error hover:text-red-700 whitespace-nowrap bg-red-50 px-3 py-2 rounded-lg transition-colors"
+            >
               Clear all
             </button>
           )}
@@ -156,45 +143,80 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
 
       {/* Table */}
       {loading ? (
-        <div className="flex items-center justify-center py-10 text-gray-400 gap-2">
-          <Loader2 size={16} className="animate-spin" /> Loading leads...
+        <div className="flex items-center justify-center py-12 text-secondary gap-2">
+          <Loader2 size={16} className="animate-spin text-[#b0004a]" /> Loading leads...
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="bg-surface-container-lowest rounded-xl border border-slate-100 overflow-hidden ambient-shadow">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b text-left text-xs text-gray-500">
-                <th className="w-8 px-3 py-2.5">
-                  <input type="checkbox" checked={allPageSelected} onChange={togglePage}
-                    className="rounded border-gray-300" />
+              <tr className="bg-surface-container border-b border-slate-100 text-left">
+                <th className="w-10 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allPageSelected}
+                    onChange={togglePage}
+                    className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                  />
                 </th>
-                <SortHeader label="Company" col="company_name" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                <SortHeader label="Email" col="primary_email" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                <SortHeader label="Rating" col="star_rating" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} className="w-20 text-right" />
-                <th className="px-3 py-2.5 font-medium w-24">Status</th>
+                <th
+                  className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary cursor-pointer hover:text-on-surface select-none"
+                  onClick={() => toggleSort('company_name')}
+                >
+                  Company <SortIcon col="company_name" />
+                </th>
+                <th
+                  className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary cursor-pointer hover:text-on-surface select-none"
+                  onClick={() => toggleSort('primary_email')}
+                >
+                  Email <SortIcon col="primary_email" />
+                </th>
+                <th
+                  className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary cursor-pointer hover:text-on-surface select-none text-right w-20"
+                  onClick={() => toggleSort('star_rating')}
+                >
+                  Rating <SortIcon col="star_rating" />
+                </th>
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary w-24">Status</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-50">
               {leads.map((lead) => {
                 const isSelected = selectedLeadIds.includes(lead.id);
                 return (
-                  <tr key={lead.id}
-                    className={`border-b last:border-b-0 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-gray-50'}`}
+                  <tr
+                    key={lead.id}
+                    className={`cursor-pointer transition-colors ${isSelected ? 'bg-[#ffd9de]/30 hover:bg-[#ffd9de]/50' : 'hover:bg-surface-container-low'}`}
                     onClick={() => toggleLead(lead.id)}
                   >
-                    <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" checked={isSelected} onChange={() => toggleLead(lead.id)}
-                        className="rounded border-gray-300" />
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleLead(lead.id)}
+                        className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                      />
                     </td>
-                    <td className="px-3 py-2 font-medium text-gray-800">{lead.company_name}</td>
-                    <td className="px-3 py-2 text-gray-500 text-xs">{lead.primary_email || <span className="text-gray-300">—</span>}</td>
-                    <td className="px-3 py-2 text-right text-gray-600">{lead.star_rating != null ? `${lead.star_rating} ★` : '—'}</td>
-                    <td className="px-3 py-2 text-xs text-gray-400">{lead.outreach_status}</td>
+                    <td className="px-4 py-3 font-bold text-on-surface">{lead.company_name}</td>
+                    <td className="px-4 py-3 text-secondary text-xs">{lead.primary_email || <span className="text-slate-300">—</span>}</td>
+                    <td className="px-4 py-3 text-right font-bold text-[#b0004a] text-xs">
+                      {lead.star_rating != null ? `${lead.star_rating} ★` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      <span className="bg-surface-container text-secondary px-2 py-0.5 rounded-full font-semibold capitalize">
+                        {lead.outreach_status}
+                      </span>
+                    </td>
                   </tr>
                 );
               })}
               {leads.length === 0 && (
-                <tr><td colSpan={5} className="px-3 py-10 text-center text-gray-400">No leads found.</td></tr>
+                <tr>
+                  <td colSpan={5} className="px-4 py-12 text-center text-secondary">
+                    <span className="material-symbols-outlined text-[28px] text-slate-200 block mb-1">search_off</span>
+                    No leads found
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -203,17 +225,25 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between text-xs text-gray-500">
-          <span>Showing {((page - 1) * LIMIT) + 1}–{Math.min(page * LIMIT, total)} of {total}</span>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-secondary font-semibold">
+            Showing {((page - 1) * LIMIT) + 1}–{Math.min(page * LIMIT, total)} of {total}
+          </span>
           <div className="flex items-center gap-1">
-            <button disabled={page === 1} onClick={() => setPage((p) => p - 1)}
-              className="p-1 border rounded disabled:opacity-40 hover:bg-gray-50">
-              <ChevronLeft size={13} />
+            <button
+              disabled={page === 1}
+              onClick={() => setPage((p) => p - 1)}
+              className="p-2 rounded-lg bg-surface-container disabled:opacity-40 hover:bg-surface-container-high transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">chevron_left</span>
             </button>
-            <span className="px-2">Page {page} of {totalPages}</span>
-            <button disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}
-              className="p-1 border rounded disabled:opacity-40 hover:bg-gray-50">
-              <ChevronRight size={13} />
+            <span className="px-3 font-semibold text-secondary">Page {page} of {totalPages}</span>
+            <button
+              disabled={page === totalPages}
+              onClick={() => setPage((p) => p + 1)}
+              className="p-2 rounded-lg bg-surface-container disabled:opacity-40 hover:bg-surface-container-high transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">chevron_right</span>
             </button>
           </div>
         </div>

@@ -1,4 +1,3 @@
-import { Mail, Users, ImageIcon, Send, Clock } from 'lucide-react';
 import { COUNTRIES, CATEGORIES } from './StepSetup';
 
 interface Props {
@@ -19,97 +18,119 @@ export default function StepReview({
   filterCountry, filterCategory, recipientCount,
   followUpCount = 0, saving, onSubmit,
 }: Props) {
-  const countryName = COUNTRIES.find((c) => c.code === filterCountry)?.name || 'All Countries';
+  const countryName  = COUNTRIES.find((c) => c.code === filterCountry)?.name  || 'All Countries';
   const categoryName = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
+  const bodyPreview  = body.replace(/<[^>]+>/g, '').slice(0, 180).trim();
 
-  const bodyPreview = body.replace(/<[^>]+>/g, '').slice(0, 150).trim();
+  const items = [
+    {
+      icon: 'badge',
+      label: 'Campaign Name',
+      value: name,
+      accent: false,
+    },
+    {
+      icon: 'group',
+      label: 'Recipients',
+      value: `${recipientCount} lead${recipientCount !== 1 ? 's' : ''} selected`,
+      sub: (filterCountry || filterCategory)
+        ? `Filtered by: ${countryName}${filterCountry && filterCategory ? ' + ' : ''}${filterCategory ? categoryName : ''}`
+        : null,
+      accent: recipientCount > 0,
+    },
+    {
+      icon: 'subject',
+      label: 'Subject Line',
+      value: subject,
+      accent: false,
+    },
+    {
+      icon: 'edit_note',
+      label: 'Body Preview',
+      value: bodyPreview + (body.length > 180 ? '…' : ''),
+      accent: false,
+    },
+  ];
 
   return (
-    <div className="space-y-5 max-w-xl mx-auto">
+    <div className="space-y-5">
+
+      {/* Header */}
       <div>
-        <h3 className="text-lg font-semibold mb-1">Review & Create</h3>
-        <p className="text-sm text-gray-500">Confirm everything looks good before creating your campaign.</p>
+        <h3
+          className="text-xl font-extrabold text-on-surface"
+          style={{ fontFamily: 'Manrope, sans-serif' }}
+        >
+          Review & Create
+        </h3>
+        <p className="text-sm text-secondary mt-0.5">Confirm everything looks good before creating your campaign.</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 divide-y">
-        {/* Name */}
-        <div className="px-5 py-4">
-          <p className="text-xs text-gray-500 mb-0.5">Campaign Name</p>
-          <p className="text-sm font-semibold text-gray-900">{name}</p>
-        </div>
-
-        {/* Target */}
-        <div className="px-5 py-4">
-          <div className="flex items-center gap-2 mb-1">
-            <Users size={14} className="text-blue-500" />
-            <p className="text-xs text-gray-500">Recipients</p>
+      {/* Summary card */}
+      <div className="bg-surface-container-lowest rounded-xl border border-slate-100 ambient-shadow divide-y divide-slate-100 overflow-hidden">
+        {items.map((item) => (
+          <div key={item.label} className="px-5 py-4">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="material-symbols-outlined text-[15px] text-secondary">{item.icon}</span>
+              <p className="text-xs font-bold text-secondary uppercase tracking-wider">{item.label}</p>
+            </div>
+            <p className={`text-sm font-semibold ${item.accent ? 'text-[#b0004a]' : 'text-on-surface'}`}>
+              {item.value}
+            </p>
+            {item.sub && <p className="text-xs text-secondary mt-0.5">{item.sub}</p>}
           </div>
-          <p className="text-sm font-semibold text-blue-700">{recipientCount} lead{recipientCount !== 1 ? 's' : ''} selected</p>
-          {(filterCountry || filterCategory) && (
-            <p className="text-xs text-gray-400 mt-0.5">Filtered by: {countryName}{filterCountry && filterCategory ? ' + ' : ''}{filterCategory ? categoryName : ''}</p>
-          )}
-        </div>
-
-        {/* Subject */}
-        <div className="px-5 py-4">
-          <div className="flex items-center gap-2 mb-1">
-            <Mail size={14} className="text-blue-500" />
-            <p className="text-xs text-gray-500">Subject Line</p>
-          </div>
-          <p className="text-sm text-gray-800">{subject}</p>
-        </div>
-
-        {/* Body preview */}
-        <div className="px-5 py-4">
-          <p className="text-xs text-gray-500 mb-1">Body Preview</p>
-          <p className="text-sm text-gray-600">{bodyPreview}{body.length > 150 ? '...' : ''}</p>
-        </div>
+        ))}
 
         {/* Follow-ups */}
         {followUpCount > 0 && (
           <div className="px-5 py-4">
             <div className="flex items-center gap-2 mb-1">
-              <Clock size={14} className="text-blue-500" />
-              <p className="text-xs text-gray-500">Follow-up Sequence</p>
+              <span className="material-symbols-outlined text-[15px] text-secondary">schedule_send</span>
+              <p className="text-xs font-bold text-secondary uppercase tracking-wider">Follow-up Sequence</p>
             </div>
-            <p className="text-sm text-gray-800">
+            <p className="text-sm font-semibold text-on-surface">
               {followUpCount} follow-up email{followUpCount !== 1 ? 's' : ''} configured
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Leads who don't reply will receive follow-ups automatically
+            <p className="text-xs text-secondary mt-0.5">
+              Leads who don&apos;t reply will receive follow-ups automatically
             </p>
           </div>
         )}
 
         {/* Screenshot */}
         {includeScreenshot && (
-          <div className="px-5 py-3 bg-blue-50">
-            <div className="flex items-center gap-2 text-xs text-blue-700">
-              <ImageIcon size={13} />
-              <span>Trustpilot screenshot will be attached</span>
-            </div>
+          <div className="px-5 py-3 bg-[#ffd9de]/30 flex items-center gap-2">
+            <span className="material-symbols-outlined text-[#b0004a] text-[16px]">screenshot_monitor</span>
+            <span className="text-xs font-bold text-[#b0004a]">Trustpilot screenshot will be attached to each email</span>
           </div>
         )}
       </div>
 
+      {/* Warning if no leads */}
+      {recipientCount === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+          <span className="material-symbols-outlined text-amber-600 text-[20px]">warning</span>
+          <p className="text-sm font-bold text-amber-800">
+            No leads selected. Go back to Step 4 and select at least one lead.
+          </p>
+        </div>
+      )}
+
+      {/* Submit */}
       <button
         type="button"
         onClick={onSubmit}
         disabled={saving || recipientCount === 0}
-        className="w-full flex items-center justify-center gap-2 bg-green-600 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors"
+        className="w-full flex items-center justify-center gap-2 primary-gradient text-on-primary px-5 py-4 rounded-xl text-sm font-extrabold ambient-shadow hover:scale-[1.01] disabled:opacity-50 disabled:scale-100 transition-transform"
+        style={{ fontFamily: 'Manrope, sans-serif' }}
       >
-        <Send size={16} />
+        <span className="material-symbols-outlined text-[20px]">{saving ? 'progress_activity' : 'rocket_launch'}</span>
         {saving ? 'Creating Campaign...' : 'Create Campaign'}
       </button>
 
-      {recipientCount === 0 && (
-        <p className="text-xs text-center text-red-500">
-          No leads selected. Go back to Step 3 and select at least one lead.
-        </p>
-      )}
-
-      <p className="text-xs text-center text-gray-400">
-        The campaign will be created as a Draft. You can send a test or go live from the campaign list.
+      <p className="text-xs text-center text-secondary">
+        Campaign will be created as a <span className="font-bold">Draft</span>.
+        You can send a test or go live from the campaign list.
       </p>
     </div>
   );
