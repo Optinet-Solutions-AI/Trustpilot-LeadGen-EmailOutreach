@@ -66,7 +66,7 @@ export default function Campaigns() {
     setTimeout(() => setNotification(null), 6000);
   };
 
-  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[]; followUpSteps?: Array<{ delayDays: number; subject: string; body: string }> }) => {
+  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[]; manualEmails?: string[]; followUpSteps?: Array<{ delayDays: number; subject: string; body: string }> }) => {
     const campaign = await createCampaign(data);
     const stepsMsg = data.followUpSteps?.length ? ` + ${data.followUpSteps.length} follow-up(s)` : '';
     notify('success', `Campaign "${campaign.name}" created with ${data.leadIds.length} lead${data.leadIds.length !== 1 ? 's' : ''}${stepsMsg}.`);

@@ -25,6 +25,7 @@ export function useCampaigns() {
     templateBody: string;
     includeScreenshot?: boolean;
     leadIds?: string[];
+    manualEmails?: string[];
     filterCountry?: string;
     filterCategory?: string;
     followUpSteps?: Array<{ delayDays: number; subject: string; body: string }>;

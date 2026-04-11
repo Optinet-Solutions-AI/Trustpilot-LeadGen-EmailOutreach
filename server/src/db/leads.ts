@@ -82,3 +82,24 @@ export async function deleteLead(id: string) {
   const { error } = await supabase.from('leads').delete().eq('id', id);
   if (error) throw new Error(error.message);
 }
+
+// Upsert manually-entered email addresses as minimal lead records.
+// Uses trustpilot_url = 'manual:<email>' as the unique key to avoid conflicts.
+// Returns the IDs of all upserted leads.
+export async function upsertManualLeads(emails: string[]): Promise<string[]> {
+  const supabase = getSupabase();
+  const records = emails.map((email) => ({
+    trustpilot_url: `manual:${email.toLowerCase().trim()}`,
+    primary_email: email.toLowerCase().trim(),
+    company_name: email.toLowerCase().trim().split('@')[1]?.split('.')[0] || email,
+    outreach_status: 'new',
+  }));
+
+  const { data, error } = await supabase
+    .from('leads')
+    .upsert(records, { onConflict: 'trustpilot_url', ignoreDuplicates: false })
+    .select('id');
+
+  if (error) throw new Error(error.message);
+  return (data || []).map((r: { id: string }) => r.id);
+}

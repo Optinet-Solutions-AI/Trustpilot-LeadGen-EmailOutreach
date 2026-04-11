@@ -19,19 +19,25 @@ interface Props {
   filterCountry: string;
   filterCategory: string;
   selectedLeadIds: string[];
+  manualEmails: string[];
   maxLeads: number;
   onFilterCountryChange: (v: string) => void;
   onFilterCategoryChange: (v: string) => void;
   onSelectionChange: (ids: string[]) => void;
+  onManualEmailsChange: (emails: string[]) => void;
   onMaxLeadsChange: (n: number) => void;
 }
 
 const LIMIT = 50;
 
+type SourceMode = 'matrix' | 'manual';
+
 export default function WizardStep1Leads({
-  filterCountry, filterCategory, selectedLeadIds, maxLeads,
-  onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onMaxLeadsChange,
+  filterCountry, filterCategory, selectedLeadIds, manualEmails, maxLeads,
+  onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
 }: Props) {
+  const [sourceMode, setSourceMode] = useState<SourceMode>('matrix');
+  const [manualInput, setManualInput] = useState(manualEmails.join('\n'));
   const [leads, setLeads]         = useState<PickerLead[]>([]);
   const [total, setTotal]         = useState(0);
   const [totalPages, setTotalPages] = useState(0);
@@ -116,23 +122,28 @@ export default function WizardStep1Leads({
 
       {/* Source selection cards */}
       <div className="grid grid-cols-3 gap-4 mb-8">
-        {/* Lead Matrix — selected (our only active source) */}
-        <div className="bg-white rounded-2xl p-6 border-2 border-[#b0004a] cursor-pointer flex flex-col items-center text-center ambient-shadow">
-          <div className="w-12 h-12 rounded-full bg-[#ffd9de] flex items-center justify-center mb-4">
-            <span className="material-symbols-outlined text-[#b0004a] text-[22px]">database</span>
+        {/* Lead Matrix */}
+        <div
+          onClick={() => setSourceMode('matrix')}
+          className={`bg-white rounded-2xl p-6 cursor-pointer flex flex-col items-center text-center transition-all ${
+            sourceMode === 'matrix' ? 'border-2 border-[#b0004a] ambient-shadow' : 'border border-slate-100 hover:border-slate-200'
+          }`}
+        >
+          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 ${sourceMode === 'matrix' ? 'bg-[#ffd9de]' : 'bg-slate-100'}`}>
+            <span className={`material-symbols-outlined text-[22px] ${sourceMode === 'matrix' ? 'text-[#b0004a]' : 'text-secondary'}`}>database</span>
           </div>
           <h3 className="font-bold text-on-surface mb-1" style={{ fontFamily: 'Manrope, sans-serif' }}>Lead Matrix</h3>
           <p className="text-xs text-secondary leading-relaxed mb-4">
             Choose from your pre-scraped, verified lists and saved searches in the system.
           </p>
-          <button className="text-xs font-extrabold text-[#b0004a] uppercase tracking-wider flex items-center gap-1 hover:gap-2 transition-all">
+          <span className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-1 ${sourceMode === 'matrix' ? 'text-[#b0004a]' : 'text-secondary'}`}>
             Browse Lists
             <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
-          </button>
+          </span>
         </div>
 
-        {/* Import Leads — disabled */}
-        <div className="bg-white rounded-2xl p-6 border border-slate-100 cursor-not-allowed opacity-50 flex flex-col items-center text-center">
+        {/* Import Leads — coming soon */}
+        <div className="relative group bg-white rounded-2xl p-6 border border-slate-100 cursor-not-allowed opacity-50 flex flex-col items-center text-center">
           <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-4">
             <span className="material-symbols-outlined text-secondary text-[22px]">upload_file</span>
           </div>
@@ -140,30 +151,100 @@ export default function WizardStep1Leads({
           <p className="text-xs text-secondary leading-relaxed mb-4">
             Upload a CSV, Excel, or Google Sheets file containing your target contact information.
           </p>
-          <button className="text-xs font-extrabold text-secondary uppercase tracking-wider flex items-center gap-1">
+          <span className="text-xs font-extrabold text-secondary uppercase tracking-wider flex items-center gap-1">
             Select File
             <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
-          </button>
+          </span>
+          {/* Tooltip */}
+          <div className="absolute -top-9 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+            Coming soon
+          </div>
         </div>
 
-        {/* Add Manually — disabled */}
-        <div className="bg-white rounded-2xl p-6 border border-slate-100 cursor-not-allowed opacity-50 flex flex-col items-center text-center">
-          <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-4">
-            <span className="material-symbols-outlined text-secondary text-[22px]">edit_note</span>
+        {/* Add Manually — active */}
+        <div
+          onClick={() => setSourceMode('manual')}
+          className={`bg-white rounded-2xl p-6 cursor-pointer flex flex-col items-center text-center transition-all ${
+            sourceMode === 'manual' ? 'border-2 border-[#b0004a] ambient-shadow' : 'border border-slate-100 hover:border-slate-200'
+          }`}
+        >
+          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 ${sourceMode === 'manual' ? 'bg-[#ffd9de]' : 'bg-slate-100'}`}>
+            <span className={`material-symbols-outlined text-[22px] ${sourceMode === 'manual' ? 'text-[#b0004a]' : 'text-secondary'}`}>edit_note</span>
           </div>
           <h3 className="font-bold text-on-surface mb-1" style={{ fontFamily: 'Manrope, sans-serif' }}>Add Manually</h3>
           <p className="text-xs text-secondary leading-relaxed mb-4">
             Quickly paste a list of email addresses or fill in a simple form for direct entry.
           </p>
-          <button className="text-xs font-extrabold text-secondary uppercase tracking-wider flex items-center gap-1">
+          <span className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-1 ${sourceMode === 'manual' ? 'text-[#b0004a]' : 'text-secondary'}`}>
             Open Editor
             <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
-          </button>
+          </span>
         </div>
       </div>
 
-      {/* Configuration panel */}
-      <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden mb-6">
+      {/* ── Manual entry panel ── */}
+      {sourceMode === 'manual' && (
+        <div className="bg-white rounded-2xl border-2 border-[#b0004a] ambient-shadow overflow-hidden mb-6">
+          <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100 bg-[#ffd9de]/20">
+            <div className="w-7 h-7 rounded-full primary-gradient flex items-center justify-center flex-shrink-0">
+              <span className="material-symbols-outlined text-on-primary text-[14px]">edit_note</span>
+            </div>
+            <div>
+              <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                Manual Email Entry
+              </p>
+              <p className="text-xs text-secondary">
+                Paste one email address per line. These will be added as leads when you create the campaign.
+              </p>
+            </div>
+          </div>
+          <div className="p-6">
+            <textarea
+              value={manualInput}
+              onChange={(e) => setManualInput(e.target.value)}
+              rows={8}
+              placeholder={`john@example.com\njane@acmecorp.com\ninfo@bigcompany.co.uk`}
+              className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm font-mono border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none resize-none"
+            />
+            <div className="flex items-center justify-between mt-3">
+              <p className="text-xs text-secondary">
+                {manualInput.split('\n').filter((l) => l.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(l.trim())).length} valid email{manualInput.split('\n').filter((l) => l.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(l.trim())).length !== 1 ? 's' : ''} detected
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setManualInput(''); onManualEmailsChange([]); }}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-secondary bg-surface-container hover:bg-surface-container-high transition-colors"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={() => {
+                    const emails = manualInput
+                      .split('\n')
+                      .map((l) => l.trim())
+                      .filter((l) => l && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(l));
+                    onManualEmailsChange(emails);
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-extrabold primary-gradient text-on-primary ambient-shadow hover:scale-[1.02] transition-transform"
+                >
+                  Apply ({manualInput.split('\n').filter((l) => l.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(l.trim())).length})
+                </button>
+              </div>
+            </div>
+            {manualEmails.length > 0 && (
+              <div className="mt-3 flex items-center gap-2 p-3 bg-[#8ff9a8]/20 rounded-xl border border-[#006630]/20">
+                <span className="material-symbols-outlined text-[#006630] text-[16px]">check_circle</span>
+                <p className="text-xs font-bold text-[#006630]">
+                  {manualEmails.length} email{manualEmails.length !== 1 ? 's' : ''} saved — click &quot;Continue to Sequence&quot; when ready
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Configuration panel — Lead Matrix only */}
+      {sourceMode === 'matrix' && <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden mb-6">
         {/* Panel header */}
         <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100">
           <div className="w-7 h-7 rounded-full primary-gradient flex items-center justify-center flex-shrink-0">
@@ -278,10 +359,10 @@ export default function WizardStep1Leads({
             </div>
           </div>
         </div>
-      </div>
+      </div>}
 
-      {/* Lead table */}
-      <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
+      {/* Lead table — Lead Matrix only */}
+      {sourceMode === 'matrix' && <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
         {/* Table toolbar */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-surface-container">
           <div className="flex items-center gap-3">
@@ -400,7 +481,7 @@ export default function WizardStep1Leads({
             </div>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

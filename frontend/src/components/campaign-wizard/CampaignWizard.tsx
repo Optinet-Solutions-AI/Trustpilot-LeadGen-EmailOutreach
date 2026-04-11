@@ -39,6 +39,7 @@ interface Props {
     templateBody: string;
     includeScreenshot: boolean;
     leadIds: string[];
+    manualEmails?: string[];
     followUpSteps?: FollowUpStepInput[];
     sendingSchedule?: SendingSchedule;
   }) => Promise<void>;
@@ -52,6 +53,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
   const [filterCountry, setFilterCountry]     = useState('');
   const [filterCategory, setFilterCategory]   = useState('');
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
+  const [manualEmails, setManualEmails]       = useState<string[]>([]);
   const [maxLeads, setMaxLeads]               = useState(500);
 
   // Step 2 — Sequence
@@ -65,7 +67,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
   const [schedule, setSchedule] = useState<SendingSchedule>(DEFAULT_SCHEDULE);
 
   const canProceed = () => {
-    if (step === 0) return selectedLeadIds.length > 0;
+    if (step === 0) return selectedLeadIds.length > 0 || manualEmails.length > 0;
     if (step === 1) return subject.trim().length > 0 && body.trim().length > 0;
     if (step === 2) return name.trim().length > 0;
     return true;
@@ -80,6 +82,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
         templateBody: body,
         includeScreenshot,
         leadIds: selectedLeadIds,
+        manualEmails: manualEmails.length > 0 ? manualEmails : undefined,
         followUpSteps: followUpSteps.length > 0 ? followUpSteps : undefined,
         sendingSchedule: schedule,
       });
@@ -162,10 +165,12 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             filterCountry={filterCountry}
             filterCategory={filterCategory}
             selectedLeadIds={selectedLeadIds}
+            manualEmails={manualEmails}
             maxLeads={maxLeads}
             onFilterCountryChange={setFilterCountry}
             onFilterCategoryChange={setFilterCategory}
             onSelectionChange={setSelectedLeadIds}
+            onManualEmailsChange={setManualEmails}
             onMaxLeadsChange={setMaxLeads}
           />
         )}
@@ -199,7 +204,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             includeScreenshot={includeScreenshot}
             filterCountry={filterCountry}
             filterCategory={filterCategory}
-            recipientCount={selectedLeadIds.length}
+            recipientCount={selectedLeadIds.length + manualEmails.length}
             followUpCount={followUpSteps.length}
             schedule={schedule}
             saving={saving}

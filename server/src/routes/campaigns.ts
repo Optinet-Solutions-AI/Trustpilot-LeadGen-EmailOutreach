@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
+import { upsertManualLeads } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
 import { createNote } from '../db/notes.js';
 import { renderAndSpin } from '../services/template-engine.js';
@@ -31,7 +32,17 @@ router.get('/', async (_req: Request, res: Response) => {
 // POST /api/campaigns
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds, filterCountry, filterCategory, followUpSteps, sendingSchedule } = req.body;
+    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds: rawLeadIds, manualEmails, filterCountry, filterCategory, followUpSteps, sendingSchedule } = req.body;
+
+    // Resolve manual email entries into lead IDs before creating the campaign
+    let leadIds: string[] = Array.isArray(rawLeadIds) ? rawLeadIds : [];
+    if (Array.isArray(manualEmails) && manualEmails.length > 0) {
+      const validEmails = manualEmails.filter((e: unknown) => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+      if (validEmails.length > 0) {
+        const manualIds = await upsertManualLeads(validEmails);
+        leadIds = [...new Set([...leadIds, ...manualIds])];
+      }
+    }
     if (!name || !templateSubject || !templateBody) {
       res.status(400).json({ success: false, error: 'name, templateSubject, and templateBody are required' });
       return;
