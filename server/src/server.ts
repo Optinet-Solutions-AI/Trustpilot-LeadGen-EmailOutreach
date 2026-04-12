@@ -16,6 +16,7 @@ import analyticsRoutes from './routes/analytics.js';
 import gmailRoutes from './routes/gmail.js';
 import webhookRoutes from './routes/webhooks.js';
 import emailAccountsRoutes from './routes/email-accounts.js';
+import gmailOAuthRoutes from './routes/gmail-oauth.js';
 
 const app = express();
 
@@ -34,8 +35,9 @@ app.use(express.json());
 // Webhook routes — BEFORE auth middleware (external platforms need to reach these)
 app.use('/api/webhooks', webhookRoutes);
 
-// OAuth callback — BEFORE auth middleware (Google redirects here with no API key)
-app.use('/api/email-accounts/oauth', emailAccountsRoutes);
+// Gmail OAuth routes — BEFORE auth middleware
+// Google redirects to /oauth/callback without any API key header
+app.use('/api/email-accounts', gmailOAuthRoutes);
 
 app.use(authMiddleware);
 

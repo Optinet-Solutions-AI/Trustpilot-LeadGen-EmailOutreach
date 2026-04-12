@@ -128,7 +128,9 @@ export default function EmailAccounts() {
     setSaveError('');
     setTestResult(null);
     setOauthConnecting(true);
-    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL
+      ? `${process.env.NEXT_PUBLIC_API_BASE_URL}/api`
+      : 'http://localhost:3001/api';
     const url = `${apiBase}/email-accounts/oauth/start?clientId=${encodeURIComponent(form.gmailClientId)}&clientSecret=${encodeURIComponent(form.gmailClientSecret)}`;
     const popup = window.open(url, 'gmail-oauth', 'width=520,height=620,left=200,top=100');
     popupRef.current = popup;
@@ -504,7 +506,7 @@ export default function EmailAccounts() {
                   </div>
                   <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700 leading-relaxed">
                     <span className="font-bold">Setup:</span> Google Cloud Console → APIs &amp; Services → Credentials → OAuth 2.0 Client IDs → set redirect URI to{' '}
-                    <span className="font-mono break-all">{(process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace('/api','')}/api/email-accounts/oauth/callback</span>.
+                    <span className="font-mono break-all">{process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001'}/api/email-accounts/oauth/callback</span>.
                     Enable the Gmail API. Then enter your credentials below and click Sign in.
                   </div>
                   <div>
