@@ -76,6 +76,38 @@ router.get('/', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /api/email-accounts/oauth/exchange — exchange Google auth code for refresh token
+// Called by the frontend /oauth/callback page after Google redirects back
+router.post('/oauth/exchange', async (req: Request, res: Response) => {
+  const { code, clientId, clientSecret, redirectUri } = req.body;
+  if (!code || !clientId || !clientSecret || !redirectUri) {
+    res.status(400).json({ success: false, error: 'code, clientId, clientSecret, and redirectUri are required' });
+    return;
+  }
+  try {
+    const { google } = await import('googleapis');
+    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+    const { tokens } = await oauth2Client.getToken(code as string);
+
+    if (!tokens.refresh_token) {
+      res.status(400).json({
+        success: false,
+        error: 'Google did not return a refresh token. Go to myaccount.google.com/permissions, revoke access for this app, then try again.',
+      });
+      return;
+    }
+
+    oauth2Client.setCredentials(tokens);
+    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+    const { data: userInfo } = await oauth2.userinfo.get();
+
+    res.json({ success: true, data: { refreshToken: tokens.refresh_token, email: userInfo.email } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ success: false, error: `Token exchange failed: ${message}` });
+  }
+});
+
 // POST /api/email-accounts/test — verify credentials without saving
 router.post('/test', async (req: Request, res: Response) => {
   const {

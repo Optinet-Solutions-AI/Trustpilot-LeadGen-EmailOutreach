@@ -128,13 +128,32 @@ export default function EmailAccounts() {
     setSaveError('');
     setTestResult(null);
     setOauthConnecting(true);
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL
-      ? `${process.env.NEXT_PUBLIC_API_BASE_URL}/api`
-      : 'http://localhost:3001/api';
-    const url = `${apiBase}/email-accounts/oauth/start?clientId=${encodeURIComponent(form.gmailClientId)}&clientSecret=${encodeURIComponent(form.gmailClientSecret)}`;
+
+    // Generate a random state token for CSRF protection
+    const state = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+
+    // Store credentials in sessionStorage — the callback page will read them
+    sessionStorage.setItem(`oauth_state_${state}`, JSON.stringify({
+      clientId: form.gmailClientId,
+      clientSecret: form.gmailClientSecret,
+    }));
+
+    // Build Google OAuth URL directly — no backend redirect needed
+    const redirectUri = window.location.origin + '/oauth/callback';
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: form.gmailClientId,
+      redirect_uri: redirectUri,
+      scope: 'https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email',
+      access_type: 'offline',
+      prompt: 'consent',
+      state,
+    });
+
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
     const popup = window.open(url, 'gmail-oauth', 'width=520,height=620,left=200,top=100');
     popupRef.current = popup;
-    // If user closes popup without completing
     const check = setInterval(() => {
       if (popup?.closed) { clearInterval(check); setOauthConnecting(false); }
     }, 1000);
@@ -506,7 +525,7 @@ export default function EmailAccounts() {
                   </div>
                   <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700 leading-relaxed">
                     <span className="font-bold">Setup:</span> Google Cloud Console → APIs &amp; Services → Credentials → OAuth 2.0 Client IDs → set redirect URI to{' '}
-                    <span className="font-mono break-all">{process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001'}/api/email-accounts/oauth/callback</span>.
+                    <span className="font-mono break-all">{typeof window !== 'undefined' ? window.location.origin : 'https://your-app.vercel.app'}/oauth/callback</span>.
                     Enable the Gmail API. Then enter your credentials below and click Sign in.
                   </div>
                   <div>
