@@ -33,7 +33,7 @@ export default function OAuthCallbackPage() {
       return;
     }
 
-    const stored = sessionStorage.getItem(`oauth_state_${state}`);
+    const stored = localStorage.getItem(`oauth_state_${state}`);
     if (!stored) {
       setStatus('error');
       setMessage('Session expired — please close and try again.');
@@ -42,7 +42,7 @@ export default function OAuthCallbackPage() {
     }
 
     const { clientId, clientSecret } = JSON.parse(stored) as { clientId: string; clientSecret: string };
-    sessionStorage.removeItem(`oauth_state_${state}`);
+    localStorage.removeItem(`oauth_state_${state}`);
 
     const redirectUri = window.location.origin + '/oauth/callback';
 

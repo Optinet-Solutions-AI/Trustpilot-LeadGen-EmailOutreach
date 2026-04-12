@@ -133,8 +133,9 @@ export default function EmailAccounts() {
     const state = Array.from(crypto.getRandomValues(new Uint8Array(16)))
       .map((b) => b.toString(16).padStart(2, '0')).join('');
 
-    // Store credentials in sessionStorage — the callback page will read them
-    sessionStorage.setItem(`oauth_state_${state}`, JSON.stringify({
+    // Store credentials in localStorage — shared across windows on same origin
+    // (sessionStorage is per-tab, popup can't read opener's sessionStorage)
+    localStorage.setItem(`oauth_state_${state}`, JSON.stringify({
       clientId: form.gmailClientId,
       clientSecret: form.gmailClientSecret,
     }));
