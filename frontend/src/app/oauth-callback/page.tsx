@@ -1,18 +1,20 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import api from '../../../api/client';
+import api from '../../api/client';
 
-// Read URL params client-side — avoids useSearchParams() which breaks static export
+// Top-level route so Next.js exports it as oauth-callback.html (flat file).
+// Subdirectory routes like oauth/callback.html are not served correctly
+// by Vercel's @vercel/static-build clean-URL routing.
 export default function OAuthCallbackPage() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Connecting your Gmail account…');
 
   useEffect(() => {
-    const params  = new URLSearchParams(window.location.search);
-    const code    = params.get('code');
-    const state   = params.get('state');
-    const error   = params.get('error');
+    const params = new URLSearchParams(window.location.search);
+    const code   = params.get('code');
+    const state  = params.get('state');
+    const error  = params.get('error');
 
     function postAndClose(payload: Record<string, unknown>) {
       try { window.opener?.postMessage({ type: 'gmail-oauth', ...payload }, '*'); } catch {}
@@ -44,7 +46,7 @@ export default function OAuthCallbackPage() {
     const { clientId, clientSecret } = JSON.parse(stored) as { clientId: string; clientSecret: string };
     localStorage.removeItem(`oauth_state_${state}`);
 
-    const redirectUri = window.location.origin + '/oauth/callback';
+    const redirectUri = window.location.origin + '/oauth-callback';
 
     api.post('/email-accounts/oauth/exchange', { code, clientId, clientSecret, redirectUri })
       .then((res) => {

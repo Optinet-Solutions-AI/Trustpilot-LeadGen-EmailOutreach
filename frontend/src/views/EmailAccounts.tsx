@@ -141,7 +141,7 @@ export default function EmailAccounts() {
     }));
 
     // Build Google OAuth URL directly — no backend redirect needed
-    const redirectUri = window.location.origin + '/oauth/callback';
+    const redirectUri = window.location.origin + '/oauth-callback';
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: form.gmailClientId,
@@ -526,7 +526,7 @@ export default function EmailAccounts() {
                   </div>
                   <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700 leading-relaxed">
                     <span className="font-bold">Setup:</span> Google Cloud Console → APIs &amp; Services → Credentials → OAuth 2.0 Client IDs → set redirect URI to{' '}
-                    <span className="font-mono break-all">https://trustpilot-lead-gen-email-outreach.vercel.app/oauth/callback</span>.
+                    <span className="font-mono break-all">https://trustpilot-lead-gen-email-outreach.vercel.app/oauth-callback</span>.
                     Enable the Gmail API. Then enter your credentials below and click Sign in.
                   </div>
                   <div>
