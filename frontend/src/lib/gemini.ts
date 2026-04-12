@@ -1,12 +1,11 @@
 /**
- * Gemini AI — generates professional cold outreach email templates.
- * Uses Google Generative AI SDK (gemini-2.0-flash).
- * Requires NEXT_PUBLIC_GEMINI_API_KEY environment variable.
+ * AI email template generator — uses OpenAI GPT-4o-mini.
+ * Requires NEXT_PUBLIC_OPENAI_API_KEY environment variable.
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from 'openai';
 
-const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
+const API_KEY = process.env.NEXT_PUBLIC_OPENAI_API_KEY as string;
 
 export interface GenerateTemplateOptions {
   country?: string;
@@ -41,11 +40,10 @@ export function domainToCompanyName(domain: string): string {
  */
 export async function generateEmailTemplate(options: GenerateTemplateOptions = {}): Promise<GenerateTemplateResult> {
   if (!API_KEY) {
-    throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not set. Add it to your .env.local file.');
+    throw new Error('NEXT_PUBLIC_OPENAI_API_KEY is not set. Add it to your .env.local file.');
   }
 
-  const genAI = new GoogleGenerativeAI(API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const client = new OpenAI({ apiKey: API_KEY, dangerouslyAllowBrowser: true });
 
   const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode } = options;
 
@@ -99,10 +97,17 @@ ${ratingTokens}
 - Use only <p>, <strong>, <br> tags — keep it email-safe
 `.trim();
 
-  const result = await model.generateContent(prompt);
-  const raw = result.response.text().replace(/^```html?\n?/i, '').replace(/\n?```$/i, '').trim();
+  const response = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.8,
+  });
 
-  // Parse structured response
+  const raw = (response.choices[0].message.content ?? '')
+    .replace(/^```html?\n?/i, '')
+    .replace(/\n?```$/i, '')
+    .trim();
+
   const subjectMatch = raw.match(/^SUBJECT:\s*(.+)$/m);
   const bodyMatch = raw.match(/^BODY:\s*\n([\s\S]+)/m);
 
