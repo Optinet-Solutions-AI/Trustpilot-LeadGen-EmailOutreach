@@ -9,17 +9,20 @@
  */
 
 import { config } from '../config.js';
-import type { SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
+import type { GmailSenderAccount, SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
+
+export type { GmailSenderAccount };
 
 export async function sendEmail(
   to: string,
   subject: string,
   html: string,
-  options: SendEmailOptions = {}
+  options: SendEmailOptions = {},
+  account?: GmailSenderAccount,
 ): Promise<SendEmailResult> {
   if (config.emailMode === 'gmail') {
     const { sendEmail: sendGmail } = await import('./email-sender.gmail.js');
-    return sendGmail(to, subject, html, options);
+    return sendGmail(to, subject, html, options, account);
   }
 
   if (config.emailMode === 'brevo') {

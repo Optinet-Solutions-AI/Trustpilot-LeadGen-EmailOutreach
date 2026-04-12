@@ -1,6 +1,7 @@
 /**
- * Gmail API client singleton.
- * Uses OAuth2 with a long-lived refresh token stored in .env
+ * Gmail API client factory.
+ * - getGmailClient()                          → primary env-var account (singleton)
+ * - createGmailClientFromCredentials(...)     → any additional account stored in DB
  */
 
 import { google } from 'googleapis';
@@ -13,8 +14,7 @@ export function getGmailClient() {
 
   if (!config.gmail.clientId || !config.gmail.clientSecret || !config.gmail.refreshToken) {
     throw new Error(
-      'Gmail credentials missing. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN in .env. ' +
-      'Run `node scripts/gmail-auth-setup.js` to generate a refresh token.'
+      'Gmail credentials missing. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN in .env.'
     );
   }
 
@@ -22,18 +22,22 @@ export function getGmailClient() {
     config.gmail.clientId,
     config.gmail.clientSecret,
   );
-
-  oauth2Client.setCredentials({
-    refresh_token: config.gmail.refreshToken,
-  });
-
-  // Auto-refresh access token on expiry
+  oauth2Client.setCredentials({ refresh_token: config.gmail.refreshToken });
   oauth2Client.on('tokens', (tokens) => {
-    if (tokens.refresh_token) {
-      console.log('[Gmail] New refresh token received — update GOOGLE_REFRESH_TOKEN in .env');
-    }
+    if (tokens.refresh_token) console.log('[Gmail] New refresh token received — update GOOGLE_REFRESH_TOKEN in .env');
   });
 
   gmailInstance = google.gmail({ version: 'v1', auth: oauth2Client });
   return gmailInstance;
+}
+
+/** Create a Gmail client from credentials stored in the email_accounts DB table. */
+export function createGmailClientFromCredentials(
+  clientId: string,
+  clientSecret: string,
+  refreshToken: string,
+): ReturnType<typeof google.gmail> {
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return google.gmail({ version: 'v1', auth: oauth2Client });
 }

@@ -11,6 +11,13 @@ import { getGmailClient } from './gmail-client.js';
 import { config } from '../config.js';
 import fs from 'fs';
 
+/** An active Gmail account that can be used for sending. */
+export interface GmailSenderAccount {
+  email: string;
+  fromName: string;
+  gmail: ReturnType<typeof import('./gmail-client.js').getGmailClient>;
+}
+
 /**
  * Strips HTML to plain text for the multipart/alternative text part.
  * Handles common patterns used in email templates.
@@ -49,14 +56,15 @@ export async function sendEmail(
   to: string,
   subject: string,
   html: string,
-  options: SendEmailOptions = {}
+  options: SendEmailOptions = {},
+  account?: GmailSenderAccount,
 ): Promise<SendEmailResult> {
   try {
-    const gmail = getGmailClient();
+    const gmail = account?.gmail ?? getGmailClient();
+    const fromEmail = account?.email ?? config.gmail.fromEmail;
+    const fromName  = account?.fromName ?? config.gmail.fromName;
 
-    const from = config.gmail.fromName
-      ? `"${config.gmail.fromName}" <${config.gmail.fromEmail}>`
-      : config.gmail.fromEmail;
+    const from = fromName ? `"${fromName}" <${fromEmail}>` : fromEmail;
 
     // Build attachments array for inline CID screenshot
     const attachments: Array<{
@@ -97,7 +105,7 @@ export async function sendEmail(
     }
 
     // Domain-aligned Message-ID improves DKIM/SPF authentication
-    const senderDomain = config.gmail.fromEmail.split('@')[1] || 'gmail.com';
+    const senderDomain = fromEmail.split('@')[1] || 'gmail.com';
 
     const mailOptions: Record<string, unknown> = {
       from,
@@ -108,7 +116,7 @@ export async function sendEmail(
       attachments,
       messageId: `<${crypto.randomUUID()}@${senderDomain}>`,
       headers: {
-        'List-Unsubscribe': `<mailto:${config.gmail.fromEmail}?subject=unsubscribe>`,
+        'List-Unsubscribe': `<mailto:${fromEmail}?subject=unsubscribe>`,
         'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       },
     };

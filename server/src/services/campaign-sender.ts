@@ -7,7 +7,8 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import { config } from '../config.js';
-import { sendEmail } from './email-sender.js';
+import { sendEmail, type GmailSenderAccount } from './email-sender.js';
+import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
@@ -92,8 +93,51 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
     emitProgress(campaignId, { stage: 'started', total, sent: 0, failed: 0 });
     console.log(`[Campaign] Starting send for campaign "${campaignName}" (${total} emails)`);
 
+    // Load all active Gmail accounts from DB and build sender pool
+    const senderPool: GmailSenderAccount[] = [];
+    if (config.emailMode === 'gmail') {
+      try {
+        const { getSupabase: getSupabaseForAccounts } = await import('../lib/supabase.js');
+        const { data: dbAccounts } = await getSupabaseForAccounts()
+          .from('email_accounts')
+          .select('email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+          .eq('status', 'active')
+          .eq('auth_type', 'gmail_oauth')
+          .not('gmail_refresh_token', 'is', null);
+
+        for (const acc of dbAccounts ?? []) {
+          if (acc.gmail_client_id && acc.gmail_client_secret && acc.gmail_refresh_token) {
+            senderPool.push({
+              email: acc.email,
+              fromName: acc.from_name,
+              gmail: createGmailClientFromCredentials(acc.gmail_client_id, acc.gmail_client_secret, acc.gmail_refresh_token),
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[Campaign] Could not load DB accounts — using primary only:', e instanceof Error ? e.message : e);
+      }
+
+      // Primary env-var account is always available as fallback (index 0 in rotation)
+      // DB accounts rotate in addition — if none, all sends use the primary
+      if (senderPool.length > 0) {
+        console.log(`[Campaign] Account pool: primary (env) + ${senderPool.length} DB account(s) = ${senderPool.length + 1} total senders`);
+      }
+    }
+
+    let accountIndex = 0; // round-robin pointer
+
     for (let i = 0; i < emails.length; i++) {
       const email = emails[i];
+
+      // Pick next sender — undefined = primary env-var account
+      let senderAccount: GmailSenderAccount | undefined;
+      if (senderPool.length > 0) {
+        // Slot 0 = primary (undefined), slots 1..N = DB accounts
+        const slot = accountIndex % (senderPool.length + 1);
+        senderAccount = slot === 0 ? undefined : senderPool[slot - 1];
+        accountIndex++;
+      }
 
       // Check for cancellation request before each email
       if (cancelRequests.has(campaignId)) {
@@ -118,13 +162,15 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
       // Apply test mode transform (UI-provided testEmailOverride takes priority over .env)
       const transformed = applyTestMode({ to: email.to, subject: email.subject, html: email.html }, testMode, testEmailOverride);
 
-      // Send email
+      // Send email — uses senderAccount if set, otherwise primary env-var account
       const result = await sendEmail(
         transformed.to,
         transformed.subject,
         transformed.html,
-        { screenshotPath }
+        { screenshotPath },
+        senderAccount,
       );
+      if (senderAccount) console.log(`[Campaign] Sending via ${senderAccount.email}`);
 
       if (result.success) {
         sent++;
