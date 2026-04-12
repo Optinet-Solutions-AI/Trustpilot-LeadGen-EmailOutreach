@@ -34,6 +34,9 @@ app.use(express.json());
 // Webhook routes — BEFORE auth middleware (external platforms need to reach these)
 app.use('/api/webhooks', webhookRoutes);
 
+// OAuth callback — BEFORE auth middleware (Google redirects here with no API key)
+app.use('/api/email-accounts/oauth', emailAccountsRoutes);
+
 app.use(authMiddleware);
 
 // Routes

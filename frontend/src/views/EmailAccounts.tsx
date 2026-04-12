@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
 
 interface EmailAccount {
@@ -73,9 +73,12 @@ export default function EmailAccounts() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [oauthConnecting, setOauthConnecting] = useState(false);
+  const [oauthConnected, setOauthConnected] = useState<string | null>(null); // email once connected
   const [saveError, setSaveError] = useState('');
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const popupRef = useRef<Window | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -91,7 +94,48 @@ export default function EmailAccounts() {
     setShowModal(true);
     setSaveError('');
     setTestResult(null);
+    setOauthConnected(null);
     setForm(EMPTY_FORM);
+  };
+
+  // Listen for the OAuth popup postMessage
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type !== 'gmail-oauth') return;
+      setOauthConnecting(false);
+      popupRef.current = null;
+      if (event.data.ok) {
+        setForm((f) => ({
+          ...f,
+          gmailRefreshToken: event.data.refreshToken ?? '',
+          email: event.data.email || f.email,
+        }));
+        setOauthConnected(event.data.email ?? 'connected');
+        setTestResult({ ok: true, message: `Connected as ${event.data.email} ✓` });
+      } else {
+        setTestResult({ ok: false, message: event.data.message ?? 'OAuth failed' });
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const handleGoogleSignIn = () => {
+    if (!form.gmailClientId || !form.gmailClientSecret) {
+      setSaveError('Enter Client ID and Client Secret first.');
+      return;
+    }
+    setSaveError('');
+    setTestResult(null);
+    setOauthConnecting(true);
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
+    const url = `${apiBase}/email-accounts/oauth/start?clientId=${encodeURIComponent(form.gmailClientId)}&clientSecret=${encodeURIComponent(form.gmailClientSecret)}`;
+    const popup = window.open(url, 'gmail-oauth', 'width=520,height=620,left=200,top=100');
+    popupRef.current = popup;
+    // If user closes popup without completing
+    const check = setInterval(() => {
+      if (popup?.closed) { clearInterval(check); setOauthConnecting(false); }
+    }, 1000);
   };
 
   const accounts = data?.accounts ?? [];
@@ -456,17 +500,19 @@ export default function EmailAccounts() {
                 <div className="border border-slate-100 rounded-xl p-4 bg-surface-container-low space-y-3">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="material-symbols-outlined text-[16px] text-[#b0004a]">key</span>
-                    <p className="text-xs font-bold text-secondary uppercase tracking-wider">Gmail OAuth2 Credentials</p>
+                    <p className="text-xs font-bold text-secondary uppercase tracking-wider">Gmail OAuth2</p>
                   </div>
                   <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700 leading-relaxed">
-                    <span className="font-bold">Setup:</span> Google Cloud Console → APIs &amp; Services → Credentials → OAuth 2.0 Client IDs. Enable Gmail API. Use the Refresh Token you obtained during your initial OAuth consent flow.
+                    <span className="font-bold">Setup:</span> Google Cloud Console → APIs &amp; Services → Credentials → OAuth 2.0 Client IDs → set redirect URI to{' '}
+                    <span className="font-mono break-all">{(process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace('/api','')}/api/email-accounts/oauth/callback</span>.
+                    Enable the Gmail API. Then enter your credentials below and click Sign in.
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-secondary mb-1">Client ID *</label>
                     <input
                       type="text"
                       value={form.gmailClientId}
-                      onChange={(e) => setField('gmailClientId', e.target.value)}
+                      onChange={(e) => { setField('gmailClientId', e.target.value); setOauthConnected(null); }}
                       placeholder="xxxxxxxxxxxx-xxxxxxxxxxxxxxxx.apps.googleusercontent.com"
                       className="w-full bg-white rounded-lg px-3 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
                     />
@@ -476,21 +522,54 @@ export default function EmailAccounts() {
                     <input
                       type="password"
                       value={form.gmailClientSecret}
-                      onChange={(e) => setField('gmailClientSecret', e.target.value)}
+                      onChange={(e) => { setField('gmailClientSecret', e.target.value); setOauthConnected(null); }}
                       placeholder="GOCSPX-…"
                       className="w-full bg-white rounded-lg px-3 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-bold text-secondary mb-1">Refresh Token *</label>
-                    <input
-                      type="password"
-                      value={form.gmailRefreshToken}
-                      onChange={(e) => setField('gmailRefreshToken', e.target.value)}
-                      placeholder="1//…"
-                      className="w-full bg-white rounded-lg px-3 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
-                    />
-                  </div>
+
+                  {/* Sign in with Google button */}
+                  {oauthConnected ? (
+                    <div className="flex items-center gap-3 px-4 py-3 bg-[#8ff9a8]/10 border border-[#006630]/20 rounded-xl">
+                      <span className="material-symbols-outlined text-[#006630] text-[20px]">check_circle</span>
+                      <div>
+                        <p className="text-sm font-bold text-[#006630]">Connected as {oauthConnected}</p>
+                        <p className="text-xs text-[#006630]/70">Refresh token stored — ready to save</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setOauthConnected(null); setField('gmailRefreshToken', ''); setTestResult(null); }}
+                        className="ml-auto text-xs text-secondary underline"
+                      >
+                        Re-connect
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignIn}
+                      disabled={oauthConnecting || !form.gmailClientId || !form.gmailClientSecret}
+                      className="w-full flex items-center justify-center gap-3 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40 shadow-sm"
+                    >
+                      {oauthConnecting ? (
+                        <>
+                          <span className="material-symbols-outlined text-[18px] animate-spin text-[#b0004a]">progress_activity</span>
+                          Waiting for Google…
+                        </>
+                      ) : (
+                        <>
+                          {/* Google G logo */}
+                          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
+                            <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/>
+                            <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+                            <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+                          </svg>
+                          Sign in with Google
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               )}
 
