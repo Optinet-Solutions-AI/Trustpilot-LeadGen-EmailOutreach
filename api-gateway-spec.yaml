@@ -2,7 +2,7 @@ swagger: "2.0"
 info:
   title: trustpilot-api
   description: Trustpilot LeadGen API Gateway proxy to Cloud Run
-  version: "1.2.0"
+  version: "1.3.0"
 schemes:
   - https
 produces:
@@ -372,6 +372,45 @@ paths:
     get:
       operationId: getAnalytics
       security: []
+      responses:
+        "200":
+          description: OK
+  /api/email-accounts:
+    get:
+      operationId: listEmailAccounts
+      security: []
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createEmailAccount
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/email-accounts/oauth/exchange:
+    post:
+      operationId: oauthExchange
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/email-accounts/test:
+    post:
+      operationId: testEmailAccount
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/email-accounts/{id}:
+    delete:
+      operationId: deleteEmailAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
       responses:
         "200":
           description: OK
