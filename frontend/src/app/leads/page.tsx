@@ -1,5 +1,10 @@
+import { Suspense } from 'react';
 import Leads from '../../views/Leads';
 
 export default function Page() {
-  return <Leads />;
+  return (
+    <Suspense>
+      <Leads />
+    </Suspense>
+  );
 }
