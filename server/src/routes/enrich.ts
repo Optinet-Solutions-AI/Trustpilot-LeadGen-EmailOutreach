@@ -121,7 +121,7 @@ router.post('/', async (req: Request, res: Response) => {
     runPython('tools/scraper/scrape_website.py', [
       '--input', tmpFile,
       '--output', tmpFile,
-      '--parallel', '3',
+      '--parallel', '1',
     ])
       .then((stdout) => {
         // Parse "PROGRESS:enrich_done:N" from scrape_website.py output

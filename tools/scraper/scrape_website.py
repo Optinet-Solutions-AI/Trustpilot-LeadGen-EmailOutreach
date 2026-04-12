@@ -176,7 +176,7 @@ async def enrich_websites(
     already_has_email = {}
 
     for i, lead in enumerate(leads):
-        if lead.get('primary_email') or lead.get('trustpilot_email') or lead.get('website_email'):
+        if lead.get('website_email'):
             already_has_email[i] = lead
         elif lead.get('website_url'):
             needs_enrichment.append((i, lead))
