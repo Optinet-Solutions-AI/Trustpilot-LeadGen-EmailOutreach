@@ -1,5 +1,7 @@
 {
   "version": 2,
+  "cleanUrls": true,
+  "trailingSlash": false,
   "builds": [
     {
       "src": "package.json",
@@ -9,7 +11,6 @@
   ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://trustpilot-gateway-3lazv1k9.uc.gateway.dev/api/:path*" },
-    { "source": "/leads/:id", "destination": "/leads/_id" },
-    { "source": "/oauth-callback", "destination": "/oauth-callback" }
+    { "source": "/leads/:path*", "destination": "/leads/_id" }
   ]
 }
