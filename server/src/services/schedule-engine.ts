@@ -131,19 +131,16 @@ export function assignScheduledTimes(
 
     const batchSize = Math.min(remaining, dailyLimit);
 
-    // Pick batchSize distinct random minutes within the effective window
-    const used = new Set<number>();
+    // Segmented distribution: divide the window into batchSize equal segments,
+    // pick a random minute within each segment.
+    // Guarantees emails are spread across the full window while remaining unpredictable.
+    // e.g. 6 emails in a 3-hour window → one email every ~30 min, at a random minute within each 30-min slot.
+    const segmentSize = Math.floor(effectiveWindowMinutes / batchSize);
     for (let i = 0; i < batchSize; i++) {
-      let randomOffset: number;
-      let attempts = 0;
-      do {
-        randomOffset = Math.floor(Math.random() * effectiveWindowMinutes);
-        attempts++;
-      } while (used.has(randomOffset) && attempts < 100);
-
-      used.add(randomOffset);
-
-      const sendTimeMs = effectiveStartMs + randomOffset * 60_000;
+      const segmentStart = i * segmentSize;
+      const segmentEnd   = i === batchSize - 1 ? effectiveWindowMinutes : segmentStart + segmentSize;
+      const randomOffset = segmentStart + Math.floor(Math.random() * (segmentEnd - segmentStart));
+      const sendTimeMs   = effectiveStartMs + randomOffset * 60_000;
       results.push(new Date(sendTimeMs));
     }
 
