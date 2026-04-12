@@ -6,13 +6,12 @@ import { rateLimiter } from '../services/rate-limiter.js';
 const router = Router();
 
 // GET /api/email-accounts — list all configured accounts
-// Always includes the env-var account, then any DB-stored accounts.
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const supabase = getSupabase();
     const { data: dbAccounts, error } = await supabase
       .from('email_accounts')
-      .select('id, email, from_name, provider, status, smtp_host, smtp_port, created_at, notes')
+      .select('id, email, from_name, provider, status, smtp_host, smtp_port, smtp_secure, auth_type, notes, created_at')
       .order('created_at', { ascending: true });
 
     if (error) throw new Error(error.message);
@@ -20,11 +19,10 @@ router.get('/', async (_req: Request, res: Response) => {
     const status = rateLimiter.getStatus();
     const warmup = rateLimiter.getWarmupStatus();
 
-    // Build the env-var account (always present as primary)
     const envEmail = config.gmail.fromEmail || config.brevo?.fromEmail || '';
     const providerLabel =
       config.emailPlatform !== 'none' ? config.emailPlatform :
-      config.emailMode === 'gmail' ? 'Gmail (Personal)' :
+      config.emailMode === 'gmail' ? 'Gmail (OAuth2)' :
       config.emailMode === 'brevo' ? 'Brevo' : 'Mock';
 
     const envAccount = envEmail ? {
@@ -32,6 +30,7 @@ router.get('/', async (_req: Request, res: Response) => {
       email: envEmail,
       from_name: config.gmail.fromName || 'OptiRate',
       provider: providerLabel,
+      auth_type: 'gmail_oauth',
       status: 'active',
       dailySent: status.dailyCount,
       dailyCap: status.dailyCap,
@@ -43,15 +42,16 @@ router.get('/', async (_req: Request, res: Response) => {
       source: 'env',
     } : null;
 
-    // DB accounts (no live rate-limit stats — they're registered but not yet wired into the sender)
     const formattedDb = (dbAccounts ?? []).map((a) => ({
       id: a.id,
       email: a.email,
       from_name: a.from_name,
       provider: a.provider,
+      auth_type: a.auth_type,
       status: a.status,
       smtp_host: a.smtp_host,
       smtp_port: a.smtp_port,
+      smtp_secure: a.smtp_secure,
       notes: a.notes,
       dailySent: 0,
       dailyCap: 50,
@@ -76,10 +76,89 @@ router.get('/', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /api/email-accounts/test — verify credentials without saving
+router.post('/test', async (req: Request, res: Response) => {
+  const {
+    authType, email,
+    gmailClientId, gmailClientSecret, gmailRefreshToken,
+    appPassword,
+    smtpHost, smtpPort, smtpUser, smtpPassword, smtpSecure,
+  } = req.body;
+
+  try {
+    if (authType === 'gmail_oauth') {
+      if (!gmailClientId || !gmailClientSecret || !gmailRefreshToken) {
+        res.status(400).json({ success: false, error: 'Client ID, Client Secret, and Refresh Token are all required.' });
+        return;
+      }
+      const { google } = await import('googleapis');
+      const oauth2Client = new google.auth.OAuth2(gmailClientId, gmailClientSecret);
+      oauth2Client.setCredentials({ refresh_token: gmailRefreshToken });
+      const tokenRes = await oauth2Client.getAccessToken();
+      if (!tokenRes.token) throw new Error('Could not obtain access token — check Client ID, Secret, and Refresh Token.');
+      res.json({ success: true, data: { message: 'Gmail OAuth2 connected successfully ✓' } });
+
+    } else if (authType === 'app_password') {
+      if (!email || !appPassword) {
+        res.status(400).json({ success: false, error: 'Email and App Password are required.' });
+        return;
+      }
+      const nodemailer = await import('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        auth: { user: email, pass: appPassword },
+      });
+      await transporter.verify();
+      res.json({ success: true, data: { message: 'Gmail App Password connection verified ✓' } });
+
+    } else if (authType === 'smtp') {
+      if (!smtpHost || !smtpUser || !smtpPassword) {
+        res.status(400).json({ success: false, error: 'Host, username, and password are required for SMTP.' });
+        return;
+      }
+      const port = parseInt(smtpPort) || 587;
+      const secure = smtpSecure === 'ssl';
+      const nodemailer = await import('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port,
+        secure,
+        ...(smtpSecure === 'none' ? { ignoreTLS: true } : {}),
+        auth: { user: smtpUser, pass: smtpPassword },
+      });
+      await transporter.verify();
+      res.json({ success: true, data: { message: `SMTP connection to ${smtpHost}:${port} verified ✓` } });
+
+    } else if (authType === 'instantly') {
+      if (!email) {
+        res.status(400).json({ success: false, error: 'Email address is required.' });
+        return;
+      }
+      res.json({ success: true, data: { message: 'Account registered for Instantly.ai management ✓' } });
+
+    } else {
+      res.status(400).json({ success: false, error: 'Unknown auth type.' });
+    }
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    // Strip verbose nodemailer internals
+    const message = raw.split('\n')[0].replace(/\s*\[.*?\]/g, '');
+    res.status(400).json({ success: false, error: `Connection failed: ${message}` });
+  }
+});
+
 // POST /api/email-accounts — register a new account
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { email, fromName, provider, smtpHost, smtpPort, smtpUser, smtpPassword, notes } = req.body;
+    const {
+      email, fromName, provider, authType,
+      gmailClientId, gmailClientSecret, gmailRefreshToken,
+      appPassword,
+      smtpHost, smtpPort, smtpUser, smtpPassword, smtpSecure,
+      notes,
+    } = req.body;
 
     if (!email || !fromName || !provider) {
       res.status(400).json({ success: false, error: 'email, fromName, and provider are required' });
@@ -93,10 +172,16 @@ router.post('/', async (req: Request, res: Response) => {
         email,
         from_name: fromName,
         provider,
+        auth_type: authType || 'smtp',
         smtp_host: smtpHost || null,
         smtp_port: smtpPort || null,
         smtp_user: smtpUser || null,
         smtp_password: smtpPassword || null,
+        smtp_secure: smtpSecure || 'tls',
+        app_password: appPassword || null,
+        gmail_client_id: gmailClientId || null,
+        gmail_client_secret: gmailClientSecret || null,
+        gmail_refresh_token: gmailRefreshToken || null,
         notes: notes || null,
         status: 'active',
       })
@@ -119,7 +204,7 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/email-accounts/:id — remove a DB account (cannot delete env account)
+// DELETE /api/email-accounts/:id — remove a DB account
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
