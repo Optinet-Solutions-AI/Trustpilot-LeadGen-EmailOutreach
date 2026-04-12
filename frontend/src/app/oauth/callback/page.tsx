@@ -1,18 +1,18 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import api from '../../../api/client';
 
-function OAuthCallbackInner() {
-  const searchParams = useSearchParams();
+// Read URL params client-side — avoids useSearchParams() which breaks static export
+export default function OAuthCallbackPage() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Connecting your Gmail account…');
 
   useEffect(() => {
-    const code  = searchParams.get('code');
-    const state = searchParams.get('state');
-    const error = searchParams.get('error');
+    const params  = new URLSearchParams(window.location.search);
+    const code    = params.get('code');
+    const state   = params.get('state');
+    const error   = params.get('error');
 
     function postAndClose(payload: Record<string, unknown>) {
       try { window.opener?.postMessage({ type: 'gmail-oauth', ...payload }, '*'); } catch {}
@@ -59,7 +59,6 @@ function OAuthCallbackInner() {
         setMessage(msg);
         postAndClose({ ok: false, message: msg });
       });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -83,17 +82,5 @@ function OAuthCallbackInner() {
         <p style={{ fontSize: 12, color: '#888', margin: 0 }}>This window will close automatically.</p>
       </div>
     </div>
-  );
-}
-
-export default function OAuthCallbackPage() {
-  return (
-    <Suspense fallback={
-      <div style={{ fontFamily: 'sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>
-        Completing authentication…
-      </div>
-    }>
-      <OAuthCallbackInner />
-    </Suspense>
   );
 }
