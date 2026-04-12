@@ -37,9 +37,7 @@ export function applyTestMode(email: EmailParams, testModeOverride?: boolean, te
 
   return {
     to: testRecipients,
-    subject: `[TEST] ${email.subject}`,
-    html: `<div style="background:#fef9c3;padding:10px 16px;margin-bottom:16px;border:1px solid #fbbf24;border-radius:6px;font-family:sans-serif;font-size:13px;">
-  <strong>⚠ TEST MODE</strong> — Original recipient: <code>${email.to}</code>
-</div>${email.html}`,
+    subject: `Test mode- ${email.subject}`,
+    html: email.html,
   };
 }

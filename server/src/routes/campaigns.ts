@@ -240,7 +240,7 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       if (screenshotUrl) {
         testBody += `<br/><img src="${screenshotUrl}" alt="Trustpilot Profile" style="max-width:600px;border-radius:8px;margin-top:16px;" />`;
       }
-      const testSubject = `[TEST] ${renderedSubject}`;
+      const testSubject = `Test mode- ${renderedSubject}`;
 
       // Create a temporary 1-lead campaign on Instantly.
       // sendingAccounts: [] → skip email_list so Instantly uses ALL connected accounts
