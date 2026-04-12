@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
 import LeadsTable from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
@@ -53,6 +53,7 @@ const CATEGORIES = [
 export default function Leads() {
   const { leads, total, totalPages, loading, fetchLeads, updateLead, deleteLead } = useLeads();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [view, setView] = useState<View>(() => {
     if (typeof window === 'undefined') return 'table';
@@ -62,7 +63,7 @@ export default function Leads() {
   const [statusFilter, setStatusFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState('created_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -158,30 +159,53 @@ export default function Leads() {
         <div className="flex items-center gap-3">
           {selectedIds.length > 0 && (
             <>
-              <button
-                onClick={handleBulkEnrich}
-                disabled={enriching || verifying}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#006630]/30 text-[#006630] text-sm font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
-              >
-                <span className="material-symbols-outlined text-[16px]">language</span>
-                {enriching ? 'Enriching...' : `Enrich (${selectedIds.length})`}
-              </button>
-              <button
-                onClick={handleBulkVerify}
-                disabled={verifying || enriching}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-300 text-blue-700 text-sm font-bold hover:bg-blue-50 disabled:opacity-50 transition-colors"
-              >
-                <span className="material-symbols-outlined text-[16px]">verified_user</span>
-                {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
-              </button>
-              <button
-                onClick={() => setQuickSendOpen(true)}
-                disabled={verifying || enriching}
-                className="flex items-center gap-2 px-4 py-2 primary-gradient text-on-primary rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[16px]">send</span>
-                Send ({selectedIds.length})
-              </button>
+              {/* Enrich */}
+              <div className="relative group">
+                <button
+                  onClick={handleBulkEnrich}
+                  disabled={enriching || verifying}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#006630]/30 text-[#006630] text-sm font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">language</span>
+                  {enriching ? 'Enriching...' : `Enrich (${selectedIds.length})`}
+                </button>
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
+                  Visits each company website and scrapes their contact email. Runs in background — results appear in 2–5 min.
+                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                </div>
+              </div>
+
+              {/* Verify */}
+              <div className="relative group">
+                <button
+                  onClick={handleBulkVerify}
+                  disabled={verifying || enriching}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-300 text-blue-700 text-sm font-bold hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">verified_user</span>
+                  {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
+                </button>
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
+                  Checks email deliverability via ZeroBounce. Marks each address as valid, invalid, or catch-all before sending.
+                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                </div>
+              </div>
+
+              {/* Send */}
+              <div className="relative group">
+                <button
+                  onClick={() => setQuickSendOpen(true)}
+                  disabled={verifying || enriching}
+                  className="flex items-center gap-2 px-4 py-2 primary-gradient text-on-primary rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px]">send</span>
+                  Send ({selectedIds.length})
+                </button>
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
+                  Send a quick one-off email to the selected leads without creating a full campaign.
+                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                </div>
+              </div>
             </>
           )}
           {/* View toggle */}

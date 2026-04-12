@@ -15,6 +15,7 @@ import followUpsRoutes from './routes/follow-ups.js';
 import analyticsRoutes from './routes/analytics.js';
 import gmailRoutes from './routes/gmail.js';
 import webhookRoutes from './routes/webhooks.js';
+import emailAccountsRoutes from './routes/email-accounts.js';
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use('/api/enrich', enrichRoutes);
 app.use('/api/follow-ups', followUpsRoutes);  // /api/follow-ups (top-level for dashboard)
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/gmail', gmailRoutes);
+app.use('/api/email-accounts', emailAccountsRoutes);
 
 // Serve screenshots as static files
 app.use('/api/screenshots', express.static(
