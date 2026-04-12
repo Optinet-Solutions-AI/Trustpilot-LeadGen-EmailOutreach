@@ -1,15 +1,20 @@
 /**
- * In-memory email rate limiter with warmup tracking.
- * Tracks hourly and daily send counts to protect domain reputation.
- * Warmup state (lifetime sends + start date) is persisted to .tmp/warmup-state.json
- * so caps survive server restarts.
+ * Email rate limiter with warmup tracking.
+ *
+ * Warmup schedule caps daily sends to protect domain reputation:
+ *   Days  1-3  → 10/day
+ *   Days  4-7  → 20/day
+ *   Days  8-14 → 30/day
+ *   Days 15-21 → 40/day
+ *   Day  22+   → configured EMAIL_DAILY_CAP
+ *
+ * Warmup state (start date + lifetime sends) is persisted to Supabase
+ * so it survives Cloud Run restarts and re-deploys.
  */
 
 import { config } from '../config.js';
-import fs from 'fs';
-import path from 'path';
+import { getSupabase } from '../lib/supabase.js';
 
-// Warmup schedule: days 1-3 = 10/day, 4-7 = 20/day, 8-14 = 30/day, 15-21 = 40/day, 22+ = config cap
 const WARMUP_SCHEDULE = [
   { maxDay: 3,  cap: 10 },
   { maxDay: 7,  cap: 20 },
@@ -17,43 +22,78 @@ const WARMUP_SCHEDULE = [
   { maxDay: 21, cap: 40 },
 ];
 
+// Key used for the single-row warmup record in Supabase
+// (one row per sending account; we use the primary from-email as the key)
+function warmupKey(): string {
+  return config.gmail.fromEmail || config.brevo.fromEmail || 'default';
+}
+
 interface WarmupState {
-  startDate: string;   // ISO date of first send
+  startDate: string;    // ISO timestamp of first-ever send
   lifetimeSent: number;
 }
 
-function getWarmupStatePath(): string {
-  return path.resolve(process.cwd(), '.tmp', 'warmup-state.json');
-}
-
-function loadWarmupState(): WarmupState {
-  try {
-    const raw = fs.readFileSync(getWarmupStatePath(), 'utf-8');
-    return JSON.parse(raw) as WarmupState;
-  } catch {
-    return { startDate: new Date().toISOString(), lifetimeSent: 0 };
-  }
-}
-
-function saveWarmupState(state: WarmupState): void {
-  try {
-    const dir = path.dirname(getWarmupStatePath());
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(getWarmupStatePath(), JSON.stringify(state, null, 2));
-  } catch {
-    // Non-critical — continue without persistence
-  }
-}
-
 class EmailRateLimiter {
+  // ── In-memory counters (reset on restart — intentional for hourly/daily windows) ──
   private hourlyCount = 0;
-  private dailyCount = 0;
+  private dailyCount  = 0;
   private hourlyWindowStart = Date.now();
-  private dailyWindowStart = Date.now();
-  private warmup: WarmupState;
+  private dailyWindowStart  = Date.now();
 
-  constructor() {
-    this.warmup = loadWarmupState();
+  // ── Warmup — loaded from DB on first use ────────────────────────────────
+  private warmup: WarmupState = { startDate: new Date().toISOString(), lifetimeSent: 0 };
+  private warmupLoaded = false;
+  private warmupLoading: Promise<void> | null = null;
+
+  // ── Initialise warmup from Supabase (called lazily on first canSend/recordSend) ──
+  private async ensureWarmupLoaded(): Promise<void> {
+    if (this.warmupLoaded) return;
+    if (this.warmupLoading) return this.warmupLoading;
+
+    this.warmupLoading = (async () => {
+      try {
+        const supabase = getSupabase();
+        const { data } = await supabase
+          .from('email_warmup_state')
+          .select('start_date, lifetime_sent')
+          .eq('account_email', warmupKey())
+          .single();
+
+        if (data) {
+          this.warmup = { startDate: data.start_date, lifetimeSent: data.lifetime_sent };
+        } else {
+          // First run — create the row
+          await supabase.from('email_warmup_state').insert({
+            account_email: warmupKey(),
+            start_date: this.warmup.startDate,
+            lifetime_sent: 0,
+          });
+        }
+      } catch (err) {
+        // Non-fatal — fall back to in-memory defaults
+        console.warn('[RateLimit] Could not load warmup state from DB:', err instanceof Error ? err.message : err);
+      } finally {
+        this.warmupLoaded = true;
+        this.warmupLoading = null;
+      }
+    })();
+
+    return this.warmupLoading;
+  }
+
+  private async persistWarmup(): Promise<void> {
+    try {
+      await getSupabase()
+        .from('email_warmup_state')
+        .upsert({
+          account_email: warmupKey(),
+          start_date:    this.warmup.startDate,
+          lifetime_sent: this.warmup.lifetimeSent,
+          updated_at:    new Date().toISOString(),
+        }, { onConflict: 'account_email' });
+    } catch (err) {
+      console.warn('[RateLimit] Could not persist warmup state:', err instanceof Error ? err.message : err);
+    }
   }
 
   private resetIfNeeded() {
@@ -68,13 +108,11 @@ class EmailRateLimiter {
     }
   }
 
-  /** Calculate the current warmup day (1-based) */
   getWarmupDay(): number {
     const startMs = new Date(this.warmup.startDate).getTime();
     return Math.max(1, Math.floor((Date.now() - startMs) / (24 * 60 * 60 * 1000)) + 1);
   }
 
-  /** Calculate effective daily cap based on warmup schedule */
   getEffectiveDailyCap(): number {
     const day = this.getWarmupDay();
     for (const entry of WARMUP_SCHEDULE) {
@@ -87,7 +125,7 @@ class EmailRateLimiter {
     this.resetIfNeeded();
     return (
       this.hourlyCount < config.rateLimits.hourlyCap &&
-      this.dailyCount < this.getEffectiveDailyCap()
+      this.dailyCount  < this.getEffectiveDailyCap()
     );
   }
 
@@ -95,68 +133,68 @@ class EmailRateLimiter {
     this.hourlyCount++;
     this.dailyCount++;
     this.warmup.lifetimeSent++;
-    saveWarmupState(this.warmup);
+    // Persist async — don't block the send loop
+    this.persistWarmup().catch(() => {});
   }
 
   getStatus() {
     this.resetIfNeeded();
     const effectiveDailyCap = this.getEffectiveDailyCap();
-    const hourlyRemaining = Math.max(0, config.rateLimits.hourlyCap - this.hourlyCount);
-    const dailyRemaining = Math.max(0, effectiveDailyCap - this.dailyCount);
-
-    const hourlyResetAt = new Date(this.hourlyWindowStart + 60 * 60 * 1000).toISOString();
-    const dailyResetAt = new Date(this.dailyWindowStart + 24 * 60 * 60 * 1000).toISOString();
-
     return {
-      hourlyCount: this.hourlyCount,
-      hourlyCap: config.rateLimits.hourlyCap,
-      hourlyRemaining,
-      hourlyResetAt,
-      dailyCount: this.dailyCount,
-      dailyCap: effectiveDailyCap,
-      dailyRemaining,
-      dailyResetAt,
-      canSend: this.canSend(),
+      hourlyCount:     this.hourlyCount,
+      hourlyCap:       config.rateLimits.hourlyCap,
+      hourlyRemaining: Math.max(0, config.rateLimits.hourlyCap - this.hourlyCount),
+      hourlyResetAt:   new Date(this.hourlyWindowStart + 60 * 60 * 1000).toISOString(),
+      dailyCount:      this.dailyCount,
+      dailyCap:        effectiveDailyCap,
+      dailyRemaining:  Math.max(0, effectiveDailyCap - this.dailyCount),
+      dailyResetAt:    new Date(this.dailyWindowStart + 24 * 60 * 60 * 1000).toISOString(),
+      canSend:         this.canSend(),
     };
   }
 
   getWarmupStatus() {
-    const day = this.getWarmupDay();
+    const day        = this.getWarmupDay();
     const currentCap = this.getEffectiveDailyCap();
-    const configuredCap = config.rateLimits.dailyCap;
     const phase =
-      day <= 3  ? 'Early warmup' :
-      day <= 7  ? 'Warming up'   :
+      day <= 3  ? 'Early warmup'        :
+      day <= 7  ? 'Warming up'          :
       day <= 14 ? 'Building reputation' :
-      day <= 21 ? 'Scaling up'   :
+      day <= 21 ? 'Scaling up'          :
       'Full speed';
 
     return {
       day,
       currentCap,
-      configuredCap,
-      lifetimeSent: this.warmup.lifetimeSent,
-      startDate: this.warmup.startDate,
+      configuredCap: config.rateLimits.dailyCap,
+      lifetimeSent:  this.warmup.lifetimeSent,
+      startDate:     this.warmup.startDate,
       phase,
-      isWarmedUp: day > 21,
+      isWarmedUp:    day > 21,
     };
   }
 
-  /** Wait until rate limiter allows sending, polling every 10s */
+  /** Load warmup state from DB (call once at server start) */
+  async init(): Promise<void> {
+    await this.ensureWarmupLoaded();
+    const ws = this.getWarmupStatus();
+    console.log(`[RateLimit] Warmup: day ${ws.day} (${ws.phase}), cap ${ws.currentCap}/day, lifetime sends: ${ws.lifetimeSent}`);
+  }
+
+  /** Block until rate limiter allows sending, polling every 10s */
   async waitUntilCanSend(logPrefix = ''): Promise<void> {
+    await this.ensureWarmupLoaded();
     while (!this.canSend()) {
       const status = this.getStatus();
       const blockedBy = status.hourlyRemaining === 0 ? 'hourly' : 'daily';
-      const resetAt = blockedBy === 'hourly' ? status.hourlyResetAt : status.dailyResetAt;
-      console.log(`${logPrefix}[RateLimit] ${blockedBy} cap reached (${blockedBy === 'daily' ? `warmup day ${this.getWarmupDay()}, cap ${status.dailyCap}` : `cap ${status.hourlyCap}`}), waiting until ${resetAt}...`);
-      await sleep(10_000);
+      const resetAt   = blockedBy === 'hourly' ? status.hourlyResetAt : status.dailyResetAt;
+      const capInfo   = blockedBy === 'daily'
+        ? `warmup day ${this.getWarmupDay()}, cap ${status.dailyCap}`
+        : `cap ${status.hourlyCap}`;
+      console.log(`${logPrefix}[RateLimit] ${blockedBy} cap reached (${capInfo}), waiting until ${resetAt}…`);
+      await new Promise(r => setTimeout(r, 10_000));
     }
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// Singleton instance
 export const rateLimiter = new EmailRateLimiter();

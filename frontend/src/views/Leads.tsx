@@ -102,6 +102,7 @@ export default function Leads() {
 
   const [verifying, setVerifying] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [enrichJobId, setEnrichJobId] = useState<string | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -130,15 +131,46 @@ export default function Leads() {
     setEnriching(true);
     try {
       const res = await api.post('/enrich', { leadIds: selectedIds });
-      const { total: t, message } = res.data.data;
-      notify('success', message || `Enrichment started for ${t} leads — refresh in a few minutes`);
-      loadLeads();
+      const { jobId, total: t } = res.data.data;
+      if (!jobId) {
+        notify('success', 'No leads needed enrichment');
+        setEnriching(false);
+        return;
+      }
+      notify('success', `Scraping websites for ${t} leads — checking progress…`);
+      setEnrichJobId(jobId);
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Enrichment failed');
-    } finally {
       setEnriching(false);
     }
   };
+
+  // Poll enrichment job status until done or failed
+  useEffect(() => {
+    if (!enrichJobId) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.get(`/enrich/status?jobId=${enrichJobId}`);
+        const { status, found, total } = res.data.data;
+        if (status === 'done') {
+          notify('success', `Enrichment done — found ${found} emails out of ${total} leads`);
+          loadLeads();
+          setEnriching(false);
+          setEnrichJobId(null);
+          clearInterval(interval);
+        } else if (status === 'failed') {
+          const { error } = res.data.data;
+          notify('error', `Enrichment failed: ${error || 'unknown error'}`);
+          setEnriching(false);
+          setEnrichJobId(null);
+          clearInterval(interval);
+        }
+      } catch {
+        // Network hiccup — keep polling
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [enrichJobId]);
 
   return (
     <div className="px-10 py-10 space-y-8">

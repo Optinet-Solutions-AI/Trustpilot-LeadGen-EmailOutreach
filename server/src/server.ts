@@ -16,6 +16,7 @@ import analyticsRoutes from './routes/analytics.js';
 import gmailRoutes from './routes/gmail.js';
 import webhookRoutes from './routes/webhooks.js';
 import emailAccountsRoutes from './routes/email-accounts.js';
+import warmupRoutes from './routes/warmup.js';
 
 const app = express();
 
@@ -48,6 +49,7 @@ app.use('/api/follow-ups', followUpsRoutes);  // /api/follow-ups (top-level for 
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/gmail', gmailRoutes);
 app.use('/api/email-accounts', emailAccountsRoutes);
+app.use('/api/warmup', warmupRoutes);
 
 // Serve screenshots as static files
 app.use('/api/screenshots', express.static(
@@ -119,6 +121,22 @@ const server = app.listen(config.port, async () => {
       }
     }, syncInterval);
     console.log(`Email platform: ${config.emailPlatform} (sync every ${syncInterval / 1000}s)`);
+  }
+
+  // Load warmup state from DB (so day counter survives Cloud Run restarts)
+  try {
+    const { rateLimiter } = await import('./services/rate-limiter.js');
+    await rateLimiter.init();
+  } catch (e) {
+    console.warn('[Startup] Warmup state load error (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
+  // Start email warmup scheduler (send/open/reply cycle every 10 min)
+  try {
+    const { startWarmupScheduler } = await import('./services/warmup-scheduler.js');
+    startWarmupScheduler();
+  } catch (e) {
+    console.warn('[Startup] Warmup scheduler error (non-fatal):', e instanceof Error ? e.message : e);
   }
 
   // Start sequence scheduler for follow-up emails (direct/Gmail mode only)

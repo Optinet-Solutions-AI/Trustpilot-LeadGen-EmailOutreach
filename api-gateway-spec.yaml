@@ -171,6 +171,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/enrich/status:
+    get:
+      operationId: enrichStatus
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/campaigns:
     get:
       operationId: listCampaigns

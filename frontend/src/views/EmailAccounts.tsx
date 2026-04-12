@@ -78,6 +78,14 @@ export default function EmailAccounts() {
   const [saveError, setSaveError] = useState('');
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [warmupData, setWarmupData] = useState<{
+    accounts: {
+      email: string; fromName: string; warmupEnabled: boolean; warmupDailyTarget: number;
+      sentToday: number; totalSent: number; totalCompleted: number; lastSentAt: string | null; inPool: boolean;
+    }[];
+    poolSize: number; healthy: boolean; warning: string | null;
+  } | null>(null);
+  const [warmupTogglingEmail, setWarmupTogglingEmail] = useState<string | null>(null);
   const popupRef = useRef<Window | null>(null);
 
   const load = () => {
@@ -86,9 +94,25 @@ export default function EmailAccounts() {
       .then((res) => setData(res.data.data))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
+    api.get('/warmup/status')
+      .then((res) => setWarmupData(res.data.data))
+      .catch(() => {});
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleWarmupToggle = async (email: string, enabled: boolean) => {
+    setWarmupTogglingEmail(email);
+    try {
+      await api.post(`/warmup/${encodeURIComponent(email)}/toggle`, { enabled });
+      setWarmupData(prev => prev ? {
+        ...prev,
+        accounts: prev.accounts.map(a => a.email === email ? { ...a, warmupEnabled: enabled, inPool: enabled && a.email !== '' } : a),
+      } : prev);
+    } catch { /* ignore */ } finally {
+      setWarmupTogglingEmail(null);
+    }
+  };
 
   const openModal = () => {
     setShowModal(true);
@@ -302,6 +326,23 @@ export default function EmailAccounts() {
         </div>
       )}
 
+      {/* Warmup pool health banner */}
+      {warmupData && warmupData.accounts.some(a => a.warmupEnabled) && (
+        <div className={`rounded-xl p-5 flex items-start gap-4 ${warmupData.healthy ? 'bg-green-50 border border-green-200' : 'bg-amber-50 border border-amber-200'}`}>
+          <span className={`material-symbols-outlined text-2xl flex-shrink-0 ${warmupData.healthy ? 'text-green-600' : 'text-amber-600'}`}>
+            {warmupData.healthy ? 'check_circle' : 'warning'}
+          </span>
+          <div>
+            <h3 className={`font-bold mb-0.5 ${warmupData.healthy ? 'text-green-800' : 'text-amber-800'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>
+              Warmup Pool — {warmupData.poolSize} account{warmupData.poolSize !== 1 ? 's' : ''} active
+            </h3>
+            <p className={`text-sm ${warmupData.healthy ? 'text-green-700' : 'text-amber-700'}`}>
+              {warmupData.warning ?? `Warmup emails are being exchanged every 10 minutes. Full send/open/reply cycles build sender reputation automatically.`}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Account Cards */}
       <div className="grid grid-cols-3 gap-6">
         {loading ? (
@@ -351,13 +392,60 @@ export default function EmailAccounts() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between py-3 border-t border-slate-50">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[14px] text-slate-400">bolt</span>
-                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">Warmup</span>
+              {/* Warmup row — only for Gmail OAuth2 accounts */}
+              {account.auth_type === 'gmail_oauth' && (() => {
+                const ws = warmupData?.accounts.find(a => a.email === account.email);
+                const enabled = ws?.warmupEnabled ?? false;
+                const toggling = warmupTogglingEmail === account.email;
+                return (
+                  <div className="border-t border-slate-50 pt-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[14px] text-slate-400">bolt</span>
+                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">Warmup</span>
+                      </div>
+                      <button
+                        onClick={() => handleWarmupToggle(account.email, !enabled)}
+                        disabled={toggling}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${enabled ? 'bg-[#b0004a]' : 'bg-slate-200'} ${toggling ? 'opacity-50' : ''}`}
+                        title={enabled ? 'Disable warmup' : 'Enable warmup'}
+                      >
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      </button>
+                    </div>
+                    {enabled && ws && (
+                      <div className="grid grid-cols-3 gap-1 text-center">
+                        <div className="bg-slate-50 rounded px-1 py-1.5">
+                          <p className="text-[10px] text-slate-400 font-medium">Today</p>
+                          <p className="text-xs font-black text-on-surface">{ws.sentToday}<span className="text-slate-400">/{ws.warmupDailyTarget}</span></p>
+                        </div>
+                        <div className="bg-slate-50 rounded px-1 py-1.5">
+                          <p className="text-[10px] text-slate-400 font-medium">Total</p>
+                          <p className="text-xs font-black text-on-surface">{ws.totalSent}</p>
+                        </div>
+                        <div className="bg-slate-50 rounded px-1 py-1.5">
+                          <p className="text-[10px] text-slate-400 font-medium">Cycles</p>
+                          <p className="text-xs font-black text-[#006630]">{ws.totalCompleted}</p>
+                        </div>
+                      </div>
+                    )}
+                    {!enabled && (
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Toggle on to join the warmup pool. Needs ≥2 accounts.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+              {account.auth_type !== 'gmail_oauth' && (
+                <div className="flex items-center justify-between py-3 border-t border-slate-50">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[14px] text-slate-400">bolt</span>
+                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">Warmup</span>
+                  </div>
+                  <span className="text-xs text-slate-400">OAuth2 only</span>
                 </div>
-                <span className="text-xs font-bold text-[#b0004a]">{account.warmupStatus}</span>
-              </div>
+              )}
 
               {account.smtp_host && (
                 <div className="flex items-center gap-2 py-1">

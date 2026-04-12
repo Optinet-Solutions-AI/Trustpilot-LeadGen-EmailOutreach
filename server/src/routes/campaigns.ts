@@ -530,6 +530,7 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       campaignId,
       campaignName: campaign.name,
       emails: emailsToSend,
+      sendingSchedule: (!isTestMode && campaign.sending_schedule) ? campaign.sending_schedule : null,
       testMode: isTestMode,
       testEmailOverride: isTestMode && testEmail ? String(testEmail) : undefined,
     });
