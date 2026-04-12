@@ -70,19 +70,37 @@ const server = app.listen(config.port, async () => {
 
   // On startup, reset any orphaned 'sending' campaigns back to 'draft'.
   // This happens when Cloud Run kills the old instance mid-send and deploys a new one.
+  // Only reset Gmail campaigns that have NO scheduled pending leads
+  // (these had an in-memory send loop that died before any scheduling was saved)
+  // Campaigns with scheduled_at on pending leads will be picked up by campaign-scheduler.
   try {
     const { getSupabase } = await import('./lib/supabase.js');
-    // Only reset Gmail/direct campaigns — platform campaigns (platform_campaign_id IS NOT NULL)
-    // are still being handled by Instantly and should stay as 'sending'.
-    const { error } = await getSupabase()
+    const { data: sendingCampaigns } = await getSupabase()
       .from('campaigns')
-      .update({ status: 'draft' })
+      .select('id')
       .eq('status', 'sending')
       .is('platform_campaign_id', null);
-    if (error) console.warn('[Startup] Failed to reset orphaned campaigns:', error.message);
-    else console.log('[Startup] Reset orphaned direct-send campaigns to draft (platform campaigns untouched)');
+
+    let resetCount = 0;
+    for (const c of sendingCampaigns ?? []) {
+      const { count } = await getSupabase()
+        .from('campaign_leads')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', c.id)
+        .eq('status', 'pending')
+        .not('scheduled_at', 'is', null);
+
+      if (!count) {
+        // No pending leads with scheduled_at — orphaned, reset to draft
+        await getSupabase().from('campaigns').update({ status: 'draft' }).eq('id', c.id);
+        resetCount++;
+      }
+      // else: has scheduled leads → leave as 'sending', campaign-scheduler will handle it
+    }
+    if (resetCount > 0) console.log(`[Startup] Reset ${resetCount} orphaned campaigns to draft (scheduled campaigns kept)`);
+    else console.log('[Startup] No orphaned campaigns found');
   } catch (e) {
-    console.error('[Startup] Orphan reset error:', e instanceof Error ? e.message : e);
+    console.error('[Startup] Campaign orphan check error:', e instanceof Error ? e.message : e);
   }
 
   // Reset truly orphaned 'running' scrape jobs to 'failed' on startup.
@@ -145,6 +163,14 @@ const server = app.listen(config.port, async () => {
     startSequenceScheduler();
   } catch (e) {
     console.error('[Startup] Sequence scheduler error:', e instanceof Error ? e.message : e);
+  }
+
+  // Start campaign scheduler — DB-driven poller that sends scheduled campaign emails (Gmail mode only)
+  try {
+    const { startCampaignScheduler } = await import('./services/campaign-scheduler.js');
+    startCampaignScheduler();
+  } catch (e) {
+    console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
   }
 
   // Start Gmail reply tracking poll (every 5 minutes) when in gmail mode

@@ -362,9 +362,14 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
     }
   }
 
-  // Direct mode: in-memory cancel
-  cancelCampaign(campaignId);
-  res.json({ success: true, data: { message: 'Cancel requested — will stop before next email.' } });
+  // Direct mode: set campaign to draft — DB scheduler checks status before each send
+  try {
+    await updateCampaign(campaignId, { status: 'draft' });
+    res.json({ success: true, data: { message: 'Campaign cancelled — pending scheduled emails will not be sent.' } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
 });
 
 // POST /api/campaigns/:id/sync — trigger on-demand stats sync for platform campaigns

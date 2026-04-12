@@ -50,10 +50,6 @@ export interface CampaignSendParams {
   testEmailOverride?: string;
 }
 
-function sleep(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
 function emitProgress(campaignId: string, data: Record<string, unknown>) {
   campaignEvents.emit('progress', { campaignId, ...data });
 }
@@ -153,7 +149,7 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
       return;
     }
 
-    // Compute random send times for all emails
+    // ── LIVE MODE: save scheduled times to DB, let campaign-scheduler handle sending ────
     let scheduledTimes: Date[];
     try {
       scheduledTimes = assignScheduledTimes(total, sendingSchedule);
@@ -170,7 +166,7 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
 
     console.log(`[Campaign] ${describeSendPlan(scheduledTimes, sendingSchedule.timezone)}`);
 
-    // Store scheduled_at on each campaign_lead so the UI can show "sends at X"
+    // Store scheduled_at on each campaign_lead — the campaign-scheduler polls these
     await Promise.allSettled(
       emails.map((email, i) => {
         const t = scheduledTimes[i];
@@ -191,65 +187,8 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
       plan: describeSendPlan(scheduledTimes, sendingSchedule.timezone),
     });
 
-    // Send loop — sleep until each email's assigned time
-    for (let i = 0; i < emails.length; i++) {
-      const email = emails[i];
-      const sendAt = scheduledTimes[i];
-
-      if (!sendAt) {
-        console.warn(`[Campaign] No scheduled time for email ${i + 1}, skipping`);
-        failed++;
-        continue;
-      }
-
-      if (cancelRequests.has(campaignId)) {
-        cancelRequests.delete(campaignId);
-        await updateCampaign(campaignId, { status: 'draft' });
-        emitProgress(campaignId, { stage: 'cancelled', sent, failed, total });
-        console.log(`[Campaign] Cancelled after ${sent} sends.`);
-        return;
-      }
-
-      // Sleep until the scheduled time (check for cancel every 30s while waiting)
-      const msUntilSend = sendAt.getTime() - Date.now();
-      if (msUntilSend > 0) {
-        console.log(`[Campaign] Email ${i + 1}/${total}: sleeping ${Math.round(msUntilSend / 1000)}s until ${sendAt.toISOString()}`);
-        await sleepWithCancelCheck(msUntilSend, campaignId, cancelRequests, async () => {
-          cancelRequests.delete(campaignId);
-          await updateCampaign(campaignId, { status: 'draft' });
-          emitProgress(campaignId, { stage: 'cancelled', sent, failed, total });
-        });
-        // Re-check cancel after sleep
-        if (cancelRequests.has(campaignId)) return;
-      }
-
-      // Rate limiter check (daily/hourly warmup cap)
-      await rateLimiter.waitUntilCanSend(`[Campaign:${campaignId}] `);
-
-      const senderAccount = pickSender(senderPool, accountIndex++);
-      const screenshotPath = resolveScreenshotPath(email.screenshotPath);
-
-      const result = await sendEmail(
-        email.to, email.subject, email.html,
-        { screenshotPath },
-        senderAccount,
-      );
-      if (senderAccount) console.log(`[Campaign] Sending via ${senderAccount.email}`);
-
-      if (result.success) {
-        sent++;
-        rateLimiter.recordSend();
-        await markSent(supabase, email, result, campaignId, campaignName, false);
-        emitProgress(campaignId, { stage: 'sent', emailIndex: i + 1, total, sent, failed, to: email.to, success: true });
-        console.log(`[Campaign] Sent ${i + 1}/${total}: ${email.to}`);
-      } else {
-        failed++;
-        emitProgress(campaignId, { stage: 'sent', emailIndex: i + 1, total, sent, failed, to: email.to, success: false, error: result.error });
-        console.warn(`[Campaign] Failed ${i + 1}/${total}: ${email.to} — ${result.error}`);
-      }
-    }
-
-    await finalizeCampaign(supabase, campaignId, campaignName, sent, failed, total);
+    console.log(`[Campaign] "${campaignName}" scheduled — DB poller will send ${scheduledTimes.length} emails.`);
+    // campaign status stays 'sending'; campaign-scheduler will finalize it when all sent
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -337,84 +276,36 @@ async function finalizeCampaign(
 }
 
 /**
- * Sleep for `ms` milliseconds, checking for cancel every 30 seconds.
- * Calls `onCancel` if a cancel is detected during the wait.
- */
-async function sleepWithCancelCheck(
-  ms: number,
-  campaignId: string,
-  cancelSet: Set<string>,
-  onCancel: () => Promise<void>,
-) {
-  const checkInterval = 30_000; // check every 30s
-  const deadline = Date.now() + ms;
-
-  while (Date.now() < deadline) {
-    if (cancelSet.has(campaignId)) {
-      await onCancel();
-      return;
-    }
-    const remaining = deadline - Date.now();
-    await sleep(Math.min(checkInterval, remaining));
-  }
-}
-
-/**
- * Fallback: send immediately with small random delays between emails.
- * Used when no sendingSchedule is configured.
+ * No schedule provided — assign random send times within the next 30 minutes
+ * and save to DB. The campaign-scheduler picks them up and sends.
  */
 async function runUnscheduledSend(params: CampaignSendParams & {
   senderPool: GmailSenderAccount[];
   accountIndex: number;
 }) {
-  const { campaignId, campaignName, emails, senderPool, testMode, testEmailOverride } = params;
-  let { accountIndex } = params;
+  const { campaignId, campaignName, emails } = params;
   const supabase = getSupabase();
-  let sent = 0;
-  let failed = 0;
   const total = emails.length;
 
-  for (let i = 0; i < emails.length; i++) {
-    const email = emails[i];
+  // Assign random send times: spread emails 1–30 min from now
+  const windowMs = Math.min(total * 5 * 60_000, 30 * 60_000); // up to 30 min window
+  const times = emails.map(() => {
+    const offsetMs = Math.floor(Math.random() * windowMs);
+    return new Date(Date.now() + 60_000 + offsetMs); // at least 1 min from now
+  }).sort((a, b) => a.getTime() - b.getTime());
 
-    if (cancelRequests.has(campaignId)) {
-      cancelRequests.delete(campaignId);
-      await updateCampaign(campaignId, { status: 'draft' });
-      emitProgress(campaignId, { stage: 'cancelled', sent, failed, total });
-      return;
-    }
+  await Promise.allSettled(
+    emails.map((email, i) =>
+      supabase
+        .from('campaign_leads')
+        .update({ scheduled_at: times[i].toISOString() })
+        .eq('id', email.campaignLeadId)
+    )
+  );
 
-    await rateLimiter.waitUntilCanSend(`[Campaign:${campaignId}] `);
-
-    const senderAccount = pickSender(senderPool, accountIndex++);
-    const transformed = applyTestMode(
-      { to: email.to, subject: email.subject, html: email.html },
-      testMode, testEmailOverride,
-    );
-
-    const result = await sendEmail(
-      transformed.to, transformed.subject, transformed.html,
-      { screenshotPath: resolveScreenshotPath(email.screenshotPath) },
-      senderAccount,
-    );
-
-    if (result.success) {
-      sent++;
-      rateLimiter.recordSend();
-      await markSent(supabase, email, result, campaignId, campaignName, !!testMode);
-      emitProgress(campaignId, { stage: 'sent', emailIndex: i + 1, total, sent, failed, to: email.to, success: true });
-    } else {
-      failed++;
-      emitProgress(campaignId, { stage: 'sent', emailIndex: i + 1, total, sent, failed, to: email.to, success: false, error: result.error });
-    }
-
-    // Random 2–5 minute delay between emails
-    if (i < emails.length - 1) {
-      const delay = 120_000 + Math.floor(Math.random() * 180_000);
-      console.log(`[Campaign] No schedule — waiting ${Math.round(delay / 1000)}s before next send`);
-      await sleep(delay);
-    }
-  }
-
-  await finalizeCampaign(supabase, campaignId, campaignName, sent, failed, total);
+  const firstAt = times[0]?.toLocaleTimeString();
+  const lastAt  = times[times.length - 1]?.toLocaleTimeString();
+  console.log(`[Campaign] "${campaignName}" unscheduled — ${total} emails queued from ${firstAt} to ${lastAt}`);
+  emitProgress(campaignId, { stage: 'scheduled', total, scheduledCount: total, firstSendAt: times[0]?.toISOString() });
+  // campaign-scheduler will finalize when all sent
 }
