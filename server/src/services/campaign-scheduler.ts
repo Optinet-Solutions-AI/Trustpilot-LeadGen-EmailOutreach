@@ -19,22 +19,36 @@ import { sendEmail, type GmailSenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter } from './rate-limiter.js';
 import { renderAndSpin } from './template-engine.js';
-import { updateCampaign } from '../db/campaigns.js';
+import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getCampaignSteps } from '../db/campaign-steps.js';
+import { checkForBounces } from './bounce-tracker.js';
 
 const POLL_INTERVAL_MS = 60_000; // check every 60 seconds
 const BATCH_LIMIT = 10;           // max sends per tick (stays within hourly caps)
+const BOUNCE_CHECK_EVERY = 5;     // run bounce check every N ticks (= every 5 minutes)
 
 export function startCampaignScheduler(): void {
+  let tick = 0;
+
   // Always run the recovery loop regardless of email platform —
   // it finalizes campaigns stuck in 'draft'/'sending' where all emails are already done.
+  // Also runs the Gmail bounce checker every BOUNCE_CHECK_EVERY ticks.
   setInterval(async () => {
+    tick++;
     try {
       await recoverStuckCampaigns();
     } catch (err) {
       console.error('[CampaignScheduler] Recovery error:', err instanceof Error ? err.message : err);
+    }
+
+    if (tick % BOUNCE_CHECK_EVERY === 0) {
+      try {
+        await checkForBounces();
+      } catch (err) {
+        console.error('[CampaignScheduler] Bounce check error:', err instanceof Error ? err.message : err);
+      }
     }
   }, POLL_INTERVAL_MS);
 
@@ -43,7 +57,7 @@ export function startCampaignScheduler(): void {
     return;
   }
 
-  console.log('[CampaignScheduler] Started — polling every 60s for due emails.');
+  console.log('[CampaignScheduler] Started — polling every 60s for due emails, bounce check every 5 min.');
 
   setInterval(async () => {
     try {
@@ -178,6 +192,11 @@ async function sendScheduledEmail(cl: any, senderAccount: GmailSenderAccount | u
       .from('campaign_leads')
       .update({ status: 'sent', sent_at: new Date().toISOString() })
       .eq('id', cl.id);
+
+    // Store Gmail thread/message IDs so the reply tracker and bounce tracker can cross-reference
+    if (result.messageId || result.threadId) {
+      await updateCampaignLeadGmailIds(cl.id, result.messageId, result.threadId);
+    }
 
     await updateLead(lead.id as string, {
       outreach_status: 'contacted',

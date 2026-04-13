@@ -47,13 +47,17 @@ export async function deleteCampaign(id: string) {
   if (error) throw new Error(error.message);
 }
 
-/** Returns a Set of email addresses already successfully sent in any campaign. */
+/**
+ * Returns a Set of email addresses that should NOT receive another campaign email.
+ * Includes: previously sent/opened/replied (already contacted) + bounced (permanently failed).
+ * This prevents re-sending to hard-bounced addresses and double-emailing active conversations.
+ */
 export async function getSentEmails(): Promise<Set<string>> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('campaign_leads')
     .select('email_used')
-    .in('status', ['sent', 'opened', 'replied']);
+    .in('status', ['sent', 'opened', 'replied', 'bounced']);
   if (error) throw new Error(error.message);
   return new Set(
     (data || []).map((r: { email_used: string | null }) => r.email_used).filter(Boolean) as string[]
