@@ -170,6 +170,8 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     try {
       const res = await api.post('/scrape', params);
       const id = res.data.data.jobId;
+      // Persist so we can restore state after a page refresh
+      localStorage.setItem('active_scrape_job', id);
       subscribeToJob(id);
       return id;
     } catch (e) {
@@ -212,7 +214,28 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       const fetched = res.data.data as ScrapeJob[];
       setJobs(fetched);
 
-      // Sync status from server for current job
+      // If no active job in state (e.g. after a page refresh), restore from localStorage
+      if (!jobIdRef.current) {
+        const persistedId = localStorage.getItem('active_scrape_job');
+        if (persistedId) {
+          const match = fetched.find((j) => j.id === persistedId);
+          if (match) {
+            setJobId(persistedId);
+            jobIdRef.current = persistedId;
+            // Restore terminal states immediately; 'running' falls through to auto-reconnect
+            if (match.status === 'completed') {
+              setStatus('completed');
+              statusRef.current = 'completed';
+            } else if (match.status === 'failed') {
+              setStatus('failed');
+              statusRef.current = 'failed';
+              if (match.error) setError(match.error);
+            }
+          }
+        }
+      }
+
+      // Sync status from server for current job (catches completion while tab was inactive)
       const currentId = jobIdRef.current;
       if (currentId) {
         const match = fetched.find((j) => j.id === currentId);

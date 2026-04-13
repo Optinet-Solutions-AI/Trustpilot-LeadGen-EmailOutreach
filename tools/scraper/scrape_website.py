@@ -65,65 +65,25 @@ FREE_EMAIL_DOMAINS = {
     'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com',
     'icloud.com', 'aol.com', 'mail.com', 'protonmail.com', 'yandex.com',
     'gmx.com', 'gmx.de', 'web.de', 'zoho.com',
+    # Common support/CRM platforms — emails here go to a third-party, not the company
+    'zendesk.com', 'freshdesk.com', 'helpscout.com', 'intercom.io',
+    'salesforce.com', 'hubspot.com', 'mailchimp.com', 'sendgrid.net',
 }
 
-
-def extract_base_domain(url: str) -> str:
-    """Extract the registrable domain from a URL, e.g. 'https://www.company.co.uk/page' → 'company.co.uk'."""
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url if url.startswith('http') else f'https://{url}')
-        host = (parsed.hostname or '').lower()
-        # Strip www. prefix
-        if host.startswith('www.'):
-            host = host[4:]
-        return host
-    except Exception:
-        return ''
 
 
 def email_matches_domain(email: str, website_url: str) -> bool:
     """
-    Check if an email's domain is related to the website domain.
-    Prevents accepting third-party service emails (e.g., support@zendesk.com).
+    Reject clearly wrong emails: free personal providers and known third-party platforms.
+    Does NOT require the email domain to match the website domain — companies often use
+    a different TLD or brand name for their emails (e.g. danskespil.dk email on
+    danske-spil-casino.dk website), and rejecting those causes too many false negatives.
     """
-    if not email or not website_url:
-        return True  # Can't validate, allow it
+    if not email:
+        return True
 
     email_domain = email.split('@')[-1].lower()
-
-    # Reject free email providers entirely
-    if email_domain in FREE_EMAIL_DOMAINS:
-        return False
-
-    site_domain = extract_base_domain(website_url)
-    if not site_domain:
-        return True  # Can't validate, allow it
-
-    # Exact match (e.g., company.com email → company.com site)
-    if email_domain == site_domain:
-        return True
-
-    # Subdomain match (e.g., mail.company.com → company.com)
-    if email_domain.endswith('.' + site_domain):
-        return True
-
-    # Site is a subdomain of email domain (rare but happens)
-    if site_domain.endswith('.' + email_domain):
-        return True
-
-    # Different TLD heuristic: company.com email vs company.co.uk site
-    # Compare the "name" segment only (first part before TLD)
-    site_parts = site_domain.split('.')
-    email_parts = email_domain.split('.')
-    if len(site_parts) >= 2 and len(email_parts) >= 2:
-        # Get name (ignore common 2nd-level like co, com, net, org)
-        site_name = site_parts[0]
-        email_name = email_parts[0]
-        if site_name == email_name and len(site_name) > 3:
-            return True
-
-    return False
+    return email_domain not in FREE_EMAIL_DOMAINS
 
 
 def rank_email(email: str) -> int:
