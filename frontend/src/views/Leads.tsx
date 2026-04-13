@@ -159,6 +159,7 @@ export default function Leads() {
 
     const finish = (success: boolean, result?: { found: number; total: number }, errMsg?: string) => {
       if (!active) return;
+      active = false; // prevent any further polls immediately
       if (interval) clearInterval(interval);
       if (success && result) setEnrichResult(result);
       else if (errMsg) notify('error', errMsg);
@@ -181,6 +182,7 @@ export default function Leads() {
         if (httpStatus === 404) {
           // Stale job ID — silently clear it, no error shown
           if (!active) return;
+          active = false; // prevent any further polls immediately
           if (interval) clearInterval(interval);
           setEnriching(false);
           setEnrichJobId(null);
