@@ -17,6 +17,13 @@ import os
 import re
 import sys
 
+# Force UTF-8 stdout/stderr so non-ASCII characters in emails/URLs don't crash
+# when running as a subprocess (Cloud Run Linux locale may default to ASCII)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from tools.scraper.browser_utils import launch_browser, human_delay, safe_goto, dismiss_popups
 
@@ -268,9 +275,9 @@ async def _enrich_batch(context, batch: list[tuple[int, dict]], results_dict: di
                 updated_lead = {**lead}
                 if best_email:
                     updated_lead['website_email'] = best_email
-                    print(f"    → SET website_email = {best_email}")
+                    print(f"    >> SET website_email = {best_email}")
                 else:
-                    print(f"    → No email found")
+                    print(f"    >> No email found")
             except Exception as e:
                 error_msg = str(e).replace('\n', ' ')[:200]
                 print(f"FAILED:website:{website_url or 'unknown'}:{error_msg}")
