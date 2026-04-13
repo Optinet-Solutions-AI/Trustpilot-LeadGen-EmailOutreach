@@ -152,46 +152,48 @@ export default function Leads() {
   // enrichJobId is initialised from localStorage so this resumes after page refresh.
   useEffect(() => {
     if (!enrichJobId) return;
-    // Mark as running immediately so the UI shows the correct state on refresh
     setEnriching(true);
 
-    const stopEnrich = (success: boolean, msg: string, result?: { found: number; total: number }) => {
-      if (success && result) {
-        setEnrichResult(result);
-      } else {
-        notify('error', msg);
-      }
-      loadLeads();
+    let active = true;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const finish = (success: boolean, result?: { found: number; total: number }, errMsg?: string) => {
+      if (!active) return;
+      if (interval) clearInterval(interval);
+      if (success && result) setEnrichResult(result);
+      else if (errMsg) notify('error', errMsg);
       setEnriching(false);
       setEnrichJobId(null);
       localStorage.removeItem('active_enrich_job');
+      loadLeads();
     };
 
-    const interval = setInterval(async () => {
+    const poll = async () => {
+      if (!active) return;
       try {
         const res = await api.get(`/enrich/status?jobId=${enrichJobId}`);
         const { status, found, total, error } = res.data.data;
-        if (status === 'done') {
-          stopEnrich(true, '', { found, total });
-          clearInterval(interval);
-        } else if (status === 'failed') {
-          stopEnrich(false, `Enrichment failed: ${error || 'unknown error'}`);
-          clearInterval(interval);
-        }
+        if (status === 'done') finish(true, { found, total });
+        else if (status === 'failed') finish(false, undefined, `Enrichment failed: ${error || 'unknown error'}`);
         // 'running' → keep polling
       } catch (err: unknown) {
-        // If the job doesn't exist in DB (404), it's a stale ID from before the
-        // Supabase-persistence fix — clear it so the banner doesn't hang forever.
-        const status = (err as { response?: { status?: number } })?.response?.status;
-        if (status === 404) {
-          stopEnrich(false, 'Enrichment job not found — it may have been lost during a server restart. Please try again.');
-          clearInterval(interval);
-
+        const httpStatus = (err as { response?: { status?: number } })?.response?.status;
+        if (httpStatus === 404) {
+          // Stale job ID — silently clear it, no error shown
+          if (!active) return;
+          if (interval) clearInterval(interval);
+          setEnriching(false);
+          setEnrichJobId(null);
+          localStorage.removeItem('active_enrich_job');
         }
         // Other network errors: keep polling
       }
-    }, 5000);
-    return () => clearInterval(interval);
+    };
+
+    // Check immediately on mount (don't wait 5s to detect stale IDs)
+    poll();
+    interval = setInterval(poll, 5000);
+    return () => { active = false; if (interval) clearInterval(interval); };
   }, [enrichJobId]);
 
   return (
