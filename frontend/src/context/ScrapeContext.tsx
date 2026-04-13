@@ -214,23 +214,24 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       const fetched = res.data.data as ScrapeJob[];
       setJobs(fetched);
 
-      // If no active job in state (e.g. after a page refresh), restore from localStorage
+      // If no active job in state (e.g. after a page refresh), restore from DB
       if (!jobIdRef.current) {
+        // Prefer the localStorage-persisted job; fall back to the most recent job
         const persistedId = localStorage.getItem('active_scrape_job');
-        if (persistedId) {
-          const match = fetched.find((j) => j.id === persistedId);
-          if (match) {
-            setJobId(persistedId);
-            jobIdRef.current = persistedId;
-            // Restore terminal states immediately; 'running' falls through to auto-reconnect
-            if (match.status === 'completed') {
-              setStatus('completed');
-              statusRef.current = 'completed';
-            } else if (match.status === 'failed') {
-              setStatus('failed');
-              statusRef.current = 'failed';
-              if (match.error) setError(match.error);
-            }
+        const target = (persistedId ? fetched.find((j) => j.id === persistedId) : null)
+          ?? fetched[0];
+
+        if (target) {
+          setJobId(target.id);
+          jobIdRef.current = target.id;
+          // Restore terminal states immediately; 'running' falls through to auto-reconnect
+          if (target.status === 'completed') {
+            setStatus('completed');
+            statusRef.current = 'completed';
+          } else if (target.status === 'failed') {
+            setStatus('failed');
+            statusRef.current = 'failed';
+            if (target.error) setError(target.error);
           }
         }
       }
