@@ -30,80 +30,92 @@ CONTACT_EXTRACT_JS = r'''() => {
     const h1 = document.querySelector('h1');
     if (h1) result.company_name = h1.textContent.trim();
 
-    // Look through all links for contact info patterns
-    const allLinks = document.querySelectorAll('a[href]');
-    for (const link of allLinks) {
-        const href = link.getAttribute('href') || '';
+    // Domains to exclude from website_url (social/tracking/trustpilot)
+    const EXCLUDED = [
+        'trustpilot.com', 'facebook.com', 'twitter.com', 'x.com',
+        'instagram.com', 'linkedin.com', 'youtube.com', 'tiktok.com',
+        'pinterest.com', 'google.com', 'apple.com', 'microsoft.com',
+        'apps.apple.com', 'play.google.com',
+    ];
+    const isExternal = (href) => {
+        if (!href || !href.startsWith('http')) return false;
+        return !EXCLUDED.some(d => href.toLowerCase().includes(d));
+    };
 
-        // Website URL — external link in contact section
-        if (href.startsWith('http') &&
-            !href.includes('trustpilot.com') &&
-            !href.includes('facebook.com') &&
-            !href.includes('twitter.com') &&
-            !href.includes('instagram.com') &&
-            !href.includes('linkedin.com') &&
-            !href.includes('youtube.com')) {
+    // ── Step 1: Look for website link in the Trustpilot business info sidebar ──
+    // Trustpilot uses various class names across versions; try all known patterns
+    const sidebarSelectors = [
+        '[class*="contactInfo"]',
+        '[class*="businessInfo"]',
+        '[class*="contactBlock"]',
+        '[class*="companyInfo"]',
+        '[class*="businessDetails"]',
+        '[class*="businessUnit"]',
+        '[class*="contact-info"]',
+        '[class*="company-info"]',
+        'aside',
+        'section[class*="contact"]',
+        '[data-business-unit-info]',
+    ];
 
-            const parent = link.closest('[class*="contact"], [class*="info"], [class*="sidebar"], aside');
-            if (parent || link.closest('body')) {
-                if (!result.website_url) {
-                    result.website_url = href.replace(/\/$/, '');
-                }
+    for (const sel of sidebarSelectors) {
+        const section = document.querySelector(sel);
+        if (!section) continue;
+
+        const links = section.querySelectorAll('a[href]');
+        for (const link of links) {
+            const href = link.getAttribute('href') || '';
+            if (href.startsWith('mailto:') && !result.trustpilot_email) {
+                result.trustpilot_email = href.replace('mailto:', '').split('?')[0].trim();
+            } else if (href.startsWith('tel:') && !result.phone) {
+                result.phone = href.replace('tel:', '').trim();
+            } else if (isExternal(href) && !result.website_url) {
+                result.website_url = href.replace(/\/$/, '');
             }
         }
-
-        // Email
-        if (href.startsWith('mailto:')) {
-            result.trustpilot_email = href.replace('mailto:', '').split('?')[0].trim();
-        }
-
-        // Phone
-        if (href.startsWith('tel:')) {
-            result.phone = href.replace('tel:', '').trim();
-        }
+        // If found what we need, stop early
+        if (result.website_url && result.trustpilot_email) break;
     }
 
-    // Fallback: look for website in the info section
+    // ── Step 2: Look for "Visit website" / website button links anywhere on page ──
     if (!result.website_url) {
-        const infoSection = document.querySelector(
-            '[class*="contactInfo"], [class*="sidebar"], [data-company-info]'
-        );
-        if (infoSection) {
-            const links = infoSection.querySelectorAll('a[href^="http"]');
-            for (const link of links) {
-                const href = link.getAttribute('href');
-                if (!href.includes('trustpilot.com')) {
+        const allLinks = document.querySelectorAll('a[href]');
+        for (const link of allLinks) {
+            const href = link.getAttribute('href') || '';
+            const text = (link.textContent || '').toLowerCase().trim();
+            const ariaLabel = (link.getAttribute('aria-label') || '').toLowerCase();
+            if (href.startsWith('mailto:') && !result.trustpilot_email) {
+                result.trustpilot_email = href.replace('mailto:', '').split('?')[0].trim();
+            } else if (href.startsWith('tel:') && !result.phone) {
+                result.phone = href.replace('tel:', '').trim();
+            } else if (isExternal(href) && !result.website_url) {
+                // Only pick links that clearly say "website" or "visit"
+                if (text.includes('website') || text.includes('visit') ||
+                    ariaLabel.includes('website') || ariaLabel.includes('visit') ||
+                    link.getAttribute('rel') === 'noopener') {
                     result.website_url = href.replace(/\/$/, '');
-                    break;
                 }
             }
         }
     }
 
-    // Fallback: look for phone in text
+    // ── Step 3: Phone fallback — scan contact section text ──
     if (!result.phone) {
-        const phonePattern = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/;
-        const infoSection = document.querySelector(
-            '[class*="contactInfo"], [class*="contact"], aside'
-        );
-        if (infoSection) {
-            const text = infoSection.textContent || '';
-            const match = text.match(phonePattern);
-            if (match) result.phone = match[0].trim();
+        const phonePattern = /(?:\+?\d{1,3}[\s.\-]?)?\(?\d{2,4}\)?[\s.\-]?\d{3,4}[\s.\-]?\d{3,4}/;
+        for (const sel of ['[class*="contactInfo"]', '[class*="contact"]', 'aside']) {
+            const section = document.querySelector(sel);
+            if (!section) continue;
+            const match = (section.textContent || '').match(phonePattern);
+            if (match) { result.phone = match[0].trim(); break; }
         }
     }
 
-    // Fallback: scan for email in text
+    // ── Step 4: Email fallback — scan visible text anywhere ──
     if (!result.trustpilot_email) {
         const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
-        const infoSection = document.querySelector(
-            '[class*="contactInfo"], [class*="contact"], aside'
-        );
-        if (infoSection) {
-            const text = infoSection.textContent || '';
-            const match = text.match(emailPattern);
-            if (match) result.trustpilot_email = match[0];
-        }
+        const bodyText = document.body ? document.body.innerText : '';
+        const match = bodyText.match(emailPattern);
+        if (match) result.trustpilot_email = match[0];
     }
 
     return result;
@@ -173,6 +185,11 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
 async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, failed_list, start_idx, total):
     """Scrape a batch of profiles using a single page (tab)."""
     page = await context.new_page()
+    try:
+        from playwright_stealth import stealth_async
+        await stealth_async(page)
+    except ImportError:
+        pass
     try:
         for i, (idx, lead) in enumerate(slugs_batch):
             slug = lead.get('slug')

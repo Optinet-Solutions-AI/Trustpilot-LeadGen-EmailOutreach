@@ -50,6 +50,10 @@ def upsert_leads(leads: list[dict]) -> int:
     for row in rows:
         seen[row['trustpilot_url']] = row
     rows = list(seen.values())
+
+    # Strip None values — prevents overwriting existing DB data with nulls.
+    # Supabase upsert will only update columns present in the payload.
+    rows = [{k: v for k, v in row.items() if v is not None} for row in rows]
     print(f"Deduplicated to {len(rows)} unique leads.")
 
     # Upsert in batches of 25 to avoid payload limits and timeouts

@@ -123,7 +123,8 @@ export default function LeadDetail() {
         {/* Stats grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: 'Email', value: lead.primary_email || '—', icon: 'alternate_email' },
+            { label: 'Trustpilot Email', value: lead.trustpilot_email || '—', icon: 'alternate_email' },
+            { label: 'Website Email', value: lead.website_email || '—', icon: 'mark_email_unread' },
             { label: 'Phone', value: lead.phone || '—', icon: 'phone' },
             { label: 'Rating', value: lead.star_rating ? `${lead.star_rating.toFixed(1)} ★` : '—', icon: 'star' },
             { label: 'Status', value: null, icon: 'flag', badge: lead.outreach_status },

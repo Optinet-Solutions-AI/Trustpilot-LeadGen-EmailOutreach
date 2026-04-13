@@ -52,6 +52,55 @@ function parseProgressFraction(progress: ScrapeProgressType[]): { current: numbe
   return null;
 }
 
+function parseSummary(progress: ScrapeProgressType[]): {
+  profilesFound?: number;
+  emailsEnriched?: number;
+  enrichSkipped?: string;
+  enrichRan: boolean;
+} {
+  let profilesFound: number | undefined;
+  let emailsEnriched: number | undefined;
+  let enrichSkipped: string | undefined;
+  let enrichRan = false;
+
+  for (const p of progress) {
+    if (p.stage === 'profile_done' && p.detail) {
+      profilesFound = parseInt(p.detail, 10);
+    }
+    if (p.stage === 'enrich_start') {
+      enrichRan = true;
+    }
+    if (p.stage === 'enrich_done' && p.detail) {
+      emailsEnriched = parseInt(p.detail, 10);
+    }
+    // "Nothing to enrich" case — detail from Python print
+    if (p.stage === 'enrich_progress' && p.detail?.includes('0/')) {
+      enrichSkipped = 'No leads had a website URL to enrich';
+    }
+  }
+  return { profilesFound, emailsEnriched, enrichSkipped, enrichRan };
+}
+
+function humanLabel(stage: string, detail: string): string {
+  switch (stage) {
+    case 'started': return 'Scrape job started';
+    case 'category_done': return `Found ${detail} companies on Trustpilot`;
+    case 'dedup_start': return `Checking ${detail} URLs against existing leads…`;
+    case 'dedup_done': { const [skip, total] = detail.split('/'); return `Dedup: ${skip} already in DB — scraping ${parseInt(total) - parseInt(skip)} new`; }
+    case 'profile_done': return `Scraped ${detail} profiles`;
+    case 'checkpoint_save': return 'Saving profile data to database…';
+    case 'checkpoint_done': return 'Profile data saved ✓';
+    case 'enrich_start': return 'Starting website email enrichment…';
+    case 'enrich_done': return `Enrichment complete — ${detail} new website emails found`;
+    case 'final_save': return 'Saving enriched data…';
+    case 'upsert_done': return `Saved ${detail.split('/')[0]} leads to database ✓`;
+    case 'completed': return detail || 'All done ✓';
+    case 'failed': return `Failed: ${detail}`;
+    case 'item_failed': return `⚠ Failed: ${detail}`;
+    default: return detail || stage;
+  }
+}
+
 interface Props {
   status: 'running' | 'completed' | 'failed' | null;
   progress: ScrapeProgressType[];
@@ -71,6 +120,7 @@ export default function ScrapeProgress({
   const activePhase = getActivePhase(progress);
   const completedPhases = getCompletedPhases(progress);
   const fraction = parseProgressFraction(progress);
+  const summary = parseSummary(progress);
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6 mt-4">
@@ -152,19 +202,65 @@ export default function ScrapeProgress({
         </div>
       )}
 
+      {/* Summary cards (shown when done or if we have data) */}
+      {(status === 'completed' || summary.profilesFound !== undefined || summary.emailsEnriched !== undefined) && (
+        <div className="flex gap-3 mb-4 flex-wrap">
+          {summary.profilesFound !== undefined && (
+            <div className="flex items-center gap-2 bg-green-50 border border-green-100 rounded-lg px-3 py-2 text-xs">
+              <span className="material-symbols-outlined text-[16px] text-green-600">business</span>
+              <span className="text-green-800 font-semibold">{summary.profilesFound} profiles scraped</span>
+            </div>
+          )}
+          {summary.enrichRan && summary.emailsEnriched !== undefined && (
+            <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs border ${
+              summary.emailsEnriched > 0
+                ? 'bg-blue-50 border-blue-100'
+                : 'bg-amber-50 border-amber-100'
+            }`}>
+              <span className={`material-symbols-outlined text-[16px] ${summary.emailsEnriched > 0 ? 'text-blue-600' : 'text-amber-600'}`}>
+                language
+              </span>
+              {summary.emailsEnriched > 0 ? (
+                <span className="text-blue-800 font-semibold">{summary.emailsEnriched} website emails found</span>
+              ) : (
+                <span className="text-amber-800 font-semibold">
+                  No website emails found
+                  <span className="font-normal block text-[10px] text-amber-600">
+                    Possible: no website URLs on these profiles, or sites had no contact email
+                  </span>
+                </span>
+              )}
+            </div>
+          )}
+          {summary.enrichRan && !summary.enrichSkipped && summary.emailsEnriched === undefined && status === 'running' && (
+            <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs">
+              <Loader2 size={14} className="animate-spin text-blue-500" />
+              <span className="text-blue-800">Enriching website emails…</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Activity Log */}
-      <div className="max-h-48 overflow-y-auto bg-gray-50 rounded p-3 text-xs font-mono space-y-1">
+      <div className="max-h-48 overflow-y-auto bg-gray-50 rounded p-3 text-xs space-y-1">
         {progress.map((p, i) => {
           // Skip verbose per-item progress in the log
           if (p.stage === 'profile_progress' || p.stage === 'enrich_progress' || p.stage === 'upsert_progress') return null;
+          const label = humanLabel(p.stage, p.detail);
           return (
-            <div key={i} className={`${
+            <div key={i} className={`flex items-start gap-1.5 ${
               p.stage === 'item_failed' ? 'text-red-500' :
-              p.stage === 'completed' ? 'text-green-600' :
-              p.stage === 'failed' ? 'text-red-600' :
-              'text-gray-600'
+              p.stage === 'completed' ? 'text-green-600 font-medium' :
+              p.stage === 'failed' ? 'text-red-600 font-medium' :
+              p.stage.includes('done') ? 'text-gray-700 font-medium' :
+              'text-gray-500'
             }`}>
-              <span className="text-gray-400">[{p.stage}]</span> {p.detail}
+              {p.timestamp && (
+                <span className="text-gray-300 shrink-0 font-mono">
+                  {new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              )}
+              <span>{label}</span>
             </div>
           );
         })}
