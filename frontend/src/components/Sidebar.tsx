@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: '/analytics',       icon: 'bar_chart',        label: 'Analytics' },
   { href: '/campaigns',       icon: 'magic_button',     label: 'Campaign Wizard' },
   { href: '/email-accounts',  icon: 'alternate_email',  label: 'Email Accounts' },
+  { href: '/affiliate-monitor', icon: 'monitoring',      label: 'Affiliate Monitor' },
 ];
 
 const isTestMode = process.env.NEXT_PUBLIC_EMAIL_TEST_MODE === 'true';
