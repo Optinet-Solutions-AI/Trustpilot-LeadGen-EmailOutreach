@@ -24,6 +24,9 @@ export const scrapeEvents = new EventEmitter();
 // Track active Python processes for cancellation
 const activeProcesses = new Map<string, ChildProcess>();
 
+// Watchdog: max seconds of silence before killing a hung Python process
+const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
 interface ScrapeParams {
   jobId: string;
   country: string;
@@ -66,10 +69,24 @@ function runPython(
   const promise = new Promise<string>((resolve, reject) => {
     let stdout = '';
     let stderr = '';
+    let lastActivityTime = Date.now();
+
+    // Watchdog timer — kills the process if no stdout for WATCHDOG_TIMEOUT_MS
+    const watchdog = setInterval(() => {
+      const silenceMs = Date.now() - lastActivityTime;
+      if (silenceMs > WATCHDOG_TIMEOUT_MS) {
+        console.error(`[Watchdog] Killing hung Python process for job ${jobId} (no output for ${Math.round(silenceMs / 1000)}s)`);
+        clearInterval(watchdog);
+        try { proc.kill('SIGKILL'); } catch {}
+        activeProcesses.delete(jobId);
+        reject(new Error(`Watchdog: Python process hung (no output for ${Math.round(silenceMs / 1000)}s) — likely OOM or Playwright freeze`));
+      }
+    }, 30_000); // Check every 30s
 
     proc.stdout.on('data', (data: Buffer) => {
       const text = data.toString();
       stdout += text;
+      lastActivityTime = Date.now(); // Reset watchdog
 
       const lines = text.split('\n');
       for (const line of lines) {
@@ -95,15 +112,18 @@ function runPython(
 
     proc.stderr.on('data', (data: Buffer) => {
       stderr += data.toString();
+      lastActivityTime = Date.now(); // stderr counts as activity too
     });
 
     proc.on('close', (code) => {
+      clearInterval(watchdog);
       activeProcesses.delete(jobId);
       if (code === 0) resolve(stdout);
       else reject(new Error(`Script exited with code ${code}: ${stderr.slice(0, 500)}`));
     });
 
     proc.on('error', (err) => {
+      clearInterval(watchdog);
       activeProcesses.delete(jobId);
       reject(err);
     });
@@ -385,6 +405,7 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       '--input', profileInput,
       '--output', enrichedOutput,
       '--screenshots-dir', screenshotsDir,
+      '--parallel', '2',
     ]);
     await profilePromise;
 
