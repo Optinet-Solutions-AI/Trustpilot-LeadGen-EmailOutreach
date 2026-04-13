@@ -16,20 +16,22 @@ interface Props {
   onSortChange: (col: string) => void;
 }
 
-type ColKey = 'company' | 'country' | 'category' | 'email' | 'rating' | 'tags' | 'status';
+type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'status';
 
-const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'email', 'rating', 'tags', 'status'];
-const COL_STORAGE_KEY = 'leads_col_order_v2';
+const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'rating', 'tags', 'status'];
+const COL_STORAGE_KEY = 'leads_col_order_v3';
 
 const COL_LABELS: Record<ColKey, string> = {
   company: 'Company', country: 'Country', category: 'Category',
-  email: 'Email', rating: 'Rating', tags: 'Tags', status: 'Status',
+  trustpilot_email: 'TP Email', website_email: 'Website Email',
+  rating: 'Rating', tags: 'Tags', status: 'Status',
 };
 
 const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
   company: 'company_name',
   category: 'category',
-  email: 'primary_email',
+  trustpilot_email: 'trustpilot_email',
+  website_email: 'website_email',
   rating: 'star_rating',
   status: 'outreach_status',
 };
@@ -167,76 +169,45 @@ export default function LeadsTable({
               : <span className="text-slate-300 text-xs">—</span>}
           </td>
         );
-      case 'email': {
-        const hasWebsiteEmail = !!lead.website_email;
-        const hasTpEmail = !!lead.trustpilot_email;
-        const hasWebsiteUrl = !!lead.website_url;
-        const neitherEmail = !hasWebsiteEmail && !hasTpEmail;
-
-        // Enrichment status pill
-        let enrichPill: React.ReactNode = null;
-        if (hasWebsiteEmail) {
-          enrichPill = (
-            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full">
-              <span className="material-symbols-outlined text-[9px]">language</span>enriched
-            </span>
-          );
-        } else if (hasWebsiteUrl && !hasWebsiteEmail) {
-          enrichPill = (
-            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Has website but no email found yet — run Enrich">
-              <span className="material-symbols-outlined text-[9px]">hourglass_empty</span>not enriched
-            </span>
-          );
-        } else if (!hasWebsiteUrl && hasTpEmail) {
-          enrichPill = (
-            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-full" title="No website URL found on Trustpilot">
-              <span className="material-symbols-outlined text-[9px]">alternate_email</span>TP only
-            </span>
-          );
-        } else if (!hasWebsiteUrl && !hasTpEmail) {
-          enrichPill = (
-            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded-full">
-              no email
-            </span>
-          );
-        }
-
+      case 'trustpilot_email':
         return (
-          <td key={col} className="px-4 py-3 min-w-[200px]">
-            <div className="flex flex-col gap-1">
-              {/* Website email row */}
-              {hasWebsiteEmail ? (
+          <td key={col} className="px-4 py-3 min-w-[170px] max-w-[200px]">
+            {lead.trustpilot_email ? (
+              <span className="inline-flex items-center gap-1 text-xs text-on-surface">
+                <span className="material-symbols-outlined text-[12px] text-blue-400 shrink-0">alternate_email</span>
+                <span className="truncate">{lead.trustpilot_email}</span>
+              </span>
+            ) : (
+              <span className="text-slate-300 text-xs">—</span>
+            )}
+          </td>
+        );
+      case 'website_email': {
+        const hasWebsiteEmail = !!lead.website_email;
+        const hasWebsiteUrl = !!lead.website_url;
+        return (
+          <td key={col} className="px-4 py-3 min-w-[170px] max-w-[220px]">
+            {hasWebsiteEmail ? (
+              <div className="flex flex-col gap-1">
                 <span className="inline-flex items-center gap-1 text-xs text-on-surface">
-                  <span className="material-symbols-outlined text-[12px] text-green-600 shrink-0" title="Website email">language</span>
-                  <span className="truncate max-w-[160px] font-medium">{lead.website_email}</span>
+                  <span className="material-symbols-outlined text-[12px] text-green-600 shrink-0">language</span>
+                  <span className="truncate font-medium">{lead.website_email}</span>
                   {lead.email_verified && <span className="material-symbols-outlined text-[11px] text-[#006630] shrink-0">verified</span>}
                 </span>
-              ) : !neitherEmail && (
-                <span className="inline-flex items-center gap-1 text-xs text-slate-300 italic">
-                  <span className="material-symbols-outlined text-[12px] shrink-0">language</span>
-                  <span>{hasWebsiteUrl ? 'no email found' : 'no website'}</span>
+                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full w-fit">
+                  <span className="material-symbols-outlined text-[9px]">language</span>enriched
                 </span>
-              )}
-
-              {/* Trustpilot email row */}
-              {hasTpEmail ? (
-                <span className="inline-flex items-center gap-1 text-xs text-secondary">
-                  <span className="material-symbols-outlined text-[12px] text-blue-400 shrink-0" title="Trustpilot email">alternate_email</span>
-                  <span className="truncate max-w-[160px]">{lead.trustpilot_email}</span>
+              </div>
+            ) : hasWebsiteUrl ? (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-slate-400 italic">no email found</span>
+                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full w-fit" title="Has website but no email found yet — run Enrich">
+                  <span className="material-symbols-outlined text-[9px]">hourglass_empty</span>not enriched
                 </span>
-              ) : !neitherEmail && (
-                <span className="inline-flex items-center gap-1 text-xs text-slate-300 italic">
-                  <span className="material-symbols-outlined text-[12px] shrink-0">alternate_email</span>
-                  <span>no TP email</span>
-                </span>
-              )}
-
-              {/* Neither email */}
-              {neitherEmail && <span className="text-slate-300 text-xs">—</span>}
-
-              {/* Enrichment status pill */}
-              <div>{enrichPill}</div>
-            </div>
+              </div>
+            ) : (
+              <span className="text-slate-300 text-xs">—</span>
+            )}
           </td>
         );
       }
