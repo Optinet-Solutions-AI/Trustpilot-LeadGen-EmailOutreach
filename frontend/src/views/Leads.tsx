@@ -102,7 +102,7 @@ export default function Leads() {
 
   const [verifying, setVerifying] = useState(false);
   const [enriching, setEnriching] = useState(false);
-  const [enrichJobId, setEnrichJobId] = useState<string | null>(null);
+  const [enrichJobId, setEnrichJobId] = useState<string | null>(() => localStorage.getItem('active_enrich_job'));
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -138,35 +138,44 @@ export default function Leads() {
         return;
       }
       notify('success', `Scraping websites for ${t} leads — checking progress…`);
+      localStorage.setItem('active_enrich_job', jobId);
       setEnrichJobId(jobId);
+      setEnriching(true);
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Enrichment failed');
       setEnriching(false);
     }
   };
 
-  // Poll enrichment job status until done or failed
+  // Poll enrichment job status until done or failed.
+  // enrichJobId is initialised from localStorage so this resumes after page refresh.
   useEffect(() => {
     if (!enrichJobId) return;
+    // Mark as running immediately so the UI shows the correct state on refresh
+    setEnriching(true);
+
+    const stopEnrich = (success: boolean, msg: string) => {
+      if (success) notify('success', msg); else notify('error', msg);
+      loadLeads();
+      setEnriching(false);
+      setEnrichJobId(null);
+      localStorage.removeItem('active_enrich_job');
+    };
+
     const interval = setInterval(async () => {
       try {
         const res = await api.get(`/enrich/status?jobId=${enrichJobId}`);
-        const { status, found, total } = res.data.data;
+        const { status, found, total, error } = res.data.data;
         if (status === 'done') {
-          notify('success', `Enrichment done — found ${found} emails out of ${total} leads`);
-          loadLeads();
-          setEnriching(false);
-          setEnrichJobId(null);
+          stopEnrich(true, `Enrichment done — found ${found} emails out of ${total} leads`);
           clearInterval(interval);
         } else if (status === 'failed') {
-          const { error } = res.data.data;
-          notify('error', `Enrichment failed: ${error || 'unknown error'}`);
-          setEnriching(false);
-          setEnrichJobId(null);
+          stopEnrich(false, `Enrichment failed: ${error || 'unknown error'}`);
           clearInterval(interval);
         }
+        // 'running' → keep polling
       } catch {
-        // Network hiccup — keep polling
+        // Network hiccup or 404 after instance restart — keep polling (status is in DB now)
       }
     }, 5000);
     return () => clearInterval(interval);
@@ -174,6 +183,15 @@ export default function Leads() {
 
   return (
     <div className="px-10 py-10 space-y-8">
+
+      {/* Enrichment running banner — persists across page refreshes */}
+      {enriching && enrichJobId && (
+        <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 text-sm text-blue-800">
+          <span className="material-symbols-outlined text-[18px] text-blue-500 animate-spin" style={{ animationDuration: '1.5s' }}>progress_activity</span>
+          <span className="font-semibold">Website enrichment in progress</span>
+          <span className="text-blue-600 font-normal">— visiting company websites to find contact emails. This can take several minutes.</span>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex justify-between items-end">

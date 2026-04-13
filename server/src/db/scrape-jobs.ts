@@ -46,6 +46,7 @@ export async function getJobs() {
   const { data, error } = await supabase
     .from('scrape_jobs')
     .select('*')
+    .neq('country', '_enrich_')  // exclude enrichment-only jobs (managed by /api/enrich)
     .order('created_at', { ascending: false })
     .limit(20);
   if (error) throw new Error(error.message);

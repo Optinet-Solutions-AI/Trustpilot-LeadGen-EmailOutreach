@@ -2,31 +2,15 @@ import { Router, Request, Response } from 'express';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { randomUUID } from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 
 const router = Router();
 
-// ── In-memory job tracker ──────────────────────────────────────────────────
-type EnrichJob = {
-  status: 'running' | 'done' | 'failed';
-  total: number;
-  found: number;
-  error?: string;
-  createdAt: number;
-};
-const enrichJobs = new Map<string, EnrichJob>();
+// Sentinel value used in scrape_jobs to identify enrichment-only jobs
+const ENRICH_SENTINEL = '_enrich_';
 
-// Clean up jobs older than 1 hour so we don't leak memory
-setInterval(() => {
-  const cutoff = Date.now() - 3_600_000;
-  for (const [id, job] of enrichJobs) {
-    if (job.createdAt < cutoff) enrichJobs.delete(id);
-  }
-}, 300_000).unref();
-
-// ── Python runner (collects stdout for parsing) ────────────────────────────
+// ── Python runner ─────────────────────────────────────────────────────────────
 function runPython(scriptPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const pythonPath = path.isAbsolute(config.pythonPath)
@@ -34,7 +18,10 @@ function runPython(scriptPath: string, args: string[]): Promise<string> {
       : path.resolve(config.projectRoot, config.pythonPath);
     const fullScript = path.resolve(config.projectRoot, scriptPath);
 
-    const proc = spawn(pythonPath, [fullScript, ...args], { cwd: config.projectRoot });
+    const proc = spawn(pythonPath, [fullScript, ...args], {
+      cwd: config.projectRoot,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    });
     let stdout = '';
     let stderr = '';
 
@@ -52,48 +39,59 @@ function runPython(scriptPath: string, args: string[]): Promise<string> {
   });
 }
 
-// ── GET /api/enrich/status?jobId=xxx ──────────────────────────────────────
-router.get('/status', (req: Request, res: Response) => {
+// ── GET /api/enrich/status?jobId=xxx ─────────────────────────────────────────
+// Reads from Supabase so state survives Cloud Run instance restarts.
+router.get('/status', async (req: Request, res: Response) => {
   const { jobId } = req.query;
   if (!jobId || typeof jobId !== 'string') {
     res.status(400).json({ success: false, error: 'jobId query param required' });
     return;
   }
-  const job = enrichJobs.get(jobId);
+
+  const supabase = getSupabase();
+  const { data: job } = await supabase
+    .from('scrape_jobs')
+    .select('id, status, total_found, total_enriched, error')
+    .eq('id', jobId)
+    .eq('country', ENRICH_SENTINEL)
+    .single();
+
   if (!job) {
     res.status(404).json({ success: false, error: 'Job not found or expired' });
     return;
   }
+
   res.json({
     success: true,
     data: {
       jobId,
-      status: job.status,
-      total: job.total,
-      found: job.found,
+      status: job.status === 'completed' ? 'done' : job.status === 'failed' ? 'failed' : 'running',
+      total: job.total_found ?? 0,
+      found: job.total_enriched ?? 0,
       ...(job.error ? { error: job.error } : {}),
     },
   });
 });
 
-// ── POST /api/enrich — fire-and-forget with job tracking ──────────────────
+// ── POST /api/enrich — start enrichment job ───────────────────────────────────
 router.post('/', async (req: Request, res: Response) => {
   const tmpDir = path.resolve(config.projectRoot, '.tmp');
-  const jobId = randomUUID();
-  const tmpFile = path.join(tmpDir, `enrich_${jobId}.json`);
 
   try {
     const { leadIds } = req.body;
     const supabase = getSupabase();
 
+    // Fetch leads that need enrichment
     let query = supabase
       .from('leads')
       .select('id, company_name, trustpilot_url, website_url, trustpilot_email, website_email, primary_email, phone, country, category, star_rating')
       .not('website_url', 'is', null);
 
     if (leadIds && Array.isArray(leadIds) && leadIds.length > 0) {
+      // Specific leads selected — enrich them regardless of whether they have website_email
       query = query.in('id', leadIds);
     } else {
+      // All un-enriched leads
       query = query.is('website_email', null);
     }
 
@@ -105,50 +103,61 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
+    // Persist job in Supabase so status survives Cloud Run instance restarts/restarts
+    const { data: jobRow, error: jobError } = await supabase
+      .from('scrape_jobs')
+      .insert({
+        country: ENRICH_SENTINEL,
+        category: ENRICH_SENTINEL,
+        min_rating: 0,
+        max_rating: 5,
+        enrich: true,
+        verify: false,
+        status: 'running',
+        total_found: leads.length,
+        started_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+    if (jobError) throw new Error(jobError.message);
+
+    const jobId = jobRow.id;
     fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpFile = path.join(tmpDir, `enrich_${jobId}.json`);
     fs.writeFileSync(tmpFile, JSON.stringify(leads, null, 2), 'utf-8');
 
-    // Register job before responding so polling can start immediately
-    enrichJobs.set(jobId, { status: 'running', total: leads.length, found: 0, createdAt: Date.now() });
-
-    // Respond immediately (API Gateway has 30s timeout; Playwright would exceed it)
+    // Respond immediately — API Gateway has a 30s timeout; Playwright would exceed it
     res.json({
       success: true,
       data: { jobId, total: leads.length, message: `Enrichment started for ${leads.length} leads` },
     });
 
-    // ── Background execution ───────────────────────────────────────────────
+    // ── Background execution ─────────────────────────────────────────────────
     runPython('tools/scraper/scrape_website.py', [
       '--input', tmpFile,
       '--output', tmpFile,
-      '--parallel', '1',
+      '--parallel', '3',
     ])
       .then((stdout) => {
-        // Parse "PROGRESS:enrich_done:N" from scrape_website.py output
         const match = stdout.match(/PROGRESS:enrich_done:(\d+)/);
         const found = match ? parseInt(match[1], 10) : 0;
         return runPython('tools/db/upsert_leads.py', ['--input', tmpFile])
           .then(() => found);
       })
       .then((found) => {
-        const existing = enrichJobs.get(jobId);
-        enrichJobs.set(jobId, {
-          status: 'done',
-          total: leads.length,
-          found,
-          createdAt: existing?.createdAt ?? Date.now(),
-        });
+        supabase.from('scrape_jobs').update({
+          status: 'completed',
+          total_enriched: found,
+          completed_at: new Date().toISOString(),
+        }).eq('id', jobId).then(() => {});
         console.log(`[enrich] Job ${jobId} done — found ${found}/${leads.length} emails`);
       })
       .catch((err: Error) => {
-        const existing = enrichJobs.get(jobId);
-        enrichJobs.set(jobId, {
+        supabase.from('scrape_jobs').update({
           status: 'failed',
-          total: leads.length,
-          found: 0,
           error: err.message.slice(0, 300),
-          createdAt: existing?.createdAt ?? Date.now(),
-        });
+          completed_at: new Date().toISOString(),
+        }).eq('id', jobId).then(() => {});
         console.error(`[enrich] Job ${jobId} failed: ${err.message}`);
       })
       .finally(() => {
@@ -157,7 +166,6 @@ router.post('/', async (req: Request, res: Response) => {
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
     res.status(500).json({ success: false, error: message });
   }
 });
