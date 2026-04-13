@@ -131,17 +131,27 @@ export function assignScheduledTimes(
       continue;
     }
 
-    const batchSize = Math.min(remaining, dailyLimit);
+    // How many emails can we fit today with at least MIN_GAP_MINUTES between each?
+    const MIN_GAP_MINUTES = 5;
+    const rawBatchSize = Math.min(remaining, dailyLimit);
+    const batchSize = effectiveWindowMinutes >= rawBatchSize * MIN_GAP_MINUTES
+      ? rawBatchSize
+      : Math.max(1, Math.floor(effectiveWindowMinutes / MIN_GAP_MINUTES));
 
     // Segmented distribution: divide the window into batchSize equal segments,
-    // pick a random minute within each segment.
-    // Guarantees emails are spread across the full window while remaining unpredictable.
-    // e.g. 6 emails in a 3-hour window → one email every ~30 min, at a random minute within each 30-min slot.
+    // then place each email at the segment midpoint ± small jitter.
+    // This guarantees emails are spread evenly (no two emails bunched together)
+    // while still being unpredictable.
+    // e.g. 6 emails in a 3-hour window → one email every ~30 min ± a few min jitter.
     const segmentSize = Math.floor(effectiveWindowMinutes / batchSize);
     for (let i = 0; i < batchSize; i++) {
       const segmentStart = i * segmentSize;
       const segmentEnd   = i === batchSize - 1 ? effectiveWindowMinutes : segmentStart + segmentSize;
-      const randomOffset = segmentStart + Math.floor(Math.random() * (segmentEnd - segmentStart));
+      const mid          = (segmentStart + segmentEnd) / 2;
+      // Jitter: up to ±25% of segment size, capped at ±5 minutes
+      const halfJitter   = Math.min(Math.floor((segmentEnd - segmentStart) / 4), 5);
+      const jitter       = halfJitter > 0 ? Math.floor(Math.random() * (2 * halfJitter + 1)) - halfJitter : 0;
+      const randomOffset = Math.round(mid) + jitter;
       const sendTimeMs   = effectiveStartMs + randomOffset * 60_000;
       results.push(new Date(sendTimeMs));
     }

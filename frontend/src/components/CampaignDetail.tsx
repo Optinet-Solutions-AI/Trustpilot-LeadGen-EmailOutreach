@@ -295,6 +295,11 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                               </span>
                               <span className="text-[10px] text-secondary">scheduled</span>
                             </span>
+                          ) : l.status === 'pending' ? (
+                            <span className="flex flex-col items-end gap-0.5">
+                              <span className="text-orange-500 font-bold text-[11px]">Not scheduled</span>
+                              <span className="text-[10px] text-secondary">already contacted</span>
+                            </span>
                           ) : (
                             <span>—</span>
                           )}
