@@ -28,8 +28,18 @@ const POLL_INTERVAL_MS = 60_000; // check every 60 seconds
 const BATCH_LIMIT = 10;           // max sends per tick (stays within hourly caps)
 
 export function startCampaignScheduler(): void {
+  // Always run the recovery loop regardless of email platform —
+  // it finalizes campaigns stuck in 'draft'/'sending' where all emails are already done.
+  setInterval(async () => {
+    try {
+      await recoverStuckCampaigns();
+    } catch (err) {
+      console.error('[CampaignScheduler] Recovery error:', err instanceof Error ? err.message : err);
+    }
+  }, POLL_INTERVAL_MS);
+
   if (config.emailPlatform !== 'none') {
-    console.log('[CampaignScheduler] Platform mode — scheduling handled by platform, scheduler skipped.');
+    console.log('[CampaignScheduler] Platform mode — scheduling handled by platform, direct-send scheduler skipped.');
     return;
   }
 
@@ -186,15 +196,70 @@ async function sendScheduledEmail(cl: any, senderAccount: GmailSenderAccount | u
   }
 }
 
+/**
+ * Detect and finalize campaigns stuck in 'draft' or 'sending' where all
+ * actionable (scheduled) emails have already been sent.
+ *
+ * This handles two failure modes:
+ *  1. Campaign reverted to 'draft' after a platform push error, but Gmail
+ *     scheduler already sent some/all emails in the meantime.
+ *  2. Campaign stuck at 'sending' because a ghost pending lead (scheduled_at=null)
+ *     blocked maybeFinalizeCampaign.
+ *
+ * Runs every tick regardless of email platform.
+ */
+async function recoverStuckCampaigns(): Promise<void> {
+  const supabase = getSupabase();
+
+  const { data: candidates } = await supabase
+    .from('campaigns')
+    .select('id, name')
+    .in('status', ['sending', 'draft']);
+
+  if (!candidates || candidates.length === 0) return;
+
+  for (const campaign of candidates) {
+    // Count leads that are still genuinely waiting to be sent
+    const { count: scheduledPending } = await supabase
+      .from('campaign_leads')
+      .select('id', { count: 'exact', head: true })
+      .eq('campaign_id', campaign.id)
+      .eq('status', 'pending')
+      .not('scheduled_at', 'is', null);
+
+    if ((scheduledPending ?? 0) > 0) continue; // Emails still queued — leave it alone
+
+    // Count successfully sent leads
+    const { count: sentCount } = await supabase
+      .from('campaign_leads')
+      .select('id', { count: 'exact', head: true })
+      .eq('campaign_id', campaign.id)
+      .eq('status', 'sent');
+
+    if (!sentCount || sentCount === 0) continue; // Nothing sent yet — not ready to finalize
+
+    // All scheduled emails are done — finalize the campaign
+    await updateCampaign(campaign.id, {
+      status: 'sent',
+      total_sent: sentCount,
+      sent_at: new Date().toISOString(),
+    });
+
+    console.log(`[CampaignScheduler] Recovered stuck campaign "${campaign.name}" → sent (${sentCount} emails)`);
+  }
+}
+
 async function maybeFinalizeCampaign(campaignId: string): Promise<void> {
   const supabase = getSupabase();
 
-  // Check if any pending leads remain
+  // Only count leads that are actually scheduled (scheduled_at IS NOT NULL).
+  // Leads with null scheduled_at were deduped out and will never send — they don't block finalization.
   const { count: pendingCount } = await supabase
     .from('campaign_leads')
     .select('id', { count: 'exact', head: true })
     .eq('campaign_id', campaignId)
-    .eq('status', 'pending');
+    .eq('status', 'pending')
+    .not('scheduled_at', 'is', null);
 
   if (pendingCount !== 0) return; // Still waiting on future scheduled sends
 
