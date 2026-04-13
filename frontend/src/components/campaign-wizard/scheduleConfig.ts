@@ -37,23 +37,28 @@ export const CATEGORIES = [
   { slug: 'travel_vacation', name: 'Travel & Vacation' },
 ];
 
-// Only Instantly-accepted IANA timezones
+// Standard IANA timezones supported by the schedule engine
 export const TIMEZONES = [
-  { value: 'America/Detroit',     label: 'US Eastern — New York, Miami (EST/EDT)' },
-  { value: 'America/Chicago',     label: 'US Central — Chicago, Dallas (CST/CDT)' },
-  { value: 'America/Boise',       label: 'US Mountain — Denver, Phoenix (MST/MDT)' },
-  { value: 'America/Anchorage',   label: 'US Alaska (AKST/AKDT)' },
-  { value: 'America/Bogota',      label: 'Colombia / Lima (UTC-5, no DST)' },
-  { value: 'America/Sao_Paulo',   label: 'Brazil / Buenos Aires (UTC-3)' },
-  { value: 'Europe/Belfast',      label: 'UK / Ireland — London, Dublin (GMT/BST)' },
-  { value: 'Europe/Belgrade',     label: 'Central Europe — Paris, Berlin, Amsterdam (CET/CEST)' },
-  { value: 'Europe/Bucharest',    label: 'Eastern Europe — Athens, Kyiv (EET/EEST)' },
-  { value: 'Asia/Dubai',          label: 'Gulf — Dubai, Abu Dhabi (UTC+4)' },
-  { value: 'Asia/Kolkata',        label: 'India (IST, UTC+5:30)' },
-  { value: 'Asia/Hong_Kong',      label: 'Philippines / Hong Kong (UTC+8)' },
-  { value: 'Asia/Brunei',         label: 'Singapore / Malaysia (UTC+8)' },
-  { value: 'Australia/Melbourne', label: 'Sydney / Melbourne (AEST/AEDT)' },
-  { value: 'Pacific/Auckland',    label: 'New Zealand (NZST/NZDT)' },
+  { value: 'America/New_York',      label: 'US Eastern — New York, Miami (EST/EDT)' },
+  { value: 'America/Chicago',       label: 'US Central — Chicago, Dallas (CST/CDT)' },
+  { value: 'America/Denver',        label: 'US Mountain — Denver, Phoenix (MST/MDT)' },
+  { value: 'America/Los_Angeles',   label: 'US Pacific — Los Angeles, Seattle (PST/PDT)' },
+  { value: 'America/Anchorage',     label: 'US Alaska (AKST/AKDT)' },
+  { value: 'America/Bogota',        label: 'Colombia / Lima (UTC-5, no DST)' },
+  { value: 'America/Sao_Paulo',     label: 'Brazil / Buenos Aires (UTC-3)' },
+  { value: 'Europe/London',         label: 'UK / Ireland — London, Dublin (GMT/BST)' },
+  { value: 'Europe/Paris',          label: 'Central Europe — Paris, Berlin, Amsterdam (CET/CEST)' },
+  { value: 'Europe/Athens',         label: 'Eastern Europe — Athens, Kyiv (EET/EEST)' },
+  { value: 'Africa/Cairo',          label: 'Egypt / South Africa — Cairo (UTC+2/+3)' },
+  { value: 'Asia/Dubai',            label: 'Gulf — Dubai, Abu Dhabi (UTC+4)' },
+  { value: 'Asia/Kolkata',          label: 'India (IST, UTC+5:30)' },
+  { value: 'Asia/Singapore',        label: 'Singapore / Malaysia (UTC+8)' },
+  { value: 'Asia/Manila',           label: 'Philippines — Manila (UTC+8)' },
+  { value: 'Asia/Hong_Kong',        label: 'Hong Kong / China (UTC+8)' },
+  { value: 'Asia/Tokyo',            label: 'Japan / Korea (JST, UTC+9)' },
+  { value: 'Australia/Sydney',      label: 'Sydney / Melbourne (AEST/AEDT)' },
+  { value: 'Pacific/Auckland',      label: 'New Zealand (NZST/NZDT)' },
+  { value: 'UTC',                   label: 'UTC — Universal Coordinated Time' },
 ];
 
 export const HOURS = [
@@ -70,10 +75,12 @@ export interface SendingSchedule {
   endHour: string;
   days: number[];
   dailyLimit: number;
+  /** ID of the email account to use for this campaign ('__env__' = primary env account, DB uuid = specific account) */
+  senderAccountId?: string;
 }
 
 export const DEFAULT_SCHEDULE: SendingSchedule = {
-  timezone: 'America/Detroit',
+  timezone: 'Asia/Manila',
   startHour: '09:00',
   endHour: '17:00',
   days: [1, 2, 3, 4, 5],

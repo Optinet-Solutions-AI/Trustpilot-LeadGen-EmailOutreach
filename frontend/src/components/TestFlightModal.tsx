@@ -9,6 +9,7 @@ interface TestResult {
   sentTo: string;
   leadUsed: string;
   originalEmail: string;
+  sentFrom?: string;
   platform?: string;
   note?: string;
 }
@@ -16,13 +17,15 @@ interface TestResult {
 interface Props {
   campaignName: string;
   recipientCount: number;
+  /** Emails of campaign leads — used to warn if test email matches a lead */
+  leadEmails?: string[];
   onTestFlightSend: (testEmail: string) => Promise<TestResult>;
   onProceedLive: () => void;
   onClose: () => void;
 }
 
 export default function TestFlightModal({
-  campaignName, recipientCount, onTestFlightSend, onProceedLive, onClose,
+  campaignName, recipientCount, leadEmails = [], onTestFlightSend, onProceedLive, onClose,
 }: Props) {
   const [phase, setPhase] = useState<Phase>('preflight');
   const [testEmail, setTestEmail] = useState(() => localStorage.getItem('testFlightEmail') || '');
@@ -41,6 +44,8 @@ export default function TestFlightModal({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [phase, onClose]);
+
+  const isLeadEmail = testEmail.trim() && leadEmails.map((e) => e.toLowerCase()).includes(testEmail.trim().toLowerCase());
 
   const handleSendTest = async () => {
     if (!testEmail.trim() || !testEmail.includes('@')) return;
@@ -127,9 +132,16 @@ export default function TestFlightModal({
                 className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
               />
               <p className="text-xs text-secondary mt-1.5">
-                The email will include a <span className="font-bold text-amber-600">⚠ TEST MODE</span> banner
-                showing the real recipient it was redirected from.
+                Enter <span className="font-bold text-on-surface">your own email</span> — a personal or admin address you control. The subject will be prefixed with <span className="font-bold text-amber-600">Test mode-</span>.
               </p>
+              {isLeadEmail && (
+                <div className="mt-2 flex items-start gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-800">
+                  <span className="material-symbols-outlined text-[16px] shrink-0 mt-0.5">warning</span>
+                  <span>
+                    <span className="font-bold">This email is a lead in your campaign.</span> Using it as a test address means the prospect will receive your test email. Use your own admin email instead.
+                  </span>
+                </div>
+              )}
             </div>
 
             <button
@@ -188,6 +200,12 @@ export default function TestFlightModal({
                   <span className="material-symbols-outlined text-[12px]">alternate_email</span>
                   <span>Sent to: <span className="font-bold">{result.sentTo}</span></span>
                 </div>
+                {result.sentFrom && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[12px]">mail</span>
+                    <span>Sent from: <span className="font-bold">{result.sentFrom}</span></span>
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[12px]">business</span>
                   <span>Used data from: <span className="font-bold">{result.leadUsed}</span></span>

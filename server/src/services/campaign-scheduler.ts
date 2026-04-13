@@ -51,7 +51,7 @@ async function processDueSends(): Promise<void> {
     .from('campaign_leads')
     .select(`
       id, campaign_id, lead_id, email_used, scheduled_at,
-      campaigns (id, name, template_subject, template_body, include_screenshot, status),
+      campaigns (id, name, template_subject, template_body, include_screenshot, status, sending_schedule),
       leads (*)
     `)
     .eq('status', 'pending')
@@ -71,8 +71,11 @@ async function processDueSends(): Promise<void> {
 
   console.log(`[CampaignScheduler] ${actionable.length} emails due now`);
 
-  // Build sender pool (same accounts as campaign-sender)
-  const senderPool = await buildSenderPool();
+  // Determine the pinned sender account from the first campaign's schedule
+  const firstCampaign = actionable[0]?.campaigns as { sending_schedule?: { senderAccountId?: string } } | undefined;
+  const pinnedAccountId = firstCampaign?.sending_schedule?.senderAccountId;
+
+  const senderPool = await buildSenderPool(pinnedAccountId);
 
   for (let i = 0; i < actionable.length; i++) {
     const cl = actionable[i];
@@ -101,16 +104,22 @@ async function processDueSends(): Promise<void> {
   }
 }
 
-async function buildSenderPool(): Promise<GmailSenderAccount[]> {
+async function buildSenderPool(pinnedAccountId?: string): Promise<GmailSenderAccount[]> {
   if (config.emailMode !== 'gmail') return [];
+  if (pinnedAccountId === '__env__') return []; // Use env primary — pool stays empty → pickSender returns undefined → email-sender uses env
   try {
-    const { data: dbAccounts } = await getSupabase()
+    let query = getSupabase()
       .from('email_accounts')
-      .select('email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+      .select('id, email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
       .eq('status', 'active')
       .eq('auth_type', 'gmail_oauth')
       .not('gmail_refresh_token', 'is', null);
 
+    if (pinnedAccountId) {
+      query = query.eq('id', pinnedAccountId) as typeof query;
+    }
+
+    const { data: dbAccounts } = await query;
     return (dbAccounts ?? [])
       .filter((a: any) => a.gmail_client_id && a.gmail_client_secret && a.gmail_refresh_token)
       .map((a: any) => ({

@@ -10,11 +10,13 @@
  */
 
 export interface SendingSchedule {
-  timezone: string;   // e.g. "Asia/Hong_Kong" (PH/HK = UTC+8)
-  startHour: string;  // "21:00"
-  endHour: string;    // "22:00"
+  timezone: string;   // e.g. "Asia/Manila" or "Asia/Hong_Kong"
+  startHour: string;  // "09:00"
+  endHour: string;    // "17:00"
   days: number[];     // 0=Sun, 1=Mon … 6=Sat
   dailyLimit: number; // max emails per day
+  /** DB email_accounts.id to pin to one sender, or '__env__' for primary env account */
+  senderAccountId?: string;
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────

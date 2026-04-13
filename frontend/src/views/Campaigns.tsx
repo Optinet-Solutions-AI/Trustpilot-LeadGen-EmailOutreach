@@ -25,6 +25,7 @@ export default function Campaigns() {
 
   const [testFlightCampaignId, setTestFlightCampaignId] = useState<string | null>(null);
   const testFlightCampaign = campaigns.find((c) => c.id === testFlightCampaignId);
+  const [testFlightLeadEmails, setTestFlightLeadEmails] = useState<string[]>([]);
 
   const [launchChoiceId, setLaunchChoiceId] = useState<string | null>(null);
   const launchChoiceCampaign = campaigns.find((c) => c.id === launchChoiceId);
@@ -389,6 +390,11 @@ export default function Campaigns() {
                 onClick={() => {
                   setTestFlightCampaignId(launchChoiceId);
                   setLaunchChoiceId(null);
+                  if (launchChoiceId) {
+                    getCampaignLeads(launchChoiceId)
+                      .then((leads) => setTestFlightLeadEmails(leads.map((l: { email_used: string | null }) => l.email_used || '').filter(Boolean)))
+                      .catch(() => {});
+                  }
                 }}
                 className="w-full flex items-center gap-3 px-5 py-4 rounded-xl border-2 border-[#b0004a]/20 bg-[#ffd9de]/10 hover:bg-[#ffd9de]/20 text-left transition-colors group"
               >
@@ -428,6 +434,7 @@ export default function Campaigns() {
         <TestFlightModal
           campaignName={testFlightCampaign.name}
           recipientCount={testFlightCampaign.lead_count ?? 0}
+          leadEmails={testFlightLeadEmails}
           onTestFlightSend={(email) => handleTestFlightSend(testFlightCampaignId, email)}
           onProceedLive={() => handleLiveSend(testFlightCampaignId)}
           onClose={() => setTestFlightCampaignId(null)}

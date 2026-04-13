@@ -66,17 +66,27 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
     emitProgress(campaignId, { stage: 'started', total, sent: 0, failed: 0 });
     console.log(`[Campaign] Starting "${campaignName}" — ${total} emails, testMode=${testMode}`);
 
-    // ── Build sender account pool (Gmail round-robin) ─────────────────────
+    // ── Build sender account pool ─────────────────────────────────────────
+    // If sendingSchedule.senderAccountId is set, use only that account.
+    // '__env__' = primary env account; a DB UUID = specific DB account.
     const senderPool: GmailSenderAccount[] = [];
-    if (config.emailMode === 'gmail') {
+    const pinnedAccountId = sendingSchedule?.senderAccountId;
+
+    if (config.emailMode === 'gmail' && pinnedAccountId !== '__env__') {
       try {
-        const { data: dbAccounts } = await getSupabase()
+        let query = getSupabase()
           .from('email_accounts')
-          .select('email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+          .select('id, email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
           .eq('status', 'active')
           .eq('auth_type', 'gmail_oauth')
           .not('gmail_refresh_token', 'is', null);
 
+        if (pinnedAccountId) {
+          // Pin to the specified account only
+          query = query.eq('id', pinnedAccountId) as typeof query;
+        }
+
+        const { data: dbAccounts } = await query;
         for (const acc of dbAccounts ?? []) {
           if (acc.gmail_client_id && acc.gmail_client_secret && acc.gmail_refresh_token) {
             senderPool.push({
@@ -89,11 +99,16 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
           }
         }
         if (senderPool.length > 0) {
-          console.log(`[Campaign] Sender pool: primary (env) + ${senderPool.length} DB account(s)`);
+          const label = pinnedAccountId ? `pinned: ${senderPool[0].email}` : `pool: ${senderPool.length} DB account(s)`;
+          console.log(`[Campaign] Sender ${label}`);
         }
       } catch (e) {
         console.warn('[Campaign] Could not load DB accounts:', e instanceof Error ? e.message : e);
       }
+    }
+
+    if (pinnedAccountId === '__env__') {
+      console.log(`[Campaign] Sender pinned to primary env account`);
     }
 
     let accountIndex = 0;

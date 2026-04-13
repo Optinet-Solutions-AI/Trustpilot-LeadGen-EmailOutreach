@@ -1,6 +1,16 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import api from '../../api/client';
 import { TIMEZONES, HOURS, DAY_LABELS, type SendingSchedule } from './scheduleConfig';
+
+interface EmailAccount {
+  id: string;
+  email: string;
+  from_name: string;
+  status: string;
+  source: 'env' | 'db';
+}
 
 interface Props {
   name: string;
@@ -10,6 +20,26 @@ interface Props {
 }
 
 export default function WizardStep3Options({ name, schedule, onNameChange, onScheduleChange }: Props) {
+  const [accounts, setAccounts] = useState<EmailAccount[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(true);
+
+  useEffect(() => {
+    api.get('/email-accounts')
+      .then((res) => {
+        if (res.data.success) {
+          const active = (res.data.data.accounts as EmailAccount[]).filter((a) => a.status === 'active');
+          setAccounts(active);
+          // Auto-select the first active account if none is set yet
+          if (!schedule.senderAccountId && active.length > 0) {
+            onScheduleChange({ ...schedule, senderAccountId: active[0].id });
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingAccounts(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const set = <K extends keyof SendingSchedule>(key: K, value: SendingSchedule[K]) =>
     onScheduleChange({ ...schedule, [key]: value });
 
@@ -67,6 +97,74 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
             <p className="text-xs text-secondary mt-2">
               Used for internal tracking only. Not visible to recipients.
             </p>
+          </div>
+        </div>
+
+        {/* Sending Account */}
+        <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
+          <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100 bg-surface-container">
+            <div className="w-7 h-7 rounded-full primary-gradient flex items-center justify-center flex-shrink-0">
+              <span className="material-symbols-outlined text-on-primary text-[14px]">alternate_email</span>
+            </div>
+            <div>
+              <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                Sending Account
+              </p>
+              <p className="text-xs text-secondary">
+                Which Gmail account sends this campaign
+              </p>
+            </div>
+          </div>
+          <div className="p-6">
+            {loadingAccounts ? (
+              <div className="flex items-center gap-2 text-secondary text-sm">
+                <span className="material-symbols-outlined animate-spin text-[18px]">refresh</span>
+                Loading accounts…
+              </div>
+            ) : accounts.length === 0 ? (
+              <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+                <span className="material-symbols-outlined text-[18px] shrink-0 mt-0.5">warning</span>
+                <div>
+                  <p className="font-bold">No email accounts connected</p>
+                  <p className="text-xs mt-1">Go to <strong>Email Accounts</strong> and connect a Gmail account first.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {accounts.map((acc) => {
+                  const selected = schedule.senderAccountId === acc.id;
+                  return (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      onClick={() => set('senderAccountId', acc.id)}
+                      className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl border-2 transition-all text-left ${
+                        selected
+                          ? 'border-[#b0004a] bg-[#ffd9de]/20'
+                          : 'border-slate-100 bg-surface-container hover:border-[#b0004a]/30'
+                      }`}
+                    >
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                        selected ? 'primary-gradient text-on-primary' : 'bg-surface-container-high text-secondary'
+                      }`}>
+                        <span className="material-symbols-outlined text-[16px]">mail</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-on-surface truncate">{acc.email}</p>
+                        <p className="text-xs text-secondary">{acc.from_name}{acc.source === 'env' ? ' · Primary' : ' · Added account'}</p>
+                      </div>
+                      {selected && (
+                        <span className="material-symbols-outlined text-[#b0004a] text-[20px] shrink-0">check_circle</span>
+                      )}
+                    </button>
+                  );
+                })}
+                <p className="text-xs text-secondary mt-3 flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[13px]">info</span>
+                  The selected account is used for both the test flight and the live send.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 

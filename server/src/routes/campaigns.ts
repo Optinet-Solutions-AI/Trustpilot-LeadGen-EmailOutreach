@@ -306,6 +306,30 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       }
     }
 
+    // Resolve the pinned sender account from the campaign's sending_schedule
+    let senderAccount: import('../services/email-sender.js').GmailSenderAccount | undefined;
+    const pinnedId = (campaign.sending_schedule as Record<string, unknown> | null)?.senderAccountId as string | undefined;
+    if (pinnedId && pinnedId !== '__env__' && config.emailMode === 'gmail') {
+      try {
+        const { createGmailClientFromCredentials } = await import('../services/gmail-client.js');
+        const { data: acc } = await (await import('../lib/supabase.js')).getSupabase()
+          .from('email_accounts')
+          .select('email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+          .eq('id', pinnedId)
+          .single();
+        if (acc?.gmail_client_id && acc?.gmail_client_secret && acc?.gmail_refresh_token) {
+          senderAccount = {
+            email: acc.email,
+            fromName: acc.from_name,
+            gmail: createGmailClientFromCredentials(acc.gmail_client_id, acc.gmail_client_secret, acc.gmail_refresh_token),
+          };
+          console.log(`[TestFlight] Using pinned sender: ${acc.email}`);
+        }
+      } catch (e) {
+        console.warn('[TestFlight] Could not load pinned account:', e instanceof Error ? e.message : e);
+      }
+    }
+
     const transformed = applyTestMode(
       { to: firstPendingLead.email_used as string, subject: renderedSubject, html: renderedHtml },
       true,
@@ -316,7 +340,8 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       transformed.to,
       transformed.subject,
       transformed.html,
-      { screenshotPath: validScreenshotPath }
+      { screenshotPath: validScreenshotPath },
+      senderAccount,
     );
 
     if (!result.success) {
@@ -330,6 +355,7 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
         sentTo: testEmail,
         leadUsed: String(lead.company_name || 'Unknown'),
         originalEmail: firstPendingLead.email_used,
+        sentFrom: senderAccount?.email || config.gmail.fromEmail || 'primary account',
         messageId: result.messageId,
       },
     });
