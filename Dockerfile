@@ -59,6 +59,7 @@ ENV NODE_ENV=production
 ENV PORT=8080
 ENV PYTHON_PATH=/usr/bin/python3
 ENV PLAYWRIGHT_HEADLESS=true
+ENV PYTHONUNBUFFERED=1
 ENV EMAIL_MODE=mock
 
 # Cloud Run listens on 8080 by default

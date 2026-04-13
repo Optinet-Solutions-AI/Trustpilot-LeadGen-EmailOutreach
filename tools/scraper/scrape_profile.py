@@ -197,7 +197,7 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
                 continue
 
             tp_url = lead.get('trustpilot_url', f"https://www.trustpilot.com/review/{slug}")
-            print(f"  [{idx + 1}/{total}] {slug}")
+            print(f"  [{idx + 1}/{total}] {slug}", flush=True)
 
             try:
                 contact = await scrape_single_profile(page, slug, screenshots_dir)
@@ -219,7 +219,7 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
                 failed_list.append(tp_url)
                 results_dict[idx] = {**lead}
 
-            print(f"PROGRESS:profile_progress:{idx + 1}/{total}")
+            print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
 
             # Small delay between profiles within the same tab
             if i < len(slugs_batch) - 1:
@@ -256,7 +256,7 @@ async def scrape_profiles(
             if batch:
                 batches.append(batch)
 
-        print(f"Scraping {total} profiles using {len(batches)} parallel tabs...")
+        print(f"Scraping {total} profiles using {len(batches)} parallel tabs...", flush=True)
 
         # Run all tabs concurrently
         tasks = [
@@ -298,7 +298,7 @@ def main():
     with open(args.input, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
-    print(f"Enriching {len(leads)} leads from profiles...")
+    print(f"Enriching {len(leads)} leads from profiles...", flush=True)
     enriched = asyncio.run(scrape_profiles(
         leads,
         screenshots_dir=args.screenshots_dir,

@@ -60,7 +60,7 @@ function runPython(
   console.log(`Running: ${pythonPath} ${fullScript} ${args.join(' ')}`);
   const proc = spawn(pythonPath, [fullScript, ...args], {
     cwd: config.projectRoot,
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
   });
 
   // Track process for cancellation
