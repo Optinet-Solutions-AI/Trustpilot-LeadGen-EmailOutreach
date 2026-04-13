@@ -174,8 +174,15 @@ export default function Leads() {
           clearInterval(interval);
         }
         // 'running' → keep polling
-      } catch {
-        // Network hiccup or 404 after instance restart — keep polling (status is in DB now)
+      } catch (err: unknown) {
+        // If the job doesn't exist in DB (404), it's a stale ID from before the
+        // Supabase-persistence fix — clear it so the banner doesn't hang forever.
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (status === 404) {
+          stopEnrich(false, 'Enrichment job not found — it may have been lost during a server restart. Please try again.');
+          clearInterval(interval);
+        }
+        // Other network errors: keep polling
       }
     }, 5000);
     return () => clearInterval(interval);

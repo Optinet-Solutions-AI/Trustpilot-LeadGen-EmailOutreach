@@ -4,5 +4,5 @@
 
 playwright>=1.40.0
 python-dotenv>=1.0.0
-postgrest>=0.13.0
+postgrest==0.10.6
 playwright-stealth>=1.0.6
