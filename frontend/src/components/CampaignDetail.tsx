@@ -10,6 +10,7 @@ interface CampaignLead {
   email_used: string | null;
   status: string;
   sent_at: string | null;
+  scheduled_at?: string | null;
   reply_snippet?: string | null;
   leads: { company_name: string; star_rating: number; country: string; category: string } | null;
 }
@@ -36,6 +37,13 @@ const STATUS_CONFIG: Record<string, { label: string; classes: string; icon: stri
   replied: { label: 'Replied', classes: 'bg-[#8ff9a8]/30 text-[#006630]',            icon: 'reply' },
   bounced: { label: 'Bounced', classes: 'bg-red-50 text-error',                      icon: 'unsubscribe' },
 };
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function formatScheduleSummary(schedule: NonNullable<Campaign['sending_schedule']>): string {
+  const dayLabels = schedule.days.map((d) => DAY_NAMES[d]).join(', ');
+  return `${schedule.startHour} – ${schedule.endHour} · ${dayLabels} · up to ${schedule.dailyLimit} emails/day`;
+}
 
 export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSteps, onDuplicate }: Props) {
   const [leads, setLeads] = useState<CampaignLead[]>([]);
@@ -166,6 +174,51 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
           </div>
         )}
 
+        {/* Sending Schedule */}
+        {campaign.sending_schedule && (
+          <div className="px-6 pt-4">
+            <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+              <p className="text-xs font-bold text-amber-700 mb-2 flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[14px]">schedule</span>
+                Sending Schedule
+              </p>
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-amber-800">
+                <span>
+                  <span className="font-bold">Window:</span>{' '}
+                  {campaign.sending_schedule.startHour} – {campaign.sending_schedule.endHour}
+                </span>
+                <span>
+                  <span className="font-bold">Days:</span>{' '}
+                  {campaign.sending_schedule.days.map((d) => DAY_NAMES[d]).join(', ')}
+                </span>
+                <span>
+                  <span className="font-bold">Daily limit:</span>{' '}
+                  {campaign.sending_schedule.dailyLimit} emails/day
+                </span>
+                <span>
+                  <span className="font-bold">Timezone:</span>{' '}
+                  {campaign.sending_schedule.timezone}
+                </span>
+                {campaign.email_platform && (
+                  <span>
+                    <span className="font-bold">Managed by:</span>{' '}
+                    {campaign.email_platform}
+                    {campaign.platform_campaign_id && (
+                      <span className="ml-1 text-amber-600 font-mono">({campaign.platform_campaign_id.slice(0, 8)}…)</span>
+                    )}
+                  </span>
+                )}
+              </div>
+              {campaign.status === 'sending' && (
+                <p className="mt-2 text-[11px] text-amber-600 flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[12px]">info</span>
+                  Campaign is active — emails are being delivered within the window above. You don't need to keep the app open.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Filter tabs */}
         <div className="flex gap-2 px-6 pt-4 pb-2 flex-wrap">
           {['all', 'pending', 'sent', 'replied', 'bounced'].map((f) => (
@@ -195,8 +248,8 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left border-b border-slate-100">
-                  {['Company', 'Country', 'Email', 'Rating', 'Status', 'Sent At'].map((h) => (
-                    <th key={h} className={`py-3 text-xs font-bold uppercase tracking-wider text-secondary ${h === 'Sent At' ? 'text-right' : ''}`}>{h}</th>
+                  {['Company', 'Country', 'Email', 'Rating', 'Status', 'Sent / Scheduled'].map((h) => (
+                    <th key={h} className={`py-3 text-xs font-bold uppercase tracking-wider text-secondary ${h === 'Sent / Scheduled' ? 'text-right' : ''}`}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -231,7 +284,20 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                           </span>
                         </td>
                         <td className="py-3 text-right text-xs text-secondary">
-                          {l.sent_at ? new Date(l.sent_at).toLocaleString() : '—'}
+                          {l.sent_at ? (
+                            <span>{new Date(l.sent_at).toLocaleString()}</span>
+                          ) : l.scheduled_at ? (
+                            <span className="flex flex-col items-end gap-0.5">
+                              <span className="text-amber-600 font-bold">
+                                {new Date(l.scheduled_at) <= new Date()
+                                  ? 'Sending soon…'
+                                  : new Date(l.scheduled_at).toLocaleString()}
+                              </span>
+                              <span className="text-[10px] text-secondary">scheduled</span>
+                            </span>
+                          ) : (
+                            <span>—</span>
+                          )}
                         </td>
                       </tr>
                       {hasReply && expandedReply === l.id && (

@@ -21,6 +21,14 @@ export interface Campaign {
   /** Platform integration — set when campaign is managed by Instantly/Smartlead */
   platform_campaign_id?: string | null;
   email_platform?: string | null;
+  /** Sending schedule window (timezone, hours, days, dailyLimit) */
+  sending_schedule?: {
+    timezone: string;
+    startHour: string;
+    endHour: string;
+    days: number[];
+    dailyLimit: number;
+  } | null;
 }
 
 export interface CampaignLead {
