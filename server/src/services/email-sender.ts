@@ -10,19 +10,27 @@
 
 import { config } from '../config.js';
 import type { GmailSenderAccount, SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
+import type { SmtpSenderAccount } from './email-sender.smtp.js';
 
-export type { GmailSenderAccount };
+export type { GmailSenderAccount, SmtpSenderAccount };
+export type SenderAccount = GmailSenderAccount | SmtpSenderAccount;
 
 export async function sendEmail(
   to: string,
   subject: string,
   html: string,
   options: SendEmailOptions = {},
-  account?: GmailSenderAccount,
+  account?: SenderAccount,
 ): Promise<SendEmailResult> {
+  // Route to SMTP sender when the account's auth_type is 'smtp'
+  if (account && 'auth_type' in account && account.auth_type === 'smtp') {
+    const { sendEmailSmtp } = await import('./email-sender.smtp.js');
+    return sendEmailSmtp(to, subject, html, options, account);
+  }
+
   if (config.emailMode === 'gmail') {
     const { sendEmail: sendGmail } = await import('./email-sender.gmail.js');
-    return sendGmail(to, subject, html, options, account);
+    return sendGmail(to, subject, html, options, account as GmailSenderAccount | undefined);
   }
 
   if (config.emailMode === 'brevo') {

@@ -78,6 +78,16 @@ export default function EmailAccounts() {
   const [saveError, setSaveError] = useState('');
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // DreamHost modal
+  const [showDreamhostModal, setShowDreamhostModal] = useState(false);
+  const [dhForm, setDhForm] = useState({
+    email: '', fromName: '', password: '',
+    smtpHost: 'smtp.dreamhost.com', smtpPort: '465',
+    imapHost: 'imap.dreamhost.com', imapPort: '993',
+  });
+  const [dhSaving, setDhSaving] = useState(false);
+  const [dhError, setDhError] = useState('');
   const [warmupData, setWarmupData] = useState<{
     accounts: {
       email: string; fromName: string; warmupEnabled: boolean; warmupDailyTarget: number;
@@ -120,6 +130,36 @@ export default function EmailAccounts() {
     setTestResult(null);
     setOauthConnected(null);
     setForm(EMPTY_FORM);
+  };
+
+  const openDreamhostModal = () => {
+    setShowDreamhostModal(true);
+    setDhError('');
+    setDhForm({ email: '', fromName: '', password: '', smtpHost: 'smtp.dreamhost.com', smtpPort: '465', imapHost: 'imap.dreamhost.com', imapPort: '993' });
+  };
+
+  const handleDreamhostSave = async () => {
+    setDhError('');
+    if (!dhForm.email || !dhForm.password) { setDhError('Email and password are required.'); return; }
+    setDhSaving(true);
+    try {
+      await api.post('/email-accounts/dreamhost', {
+        email: dhForm.email,
+        fromName: dhForm.fromName || dhForm.email,
+        password: dhForm.password,
+        smtpHost: dhForm.smtpHost,
+        smtpPort: dhForm.smtpPort,
+        imapHost: dhForm.imapHost,
+        imapPort: dhForm.imapPort,
+      });
+      setShowDreamhostModal(false);
+      load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setDhError(msg || 'Failed to connect. Check your credentials.');
+    } finally {
+      setDhSaving(false);
+    }
   };
 
   // Listen for the OAuth popup postMessage
@@ -288,13 +328,22 @@ export default function EmailAccounts() {
           </h2>
           <p className="text-secondary font-medium mt-1">Monitor sender health and manage your outreach email accounts.</p>
         </div>
-        <button
-          onClick={openModal}
-          className="flex items-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
-        >
-          <span className="material-symbols-outlined text-[18px]">add_circle</span>
-          Add Account
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={openDreamhostModal}
+            className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
+          >
+            <span className="material-symbols-outlined text-[18px] text-[#b0004a]">dns</span>
+            Connect DreamHost Email
+          </button>
+          <button
+            onClick={openModal}
+            className="flex items-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
+          >
+            <span className="material-symbols-outlined text-[18px]">add_circle</span>
+            Add Account
+          </button>
+        </div>
       </div>
 
       {/* Global Health Metrics */}
@@ -830,6 +879,130 @@ export default function EmailAccounts() {
               >
                 {saving && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
                 {saving ? 'Saving…' : `Save & Connect ${authInfo ? `(${authInfo.label})` : ''}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DreamHost Modal ── */}
+      {showDreamhostModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl ambient-shadow w-full max-w-lg mx-4 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                  Connect DreamHost Email
+                </h3>
+                <p className="text-xs text-secondary mt-0.5">Tests SMTP + IMAP before saving. Username is your email address.</p>
+              </div>
+              <button onClick={() => setShowDreamhostModal(false)} className="text-slate-400 hover:text-slate-600">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="px-6 py-5 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Email Address *</label>
+                  <input
+                    type="email"
+                    value={dhForm.email}
+                    onChange={(e) => setDhForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="you@yourdomain.com"
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Display Name</label>
+                  <input
+                    type="text"
+                    value={dhForm.fromName}
+                    onChange={(e) => setDhForm((f) => ({ ...f, fromName: e.target.value }))}
+                    placeholder="OptiRate"
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Email Password *</label>
+                <input
+                  type="password"
+                  value={dhForm.password}
+                  onChange={(e) => setDhForm((f) => ({ ...f, password: e.target.value }))}
+                  placeholder="DreamHost mailbox password"
+                  className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">SMTP Host</label>
+                  <input
+                    type="text"
+                    value={dhForm.smtpHost}
+                    onChange={(e) => setDhForm((f) => ({ ...f, smtpHost: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">SMTP Port</label>
+                  <input
+                    type="number"
+                    value={dhForm.smtpPort}
+                    onChange={(e) => setDhForm((f) => ({ ...f, smtpPort: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">IMAP Host</label>
+                  <input
+                    type="text"
+                    value={dhForm.imapHost}
+                    onChange={(e) => setDhForm((f) => ({ ...f, imapHost: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">IMAP Port</label>
+                  <input
+                    type="number"
+                    value={dhForm.imapPort}
+                    onChange={(e) => setDhForm((f) => ({ ...f, imapPort: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700 leading-relaxed">
+                <span className="font-bold">Secure connections:</span> SMTP port 465 uses SSL. IMAP port 993 uses TLS. Username is your full email address.
+              </div>
+
+              {dhError && (
+                <div className="px-4 py-3 bg-[#ffd9de] text-[#b0004a] text-sm font-medium rounded-xl border border-[#b0004a]/20">
+                  {dhError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 px-6 pb-6 pt-4 border-t border-slate-100">
+              <button
+                onClick={() => setShowDreamhostModal(false)}
+                className="py-2.5 px-5 rounded-xl border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDreamhostSave}
+                disabled={dhSaving}
+                className="flex-1 py-2.5 primary-gradient text-on-primary rounded-xl text-sm font-bold ambient-shadow disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {dhSaving && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
+                {dhSaving ? 'Testing & Saving…' : 'Test & Connect'}
               </button>
             </div>
           </div>

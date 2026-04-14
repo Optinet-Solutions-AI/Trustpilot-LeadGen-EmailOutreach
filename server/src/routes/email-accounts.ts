@@ -231,6 +231,93 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/email-accounts/dreamhost — test + save a DreamHost SMTP/IMAP account
+router.post('/dreamhost', async (req: Request, res: Response) => {
+  const { email, fromName, password, smtpHost, smtpPort, imapHost, imapPort } = req.body;
+
+  if (!email || !password || !smtpHost || !smtpPort || !imapHost || !imapPort) {
+    res.status(400).json({ success: false, error: 'email, password, smtpHost, smtpPort, imapHost, and imapPort are required' });
+    return;
+  }
+
+  const parsedSmtpPort = parseInt(smtpPort, 10);
+  const parsedImapPort = parseInt(imapPort, 10);
+
+  // 1. Test SMTP connection
+  try {
+    const nodemailer = await import('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: parsedSmtpPort,
+      secure: parsedSmtpPort === 465,
+      auth: { user: email, pass: password },
+    });
+    await transporter.verify();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    res.status(400).json({ success: false, error: `SMTP connection failed: ${msg}` });
+    return;
+  }
+
+  // 2. Test IMAP connection
+  try {
+    const { ImapFlow } = await import('imapflow');
+    const client = new ImapFlow({
+      host: imapHost,
+      port: parsedImapPort,
+      secure: true,
+      auth: { user: email, pass: password },
+      logger: false,
+    });
+    await client.connect();
+    await client.logout();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    res.status(400).json({ success: false, error: `IMAP connection failed: ${msg}` });
+    return;
+  }
+
+  // 3. Save to DB
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('email_accounts')
+      .insert({
+        email,
+        from_name: fromName || email,
+        provider: 'DreamHost (SMTP)',
+        auth_type: 'smtp',
+        email_provider: 'smtp',
+        smtp_host: smtpHost,
+        smtp_port: parsedSmtpPort,
+        smtp_user: email,
+        smtp_password: password,
+        smtp_secure: parsedSmtpPort === 465 ? 'ssl' : 'tls',
+        imap_host: imapHost,
+        imap_port: parsedImapPort,
+        imap_user: email,
+        imap_pass: password,
+        status: 'active',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        res.status(409).json({ success: false, error: 'An account with this email already exists' });
+      } else {
+        throw new Error(error.message);
+      }
+      return;
+    }
+
+    res.json({ success: true, data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // DELETE /api/email-accounts/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
