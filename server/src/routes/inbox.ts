@@ -36,7 +36,6 @@ async function getAllConnectedGmailClients(): Promise<GmailClientEntry[]> {
       .from('email_accounts')
       .select('email, gmail_client_id, gmail_client_secret, gmail_refresh_token')
       .eq('status', 'active')
-      .eq('auth_type', 'gmail_oauth')
       .not('gmail_refresh_token', 'is', null);
 
     for (const acc of dbAccounts ?? []) {
