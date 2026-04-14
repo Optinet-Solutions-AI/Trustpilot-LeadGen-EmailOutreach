@@ -7,14 +7,45 @@ export async function getCampaigns() {
     .select('*, campaign_leads(count), campaign_steps(count)')
     .order('created_at', { ascending: false });
   if (error) throw new Error(error.message);
-  // Flatten the nested counts into simple fields
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (data || []).map((c: any) => ({
+  const campaigns = (data || []).map((c: any) => ({
     ...c,
     lead_count: c.campaign_leads?.[0]?.count ?? 0,
     step_count: c.campaign_steps?.[0]?.count ?? 0,
     campaign_leads: undefined,
     campaign_steps: undefined,
+  }));
+
+  if (campaigns.length === 0) return campaigns;
+
+  // Compute live stats from campaign_leads so the card always shows accurate
+  // sent/replied/bounced counts regardless of whether total_* columns were updated.
+  const { data: clRows } = await supabase
+    .from('campaign_leads')
+    .select('campaign_id, status')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .in('campaign_id', campaigns.map((c: any) => c.id));
+
+  const stats: Record<string, { total_sent: number; total_replied: number; total_bounced: number; total_opened: number }> = {};
+  for (const row of clRows || []) {
+    if (!stats[row.campaign_id]) {
+      stats[row.campaign_id] = { total_sent: 0, total_replied: 0, total_bounced: 0, total_opened: 0 };
+    }
+    const s = row.status as string;
+    if (s === 'sent' || s === 'opened' || s === 'replied') stats[row.campaign_id].total_sent++;
+    if (s === 'replied') stats[row.campaign_id].total_replied++;
+    if (s === 'bounced')  stats[row.campaign_id].total_bounced++;
+    if (s === 'opened')  stats[row.campaign_id].total_opened++;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return campaigns.map((c: any) => ({
+    ...c,
+    total_sent:    stats[c.id]?.total_sent    ?? c.total_sent    ?? 0,
+    total_replied: stats[c.id]?.total_replied ?? c.total_replied ?? 0,
+    total_bounced: stats[c.id]?.total_bounced ?? c.total_bounced ?? 0,
+    total_opened:  stats[c.id]?.total_opened  ?? c.total_opened  ?? 0,
   }));
 }
 

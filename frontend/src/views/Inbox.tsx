@@ -63,11 +63,21 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
+interface AccountDiag {
+  email: string | null;
+  source: string;
+  auth_type?: string;
+  connected: boolean;
+  issue: string | null;
+}
+
 export default function Inbox() {
   const router = useRouter();
   const [folder, setFolder] = useState<Folder>('inbox');
   const [messages, setMessages] = useState<GmailMessage[]>([]);
   const [accounts, setAccounts] = useState<string[]>([]);
+  const [accountFilter, setAccountFilter] = useState<string>('all');
+  const [diagnostics, setDiagnostics] = useState<AccountDiag[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedAccount, setSelectedAccount] = useState<string>('');
@@ -83,16 +93,27 @@ export default function Inbox() {
     api.get('/inbox/messages', { params: { folder, limit: 50 } })
       .then((res) => {
         setMessages(res.data.data ?? []);
-        setAccounts(res.data.accounts ?? []);
+        const accs: string[] = res.data.accounts ?? [];
+        setAccounts(accs);
+        // If no accounts connected, fetch diagnostics to show why
+        if (accs.length === 0) {
+          api.get('/inbox/diagnostics').then(d => setDiagnostics(d.data.data ?? [])).catch(() => {});
+        }
       })
       .catch((err) => {
         setError(err?.response?.data?.error || err.message || 'Failed to load messages');
         setMessages([]);
+        api.get('/inbox/diagnostics').then(d => setDiagnostics(d.data.data ?? [])).catch(() => {});
       })
       .finally(() => setLoading(false));
   }, [folder]);
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
+
+  // Filtered messages by selected account
+  const visibleMessages = accountFilter === 'all'
+    ? messages
+    : messages.filter(m => m.senderAccount === accountFilter);
 
   const openThread = async (msg: GmailMessage) => {
     if (selectedThreadId === msg.threadId) return;
@@ -165,20 +186,41 @@ export default function Inbox() {
         <div className="px-5 py-4 border-t border-slate-100">
           <p className="text-[10px] font-extrabold uppercase tracking-wider text-secondary mb-2">Connected Accounts</p>
           {accounts.length === 0 ? (
-            <button
-              onClick={() => router.push('/email-accounts')}
-              className="text-xs text-[#b0004a] font-semibold hover:underline flex items-center gap-1"
-            >
-              <span className="material-symbols-outlined text-[14px]">add_circle</span>
-              Connect Gmail
-            </button>
-          ) : (
-            <div className="space-y-1">
-              {accounts.map(acc => (
-                <div key={acc} className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
-                  <span className="text-[11px] text-secondary truncate">{acc}</span>
+            <div className="space-y-2">
+              <button
+                onClick={() => router.push('/email-accounts')}
+                className="text-xs text-[#b0004a] font-semibold hover:underline flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[14px]">add_circle</span>
+                Connect Gmail OAuth
+              </button>
+              {/* Show diagnostic info for why accounts aren't connecting */}
+              {diagnostics.filter(d => d.email).map((d, i) => (
+                <div key={i} className="text-[10px] leading-tight">
+                  <p className="font-semibold text-secondary truncate">{d.email}</p>
+                  {d.issue && (
+                    <p className="text-amber-600 mt-0.5 leading-snug">{d.issue}</p>
+                  )}
                 </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              <button
+                onClick={() => setAccountFilter('all')}
+                className={`w-full text-left text-[11px] px-2 py-1 rounded-lg font-semibold transition-colors ${accountFilter === 'all' ? 'bg-[#ffd9de]/30 text-[#b0004a]' : 'text-secondary hover:bg-surface-container-high'}`}
+              >
+                All accounts
+              </button>
+              {accounts.map(acc => (
+                <button
+                  key={acc}
+                  onClick={() => setAccountFilter(accountFilter === acc ? 'all' : acc)}
+                  className={`w-full text-left flex items-center gap-1.5 px-2 py-1 rounded-lg transition-colors ${accountFilter === acc ? 'bg-[#ffd9de]/30 text-[#b0004a]' : 'text-secondary hover:bg-surface-container-high'}`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                  <span className="text-[11px] truncate">{acc}</span>
+                </button>
               ))}
             </div>
           )}
@@ -189,7 +231,7 @@ export default function Inbox() {
       <div className="w-80 border-r border-slate-100 flex flex-col bg-[#f8f9fa] shrink-0 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-100 bg-white flex items-center justify-between">
           <p className="text-xs font-extrabold uppercase tracking-wider text-secondary">
-            {loading ? 'Loading…' : `${messages.length} message${messages.length !== 1 ? 's' : ''}`}
+            {loading ? 'Loading…' : `${visibleMessages.length} message${visibleMessages.length !== 1 ? 's' : ''}${accountFilter !== 'all' ? ' · filtered' : ''}`}
           </p>
           <button
             onClick={fetchMessages}
@@ -223,7 +265,7 @@ export default function Inbox() {
                 </button>
               )}
             </div>
-          ) : messages.length === 0 ? (
+          ) : visibleMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
               <span className="material-symbols-outlined text-slate-300 text-[36px] mb-3">
                 {folder === 'inbox' ? 'mark_email_unread' : folder === 'sent' ? 'send' : 'report_gmailerrorred'}
@@ -241,7 +283,7 @@ export default function Inbox() {
               )}
             </div>
           ) : (
-            messages.map((msg) => {
+            visibleMessages.map((msg) => {
               const { name, email } = parseDisplayName(folder === 'sent' ? msg.to : msg.from);
               const isSelected = selectedThreadId === msg.threadId;
               return (

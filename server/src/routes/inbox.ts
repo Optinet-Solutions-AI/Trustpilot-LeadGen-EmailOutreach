@@ -93,6 +93,59 @@ router.get('/accounts', async (_req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/inbox/diagnostics ────────────────────────────────────────────────
+// Returns all active email accounts and explains why each one can/cannot connect
+// to the Gmail inbox API. Useful for debugging missing accounts.
+router.get('/diagnostics', async (_req: Request, res: Response) => {
+  try {
+    const connectedClients = await getAllConnectedGmailClients();
+    const connectedEmails = new Set(connectedClients.map(c => c.email));
+
+    // Env account
+    const envEntry: Record<string, unknown> = {
+      email: config.gmail.fromEmail?.toLowerCase() || null,
+      source: 'env',
+      connected: config.gmail.fromEmail ? connectedEmails.has(config.gmail.fromEmail.toLowerCase()) : false,
+      issue: config.gmail.fromEmail ? null : 'EMAIL_FROM env var not set',
+    };
+
+    // DB accounts
+    const { data: dbAccounts } = await getSupabase()
+      .from('email_accounts')
+      .select('email, auth_type, status, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+      .eq('status', 'active');
+
+    const dbEntries = (dbAccounts || []).map((acc: Record<string, unknown>) => {
+      const email = (acc.email as string)?.toLowerCase();
+      let issue: string | null = null;
+      if (!acc.gmail_refresh_token) {
+        issue = acc.auth_type === 'app_password'
+          ? 'Account uses App Password — inbox requires Gmail OAuth. Re-add this account using "Connect with Google OAuth".'
+          : 'Missing Gmail OAuth refresh token — re-connect this account via OAuth.';
+      } else if (!acc.gmail_client_id) {
+        issue = 'Missing Gmail Client ID — re-add account with OAuth credentials.';
+      } else if (!acc.gmail_client_secret) {
+        issue = 'Missing Gmail Client Secret — re-add account with OAuth credentials.';
+      }
+      return {
+        email,
+        source: 'db',
+        auth_type: acc.auth_type,
+        connected: !issue && connectedEmails.has(email),
+        issue,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: [envEntry, ...dbEntries],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // ── GET /api/inbox/messages?folder=inbox|sent|spam&limit=50 ───────────────────
 router.get('/messages', async (req: Request, res: Response) => {
   const folder = (req.query.folder as string) || 'inbox';
