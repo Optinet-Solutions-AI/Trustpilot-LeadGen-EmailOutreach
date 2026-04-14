@@ -41,7 +41,7 @@ export async function getJob(id: string) {
   return data;
 }
 
-/** Returns the most recent completed or running job for the same country+category, or null. */
+/** Returns a currently running job for the same country+category, or null. */
 export async function findActiveJobForParams(country: string, category: string) {
   const supabase = getSupabase();
   const { data } = await supabase
@@ -49,7 +49,7 @@ export async function findActiveJobForParams(country: string, category: string) 
     .select('id, status, created_at, total_found')
     .eq('country', country)
     .eq('category', category)
-    .in('status', ['running', 'completed'])
+    .eq('status', 'running')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

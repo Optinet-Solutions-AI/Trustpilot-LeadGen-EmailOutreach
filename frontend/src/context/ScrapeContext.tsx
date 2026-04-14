@@ -164,6 +164,23 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   }, [closeEventSource, stopPolling, startPolling, markDone]);
 
   const startScrape = useCallback(async (params: ScrapeParams) => {
+    // Guard 1: block if a job is already running in this context
+    if (statusRef.current === 'running') {
+      setError('A scrape is already running. Wait for it to finish or cancel it first.');
+      return null;
+    }
+
+    // Guard 2: check the jobs list for a running job with the same country+category
+    const alreadyRunning = jobs.find(
+      (j) => j.status === 'running' &&
+        j.country === params.country &&
+        j.category === params.category,
+    );
+    if (alreadyRunning && !params.forceRescrape) {
+      setError(`A scrape for "${params.category}" in ${params.country} is already running (job ${alreadyRunning.id.slice(0, 8)}…).`);
+      return null;
+    }
+
     setError(null);
     setProgress([]);
     setFailedCount(0);
@@ -175,12 +192,16 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       subscribeToJob(id);
       return id;
     } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
       const axiosMsg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setError(axiosMsg || (e instanceof Error ? e.message : 'Failed to start scrape'));
-      setStatus('failed');
+      // 409 = duplicate detected by server — do NOT clobber the existing job status
+      if (status !== 409) {
+        setStatus('failed');
+      }
       return null;
     }
-  }, [subscribeToJob]);
+  }, [subscribeToJob, jobs]);
 
   const cancelJob = useCallback(async (id: string) => {
     try {

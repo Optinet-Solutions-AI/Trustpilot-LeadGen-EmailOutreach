@@ -27,7 +27,7 @@ router.post('/', async (req: Request, res: Response) => {
       if (existing) {
         res.status(409).json({
           success: false,
-          error: `Already scraped "${category}" in ${country} (${existing.total_found} leads found, status: ${existing.status}). Check "Force re-scrape" to run again.`,
+          error: `A scrape for "${category}" in ${country} is already running. Wait for it to finish or cancel it first.`,
           data: { existingJobId: existing.id },
         });
         return;
