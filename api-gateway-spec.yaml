@@ -44,6 +44,18 @@ paths:
       responses:
         "200":
           description: OK
+  /api/scrape/{id}/cancel:
+    post:
+      operationId: cancelScrapeJob
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/leads:
     get:
       operationId: listLeads
