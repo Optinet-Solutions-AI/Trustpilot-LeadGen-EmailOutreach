@@ -360,36 +360,127 @@ export default function WizardStep2Sequence({
         {/* ── Right: panels ── */}
         <div className="space-y-4">
 
-          {/* Dynamic preview */}
+          {/* Message Preview — Actual Sent Message style */}
           <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 bg-surface-container">
-              <span className="material-symbols-outlined text-[16px] text-[#b0004a]">visibility</span>
-              <p className="text-xs font-extrabold text-on-surface uppercase tracking-wider">Dynamic Preview</p>
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+              <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                Message Preview
+              </p>
+              <span className="text-[10px] font-bold text-secondary bg-surface-container px-2.5 py-1 rounded-full uppercase tracking-wider">
+                Sample Data
+              </span>
             </div>
-            <div className="p-4">
-              {firstEmailDomain && (
-                <div className="flex items-center gap-1.5 text-[10px] text-[#b0004a] bg-[#ffd9de]/40 rounded-lg px-3 py-1.5 mb-3">
-                  <span className="material-symbols-outlined text-[12px]">person</span>
-                  Sample recipient: <strong>{previewCompanyName}</strong> ({firstEmailDomain})
-                </div>
-              )}
-              <div className="bg-surface-container rounded-xl p-3 mb-3">
-                <p className="text-[10px] font-bold text-secondary uppercase tracking-wider mb-1">Subject</p>
-                <p className="text-xs font-semibold text-on-surface leading-relaxed break-all">
-                  {subjectPreview || <span className="text-slate-300">No subject yet</span>}
-                </p>
+
+            {/* Lead avatar + info */}
+            <div className="px-4 pt-4 pb-3 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full primary-gradient flex items-center justify-center flex-shrink-0 text-on-primary text-sm font-extrabold">
+                {previewCompanyName.charAt(0)}
               </div>
-              <div className="bg-surface-container rounded-xl p-3">
-                <p className="text-[10px] font-bold text-secondary uppercase tracking-wider mb-1">Body</p>
-                <p className="text-xs text-secondary leading-relaxed line-clamp-6">
-                  {bodyPreview || <span className="text-slate-300">No body yet</span>}
-                </p>
+              <div>
+                <p className="text-sm font-bold text-on-surface">{previewCompanyName}</p>
+                <p className="text-xs text-secondary">{firstEmailDomain ? `contact@${firstEmailDomain}` : 'contact@example.com'}</p>
               </div>
-              <p className="text-[10px] text-secondary mt-2 text-center">
-                Tokens and spintax resolved per lead at send time
+            </div>
+
+            {/* Subject */}
+            <div className="px-4 pb-2">
+              <p className="text-sm font-bold text-on-surface leading-snug">
+                {subjectPreview || <span className="text-slate-300 font-normal text-sm">No subject yet</span>}
               </p>
             </div>
+
+            {/* Body */}
+            <div className="px-4 pb-4 max-h-[180px] overflow-y-auto">
+              <p className="text-xs text-secondary leading-relaxed">
+                {bodyPreview || <span className="text-slate-300">No body yet</span>}
+              </p>
+            </div>
+
+            {/* Metadata */}
+            <div className="border-t border-slate-100 px-4 py-3">
+              <p className="text-[10px] font-extrabold text-secondary uppercase tracking-wider mb-2">Metadata</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                <div>
+                  <p className="text-[10px] text-secondary">Sequence Steps</p>
+                  <p className="text-xs font-semibold text-on-surface">{followUpSteps.length + 1} steps</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Spintax Groups</p>
+                  <p className="text-xs font-semibold text-on-surface">
+                    {(activeBody.match(/\{[^{}|]+\|[^{}]+\}/g) || []).length} groups
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Active Step</p>
+                  <p className="text-xs font-semibold text-on-surface">
+                    {activeStep === 'intro' ? 'Introduction' : `Follow-up #${(activeStep as number) + 1}`}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Status</p>
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    activeSubject && activeBody
+                      ? 'text-[#006630] bg-[#e6f4ec]'
+                      : 'text-amber-700 bg-amber-50'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${activeSubject && activeBody ? 'bg-[#006630]' : 'bg-amber-400'}`} />
+                    {activeSubject && activeBody ? 'Syntax Passed' : 'Incomplete'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="border-t border-slate-100 px-4 py-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(`Subject: ${activeSubject}\n\n${activeBody.replace(/<[^>]+>/g, '')}`)}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-secondary border border-slate-200 rounded-lg py-2 hover:bg-surface-container transition-colors"
+              >
+                <span className="material-symbols-outlined text-[13px]">content_copy</span>
+                Copy Message
+              </button>
+              {(activeBody.match(/\{[^{}|]+\|[^{}]+\}/g) || []).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onBodyChange(activeBody + ' ')}
+                  className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-[#b0004a] bg-[#ffd9de]/40 border border-[#b0004a]/20 rounded-lg py-2 hover:bg-[#ffd9de]/70 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[13px]">shuffle</span>
+                  Randomize
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Optimization Suggestion */}
+          {activeSubject && activeBody && (activeBody.match(/\{[^{}|]+\|[^{}]+\}/g) || []).length === 0 && (
+            <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
+              <div className="flex items-start gap-3 p-4">
+                <div className="w-7 h-7 rounded-xl bg-[#e6f4ec] flex items-center justify-center flex-shrink-0">
+                  <span className="material-symbols-outlined text-[14px] text-[#006630]">tips_and_updates</span>
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs font-extrabold text-on-surface mb-1">Optimization Suggestion</p>
+                  <p className="text-[11px] text-secondary leading-relaxed">
+                    No spintax detected. Adding variations like <code className="bg-surface-container px-1 rounded">{'{Hi|Hello|Hey}'}</code> reduces spam detection and improves open rates.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!activeSubject.includes('{')) {
+                        setActiveSubject(`{Scale|Improve|Strengthen} your reputation, {{company_name}}`);
+                      }
+                    }}
+                    className="mt-2 text-[10px] font-extrabold text-[#006630] uppercase tracking-wider hover:underline"
+                  >
+                    Apply to Sequence →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Sequence summary */}
           <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">

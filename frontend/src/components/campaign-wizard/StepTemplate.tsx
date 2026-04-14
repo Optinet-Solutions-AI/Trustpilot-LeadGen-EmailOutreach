@@ -206,44 +206,127 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
           </div>
         </div>
 
-        {/* ── Preview column ── */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-bold text-on-surface">Preview (sample data)</label>
-            {spintaxCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setPreviewSeed(previewSeed + 1)}
-                className="flex items-center gap-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded-lg border border-amber-200 transition-colors"
-              >
-                <span className="material-symbols-outlined text-[14px]">shuffle</span>
-                Randomize
-              </button>
-            )}
-          </div>
-          <div className="bg-surface-container-lowest rounded-xl border border-slate-100 overflow-hidden ambient-shadow">
-            <div className="px-4 py-3 border-b border-slate-100 bg-surface-container">
-              <p className="text-xs text-secondary">To: contact@acme.com</p>
-              <p className="text-sm font-bold text-on-surface mt-0.5">{resolvedSubject}</p>
+        {/* ── Preview column — Actual Sent Message style ── */}
+        <div className="space-y-3">
+
+          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden ambient-shadow">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+              <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                Message Preview
+              </p>
+              {spintaxCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setPreviewSeed(previewSeed + 1)}
+                  className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 px-2.5 py-1 rounded-full border border-amber-200 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[11px]">shuffle</span>
+                  Randomize
+                </button>
+              )}
             </div>
-            <div className="p-4 text-sm text-secondary whitespace-pre-wrap max-h-[380px] overflow-y-auto leading-relaxed">
-              {preview}
+
+            {/* Lead avatar + info */}
+            <div className="px-4 pt-4 pb-3 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full primary-gradient flex items-center justify-center flex-shrink-0 text-on-primary text-sm font-extrabold">
+                A
+              </div>
+              <div>
+                <p className="text-sm font-bold text-on-surface">Acme Corp</p>
+                <p className="text-xs text-secondary">contact@acme.com</p>
+              </div>
+            </div>
+
+            {/* Subject */}
+            <div className="px-4 pb-2">
+              <p className="text-sm font-bold text-on-surface leading-snug">
+                {resolvedSubject || <span className="text-slate-300 font-normal">No subject yet</span>}
+              </p>
+            </div>
+
+            {/* Body */}
+            <div className="px-4 pb-4 max-h-[220px] overflow-y-auto">
+              <p className="text-xs text-secondary leading-relaxed whitespace-pre-wrap">
+                {preview || <span className="text-slate-300">No content yet</span>}
+              </p>
               {includeScreenshot && (
-                <div className="mt-3 border-t border-slate-100 pt-3">
-                  <div className="flex items-center gap-2 text-secondary text-xs">
-                    <span className="material-symbols-outlined text-[14px]">image</span>
-                    <span>[Trustpilot profile screenshot attached]</span>
-                  </div>
+                <div className="mt-3 border-t border-slate-100 pt-3 flex items-center gap-2 text-secondary text-xs">
+                  <span className="material-symbols-outlined text-[13px]">image</span>
+                  <span>[Trustpilot screenshot attached]</span>
                 </div>
               )}
             </div>
+
+            {/* Metadata */}
+            <div className="border-t border-slate-100 px-4 py-3">
+              <p className="text-[10px] font-extrabold text-secondary uppercase tracking-wider mb-2">Metadata</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                <div>
+                  <p className="text-[10px] text-secondary">Category</p>
+                  <p className="text-xs font-semibold text-on-surface">{filterCategory || 'General'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Country</p>
+                  <p className="text-xs font-semibold text-on-surface">{filterCountry || 'All'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Spintax Groups</p>
+                  <p className="text-xs font-semibold text-on-surface">{spintaxCount}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Status</p>
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    subject && body ? 'text-[#006630] bg-[#e6f4ec]' : 'text-amber-700 bg-amber-50'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${subject && body ? 'bg-[#006630]' : 'bg-amber-400'}`} />
+                    {subject && body ? 'Syntax Passed' : 'Incomplete'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="border-t border-slate-100 px-4 py-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(`Subject: ${subject}\n\n${body.replace(/<[^>]+>/g, '')}`)}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-secondary border border-slate-200 rounded-lg py-2 hover:bg-surface-container transition-colors"
+              >
+                <span className="material-symbols-outlined text-[13px]">content_copy</span>
+                Copy Message
+              </button>
+            </div>
           </div>
-          {spintaxCount > 0 && (
-            <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
-              <span className="material-symbols-outlined text-[13px]">shuffle</span>
-              {spintaxCount} spintax group{spintaxCount !== 1 ? 's' : ''} — click Randomize to preview variations
-            </p>
+
+          {/* Optimization Suggestion */}
+          {subject && body && spintaxCount === 0 && (
+            <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
+              <div className="flex items-start gap-3 p-4">
+                <div className="w-7 h-7 rounded-xl bg-[#e6f4ec] flex items-center justify-center flex-shrink-0">
+                  <span className="material-symbols-outlined text-[14px] text-[#006630]">tips_and_updates</span>
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs font-extrabold text-on-surface mb-1">Optimization Suggestion</p>
+                  <p className="text-[11px] text-secondary leading-relaxed">
+                    No spintax detected in your template. Adding variations like <code className="bg-surface-container px-1 rounded">{'{Hi|Hello|Hey}'}</code> improves deliverability and reduces spam detection.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!subject.includes('{')) {
+                        onChange({ subject: `{Scale|Improve|Strengthen} your reputation, {{company_name}}` });
+                      }
+                    }}
+                    className="mt-2 text-[10px] font-extrabold text-[#006630] uppercase tracking-wider hover:underline"
+                  >
+                    Apply to Sequence →
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
+
         </div>
       </div>
     </div>
