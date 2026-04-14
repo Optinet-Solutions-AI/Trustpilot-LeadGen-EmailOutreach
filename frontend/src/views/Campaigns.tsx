@@ -184,7 +184,7 @@ export default function Campaigns() {
   // Full-page campaign detail — replaces the campaign list
   if (detailCampaign) {
     return (
-      <div className="overflow-y-auto" style={{ minHeight: 'calc(100vh - 4rem)' }}>
+      <div style={{ height: 'calc(100vh - 4rem)', display: 'flex', overflow: 'hidden' }}>
         <CampaignDetail
           campaign={detailCampaign}
           onClose={() => setDetailCampaign(null)}
