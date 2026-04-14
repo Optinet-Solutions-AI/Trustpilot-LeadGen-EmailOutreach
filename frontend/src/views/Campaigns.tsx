@@ -181,6 +181,21 @@ export default function Campaigns() {
     );
   }
 
+  // Full-page campaign detail — replaces the campaign list
+  if (detailCampaign) {
+    return (
+      <div className="overflow-y-auto" style={{ minHeight: 'calc(100vh - 4rem)' }}>
+        <CampaignDetail
+          campaign={detailCampaign}
+          onClose={() => setDetailCampaign(null)}
+          fetchLeads={getCampaignLeads}
+          fetchSteps={getCampaignSteps}
+          onDuplicate={handleDuplicate}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="px-10 py-10 space-y-8">
 
@@ -355,17 +370,6 @@ export default function Campaigns() {
           </div>
         )}
       </div>
-
-      {/* Campaign detail modal */}
-      {detailCampaign && (
-        <CampaignDetail
-          campaign={detailCampaign}
-          onClose={() => setDetailCampaign(null)}
-          fetchLeads={getCampaignLeads}
-          fetchSteps={getCampaignSteps}
-          onDuplicate={handleDuplicate}
-        />
-      )}
 
       {/* Launch choice — optional test flight or go live now */}
       {launchChoiceId && launchChoiceCampaign && (

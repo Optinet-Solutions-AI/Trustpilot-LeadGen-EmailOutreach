@@ -85,28 +85,54 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-surface-container-lowest rounded-2xl ambient-shadow w-full max-w-4xl max-h-[85vh] flex flex-col border border-slate-100">
+    <div className="px-10 py-10 space-y-6">
+
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onClose}
+          className="flex items-center gap-1.5 text-secondary hover:text-[#b0004a] font-semibold text-sm transition-colors"
+        >
+          <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+          All Campaigns
+        </button>
+        <span className="text-slate-300 text-sm">/</span>
+        <span className="text-sm font-bold text-on-surface">{campaign.name}</span>
+        <span className={`ml-1 px-2 py-0.5 rounded-full text-xs font-bold ${statusClasses[campaign.status] || 'bg-surface-container-high text-secondary'}`}>
+          {campaign.status}
+        </span>
+      </div>
+
+      <div className="bg-surface-container-lowest rounded-2xl ambient-shadow border border-slate-100">
 
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-5 border-b border-slate-100">
           <div>
             <h2
-              className="text-xl font-extrabold text-on-surface"
+              className="text-2xl font-extrabold text-on-surface"
               style={{ fontFamily: 'Manrope, sans-serif' }}
             >
               {campaign.name}
             </h2>
-            <p className="text-xs text-secondary mt-0.5 flex items-center gap-2">
+            <p className="text-xs text-secondary mt-1">
               Created {new Date(campaign.created_at).toLocaleDateString()}
-              <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${statusClasses[campaign.status] || 'bg-surface-container-high text-secondary'}`}>
-                {campaign.status}
-              </span>
+              {campaign.email_platform && (
+                <span className="ml-2 px-2 py-0.5 rounded-full bg-surface-container text-secondary font-semibold">
+                  via {campaign.email_platform}
+                </span>
+              )}
             </p>
           </div>
-          <button onClick={onClose} className="p-2 text-secondary hover:text-on-surface rounded-lg hover:bg-surface-container transition-colors">
-            <span className="material-symbols-outlined text-[20px]">close</span>
-          </button>
+          {onDuplicate && (
+            <button
+              onClick={handleDuplicate}
+              disabled={duplicating}
+              className="flex items-center gap-2 border border-slate-200 text-secondary px-4 py-2 rounded-lg text-xs font-bold hover:bg-surface-container-high disabled:opacity-50 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[14px]">content_copy</span>
+              {duplicating ? 'Duplicating...' : 'Duplicate Campaign'}
+            </button>
+          )}
         </div>
 
         {/* Stats bar */}
@@ -237,7 +263,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
         </div>
 
         {/* Lead list */}
-        <div className="flex-1 overflow-y-auto px-6 py-2">
+        <div className="px-6 py-2">
           {loading ? (
             <div className="flex items-center justify-center py-12 text-secondary gap-2">
               <Loader2 size={16} className="animate-spin text-[#b0004a]" /> Loading leads...
@@ -327,21 +353,11 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4 bg-surface-container rounded-b-2xl">
+        <div className="flex items-center border-t border-slate-100 px-6 py-4 bg-surface-container rounded-b-2xl">
           <p className="text-xs text-secondary">
             <span className="font-bold text-on-surface">Workflow:</span>{' '}
             Draft → Test Flight → Live Send → Check Replies → Follow up
           </p>
-          {onDuplicate && (
-            <button
-              onClick={handleDuplicate}
-              disabled={duplicating}
-              className="flex items-center gap-2 border border-slate-200 text-secondary px-4 py-2 rounded-lg text-xs font-bold hover:bg-surface-container-high disabled:opacity-50 transition-colors"
-            >
-              <span className="material-symbols-outlined text-[14px]">content_copy</span>
-              {duplicating ? 'Duplicating...' : 'Duplicate Campaign'}
-            </button>
-          )}
         </div>
       </div>
     </div>

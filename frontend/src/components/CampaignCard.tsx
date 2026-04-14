@@ -46,7 +46,10 @@ export default function CampaignCard({
   };
 
   return (
-    <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 hover:shadow-lg transition-all border border-slate-50">
+    <div
+      className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer"
+      onClick={() => onViewDetail(c)}
+    >
 
       {/* Top row */}
       <div className="flex items-center justify-between mb-3">
@@ -66,9 +69,9 @@ export default function CampaignCard({
       </div>
 
       {/* Campaign name */}
-      <button onClick={() => onViewDetail(c)} className="text-left w-full group mb-1">
+      <div className="mb-1">
         <h3
-          className="text-base font-extrabold text-on-surface group-hover:text-[#b0004a] transition-colors flex items-center gap-2"
+          className="text-base font-extrabold text-on-surface hover:text-[#b0004a] transition-colors flex items-center gap-2"
           style={{ fontFamily: 'Manrope, sans-serif' }}
         >
           {c.name}
@@ -76,7 +79,7 @@ export default function CampaignCard({
             <span className="material-symbols-outlined text-[14px] text-secondary">image</span>
           )}
         </h3>
-      </button>
+      </div>
 
       {/* Subject preview */}
       {c.template_subject && (
@@ -91,7 +94,7 @@ export default function CampaignCard({
         </div>
       )}
 
-      {/* Metrics */}
+      {/* Metrics — always visible */}
       <div className="flex items-center gap-5 my-3">
         <div className="text-center">
           <p className={`text-lg font-extrabold ${hasLeads ? 'text-on-surface' : 'text-error'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>
@@ -99,31 +102,23 @@ export default function CampaignCard({
           </p>
           <p className="text-xs text-secondary font-medium">leads</p>
         </div>
-        {c.total_sent > 0 && (
-          <>
-            <div className="w-px h-8 bg-slate-100" />
-            <div className="text-center">
-              <p className="text-lg font-extrabold text-blue-600" style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_sent}</p>
-              <p className="text-xs text-secondary font-medium">sent</p>
-            </div>
-            <div className="w-px h-8 bg-slate-100" />
-            <div className="text-center">
-              <p className="text-lg font-extrabold text-[#006630]" style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_replied}</p>
-              <p className="text-xs text-secondary font-medium">replied ({replyRate}%)</p>
-            </div>
-            {c.total_bounced > 0 && (
-              <>
-                <div className="w-px h-8 bg-slate-100" />
-                <div className="text-center">
-                  <p className="text-lg font-extrabold text-error" style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_bounced}</p>
-                  <p className="text-xs text-secondary font-medium">bounced</p>
-                </div>
-              </>
-            )}
-          </>
-        )}
+        <div className="w-px h-8 bg-slate-100" />
+        <div className="text-center">
+          <p className={`text-lg font-extrabold ${c.total_sent > 0 ? 'text-blue-600' : 'text-slate-300'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_sent}</p>
+          <p className="text-xs text-secondary font-medium">sent</p>
+        </div>
+        <div className="w-px h-8 bg-slate-100" />
+        <div className="text-center">
+          <p className={`text-lg font-extrabold ${c.total_replied > 0 ? 'text-[#006630]' : 'text-slate-300'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_replied}</p>
+          <p className="text-xs text-secondary font-medium">replied{c.total_sent > 0 ? ` (${replyRate}%)` : ''}</p>
+        </div>
+        <div className="w-px h-8 bg-slate-100" />
+        <div className="text-center">
+          <p className={`text-lg font-extrabold ${c.total_bounced > 0 ? 'text-error' : 'text-slate-300'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>{c.total_bounced}</p>
+          <p className="text-xs text-secondary font-medium">bounced</p>
+        </div>
         {!hasLeads && c.status === 'draft' && (
-          <span className="text-xs font-bold text-amber-600 flex items-center gap-1">
+          <span className="ml-2 text-xs font-bold text-amber-600 flex items-center gap-1">
             <span className="material-symbols-outlined text-[14px]">warning</span>
             No leads assigned
           </span>
@@ -163,7 +158,7 @@ export default function CampaignCard({
       )}
 
       {/* Action bar */}
-      <div className="flex items-center gap-3 pt-4 border-t border-slate-50">
+      <div className="flex items-center gap-3 pt-4 border-t border-slate-50" onClick={(e) => e.stopPropagation()}>
         {canLaunch && (
           <button
             onClick={() => onLaunch(c.id)}
