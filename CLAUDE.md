@@ -4,15 +4,14 @@
 
 ## Project Overview
 
-A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via Instantly.ai. Built on the WAT framework (Workflows → Agents → Tools).
+A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via Gmail. Built on the WAT framework (Workflows → Agents → Tools).
 
-**Business purpose:** Sell reputation management services to companies with poor Trustpilot ratings. Brand: **OptiRate** / optiratesolutions.com. Sending account: jordi@optiratesolutions.com.
+**Business purpose:** Sell reputation management services to companies with poor Trustpilot ratings. Brand: **OptiRate** / optiratesolutions.com.
 
 - **Frontend:** React + Vite + Tailwind CSS (port 5173) — deployed on Vercel
 - **Backend / API:** Node.js (Express) with TypeScript (port 3001) — deployed on Google Cloud Run (`trustpilot-crm`)
 - **Database:** Supabase (PostgreSQL, 8 tables)
-- **Email Platform:** Instantly.ai v2 API (`EMAIL_PLATFORM=instantly`) — handles warmup, rotation, pacing
-- **Email Fallback:** Gmail API via OAuth2 (`EMAIL_MODE=gmail`) — test flights when platform unavailable
+- **Email Platform:** Direct Gmail via OAuth2 (`EMAIL_PLATFORM=none`, `EMAIL_MODE=gmail`) — connected accounts from `email_accounts` table
 - **Scraper Tools:** Python + Playwright (headless Chromium) + playwright-stealth
 - **Email Verify:** ZeroBounce (mock mode available)
 - **AI:** Google Gemini API (template generation)
@@ -40,11 +39,11 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
    ↓
 9. User creates campaign (5-step wizard: setup → template → follow-ups → recipients → review)
    ↓
-10. MANDATORY: Test flight → sends 1 email via Instantly to verify format/content
+10. MANDATORY: Test flight → sends 1 email via Gmail to verify format/content
     ↓
-11. Live send → pushes entire campaign to Instantly → Instantly handles sending from jordi@
+11. Live send → campaign-scheduler.ts polls every 60s → sends via connected Gmail OAuth accounts
     ↓
-12. Stats sync every 2min: opens, replies, bounces → CRM dashboard updates automatically
+12. Stats tracked in campaign_leads table; opens/replies synced from Gmail
 ```
 
 ---
@@ -67,16 +66,11 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
        │               │
        ▼               ▼
 ┌───────────┐    ┌─────────────────────────┐
-│ Python    │    │ Email Platform Layer     │
-│ Scrapers  │    │ adapter-instantly.ts     │
-│ Playwright│    │ → Instantly.ai v2 API    │
-│ + Stealth │    │   (create, add, activate)│
+│ Python    │    │ Email Layer (Gmail)      │
+│ Scrapers  │    │ campaign-scheduler.ts   │
+│ Playwright│    │ → Gmail OAuth per acct  │
+│ + Stealth │    │   email_accounts table  │
 └───────────┘    └─────────────────────────┘
-                          ↑ sync every 2 min
-                 ┌─────────────────────────┐
-                 │ platform-sync.ts        │
-                 │ updates campaign_leads  │
-                 └─────────────────────────┘
 ```
 
 ### Golden Rules
@@ -188,12 +182,8 @@ trustpilot-leadgen/
 |----------|---------|---------------|
 | `SUPABASE_URL` | Supabase project URL | set |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key | set |
-| `EMAIL_PLATFORM` | `instantly` / `none` / `mock` | `instantly` |
-| `INSTANTLY_API_KEY` | Instantly.ai API key | set |
-| `INSTANTLY_SENDING_ACCOUNTS` | Comma-separated sending emails | `jordi@optiratesolutions.com` |
-| `INSTANTLY_SYNC_INTERVAL` | Stats poll interval ms | `120000` |
-| `INSTANTLY_WEBHOOK_SECRET` | Webhook signature secret | not set (optional) |
-| `EMAIL_MODE` | `gmail` or `mock` (fallback) | `gmail` |
+| `EMAIL_PLATFORM` | `instantly` / `none` / `mock` | `none` |
+| `EMAIL_MODE` | `gmail` or `mock` | `gmail` |
 | `GOOGLE_CLIENT_ID` | Gmail OAuth2 client ID | set |
 | `GOOGLE_CLIENT_SECRET` | Gmail OAuth2 client secret | set |
 | `GOOGLE_REFRESH_TOKEN` | Gmail OAuth2 refresh token | set |
@@ -242,8 +232,8 @@ trustpilot-leadgen/
 | `template_body` | text | HTML, supports tokens + spintax |
 | `include_screenshot` | boolean | Embeds screenshot from lead.screenshot_path |
 | `status` | text | `draft`/`sending`/`sent`/`completed`/`failed` |
-| `platform_campaign_id` | text | Instantly campaign ID (set after send) |
-| `email_platform` | text | e.g. `instantly` (set after send) |
+| `platform_campaign_id` | text | Platform campaign ID (unused in Gmail mode) |
+| `email_platform` | text | Email platform used (unused in Gmail mode) |
 | `sending_schedule` | jsonb | `{timezone, startHour, endHour, days[], dailyLimit}` |
 | `total_sent/opened/replied/bounced` | int | Synced from platform |
 
@@ -268,36 +258,11 @@ Same as before — see `supabase/migrations/001_initial_schema.sql`.
 
 ---
 
-## Email Platform — Instantly.ai
+## Email Platform — Gmail Direct
 
-### Send flow
-1. Spintax + tokens rendered locally per lead (Instantly doesn't support spintax)
-2. Campaign created on Instantly with `{{custom_subject}}` / `{{custom_body}}` template
-3. Leads added in bulk with pre-rendered content as custom variables
-4. Campaign activated → Instantly handles sending, pacing, rotation
-5. Stats polled every 2min → updates campaign_leads in Supabase
+`EMAIL_PLATFORM=none`, `EMAIL_MODE=gmail`. Users connect Gmail accounts via OAuth in-app (stored in `email_accounts` table). Campaign sends go through `campaign-scheduler.ts` (polls every 60s) → `campaign-sender.ts` → Gmail API per connected account. Test flight sends 1 email directly via the pinned sender account.
 
-### Test flight
-Creates a temporary 1-lead Instantly campaign with all-day schedule (00:00–23:59, all days) so it sends immediately regardless of the configured sending window. Auto-deleted after 30 minutes.
-
-### Instantly API v2 — Critical Gotchas
-
-| Issue | Details |
-|-------|---------|
-| `campaign_schedule` REQUIRED | Always include it, even with no custom schedule |
-| Timezone whitelist | NOT all IANA zones accepted. Use `mapTimezone()` helper. Invalid: `America/New_York`, `UTC`, `Europe/London`, `Asia/Manila`. Valid: `America/Detroit`, `Europe/Belfast`, `Europe/Belgrade`, `Asia/Hong_Kong` |
-| `delay` on every step | Each step needs `delay` (int, days). First step: `delay: 0`. Was incorrectly `wait_days`. |
-| No Content-Type on empty body | `/campaigns/:id/activate` and `/pause` are bodyless POSTs. Don't send `Content-Type: application/json` with no body — 400 error. |
-| `email_list` must be connected | Specifies which accounts to use. If those accounts have DNS errors or are disconnected, campaign activates but never sends. Pass `[]` to use all connected accounts. |
-
-### DNS Requirements (BLOCKING until done)
-`jordi@optiratesolutions.com` currently has **DNS Error** in Instantly (DKIM + DMARC not found). Add in Dreamhost DNS for `optiratesolutions.com`:
-
-| Type | Name | Value |
-|------|------|-------|
-| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:jordi@optiratesolutions.com` |
-| TXT | `selector._domainkey` | Copy from Instantly → Email Accounts → click the account |
-| TXT | `@` | `v=spf1 include:spf.instantlyapp.com ~all` |
+The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not used in production**.
 
 ---
 
@@ -318,7 +283,7 @@ Creates a temporary 1-lead Instantly campaign with all-day schedule (00:00–23:
 | `/api/verify` | POST | Batch email verification |
 | `/api/campaigns` | GET/POST | List + create |
 | `/api/campaigns/:id` | PATCH/DELETE | Update or delete |
-| `/api/campaigns/:id/send` | POST | Push to Instantly or send via Gmail |
+| `/api/campaigns/:id/send` | POST | Launch campaign send via Gmail |
 | `/api/campaigns/:id/test-flight` | POST | Mandatory pre-send test (body: `{testEmail}`) |
 | `/api/campaigns/:id/cancel` | POST | Pause/cancel campaign |
 | `/api/campaigns/:id/duplicate` | POST | Clone campaign |
@@ -339,23 +304,21 @@ All routes return: `{ success: true, data: {...} }` or `{ success: false, error:
 
 ## Deployment
 
-### Backend (Cloud Run)
+**Policy:** Never run git push or deploy commands automatically. Always output the commands below for the user to copy-paste and run themselves.
+
+### Step 1 — Push frontend (triggers Vercel auto-deploy)
 ```bash
+git add <files> && git commit -m "..." && git push origin main
+```
+
+### Step 2 — Deploy backend (Cloud Run)
+```powershell
 powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"
 ```
 
 ### Env var update only (no rebuild)
-```bash
+```powershell
 powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --update-env-vars 'KEY=VALUE' --quiet"
-```
-
-### Frontend
-Auto-deploys on `git push origin main`. No manual action needed.
-
-### Full workflow
-```bash
-git add <files> && git commit -m "..." && git push origin main
-# then run Cloud Run deploy command above
 ```
 
 See `docs/deployment.md` for complete reference.
@@ -378,9 +341,8 @@ See `docs/deployment.md` for complete reference.
 - Trustpilot blocks aggressive scrapers — use 2-5s randomized delays
 - Playwright required — Trustpilot pages are JS-rendered
 - ZeroBounce free tier: 100 credits/month
-- Instantly.ai: only specific IANA timezones accepted (use `mapTimezone()` helper)
-- jordi@optiratesolutions.com has DNS Error in Instantly — no emails send until DKIM/DMARC added
-- Warmup: start at 20 emails/day, increase gradually over 4 weeks
+- Gmail: connected accounts managed in-app via `email_accounts` table (OAuth per account)
+- Warmup: start at 10–20 emails/day per account, ramp up over 2–4 weeks
 
 ---
 
@@ -399,8 +361,7 @@ See `docs/deployment.md` for complete reference.
 - Don't store emails or API keys in client-side state
 - Don't skip the test flight before a live campaign
 - Don't commit `.env`, `credentials.json`, or `token.json`
-- Don't hardcode timezone strings — use the TIMEZONES list in StepSetup.tsx (only Instantly-valid values)
-- Don't send `Content-Type: application/json` on bodyless requests to Instantly
+- Don't hardcode timezone strings — use the TIMEZONES list in StepSetup.tsx
 
 ---
 
@@ -415,3 +376,105 @@ See `docs/deployment.md` for complete reference.
 | Deploy backend | `powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"` |
 | Run scraper manually | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country DE --category casino --max-rating 3.5` |
 | Run migration 008 | `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;` (Supabase SQL editor) |
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **TRUSPILOT LEAD GEN AND EMAIL OUTREACH** (1062 symbols, 2238 relationships, 81 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## When Debugging
+
+1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
+2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
+3. `READ gitnexus://repo/TRUSPILOT LEAD GEN AND EMAIL OUTREACH/process/{processName}` — trace the full execution flow step by step
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+
+## When Refactoring
+
+- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
+- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
+- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Tools Quick Reference
+
+| Tool | When to use | Command |
+|------|-------------|---------|
+| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
+| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
+| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
+| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
+| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
+| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
+
+## Impact Risk Levels
+
+| Depth | Meaning | Action |
+|-------|---------|--------|
+| d=1 | WILL BREAK — direct callers/importers | MUST update these |
+| d=2 | LIKELY AFFECTED — indirect deps | Should test |
+| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/TRUSPILOT LEAD GEN AND EMAIL OUTREACH/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/TRUSPILOT LEAD GEN AND EMAIL OUTREACH/clusters` | All functional areas |
+| `gitnexus://repo/TRUSPILOT LEAD GEN AND EMAIL OUTREACH/processes` | All execution flows |
+| `gitnexus://repo/TRUSPILOT LEAD GEN AND EMAIL OUTREACH/process/{name}` | Step-by-step execution trace |
+
+## Self-Check Before Finishing
+
+Before completing any code modification task, verify:
+1. `gitnexus_impact` was run for all modified symbols
+2. No HIGH/CRITICAL risk warnings were ignored
+3. `gitnexus_detect_changes()` confirms changes match expected scope
+4. All d=1 (WILL BREAK) dependents were updated
+
+## Keeping the Index Fresh
+
+After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
+
+```bash
+npx gitnexus analyze
+```
+
+If the index previously included embeddings, preserve them by adding `--embeddings`:
+
+```bash
+npx gitnexus analyze --embeddings
+```
+
+To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**
+
+> Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

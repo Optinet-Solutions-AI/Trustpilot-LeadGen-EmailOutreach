@@ -1,6 +1,8 @@
 node_modules/
 .venv/
 .env
+.env.local
+frontend/.env.local
 .tmp/
 __pycache__/
 dist/
@@ -15,3 +17,19 @@ token.json
 frontend/.next/
 frontend/out/
 frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
+.gitnexus
+
+# IDE / AI tool config (personal, not project)
+.claude/
+.cursorrules
+.opencode.json
+.windsurfrules
+AGENTS.md
+GEMINI.md
+
+# Temp / scratch files
+*.zip
+tp_combined.html
+DEFAULT --project*
+*.csv
