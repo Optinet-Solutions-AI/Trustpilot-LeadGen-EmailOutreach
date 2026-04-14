@@ -39,14 +39,18 @@ async function getAllConnectedGmailClients(): Promise<GmailClientEntry[]> {
       .not('gmail_refresh_token', 'is', null);
 
     for (const acc of dbAccounts ?? []) {
-      if (!acc.gmail_client_id || !acc.gmail_client_secret || !acc.gmail_refresh_token) continue;
+      if (!acc.gmail_refresh_token) continue;
+      // Fall back to env Google OAuth credentials when account-specific ones weren't stored.
+      // This is the normal case when the account was added via the app's own OAuth client
+      // (the form's Client ID / Secret fields were left blank during OAuth popup flow).
+      const clientId = acc.gmail_client_id || config.gmail.clientId;
+      const clientSecret = acc.gmail_client_secret || config.gmail.clientSecret;
+      if (!clientId || !clientSecret) continue;
       const email = (acc.email as string).toLowerCase();
       if (clients.some(c => c.email === email)) continue;
       clients.push({
         email,
-        gmail: createGmailClientFromCredentials(
-          acc.gmail_client_id, acc.gmail_client_secret, acc.gmail_refresh_token
-        ),
+        gmail: createGmailClientFromCredentials(clientId, clientSecret, acc.gmail_refresh_token),
       });
     }
   } catch {

@@ -129,18 +129,18 @@ export default function Leads() {
     }
   };
 
-  const handleBulkEnrich = async () => {
-    if (selectedIds.length === 0) return;
+  const startEnrich = async (leadIds?: string[]) => {
     setEnriching(true);
     try {
-      const res = await api.post('/enrich', { leadIds: selectedIds });
+      const body = leadIds && leadIds.length > 0 ? { leadIds } : {};
+      const res = await api.post('/enrich', body);
       const { jobId, total: t } = res.data.data;
       if (!jobId) {
-        notify('success', 'No leads needed enrichment');
+        notify('success', 'No leads needed enrichment (all already have website emails)');
         setEnriching(false);
         return;
       }
-      notify('success', `Scraping websites for ${t} leads — checking progress…`);
+      notify('success', `Scraping websites for ${t} lead${t !== 1 ? 's' : ''} — results appear in a few minutes…`);
       localStorage.setItem('active_enrich_job', jobId);
       setEnrichJobId(jobId);
       setEnriching(true);
@@ -149,6 +149,9 @@ export default function Leads() {
       setEnriching(false);
     }
   };
+
+  const handleBulkEnrich = () => startEnrich(selectedIds);
+  const handleEnrichAll  = () => startEnrich();
 
   // Poll enrichment job status until done or failed.
   // enrichJobId is initialised from localStorage so this resumes after page refresh.
@@ -295,6 +298,24 @@ export default function Leads() {
               </div>
             </>
           )}
+          {/* Enrich All — always visible, enriches every lead missing website_email */}
+          <div className="relative group">
+            <button
+              onClick={handleEnrichAll}
+              disabled={enriching}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#006630]/30 text-[#006630] text-sm font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
+            >
+              <span className={`material-symbols-outlined text-[16px] ${enriching ? 'animate-spin' : ''}`}>
+                {enriching ? 'progress_activity' : 'travel_explore'}
+              </span>
+              {enriching ? 'Enriching…' : 'Enrich All'}
+            </button>
+            <div className="absolute bottom-full mb-2 right-0 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
+              Visits every company website and finds their contact email. Only runs on leads that don't have a website email yet. Runs in background.
+              <span className="absolute top-full right-4 border-4 border-transparent border-t-slate-800" />
+            </div>
+          </div>
+
           {/* View toggle */}
           <div className="flex bg-surface-container-high rounded-lg p-1 gap-1">
             <button
