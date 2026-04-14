@@ -45,10 +45,24 @@ def upsert_leads(leads: list[dict]) -> int:
         print("No leads to upsert.")
         return 0
 
-    # Deduplicate by trustpilot_url (keep last occurrence which has most data)
-    seen = {}
+    # Deduplicate by trustpilot_url — merge so that enriched data (website_email) is
+    # never overwritten by an unenriched duplicate of the same lead.
+    seen: dict[str, dict] = {}
     for row in rows:
-        seen[row['trustpilot_url']] = row
+        key = row['trustpilot_url']
+        if key not in seen:
+            seen[key] = row
+        else:
+            existing = seen[key]
+            # Prefer whichever version has website_email; otherwise keep the later one
+            if row.get('website_email') and not existing.get('website_email'):
+                seen[key] = row
+            elif not row.get('website_email') and existing.get('website_email'):
+                pass  # keep existing
+            else:
+                # Both have or both lack website_email — merge, preferring non-None values
+                merged = {**existing, **{k: v for k, v in row.items() if v is not None}}
+                seen[key] = merged
     rows = list(seen.values())
 
     # Strip None values — prevents overwriting existing DB data with nulls.

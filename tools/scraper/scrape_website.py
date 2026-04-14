@@ -128,40 +128,43 @@ async def find_emails_on_page(page, website_url: str = '') -> list[str]:
     Extract all email addresses from the current page.
     Checks: mailto links, visible text, HTML source, obfuscated patterns, data attributes.
     Filters by domain match against website_url.
+    Uses a single page.evaluate() call to reduce IPC round-trips.
     """
     all_emails: set[str] = set()
 
     try:
-        # 1. Explicit mailto: links (most reliable)
-        mailto_emails = await page.evaluate(r'''() => {
-            const found = [];
+        # Single batched evaluate — collects mailto links, body text, and data attributes
+        # in one IPC round-trip instead of four.
+        page_data = await page.evaluate(r'''() => {
+            const mailtoEmails = [];
             document.querySelectorAll('a[href^="mailto:"]').forEach(el => {
                 const email = el.href.replace('mailto:', '').split('?')[0].trim().toLowerCase();
-                if (email && email.includes('@')) found.push(email);
+                if (email && email.includes('@')) mailtoEmails.push(email);
             });
-            return found;
-        }''')
-        all_emails.update(mailto_emails)
 
-        # 2. Visible text (rendered by browser)
-        body_text = await page.evaluate('() => document.body ? document.body.innerText : ""')
+            const dataAttrEmails = [];
+            document.querySelectorAll('[data-email],[data-mail],[data-contact]').forEach(el => {
+                const val = el.getAttribute('data-email') || el.getAttribute('data-mail') || el.getAttribute('data-contact');
+                if (val && val.includes('@')) dataAttrEmails.push(val.toLowerCase().trim());
+            });
+
+            return {
+                mailtoEmails,
+                bodyText: document.body ? document.body.innerText : '',
+                dataAttrEmails,
+            };
+        }''')
+
+        all_emails.update(page_data['mailtoEmails'])
+        all_emails.update(page_data['dataAttrEmails'])
+
+        body_text = page_data['bodyText']
         all_emails.update(parse_emails_from_text(body_text))
         all_emails.update(parse_obfuscated_emails(body_text))
 
-        # 3. Raw HTML source — catches encoded emails and data attributes
+        # Raw HTML source — catches encoded emails not visible in the DOM
         html_source = await page.content()
         all_emails.update(parse_emails_from_text(html_source))
-
-        # 4. data-email / data-mail attributes (some sites use these to avoid scrapers)
-        data_emails = await page.evaluate(r'''() => {
-            const found = [];
-            document.querySelectorAll('[data-email],[data-mail],[data-contact]').forEach(el => {
-                const val = el.getAttribute('data-email') || el.getAttribute('data-mail') || el.getAttribute('data-contact');
-                if (val && val.includes('@')) found.push(val.toLowerCase().trim());
-            });
-            return found;
-        }''')
-        all_emails.update(data_emails)
 
     except Exception as e:
         print(f"    Warning: email extraction error: {str(e)[:100]}")
@@ -257,13 +260,8 @@ async def scrape_website_email(page, website_url: str) -> tuple[str | None, list
 async def _enrich_batch(context, batch: list[tuple[int, dict]], results_dict: dict, failed_list: list, total: int):
     """Enrich a batch of leads using a single browser tab."""
     page = await context.new_page()
-
-    # Apply stealth to every new tab
-    try:
-        from playwright_stealth import stealth_async
-        await stealth_async(page)
-    except ImportError:
-        pass
+    # Stealth is already applied at the browser context level (browser_utils.py).
+    # Applying it per-tab is redundant and wastes ~1-2s per tab creation.
 
     try:
         for i, (idx, lead) in enumerate(batch):
@@ -347,8 +345,9 @@ async def enrich_websites(
     finally:
         await browser.close()
 
-    # Rebuild ordered list
-    enriched_out = [results_dict[i] for i in range(len(leads)) if i in results_dict]
+    # Rebuild ordered list — fall back to original lead if any index is missing,
+    # so we never silently drop leads from the output on partial failures.
+    enriched_out = [results_dict.get(i, leads[i]) for i in range(len(leads))]
 
     found_count = sum(1 for l in enriched_out if l.get('website_email'))
     new_found = found_count - sum(1 for l in leads if l.get('website_email'))

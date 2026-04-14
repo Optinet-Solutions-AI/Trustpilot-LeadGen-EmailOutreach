@@ -37,6 +37,7 @@ router.get('/', async (req: Request, res: Response) => {
       limit: req.query.limit ? parseInt(req.query.limit as string) : 25,
       sortBy: req.query.sortBy as string | undefined,
       sortDir: req.query.sortDir === 'asc' ? 'asc' : 'desc',
+      hasEmail: req.query.hasEmail === 'true',
     });
     res.json({ success: true, ...result });
   } catch (err) {

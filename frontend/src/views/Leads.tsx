@@ -63,6 +63,7 @@ export default function Leads() {
   const [statusFilter, setStatusFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState('created_at');
@@ -83,11 +84,12 @@ export default function Leads() {
     if (statusFilter) filters.status = statusFilter;
     if (countryFilter) filters.country = countryFilter;
     if (categoryFilter) filters.category = categoryFilter;
+    if (hasEmailFilter) (filters as any).hasEmail = 'true';
     if (search) filters.search = search;
     filters.sortBy = sortBy;
     filters.sortDir = sortDir;
     fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
-  }, [page, statusFilter, countryFilter, categoryFilter, search, view, sortBy, sortDir, fetchLeads]);
+  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, view, sortBy, sortDir, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 
@@ -180,13 +182,14 @@ export default function Leads() {
       } catch (err: unknown) {
         const httpStatus = (err as { response?: { status?: number } })?.response?.status;
         if (httpStatus === 404) {
-          // Stale job ID — silently clear it, no error shown
+          // Stale job ID — clear it and reload the table (enrichment may have finished)
           if (!active) return;
-          active = false; // prevent any further polls immediately
+          active = false;
           if (interval) clearInterval(interval);
           setEnriching(false);
           setEnrichJobId(null);
           localStorage.removeItem('active_enrich_job');
+          loadLeads();
         }
         // Other network errors: keep polling
       }
@@ -360,6 +363,17 @@ export default function Leads() {
             <option value="converted">Converted</option>
             <option value="lost">Lost</option>
           </select>
+          <button
+            onClick={() => { setHasEmailFilter(v => !v); setPage(1); }}
+            className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
+              hasEmailFilter
+                ? 'bg-[#006630] text-white border-[#006630]'
+                : 'bg-surface-container text-secondary border-transparent hover:text-on-surface'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">mail</span>
+            Has Email
+          </button>
         </div>
       </div>
 

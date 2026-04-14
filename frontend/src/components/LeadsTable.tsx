@@ -1,6 +1,17 @@
 import { useState, useRef } from 'react';
 import type { Lead, LeadStatus } from '../types/lead';
 
+function getRelativeTime(date: Date): string {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 interface Props {
   leads: Lead[];
   total: number;
@@ -16,15 +27,15 @@ interface Props {
   onSortChange: (col: string) => void;
 }
 
-type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'status';
+type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'scraped' | 'status';
 
-const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'rating', 'tags', 'status'];
-const COL_STORAGE_KEY = 'leads_col_order_v3';
+const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'rating', 'tags', 'scraped', 'status'];
+const COL_STORAGE_KEY = 'leads_col_order_v4';
 
 const COL_LABELS: Record<ColKey, string> = {
   company: 'Company', country: 'Country', category: 'Category',
   trustpilot_email: 'TP Email', website_email: 'Website Email',
-  rating: 'Rating', tags: 'Tags', status: 'Status',
+  rating: 'Rating', tags: 'Tags', scraped: 'Scraped', status: 'Status',
 };
 
 const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
@@ -33,6 +44,7 @@ const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
   trustpilot_email: 'trustpilot_email',
   website_email: 'website_email',
   rating: 'star_rating',
+  scraped: 'scraped_at',
   status: 'outreach_status',
 };
 
@@ -229,6 +241,18 @@ export default function LeadsTable({
             </div>
           </td>
         );
+      case 'scraped': {
+        const date = lead.scraped_at ? new Date(lead.scraped_at) : null;
+        return (
+          <td key={col} className="px-4 py-3 text-xs text-secondary whitespace-nowrap w-24">
+            {date ? (
+              <span title={date.toLocaleString()}>{getRelativeTime(date)}</span>
+            ) : (
+              <span className="text-slate-300">—</span>
+            )}
+          </td>
+        );
+      }
       case 'status':
         return (
           <td key={col} className="px-4 py-3 w-32" onClick={(e) => e.stopPropagation()}>

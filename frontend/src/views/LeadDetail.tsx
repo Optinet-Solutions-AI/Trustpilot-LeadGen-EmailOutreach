@@ -19,6 +19,7 @@ export default function LeadDetail() {
   const id = params?.id;
   const router = useRouter();
   const [lead, setLead] = useState<Lead | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState('');
   const [quickSendOpen, setQuickSendOpen] = useState(false);
 
@@ -43,10 +44,30 @@ export default function LeadDetail() {
 
   useEffect(() => {
     if (!id || id === '_id') return;
-    api.get(`/leads/${id}`).then((res) => setLead(res.data.data));
+    setLoadError(null);
+    api.get(`/leads/${id}`)
+      .then((res) => setLead(res.data.data))
+      .catch((err) => setLoadError(err?.response?.data?.error || err.message || 'Failed to load lead'));
     fetchNotes();
     fetchFollowUps();
   }, [id, fetchNotes, fetchFollowUps]);
+
+  if (loadError) return (
+    <div className="px-10 py-10 space-y-6">
+      <button
+        onClick={() => router.push('/leads')}
+        className="flex items-center gap-2 text-sm font-semibold text-secondary hover:text-on-surface transition-colors"
+      >
+        <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+        Back to Lead Matrix
+      </button>
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <span className="material-symbols-outlined text-slate-300 text-[40px]">error_outline</span>
+        <p className="text-base font-bold text-on-surface">Could not load lead</p>
+        <p className="text-sm text-secondary">{loadError}</p>
+      </div>
+    </div>
+  );
 
   if (!lead) return (
     <div className="flex items-center justify-center h-64 text-secondary gap-2">

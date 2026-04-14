@@ -7,6 +7,7 @@ export interface LeadFilters {
   search?: string;
   minRating?: number;
   maxRating?: number;
+  hasEmail?: boolean;
   page?: number;
   limit?: number;
   sortBy?: string;
@@ -31,16 +32,21 @@ export async function getLeads(filters: LeadFilters = {}) {
   if (filters.search) {
     query = query.or(`company_name.ilike.%${filters.search}%,website_url.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%`);
   }
+  if (filters.hasEmail) {
+    query = query.not('primary_email', 'is', null);
+  }
 
+  const EMAIL_SORT_COLUMNS = new Set(['primary_email', 'trustpilot_email', 'website_email']);
   const ALLOWED_SORT_COLUMNS = new Set([
     'company_name', 'star_rating', 'outreach_status',
-    'country', 'category', 'primary_email', 'created_at',
+    'country', 'category', 'primary_email', 'trustpilot_email', 'website_email',
+    'created_at', 'scraped_at',
   ]);
   const sortCol = filters.sortBy && ALLOWED_SORT_COLUMNS.has(filters.sortBy) ? filters.sortBy : 'created_at';
   const sortAsc = filters.sortDir === 'asc';
 
-  // For email: always put nulls last so leads with emails surface at the top
-  const nullsFirst = sortCol === 'primary_email' ? false : undefined;
+  // For any email column: always put nulls last so leads with emails surface at the top
+  const nullsFirst = EMAIL_SORT_COLUMNS.has(sortCol) ? false : undefined;
 
   const { data, error, count } = await query
     .order(sortCol, { ascending: sortAsc, nullsFirst })

@@ -126,6 +126,20 @@ router.post('/', async (req: Request, res: Response) => {
     const tmpFile = path.join(tmpDir, `enrich_${jobId}.json`);
     fs.writeFileSync(tmpFile, JSON.stringify(leads, null, 2), 'utf-8');
 
+    // Pre-flight: verify Python binary exists before responding
+    const pythonPath = path.isAbsolute(config.pythonPath)
+      ? config.pythonPath
+      : path.resolve(config.projectRoot, config.pythonPath);
+    if (!fs.existsSync(pythonPath)) {
+      await supabase.from('scrape_jobs').update({
+        status: 'failed',
+        error: `Python binary not found at: ${pythonPath}`,
+        completed_at: new Date().toISOString(),
+      }).eq('id', jobId);
+      res.status(500).json({ success: false, error: `Python not found at ${pythonPath}` });
+      return;
+    }
+
     // Respond immediately — API Gateway has a 30s timeout; Playwright would exceed it
     res.json({
       success: true,
@@ -155,10 +169,10 @@ router.post('/', async (req: Request, res: Response) => {
       .catch((err: Error) => {
         supabase.from('scrape_jobs').update({
           status: 'failed',
-          error: err.message.slice(0, 300),
+          error: err.message.slice(0, 500),
           completed_at: new Date().toISOString(),
         }).eq('id', jobId).then(() => {});
-        console.error(`[enrich] Job ${jobId} failed: ${err.message}`);
+        console.error(`[enrich] Job ${jobId} failed:`, err.message);
       })
       .finally(() => {
         try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
