@@ -490,6 +490,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/inbox/campaign-replies:
+    get:
+      operationId: getInboxCampaignReplies
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/inbox/mark-read:
     post:
       operationId: markInboxRead
