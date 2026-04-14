@@ -269,7 +269,9 @@ export default function EmailAccounts() {
     try {
       await api.delete(`/email-accounts/${id}`);
       load();
-    } catch { /* ignore */ } finally {
+    } catch (err: any) {
+      alert(err?.response?.data?.error || err?.message || 'Failed to delete account');
+    } finally {
       setDeleteId(null);
     }
   };
