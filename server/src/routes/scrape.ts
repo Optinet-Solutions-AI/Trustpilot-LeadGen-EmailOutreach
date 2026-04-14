@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { createJob, getJob, getJobs } from '../db/scrape-jobs.js';
+import { createJob, getJob, getJobs, findActiveJobForParams } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
 
@@ -19,6 +19,19 @@ router.post('/', async (req: Request, res: Response) => {
     if (!country || !category) {
       res.status(400).json({ success: false, error: 'country and category are required' });
       return;
+    }
+
+    // Block duplicate scrape unless forceRescrape is explicitly set
+    if (!forceRescrape) {
+      const existing = await findActiveJobForParams(country, category);
+      if (existing) {
+        res.status(409).json({
+          success: false,
+          error: `Already scraped "${category}" in ${country} (${existing.total_found} leads found, status: ${existing.status}). Check "Force re-scrape" to run again.`,
+          data: { existingJobId: existing.id },
+        });
+        return;
+      }
     }
 
     const job = await createJob({

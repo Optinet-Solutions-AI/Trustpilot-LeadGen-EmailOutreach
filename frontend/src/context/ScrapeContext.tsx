@@ -174,8 +174,9 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('active_scrape_job', id);
       subscribeToJob(id);
       return id;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start scrape');
+    } catch (e: unknown) {
+      const axiosMsg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(axiosMsg || (e instanceof Error ? e.message : 'Failed to start scrape'));
       setStatus('failed');
       return null;
     }

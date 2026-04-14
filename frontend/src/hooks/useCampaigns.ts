@@ -72,8 +72,33 @@ export function useCampaigns() {
       email_used: string | null;
       status: string;
       sent_at: string | null;
+      scheduled_at?: string | null;
+      reply_snippet?: string | null;
+      gmail_thread_id?: string | null;
+      gmail_message_id?: string | null;
       leads: { company_name: string; star_rating: number; country: string; category: string } | null;
     }>;
+  }, []);
+
+  const getEmailThread = useCallback(async (threadId: string) => {
+    const res = await api.get(`/inbox/thread/${threadId}`);
+    return res.data.data as {
+      threadId: string;
+      senderAccount: string;
+      messages: Array<{
+        id: string;
+        threadId: string;
+        from: string;
+        to: string;
+        subject: string;
+        date: string;
+        snippet: string;
+        body: string;
+        bodyType: 'html' | 'plain';
+        unread: boolean;
+        labels: string[];
+      }>;
+    };
   }, []);
 
   const checkReplies = useCallback(async () => {
@@ -141,5 +166,5 @@ export function useCampaigns() {
     return res.data.data as CampaignStepType[];
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus };
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, getEmailThread, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus };
 }

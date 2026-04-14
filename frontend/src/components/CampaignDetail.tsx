@@ -12,6 +12,8 @@ interface CampaignLead {
   sent_at: string | null;
   scheduled_at?: string | null;
   reply_snippet?: string | null;
+  gmail_thread_id?: string | null;
+  gmail_message_id?: string | null;
   leads: { company_name: string; star_rating: number; country: string; category: string } | null;
 }
 
@@ -22,12 +24,30 @@ interface CampaignStep {
   template_subject: string;
 }
 
+interface ThreadMessage {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  body: string;
+  bodyType: 'html' | 'plain';
+}
+
+interface ThreadData {
+  threadId: string;
+  messages: ThreadMessage[];
+  senderAccount: string;
+}
+
 interface Props {
   campaign: Campaign;
   onClose: () => void;
   fetchLeads: (id: string) => Promise<CampaignLead[]>;
   fetchSteps?: (id: string) => Promise<CampaignStep[]>;
   onDuplicate?: (campaignId: string) => Promise<void>;
+  getEmailThread?: (threadId: string) => Promise<ThreadData>;
 }
 
 const STATUS_CONFIG: Record<string, { label: string; classes: string; icon: string }> = {
@@ -40,19 +60,24 @@ const STATUS_CONFIG: Record<string, { label: string; classes: string; icon: stri
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-function formatScheduleSummary(schedule: NonNullable<Campaign['sending_schedule']>): string {
-  const dayLabels = schedule.days.map((d) => DAY_NAMES[d]).join(', ');
-  return `${schedule.startHour} – ${schedule.endHour} · ${dayLabels} · up to ${schedule.dailyLimit} emails/day`;
+function parseDisplayName(address: string): { name: string; email: string } {
+  const match = address.match(/^"?([^"<]+?)"?\s*<([^>]+)>$/);
+  if (match) return { name: match[1].trim(), email: match[2].trim() };
+  return { name: address, email: address };
 }
 
-export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSteps, onDuplicate }: Props) {
+export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSteps, onDuplicate, getEmailThread }: Props) {
   const [leads, setLeads] = useState<CampaignLead[]>([]);
   const [steps, setSteps] = useState<CampaignStep[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
-  const [expandedReply, setExpandedReply] = useState<string | null>(null);
   const [showTemplate, setShowTemplate] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+
+  // Email thread panel
+  const [threadLead, setThreadLead] = useState<CampaignLead | null>(null);
+  const [thread, setThread] = useState<ThreadData | null>(null);
+  const [threadLoading, setThreadLoading] = useState(false);
 
   useEffect(() => {
     fetchLeads(campaign.id).then(setLeads).finally(() => setLoading(false));
@@ -76,6 +101,27 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
     try { await onDuplicate(campaign.id); onClose(); } finally { setDuplicating(false); }
   };
 
+  const openThread = async (lead: CampaignLead) => {
+    setThreadLead(lead);
+    setThread(null);
+    if (lead.gmail_thread_id && getEmailThread) {
+      setThreadLoading(true);
+      try {
+        const data = await getEmailThread(lead.gmail_thread_id);
+        setThread(data);
+      } catch {
+        setThread(null);
+      } finally {
+        setThreadLoading(false);
+      }
+    }
+  };
+
+  const closeThread = () => {
+    setThreadLead(null);
+    setThread(null);
+  };
+
   const statusClasses: Record<string, string> = {
     sent:      'bg-[#8ff9a8]/20 text-[#006630]',
     sending:   'bg-blue-50 text-blue-700',
@@ -84,6 +130,139 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
     failed:    'bg-[#ffd9de] text-[#b0004a]',
   };
 
+  // ── Email thread slide panel ─────────────────────────────────────────────────
+  if (threadLead) {
+    const st = STATUS_CONFIG[threadLead.status] || STATUS_CONFIG.pending;
+    return (
+      <div className="px-10 py-10 space-y-6">
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onClose}
+            className="flex items-center gap-1.5 text-secondary hover:text-[#b0004a] font-semibold text-sm transition-colors"
+          >
+            <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+            All Campaigns
+          </button>
+          <span className="text-slate-300 text-sm">/</span>
+          <button
+            onClick={closeThread}
+            className="text-sm font-semibold text-secondary hover:text-[#b0004a] transition-colors"
+          >
+            {campaign.name}
+          </button>
+          <span className="text-slate-300 text-sm">/</span>
+          <span className="text-sm font-bold text-on-surface">{threadLead.leads?.company_name || threadLead.email_used}</span>
+        </div>
+
+        <div className="bg-surface-container-lowest rounded-2xl ambient-shadow border border-slate-100 overflow-hidden">
+          {/* Lead header */}
+          <div className="px-6 py-5 border-b border-slate-100 flex items-center gap-4">
+            <div className="w-11 h-11 rounded-full bg-[#ffd9de] flex items-center justify-center text-[#b0004a] font-extrabold text-base flex-shrink-0">
+              {(threadLead.leads?.company_name || threadLead.email_used || '?').charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                {threadLead.leads?.company_name || '—'}
+              </h2>
+              <p className="text-xs text-secondary mt-0.5">{threadLead.email_used || '—'}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${st.classes}`}>
+                <span className="material-symbols-outlined text-[12px]">{st.icon}</span>
+                {st.label}
+              </span>
+              {threadLead.leads?.star_rating && (
+                <span className="text-xs font-bold text-[#b0004a]">{threadLead.leads.star_rating} ★</span>
+              )}
+            </div>
+          </div>
+
+          {/* Thread body */}
+          <div className="p-6">
+            {threadLoading ? (
+              <div className="flex items-center justify-center py-16 gap-2 text-secondary text-sm">
+                <span className="material-symbols-outlined text-[#b0004a] text-[20px] animate-spin">progress_activity</span>
+                Loading thread…
+              </div>
+            ) : thread && thread.messages.length > 0 ? (
+              <div className="space-y-4">
+                <p className="text-xs font-bold text-secondary uppercase tracking-wider">
+                  {thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''} in thread
+                </p>
+                {thread.messages.map((msg, idx) => {
+                  const { name: fromName, email: fromEmail } = parseDisplayName(msg.from);
+                  const isLast = idx === thread.messages.length - 1;
+                  return (
+                    <div key={msg.id} className={`bg-white rounded-xl border border-slate-100 overflow-hidden ${isLast ? 'ring-1 ring-[#b0004a]/10' : ''}`}>
+                      <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-full bg-[#ffd9de] flex items-center justify-center flex-shrink-0 text-[#b0004a] font-extrabold text-sm">
+                            {(fromName || fromEmail).charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-on-surface truncate">{fromName || fromEmail}</p>
+                            <p className="text-xs text-secondary truncate">{fromEmail !== fromName ? fromEmail : ''}</p>
+                            <p className="text-xs text-slate-400 mt-0.5">To: {msg.to}</p>
+                          </div>
+                        </div>
+                        <span className="text-xs text-slate-400 flex-shrink-0 mt-0.5">
+                          {new Date(msg.date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                        </span>
+                      </div>
+                      <div className="px-5 py-4">
+                        {msg.body ? (
+                          msg.bodyType === 'html' ? (
+                            <div
+                              className="prose prose-sm max-w-none text-on-surface text-sm leading-relaxed overflow-auto"
+                              style={{ maxHeight: '400px' }}
+                              dangerouslySetInnerHTML={{ __html: msg.body }}
+                            />
+                          ) : (
+                            <pre className="text-sm text-on-surface leading-relaxed whitespace-pre-wrap font-sans overflow-auto" style={{ maxHeight: '400px' }}>
+                              {msg.body}
+                            </pre>
+                          )
+                        ) : (
+                          <p className="text-sm text-secondary italic">{msg.snippet}</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* No full thread — show what we have */}
+                {threadLead.reply_snippet && (
+                  <div className="bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-4">
+                    <p className="text-xs font-bold text-[#006630] mb-2 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[14px]">reply</span>
+                      Reply received:
+                    </p>
+                    <p className="text-sm text-[#006630]">{threadLead.reply_snippet}</p>
+                  </div>
+                )}
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <span className="material-symbols-outlined text-slate-300 text-[36px] mb-3">forum</span>
+                  <p className="text-sm font-semibold text-secondary mb-1">
+                    {threadLead.gmail_thread_id ? 'Could not load thread' : 'Thread not available'}
+                  </p>
+                  <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+                    {threadLead.gmail_thread_id
+                      ? 'The Gmail thread could not be loaded. The account may not be connected.'
+                      : 'This email was sent via Instantly. Full thread view is only available for Gmail-sent emails.'}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main campaign detail ─────────────────────────────────────────────────────
   return (
     <div className="px-10 py-10 space-y-6">
 
@@ -138,11 +317,11 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
         {/* Stats bar */}
         <div className="grid grid-cols-5 divide-x divide-slate-100 border-b border-slate-100">
           {[
-            { label: 'Total Leads', value: leads.length,         sub: null,           color: 'text-on-surface' },
-            { label: 'Sent',        value: totalSent,            sub: null,           color: 'text-blue-600' },
+            { label: 'Total Leads', value: leads.length,         sub: null,            color: 'text-on-surface' },
+            { label: 'Sent',        value: totalSent,            sub: null,            color: 'text-blue-600' },
             { label: 'Replied',     value: counts.replied || 0,  sub: `${replyRate}%`, color: 'text-[#006630]' },
             { label: 'Bounced',     value: counts.bounced || 0,  sub: `${bounceRate}%`, color: 'text-error' },
-            { label: 'Pending',     value: counts.pending || 0,  sub: null,           color: 'text-secondary' },
+            { label: 'Pending',     value: counts.pending || 0,  sub: null,            color: 'text-secondary' },
           ].map((s) => (
             <div key={s.label} className="py-4 px-4 text-center">
               <p className={`text-2xl font-extrabold ${s.color}`} style={{ fontFamily: 'Manrope, sans-serif' }}>{s.value}</p>
@@ -238,7 +417,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
               {campaign.status === 'sending' && (
                 <p className="mt-2 text-[11px] text-amber-600 flex items-center gap-1">
                   <span className="material-symbols-outlined text-[12px]">info</span>
-                  Campaign is active — emails are being delivered within the window above. You don't need to keep the app open.
+                  Campaign is active — emails are being delivered within the window above.
                 </p>
               )}
             </div>
@@ -274,7 +453,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left border-b border-slate-100">
-                  {['Company', 'Country', 'Email', 'Rating', 'Status', 'Sent / Scheduled'].map((h) => (
+                  {['Company', 'Country', 'Email', 'Rating', 'Status', 'Sent / Scheduled', ''].map((h) => (
                     <th key={h} className={`py-3 text-xs font-bold uppercase tracking-wider text-secondary ${h === 'Sent / Scheduled' ? 'text-right' : ''}`}>{h}</th>
                   ))}
                 </tr>
@@ -282,69 +461,54 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
               <tbody>
                 {filtered.map((l) => {
                   const st = STATUS_CONFIG[l.status] || STATUS_CONFIG.pending;
-                  const hasReply = l.status === 'replied' && l.reply_snippet;
+                  const canOpenThread = !!(l.gmail_thread_id || l.status === 'replied');
                   return (
-                    <>
-                      <tr
-                        key={l.id}
-                        className={`border-b border-slate-50 hover:bg-surface-container-low transition-colors ${hasReply ? 'cursor-pointer' : ''}`}
-                        onClick={() => hasReply && setExpandedReply(expandedReply === l.id ? null : l.id)}
-                      >
-                        <td className="py-3 font-bold text-on-surface">
-                          {l.leads?.company_name || '—'}
-                          {hasReply && (
-                            <span className="ml-1.5 material-symbols-outlined text-[14px] text-[#006630] align-middle">
-                              {expandedReply === l.id ? 'expand_less' : 'expand_more'}
+                    <tr
+                      key={l.id}
+                      className={`border-b border-slate-50 transition-colors ${canOpenThread ? 'hover:bg-surface-container-low cursor-pointer' : ''}`}
+                      onClick={() => canOpenThread && openThread(l)}
+                    >
+                      <td className="py-3 font-bold text-on-surface">
+                        {l.leads?.company_name || '—'}
+                      </td>
+                      <td className="py-3 text-secondary text-xs">{l.leads?.country || '—'}</td>
+                      <td className="py-3 text-secondary text-xs">{l.email_used || '—'}</td>
+                      <td className="py-3 font-bold text-[#b0004a] text-xs">
+                        {l.leads?.star_rating ? `${l.leads.star_rating} ★` : '—'}
+                      </td>
+                      <td className="py-3">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${st.classes}`}>
+                          <span className="material-symbols-outlined text-[12px]">{st.icon}</span>
+                          {st.label}
+                        </span>
+                      </td>
+                      <td className="py-3 text-right text-xs text-secondary">
+                        {l.sent_at ? (
+                          <span>{new Date(l.sent_at).toLocaleString()}</span>
+                        ) : l.scheduled_at ? (
+                          <span className="flex flex-col items-end gap-0.5">
+                            <span className="text-amber-600 font-bold">
+                              {new Date(l.scheduled_at) <= new Date()
+                                ? 'Sending soon…'
+                                : new Date(l.scheduled_at).toLocaleString()}
                             </span>
-                          )}
-                        </td>
-                        <td className="py-3 text-secondary text-xs">{l.leads?.country || '—'}</td>
-                        <td className="py-3 text-secondary text-xs">{l.email_used || '—'}</td>
-                        <td className="py-3 font-bold text-[#b0004a] text-xs">
-                          {l.leads?.star_rating ? `${l.leads.star_rating} ★` : '—'}
-                        </td>
-                        <td className="py-3">
-                          <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${st.classes}`}>
-                            <span className="material-symbols-outlined text-[12px]">{st.icon}</span>
-                            {st.label}
+                            <span className="text-[10px] text-secondary">scheduled</span>
                           </span>
-                        </td>
-                        <td className="py-3 text-right text-xs text-secondary">
-                          {l.sent_at ? (
-                            <span>{new Date(l.sent_at).toLocaleString()}</span>
-                          ) : l.scheduled_at ? (
-                            <span className="flex flex-col items-end gap-0.5">
-                              <span className="text-amber-600 font-bold">
-                                {new Date(l.scheduled_at) <= new Date()
-                                  ? 'Sending soon…'
-                                  : new Date(l.scheduled_at).toLocaleString()}
-                              </span>
-                              <span className="text-[10px] text-secondary">scheduled</span>
-                            </span>
-                          ) : l.status === 'pending' ? (
-                            <span className="flex flex-col items-end gap-0.5">
-                              <span className="text-orange-500 font-bold text-[11px]">Not scheduled</span>
-                              <span className="text-[10px] text-secondary">already contacted</span>
-                            </span>
-                          ) : (
-                            <span>—</span>
-                          )}
-                        </td>
-                      </tr>
-                      {hasReply && expandedReply === l.id && (
-                        <tr key={`${l.id}-reply`}>
-                          <td colSpan={6} className="py-2 px-4">
-                            <div className="bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-3 text-xs text-[#006630]">
-                              <p className="font-bold mb-1 flex items-center gap-1">
-                                <span className="material-symbols-outlined text-[13px]">reply</span>
-                                Reply snippet:
-                              </p>
-                              <p>{l.reply_snippet}</p>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </>
+                        ) : l.status === 'pending' ? (
+                          <span className="flex flex-col items-end gap-0.5">
+                            <span className="text-orange-500 font-bold text-[11px]">Not scheduled</span>
+                            <span className="text-[10px] text-secondary">already contacted</span>
+                          </span>
+                        ) : (
+                          <span>—</span>
+                        )}
+                      </td>
+                      <td className="py-3 pl-2">
+                        {canOpenThread && (
+                          <span className="material-symbols-outlined text-[16px] text-secondary">chevron_right</span>
+                        )}
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -358,6 +522,12 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
             <span className="font-bold text-on-surface">Workflow:</span>{' '}
             Draft → Test Flight → Live Send → Check Replies → Follow up
           </p>
+          {getEmailThread && (
+            <p className="ml-auto text-xs text-secondary flex items-center gap-1">
+              <span className="material-symbols-outlined text-[13px]">info</span>
+              Click a sent/replied lead to view the email thread
+            </p>
+          )}
         </div>
       </div>
     </div>

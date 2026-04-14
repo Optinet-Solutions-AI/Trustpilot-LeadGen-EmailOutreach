@@ -13,7 +13,7 @@ import type { Campaign } from '../types/campaign';
 export default function Campaigns() {
   const {
     campaigns, loading, fetchCampaigns, createCampaign, sendCampaign,
-    cancelCampaign, deleteCampaign, getCampaignLeads, checkReplies,
+    cancelCampaign, deleteCampaign, getCampaignLeads, getEmailThread, checkReplies,
     getRateLimit, duplicateCampaign, previewRecipients, testFlightSend,
     syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus,
   } = useCampaigns();
@@ -191,6 +191,7 @@ export default function Campaigns() {
           fetchLeads={getCampaignLeads}
           fetchSteps={getCampaignSteps}
           onDuplicate={handleDuplicate}
+          getEmailThread={getEmailThread}
         />
       </div>
     );

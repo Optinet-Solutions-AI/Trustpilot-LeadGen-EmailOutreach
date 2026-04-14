@@ -284,6 +284,51 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/inbox/campaign-replies?folder=replies|sent ───────────────────────
+// Returns campaign_leads enriched with lead + campaign info.
+// folder=replies → status='replied'
+// folder=sent    → status IN (sent, opened, replied, bounced)
+router.get('/campaign-replies', async (req: Request, res: Response) => {
+  const folder = (req.query.folder as string) || 'replies';
+  const statusFilter = folder === 'replies'
+    ? ['replied']
+    : ['sent', 'opened', 'replied', 'bounced'];
+
+  try {
+    const { data, error } = await getSupabase()
+      .from('campaign_leads')
+      .select('id, campaign_id, lead_id, email_used, status, sent_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name), leads(company_name, country)')
+      .in('status', statusFilter)
+      .order('sent_at', { ascending: false })
+      .limit(200);
+
+    if (error) {
+      res.status(500).json({ success: false, error: error.message });
+      return;
+    }
+
+    const messages = (data || []).map((row: Record<string, unknown>) => ({
+      id: row.id,
+      campaign_id: row.campaign_id,
+      campaign_name: (row.campaigns as { name?: string } | null)?.name || 'Unknown Campaign',
+      lead_id: row.lead_id,
+      company_name: (row.leads as { company_name?: string } | null)?.company_name || 'Unknown',
+      country: (row.leads as { country?: string } | null)?.country || '',
+      email_used: row.email_used,
+      status: row.status,
+      sent_at: row.sent_at,
+      reply_snippet: row.reply_snippet,
+      gmail_thread_id: row.gmail_thread_id,
+      gmail_message_id: row.gmail_message_id,
+    }));
+
+    res.json({ success: true, data: messages });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // ── POST /api/inbox/mark-read — body: { messageId, account } ─────────────────
 router.post('/mark-read', async (req: Request, res: Response) => {
   const { messageId, account } = req.body;
