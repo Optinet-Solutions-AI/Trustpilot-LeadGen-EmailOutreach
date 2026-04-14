@@ -61,6 +61,10 @@ function runPython(
   const proc = spawn(pythonPath, [fullScript, ...args], {
     cwd: config.projectRoot,
     env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
+    // detached=true on Linux puts the child in its own process group so we can
+    // kill the whole group (Python + Chromium) with process.kill(-pid, SIGKILL).
+    // On Windows this has no meaningful effect since we use taskkill /T instead.
+    detached: process.platform !== 'win32',
   });
 
   // Track process for cancellation
@@ -201,15 +205,20 @@ async function uploadScreenshotsToStorage(screenshotsDir: string, enrichedOutput
 export async function cancelScrapeJob(jobId: string): Promise<void> {
   const proc = activeProcesses.get(jobId);
   if (proc) {
-    // Kill the process tree
+    // Kill the entire process tree (including Playwright/Chromium children)
     if (process.platform === 'win32') {
       try {
         spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
       } catch {}
     } else {
+      // Use SIGKILL on the process group to kill Python + all Chromium children.
+      // proc.pid is the Python process; negating the PID targets the whole group.
       try {
-        proc.kill('SIGTERM');
-      } catch {}
+        process.kill(-proc.pid!, 'SIGKILL');
+      } catch {
+        // Fallback if process group kill fails (e.g. proc already exited)
+        try { proc.kill('SIGKILL'); } catch {}
+      }
     }
     activeProcesses.delete(jobId);
   }

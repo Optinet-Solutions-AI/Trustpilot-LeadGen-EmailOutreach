@@ -2,7 +2,7 @@ swagger: "2.0"
 info:
   title: trustpilot-api
   description: Trustpilot LeadGen API Gateway proxy to Cloud Run
-  version: "1.4.0"
+  version: "1.5.0"
 schemes:
   - https
 produces:
@@ -47,6 +47,30 @@ paths:
   /api/scrape/{id}/cancel:
     post:
       operationId: cancelScrapeJob
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/scrape/{id}/failures:
+    get:
+      operationId: getScrapeJobFailures
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/scrape/{id}/retry-failed:
+    post:
+      operationId: retryFailedScrape
       security: []
       parameters:
         - in: path

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Loader2, CheckCircle2, XCircle, AlertTriangle, RotateCcw, Square } from 'lucide-react';
 import type { ScrapeProgress as ScrapeProgressType } from '../types/scrape';
 
@@ -115,7 +116,19 @@ export default function ScrapeProgress({
   status, progress, error, failedCount = 0,
   onCancel, onRetryFailed,
 }: Props) {
+  const [cancelling, setCancelling] = useState(false);
+
   if (!status) return null;
+
+  const handleCancel = async () => {
+    if (!onCancel || cancelling) return;
+    setCancelling(true);
+    try {
+      await onCancel();
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   const activePhase = getActivePhase(progress);
   const completedPhases = getCompletedPhases(progress);
@@ -145,10 +158,12 @@ export default function ScrapeProgress({
         <div className="flex items-center gap-2">
           {status === 'running' && onCancel && (
             <button
-              onClick={onCancel}
-              className="inline-flex items-center gap-1.5 text-xs text-red-600 hover:text-red-700 border border-red-200 rounded-md px-2.5 py-1.5 hover:bg-red-50 transition-colors"
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="inline-flex items-center gap-1.5 text-xs text-red-600 hover:text-red-700 border border-red-200 rounded-md px-2.5 py-1.5 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Square size={12} /> Cancel
+              {cancelling ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
+              {cancelling ? 'Cancelling...' : 'Cancel'}
             </button>
           )}
           {status === 'completed' && failedCount > 0 && onRetryFailed && (
