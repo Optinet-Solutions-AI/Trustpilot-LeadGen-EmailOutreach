@@ -371,10 +371,11 @@ export default function EmailAccounts() {
                   <button
                     onClick={() => handleDelete(account.id)}
                     disabled={deleteId === account.id}
-                    className="text-slate-300 hover:text-[#b0004a] transition-colors"
+                    className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-slate-400 hover:text-[#b0004a] hover:bg-red-50 rounded-lg transition-colors disabled:opacity-40"
                     title="Remove account"
                   >
-                    <span className="material-symbols-outlined text-[16px]">delete</span>
+                    <span className="material-symbols-outlined text-[14px]">delete</span>
+                    {deleteId === account.id ? 'Removing…' : 'Remove'}
                   </button>
                 )}
               </div>
