@@ -348,7 +348,7 @@ export default function Inbox() {
                 {!selectedMsg.gmail_thread_id && (
                   <p className="text-[11px] text-slate-400 mt-3 flex items-center gap-1">
                     <span className="material-symbols-outlined text-[13px]">info</span>
-                    Full thread not available — email sent via platform (Instantly).
+                    Full thread not available — Gmail thread ID not recorded for this send.
                   </p>
                 )}
               </div>

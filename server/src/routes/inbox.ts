@@ -299,6 +299,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       .from('campaign_leads')
       .select('id, campaign_id, lead_id, email_used, status, sent_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name), leads(company_name, country)')
       .in('status', statusFilter)
+      .not('gmail_thread_id', 'is', null)
       .order('sent_at', { ascending: false })
       .limit(200);
 
