@@ -365,6 +365,55 @@ See `docs/deployment.md` for complete reference.
 
 ---
 
+## Commit Messages
+
+After completing any code change, always output a ready-to-copy commit message following the **Conventional Commits** standard used by Optinet Solutions:
+
+### Format
+```
+<type>(<scope>): <short summary>
+
+[optional body — one or two sentences explaining WHY, not what]
+```
+
+### Types
+| Type | When to use |
+|------|-------------|
+| `feat` | New feature or capability |
+| `fix` | Bug fix |
+| `refactor` | Code change that neither fixes a bug nor adds a feature |
+| `style` | Formatting, whitespace, no logic change |
+| `perf` | Performance improvement |
+| `docs` | Documentation only |
+| `chore` | Build config, deps, tooling, non-production changes |
+| `test` | Adding or updating tests |
+
+### Scope examples (this project)
+`frontend`, `backend`, `scraper`, `campaigns`, `email`, `leads`, `db`, `auth`, `analytics`, `config`
+
+### Rules
+- Summary line: **imperative mood**, lowercase after the colon, no period, max 72 chars
+  - ✅ `feat(campaigns): add heavily nested spintax to AI prompt`
+  - ❌ `Updated the prompt to use spintax`
+- Body: explain the *why* if the change is non-obvious; skip it for trivial changes
+- Never reference internal file paths in the summary — describe the behavior change
+- Breaking changes: append `!` after the type/scope and add a `BREAKING CHANGE:` footer
+
+### Output format
+After every set of changes, output this block at the end of your response (copy-paste ready):
+
+```
+---
+**Suggested commit:**
+\`\`\`
+<type>(<scope>): <summary>
+
+<optional body>
+\`\`\`
+```
+
+---
+
 ## Quick Reference
 
 | Task | Command |

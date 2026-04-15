@@ -77,24 +77,44 @@ SUBJECT: [the subject line here — one line, no quotes]
 BODY:
 [the HTML body here]
 
-Requirements for the SUBJECT:
+=== CRITICAL SPINTAX RULES — YOU MUST FOLLOW THESE EXACTLY ===
+
+SPINTAX FORMAT: {option1|option2|option3}
+Spintax can and MUST be deeply nested: {Hi|Hello|{Hey|Greetings}} {{company_name}}
+
+MANDATORY: Apply spintax to ALMOST EVERY PHRASE in both the subject and body — not just a few spots.
+This means:
+- Every greeting, opener, and transition phrase MUST have spintax
+- Every descriptive phrase MUST have spintax
+- Every sentence MUST contain at least one spintax group, preferably multiple
+- Closing lines MUST have spintax on every element
+- Aim for 20–35 spintax groups across the full email
+- Use nested spintax frequently: {I {noticed|spotted|came across}|{Our team|We} {found|discovered|identified}}
+- Vary sentence structure, synonyms, phrasing, and tone across options
+
+TOKENS — include these organically woven into sentences (never isolated, never inside spintax braces):
+${ratingTokens}
+${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{businesses in {{country}}|{{country}}-based companies}")\n` : ''}- DO NOT put {{token}} placeholders inside spintax braces — always outside
+
+=== SUBJECT REQUIREMENTS ===
 - Concise and compelling (6-10 words)
 - Relevant to reputation management
-- Use spintax for variation: e.g. "{Quick question|One thing I noticed|A thought} about {{company_name}}"
+- The ENTIRE subject line must be wrapped in heavy spintax
+- Example pattern: "{Quick question|One thing I noticed|{A thought|Something} I wanted to share} about {{company_name}}"
 - Do NOT use exclamation marks or all-caps
 
-Requirements for the BODY:
+=== BODY REQUIREMENTS ===
 - Tone: professional, empathetic, consultative — NOT pushy or salesy
 - Length: 3-4 short paragraphs
 ${bodyGuidance}
-- Close with: "{Best regards|Kind regards|Best},<br>OptiRate<br>www.optiratesolutions.com"
-- Use these exact placeholder tokens:
-${ratingTokens}
-- Use spintax {option1|option2|option3} throughout for variation (at least 5-8 groups)
-  Examples: "{Hi|Hello|Hey}", "{We noticed|I came across|Our team spotted}", "{Would you be open to|Could we schedule|How about}"
-  Do NOT put spintax inside {{token}} placeholders
+- Close with heavy spintax on every element, e.g.:
+  "{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team}<br>{www.optiratesolutions.com|optiratesolutions.com}"
 - Output ONLY the HTML body content (no <html>, <head>, <body> tags)
 - Use only <p>, <strong>, <br> tags — keep it email-safe
+
+=== EXAMPLE OF ACCEPTABLE SPINTAX DENSITY ===
+"<p>{Hi|Hello|Hey there} {{company_name}},</p>
+<p>{I {recently|just} {came across|noticed|spotted}|{Our team|We} {recently|just} {reviewed|looked at}} your {Trustpilot {profile|page|listing}|reviews on Trustpilot} and {wanted to reach out|thought I'd get in touch|felt compelled to {write|connect}}. {With|Given} a {{star_rating}}-star {rating|score}, {I understand|I can imagine|it's clear} {how {challenging|frustrating|tough} that {can be|must be|is}|the {impact|effect} that {can have|has} on {your business|customer trust|growth}}.</p>"
 `.trim();
 
   const response = await client.chat.completions.create({
