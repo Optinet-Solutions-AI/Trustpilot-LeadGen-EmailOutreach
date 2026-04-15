@@ -440,7 +440,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                         {msg.body ? (
                           msg.bodyType === 'html' ? (
                             <div
-                              className="prose prose-sm max-w-none text-secondary text-xs leading-relaxed overflow-auto"
+                              className="email-body text-secondary text-xs overflow-auto"
                               style={{ maxHeight: idx === 0 ? '240px' : '160px' }}
                               dangerouslySetInnerHTML={{ __html: msg.body }}
                             />
@@ -463,7 +463,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                 <p className="text-sm font-bold text-on-surface leading-snug mb-3">{renderedSubject}</p>
                 {renderedBody ? (
                   <div
-                    className="prose prose-sm max-w-none text-secondary text-xs leading-relaxed"
+                    className="email-body text-secondary text-xs"
                     dangerouslySetInnerHTML={{ __html: renderedBody }}
                   />
                 ) : (
