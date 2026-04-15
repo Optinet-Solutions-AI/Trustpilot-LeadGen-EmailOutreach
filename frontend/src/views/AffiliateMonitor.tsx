@@ -25,7 +25,7 @@ const EMPTY_FORM = {
 
 interface AddModalProps {
   onClose: () => void;
-  onSave: (payload: Omit<Affiliate, 'id' | 'created_at'>) => Promise<void>;
+  onSave: (payload: Omit<Affiliate, 'id' | 'created_at'>) => Promise<unknown>;
 }
 
 function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
