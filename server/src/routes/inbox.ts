@@ -68,6 +68,22 @@ function decodeBase64Url(data: string): string {
   return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
 }
 
+/** Strip outer HTML document wrapper — return only the <body> inner content. */
+function extractBodyContent(rawHtml: string): string {
+  const bodyMatch = rawHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) return bodyMatch[1].trim();
+  if (!rawHtml.trim().startsWith('<html')) return rawHtml;
+  return rawHtml;
+}
+
+/** Convert plain text to simple HTML paragraphs for consistent rendering. */
+function plainToHtml(plain: string): string {
+  return plain
+    .split(/\n\n+/)
+    .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+    .join('');
+}
+
 function extractBody(payload: any): { html: string; plain: string } {
   let html = '';
   let plain = '';
@@ -82,6 +98,11 @@ function extractBody(payload: any): { html: string; plain: string } {
     if (part.parts) (part.parts as any[]).forEach(walk);
   }
   walk(payload);
+
+  // Strip outer HTML document wrapper so Gmail's injected styles don't override our CSS
+  if (html) html = extractBodyContent(html);
+  // If no HTML part, convert plain text to basic HTML paragraphs
+  if (!html && plain) html = plainToHtml(plain);
 
   return { html, plain };
 }

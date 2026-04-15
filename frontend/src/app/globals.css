@@ -114,20 +114,22 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: #b0004a; }
 
 /* ─── Email Body Renderer ────────────────────────────────────────────────────── */
-.email-body p {
+.email-body p,
+.email-body div {
   margin-bottom: 0.75rem;
   line-height: 1.6;
 }
-.email-body p:last-child {
+.email-body p:last-child,
+.email-body div:last-child {
   margin-bottom: 0;
 }
 .email-body strong {
   font-weight: 600;
   color: #191c1d;
 }
-.email-body br {
-  display: block;
-  margin-bottom: 0.25rem;
+.email-body a {
+  color: #b0004a;
+  text-decoration: underline;
 }
 
 /* ─── Selection ──────────────────────────────────────────────────────────────── */

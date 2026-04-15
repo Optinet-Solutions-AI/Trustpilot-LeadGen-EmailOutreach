@@ -438,17 +438,11 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                       )}
                       <div className="px-5 pb-4">
                         {msg.body ? (
-                          msg.bodyType === 'html' ? (
-                            <div
-                              className="email-body text-secondary text-xs overflow-auto"
-                              style={{ maxHeight: idx === 0 ? '240px' : '160px' }}
-                              dangerouslySetInnerHTML={{ __html: msg.body }}
-                            />
-                          ) : (
-                            <pre className="text-xs text-secondary leading-relaxed whitespace-pre-wrap font-sans overflow-auto" style={{ maxHeight: '200px' }}>
-                              {msg.body}
-                            </pre>
-                          )
+                          <div
+                            className="email-body text-secondary text-xs overflow-auto"
+                            style={{ maxHeight: idx === 0 ? '240px' : '160px' }}
+                            dangerouslySetInnerHTML={{ __html: msg.body }}
+                          />
                         ) : (
                           <p className="text-xs text-secondary italic">{msg.snippet}</p>
                         )}
