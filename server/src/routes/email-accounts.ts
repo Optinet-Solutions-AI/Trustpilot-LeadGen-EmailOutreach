@@ -184,6 +184,7 @@ router.post('/', async (req: Request, res: Response) => {
       gmailClientId, gmailClientSecret, gmailRefreshToken,
       appPassword,
       smtpHost, smtpPort, smtpUser, smtpPassword, smtpSecure,
+      imapHost, imapPort,
       notes,
     } = req.body;
 
@@ -191,6 +192,8 @@ router.post('/', async (req: Request, res: Response) => {
       res.status(400).json({ success: false, error: 'email, fromName, and provider are required' });
       return;
     }
+
+    const isSmtp = authType === 'smtp';
 
     const supabase = getSupabase();
     const { data, error } = await supabase
@@ -200,11 +203,16 @@ router.post('/', async (req: Request, res: Response) => {
         from_name: fromName,
         provider,
         auth_type: authType || 'smtp',
+        email_provider: isSmtp ? 'smtp' : 'gmail',
         smtp_host: smtpHost || null,
         smtp_port: smtpPort || null,
         smtp_user: smtpUser || null,
         smtp_password: smtpPassword || null,
         smtp_secure: smtpSecure || 'tls',
+        imap_host: imapHost || null,
+        imap_port: imapPort || null,
+        imap_user: isSmtp ? (smtpUser || null) : null,
+        imap_pass: isSmtp ? (smtpPassword || null) : null,
         app_password: appPassword || null,
         gmail_client_id: gmailClientId || null,
         gmail_client_secret: gmailClientSecret || null,

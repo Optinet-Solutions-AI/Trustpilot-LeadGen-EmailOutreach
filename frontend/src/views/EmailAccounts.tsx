@@ -47,6 +47,9 @@ interface FormState {
   smtpUser: string;
   smtpPassword: string;
   smtpSecure: 'tls' | 'ssl' | 'none';
+  // IMAP (for reply tracking)
+  imapHost: string;
+  imapPort: string;
   // Meta
   notes: string;
 }
@@ -56,6 +59,7 @@ const EMPTY_FORM: FormState = {
   gmailClientId: '', gmailClientSecret: '', gmailRefreshToken: '',
   appPassword: '',
   smtpHost: '', smtpPort: '587', smtpUser: '', smtpPassword: '', smtpSecure: 'tls',
+  imapHost: '', imapPort: '993',
   notes: '',
 };
 
@@ -290,6 +294,8 @@ export default function EmailAccounts() {
         smtpUser: form.smtpUser || undefined,
         smtpPassword: form.smtpPassword || undefined,
         smtpSecure: form.smtpSecure,
+        imapHost: form.imapHost || undefined,
+        imapPort: form.imapPort ? parseInt(form.imapPort) : undefined,
         notes: form.notes || undefined,
       });
       setShowModal(false);
@@ -804,6 +810,34 @@ export default function EmailAccounts() {
                         </button>
                       ))}
                     </div>
+                  </div>
+
+                  {/* IMAP — reply tracking */}
+                  <div className="border-t border-slate-100 pt-3">
+                    <p className="text-xs font-bold text-secondary uppercase tracking-wider mb-2">IMAP — Reply Tracking</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="col-span-2">
+                        <label className="block text-xs font-bold text-secondary mb-1">IMAP Host</label>
+                        <input
+                          type="text"
+                          value={form.imapHost}
+                          onChange={(e) => setField('imapHost', e.target.value)}
+                          placeholder="imap.example.com"
+                          className="w-full bg-white rounded-lg px-3 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-secondary mb-1">Port</label>
+                        <input
+                          type="number"
+                          value={form.imapPort}
+                          onChange={(e) => setField('imapPort', e.target.value)}
+                          placeholder="993"
+                          className="w-full bg-white rounded-lg px-3 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5">Uses the same username and password as SMTP. Leave blank to skip reply tracking.</p>
                   </div>
                 </div>
               )}
