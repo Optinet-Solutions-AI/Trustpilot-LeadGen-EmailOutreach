@@ -1,9 +1,9 @@
 'use client';
 
-import { AffiliateEntry, COUNTRY_META } from './AffiliateData';
+import { Affiliate, COUNTRY_META } from './AffiliateData';
 
 interface CountryOverviewProps {
-  data: AffiliateEntry[];
+  data: Affiliate[];
   onFilterClick: (geo: string) => void;
 }
 

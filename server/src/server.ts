@@ -18,6 +18,7 @@ import webhookRoutes from './routes/webhooks.js';
 import emailAccountsRoutes from './routes/email-accounts.js';
 import warmupRoutes from './routes/warmup.js';
 import inboxRoutes from './routes/inbox.js';
+import affiliatesRoutes from './routes/affiliates.js';
 
 const app = express();
 
@@ -52,6 +53,7 @@ app.use('/api/gmail', gmailRoutes);
 app.use('/api/email-accounts', emailAccountsRoutes);
 app.use('/api/warmup', warmupRoutes);
 app.use('/api/inbox', inboxRoutes);
+app.use('/api/affiliates', affiliatesRoutes);
 
 // Serve screenshots as static files
 app.use('/api/screenshots', express.static(

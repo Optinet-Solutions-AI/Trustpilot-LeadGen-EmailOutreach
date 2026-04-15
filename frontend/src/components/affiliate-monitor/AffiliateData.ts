@@ -1,3 +1,17 @@
+// DB-backed type (matches affiliates table)
+export interface Affiliate {
+  id: string;
+  name: string;
+  description: string | null;
+  tp_url: string | null;
+  website: string | null;
+  warning: boolean;
+  reviews: number | null;
+  rating: number | null;
+  geo: string[];
+  created_at?: string;
+}
+
 export interface ReviewEntry {
   text: string;
   reviewer: string;

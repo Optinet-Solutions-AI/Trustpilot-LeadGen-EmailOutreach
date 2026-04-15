@@ -1,13 +1,16 @@
 'use client';
 
 import { Fragment } from 'react';
-import { AffiliateEntry, COUNTRY_META } from './AffiliateData';
+import { Affiliate, COUNTRY_META } from './AffiliateData';
 
 interface AffiliateTableProps {
-  data: AffiliateEntry[];
-  expandedId: number | null;
-  onToggleExpand: (id: number) => void;
+  data: Affiliate[];
+  expandedId: string | null;
+  onToggleExpand: (id: string) => void;
   totalCount: number;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleAll: () => void;
 }
 
 function StarRating({ rating }: { rating: number | null }) {
@@ -33,38 +36,21 @@ function StarRating({ rating }: { rating: number | null }) {
   );
 }
 
-function ReviewerFlag(reviewer: string) {
-  if (reviewer.includes('AU')) return COUNTRY_META.AU.flag;
-  if (reviewer.includes('DE')) return COUNTRY_META.DE.flag;
-  if (reviewer.includes('IT')) return COUNTRY_META.IT.flag;
-  if (reviewer.includes('DK')) return COUNTRY_META.DK.flag;
-  if (reviewer.includes('CA')) return COUNTRY_META.CA.flag;
-  if (reviewer.includes('GB')) return '\u{1F1EC}\u{1F1E7}';
-  if (reviewer.includes('BR')) return '\u{1F1E7}\u{1F1F7}';
-  if (reviewer.includes('NZ')) return '\u{1F1F3}\u{1F1FF}';
-  if (reviewer.includes('AT')) return '\u{1F1E6}\u{1F1F9}';
-  return COUNTRY_META.Multiple.flag;
-}
-
-function ExpandPanel({ entry }: { entry: AffiliateEntry }) {
+function ExpandPanel({ entry }: { entry: Affiliate }) {
   return (
     <div className="bg-slate-50/50 border-t border-slate-100 px-6 py-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Page Information */}
         <div>
           <h4 className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">
             Page Information
           </h4>
           <div className="space-y-0">
             {[
-              { key: 'TP Page Title', val: entry.tp_title },
-              { key: 'Trustpilot URL', val: entry.tp_url, link: `https://${entry.tp_url}` },
-              { key: 'Website', val: entry.website, link: `https://${entry.website}` },
-              { key: 'Total Reviews', val: entry.reviews != null ? String(entry.reviews) : 'N/A' },
-              { key: 'Rating', val: entry.rating != null ? `${entry.rating} / 5` : 'N/A' },
-              { key: 'Geo Markets', val: entry.geo.join(', ') },
-              { key: 'Affiliate Name', val: entry.affiliate },
-              { key: 'Owner', val: entry.owner },
+              { key: 'Trustpilot URL', val: entry.tp_url, link: entry.tp_url ? `https://${entry.tp_url}` : null },
+              { key: 'Website', val: entry.website, link: entry.website ? `https://${entry.website}` : null },
+              { key: 'Total Reviews', val: entry.reviews != null ? String(entry.reviews) : 'N/A', link: null },
+              { key: 'Rating', val: entry.rating != null ? `${entry.rating} / 5` : 'N/A', link: null },
+              { key: 'Geo Markets', val: entry.geo.join(', ') || '—', link: null },
             ].map((row) => (
               <div
                 key={row.key}
@@ -89,40 +75,21 @@ function ExpandPanel({ entry }: { entry: AffiliateEntry }) {
               </div>
             ))}
           </div>
-          <p className="text-xs text-slate-500 mt-3 leading-relaxed">{entry.description}</p>
-          <a
-            href={`https://${entry.tp_url}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-[#b0004a] text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <span className="material-symbols-outlined text-[14px]">open_in_new</span>
-            View on Trustpilot
-          </a>
-        </div>
-
-        {/* Reviews */}
-        <div>
-          <h4 className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">
-            Reviews
-          </h4>
-          <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
-            {entry.reviews_text.map((rv, i) => (
-              <div
-                key={i}
-                className="bg-white border border-slate-100 rounded-lg p-4"
-              >
-                <p className="text-sm text-on-surface leading-relaxed">
-                  &ldquo;{rv.text}&rdquo;
-                </p>
-                <p className="text-xs text-slate-400 mt-2 font-mono">
-                  <span className="mr-1.5">{ReviewerFlag(rv.reviewer)}</span>
-                  {rv.reviewer}
-                </p>
-              </div>
-            ))}
-          </div>
+          {entry.description && (
+            <p className="text-xs text-slate-500 mt-3 leading-relaxed">{entry.description}</p>
+          )}
+          {entry.tp_url && (
+            <a
+              href={`https://${entry.tp_url}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-[#b0004a] text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+              View on Trustpilot
+            </a>
+          )}
         </div>
       </div>
     </div>
@@ -134,13 +101,29 @@ export default function AffiliateTable({
   expandedId,
   onToggleExpand,
   totalCount,
+  selectedIds,
+  onToggleSelect,
+  onToggleAll,
 }: AffiliateTableProps) {
+  const allSelected = data.length > 0 && data.every((e) => selectedIds.has(e.id));
+  const someSelected = data.some((e) => selectedIds.has(e.id));
+
   return (
     <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="bg-slate-50/50">
+              <th className="px-4 py-3 w-10">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                  onChange={onToggleAll}
+                  className="accent-[#b0004a] cursor-pointer w-4 h-4"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </th>
               <th className="text-left text-[11px] font-bold uppercase tracking-widest text-slate-400 px-5 py-3 w-12">
                 #
               </th>
@@ -170,8 +153,18 @@ export default function AffiliateTable({
                   onClick={() => onToggleExpand(entry.id)}
                   className={`cursor-pointer transition-colors hover:bg-[#b0004a]/[0.03] ${
                     entry.warning ? 'bg-red-50/50' : ''
-                  } ${expandedId === entry.id ? 'bg-[#b0004a]/[0.05]' : ''}`}
+                  } ${expandedId === entry.id ? 'bg-[#b0004a]/[0.05]' : ''} ${
+                    selectedIds.has(entry.id) ? 'bg-[#ffd9de]/30' : ''
+                  }`}
                 >
+                  <td className="px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(entry.id)}
+                      onChange={() => onToggleSelect(entry.id)}
+                      className="accent-[#b0004a] cursor-pointer w-4 h-4"
+                    />
+                  </td>
                   <td className="px-5 py-3.5 text-xs text-slate-400 font-mono">{idx + 1}</td>
                   <td className="px-5 py-3.5">
                     <div className="flex items-center gap-2">
@@ -182,34 +175,37 @@ export default function AffiliateTable({
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-400 italic mt-0.5 truncate max-w-[300px]">
-                      {entry.tp_title}
-                    </p>
-                    <a
-                      href={`https://${entry.tp_url}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[11px] text-[#b0004a] font-mono hover:underline mt-0.5 block"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {entry.tp_url}
-                    </a>
+                    {entry.tp_url && (
+                      <a
+                        href={`https://${entry.tp_url}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11px] text-[#b0004a] font-mono hover:underline mt-0.5 block"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {entry.tp_url}
+                      </a>
+                    )}
                   </td>
                   <td className="px-5 py-3.5 hidden md:table-cell">
-                    <a
-                      href={`https://${entry.website}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-[#b0004a] text-xs font-mono hover:underline"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <span className="material-symbols-outlined text-[12px]">link</span>
-                      {entry.website}
-                    </a>
+                    {entry.website ? (
+                      <a
+                        href={`https://${entry.website}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[#b0004a] text-xs font-mono hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span className="material-symbols-outlined text-[12px]">link</span>
+                        {entry.website}
+                      </a>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
                   </td>
                   <td className="px-5 py-3.5">
                     <span className="text-sm font-bold text-[#b0004a]">
-                      {entry.reviews != null ? entry.reviews.toLocaleString() : '\u2014'}
+                      {entry.reviews != null ? entry.reviews.toLocaleString() : '—'}
                     </span>
                   </td>
                   <td className="px-5 py-3.5 hidden md:table-cell">
@@ -239,7 +235,7 @@ export default function AffiliateTable({
                 </tr>
                 {expandedId === entry.id && (
                   <tr>
-                    <td colSpan={7} className="p-0">
+                    <td colSpan={8} className="p-0">
                       <ExpandPanel entry={entry} />
                     </td>
                   </tr>
@@ -252,7 +248,7 @@ export default function AffiliateTable({
 
       <div className="px-6 py-4 bg-slate-50/50 border-t border-slate-100 flex justify-between text-xs text-slate-400">
         <span>Showing {data.length} of {totalCount} pages</span>
-        <span>Click a row to see reviews</span>
+        <span>Click a row to see details</span>
       </div>
     </div>
   );
