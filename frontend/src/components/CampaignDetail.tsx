@@ -462,7 +462,10 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
               <div className="px-5 pt-4 pb-4">
                 <p className="text-sm font-bold text-on-surface leading-snug mb-3">{renderedSubject}</p>
                 {renderedBody ? (
-                  <p className="text-xs text-secondary leading-relaxed whitespace-pre-line">{renderedBody}</p>
+                  <div
+                    className="prose prose-sm max-w-none text-secondary text-xs leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: renderedBody }}
+                  />
                 ) : (
                   <p className="text-xs text-secondary italic">No message body available.</p>
                 )}
