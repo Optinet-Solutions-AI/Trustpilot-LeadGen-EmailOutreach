@@ -2,7 +2,7 @@ swagger: "2.0"
 info:
   title: trustpilot-api
   description: Trustpilot LeadGen API Gateway proxy to Cloud Run
-  version: "1.5.0"
+  version: "1.6.0"
 schemes:
   - https
 produces:
@@ -500,6 +500,26 @@ paths:
   /api/inbox/mark-read:
     post:
       operationId: markInboxRead
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/affiliates:
+    get:
+      operationId: listAffiliates
+      security: []
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createAffiliate
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/affiliates/bulk-delete:
+    post:
+      operationId: bulkDeleteAffiliates
       security: []
       responses:
         "200":
