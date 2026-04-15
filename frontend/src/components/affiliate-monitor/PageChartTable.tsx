@@ -7,9 +7,10 @@ interface PageChartTableProps {
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleAll: () => void;
+  onDelete: (id: string) => void;
 }
 
-export default function PageChartTable({ data, selectedIds, onToggleSelect, onToggleAll }: PageChartTableProps) {
+export default function PageChartTable({ data, selectedIds, onToggleSelect, onToggleAll, onDelete }: PageChartTableProps) {
   const allSelected = data.length > 0 && data.every((e) => selectedIds.has(e.id));
   const someSelected = data.some((e) => selectedIds.has(e.id));
 
@@ -61,7 +62,7 @@ export default function PageChartTable({ data, selectedIds, onToggleSelect, onTo
             {data.map((entry, idx) => (
               <tr
                 key={entry.id}
-                className={`transition-colors hover:bg-[#b0004a]/[0.03] ${
+                className={`group transition-colors hover:bg-[#b0004a]/[0.03] ${
                   entry.warning ? 'bg-red-50/50' : ''
                 } ${selectedIds.has(entry.id) ? 'bg-[#ffd9de]/30' : ''}`}
               >
@@ -77,14 +78,21 @@ export default function PageChartTable({ data, selectedIds, onToggleSelect, onTo
                   {idx + 1}
                 </td>
                 <td className="px-5 py-3.5">
-                  <span className="font-semibold text-on-surface text-sm">
-                    {entry.name}
-                  </span>
-                  {entry.warning && (
-                    <span className="ml-2 px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black rounded uppercase">
-                      FAKE
-                    </span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDelete(entry.id); }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 shrink-0"
+                      title="Delete"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                    <span className="font-semibold text-on-surface text-sm">{entry.name}</span>
+                    {entry.warning && (
+                      <span className="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black rounded uppercase">
+                        FAKE
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-5 py-3.5 text-sm text-slate-500 max-w-[400px] hidden md:table-cell">
                   {entry.description ?? '—'}

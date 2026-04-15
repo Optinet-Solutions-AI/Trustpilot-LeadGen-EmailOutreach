@@ -11,6 +11,7 @@ interface AffiliateTableProps {
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleAll: () => void;
+  onDelete: (id: string) => void;
 }
 
 function StarRating({ rating }: { rating: number | null }) {
@@ -104,6 +105,7 @@ export default function AffiliateTable({
   selectedIds,
   onToggleSelect,
   onToggleAll,
+  onDelete,
 }: AffiliateTableProps) {
   const allSelected = data.length > 0 && data.every((e) => selectedIds.has(e.id));
   const someSelected = data.some((e) => selectedIds.has(e.id));
@@ -151,7 +153,7 @@ export default function AffiliateTable({
               <Fragment key={entry.id}>
                 <tr
                   onClick={() => onToggleExpand(entry.id)}
-                  className={`cursor-pointer transition-colors hover:bg-[#b0004a]/[0.03] ${
+                  className={`group cursor-pointer transition-colors hover:bg-[#b0004a]/[0.03] ${
                     entry.warning ? 'bg-red-50/50' : ''
                   } ${expandedId === entry.id ? 'bg-[#b0004a]/[0.05]' : ''} ${
                     selectedIds.has(entry.id) ? 'bg-[#ffd9de]/30' : ''
@@ -168,6 +170,13 @@ export default function AffiliateTable({
                   <td className="px-5 py-3.5 text-xs text-slate-400 font-mono">{idx + 1}</td>
                   <td className="px-5 py-3.5">
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDelete(entry.id); }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 shrink-0"
+                        title="Delete"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">delete</span>
+                      </button>
                       <span className="font-semibold text-on-surface text-sm">{entry.name}</span>
                       {entry.warning && (
                         <span className="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black rounded uppercase whitespace-nowrap">

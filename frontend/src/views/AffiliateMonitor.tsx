@@ -271,6 +271,18 @@ export default function AffiliateMonitor() {
     });
   }, [filteredData, selectedIds]);
 
+  const handleDelete = async (id: string) => {
+    const confirmed = window.confirm('Delete this affiliate? This cannot be undone.');
+    if (!confirmed) return;
+    setDeleting(true);
+    try {
+      await bulkDelete([id]);
+      setSelectedIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     const confirmed = window.confirm(
@@ -357,6 +369,7 @@ export default function AffiliateMonitor() {
           selectedIds={selectedIds}
           onToggleSelect={handleToggleSelect}
           onToggleAll={handleToggleAll}
+          onDelete={handleDelete}
         />
       )}
 
@@ -385,6 +398,7 @@ export default function AffiliateMonitor() {
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
             onToggleAll={handleToggleAll}
+            onDelete={handleDelete}
           />
         </>
       )}
