@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import api from '../api/client';
 
 type Folder = 'replies' | 'sent';
@@ -79,6 +79,28 @@ export default function Inbox() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [selectedMsg, setSelectedMsg] = useState<CampaignMessage | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Draggable panel width
+  const [panelWidth, setPanelWidth] = useState(480);
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startWidth: panelWidth };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startX - ev.clientX;
+      const next = Math.min(Math.max(dragRef.current.startWidth + delta, 320), Math.floor(window.innerWidth * 0.72));
+      setPanelWidth(next);
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [panelWidth]);
 
   const fetchMessages = useCallback(() => {
     setLoading(true);
@@ -239,9 +261,11 @@ export default function Inbox() {
         </div>
       </div>
 
-      {/* Right — thread / detail pane (matches CampaignDetail panel style) */}
-      <div className="flex-1 flex flex-col bg-[#f8f9fa] overflow-hidden">
+      {/* Right — thread / detail pane */}
+      <div className="flex-1 flex overflow-hidden bg-[#f8f9fa]">
+
         {!selectedMsg ? (
+          /* Empty state */
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
             <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center mb-5">
               <span className="material-symbols-outlined text-[32px] text-secondary">
@@ -260,8 +284,19 @@ export default function Inbox() {
             </p>
           </div>
         ) : (
-          /* Compact detail panel — same style as CampaignDetail */
-          <div className="w-full max-w-[420px] flex flex-col bg-white border-l border-slate-100 overflow-y-auto h-full">
+          <>
+            {/* Spacer — fills remaining space to the left of the panel */}
+            <div className="flex-1 min-w-0" />
+
+            {/* Drag handle */}
+            <div
+              onMouseDown={onDragStart}
+              className="w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"
+              title="Drag to resize panel"
+            />
+
+            {/* Detail panel — draggable width */}
+            <div className="flex flex-col bg-white overflow-y-auto h-full flex-shrink-0 border-l border-slate-100" style={{ width: panelWidth }}>
 
             {/* Panel header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
@@ -399,6 +434,7 @@ export default function Inbox() {
             </div>
 
           </div>
+          </>
         )}
       </div>
     </div>
