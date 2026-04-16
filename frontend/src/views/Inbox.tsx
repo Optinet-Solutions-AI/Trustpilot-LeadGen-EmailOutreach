@@ -287,9 +287,6 @@ export default function Inbox() {
           </div>
         ) : (
           <>
-            {/* Spacer — fills remaining space to the left of the panel */}
-            <div className="flex-1 min-w-0" />
-
             {/* Drag handle */}
             <div
               onMouseDown={onDragStart}
