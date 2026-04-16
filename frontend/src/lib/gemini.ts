@@ -1,11 +1,11 @@
 /**
- * AI email template generator — uses OpenAI GPT-4o-mini.
- * Requires NEXT_PUBLIC_OPENAI_API_KEY environment variable.
+ * AI email template generator — uses Google Gemini 2.0 Flash.
+ * Requires NEXT_PUBLIC_GEMINI_API_KEY environment variable.
  */
 
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const API_KEY = process.env.NEXT_PUBLIC_OPENAI_API_KEY as string;
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
 
 export interface GenerateTemplateOptions {
   country?: string;
@@ -40,10 +40,11 @@ export function domainToCompanyName(domain: string): string {
  */
 export async function generateEmailTemplate(options: GenerateTemplateOptions = {}): Promise<GenerateTemplateResult> {
   if (!API_KEY) {
-    throw new Error('NEXT_PUBLIC_OPENAI_API_KEY is not set. Add it to your .env.local file.');
+    throw new Error('VITE_GEMINI_API_KEY is not set. Add it to your .env file.');
   }
 
-  const client = new OpenAI({ apiKey: API_KEY, dangerouslyAllowBrowser: true });
+  const genAI = new GoogleGenerativeAI(API_KEY);
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
   const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode } = options;
 
@@ -117,13 +118,12 @@ ${bodyGuidance}
 <p>{I {recently|just} {came across|noticed|spotted}|{Our team|We} {recently|just} {reviewed|looked at}} your {Trustpilot {profile|page|listing}|reviews on Trustpilot} and {wanted to reach out|thought I'd get in touch|felt compelled to {write|connect}}. {With|Given} a {{star_rating}}-star {rating|score}, {I understand|I can imagine|it's clear} {how {challenging|frustrating|tough} that {can be|must be|is}|the {impact|effect} that {can have|has} on {your business|customer trust|growth}}.</p>"
 `.trim();
 
-  const response = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.8,
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.8 },
   });
 
-  const raw = (response.choices[0].message.content ?? '')
+  const raw = (result.response.text() ?? '')
     .replace(/^```html?\n?/i, '')
     .replace(/\n?```$/i, '')
     .trim();
