@@ -3,7 +3,7 @@
  * Requires NEXT_PUBLIC_GEMINI_API_KEY environment variable.
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
 const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 
@@ -43,8 +43,7 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
     throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not set. Add it to your .env file.');
   }
 
-  const genAI = new GoogleGenerativeAI(API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const genAI = new GoogleGenAI({ apiKey: API_KEY });
 
   const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode } = options;
 
@@ -118,12 +117,13 @@ ${bodyGuidance}
 <p>{I {recently|just} {came across|noticed|spotted}|{Our team|We} {recently|just} {reviewed|looked at}} your {Trustpilot {profile|page|listing}|reviews on Trustpilot} and {wanted to reach out|thought I'd get in touch|felt compelled to {write|connect}}. {With|Given} a {{star_rating}}-star {rating|score}, {I understand|I can imagine|it's clear} {how {challenging|frustrating|tough} that {can be|must be|is}|the {impact|effect} that {can have|has} on {your business|customer trust|growth}}.</p>"
 `.trim();
 
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.8 },
+  const result = await genAI.models.generateContent({
+    model: 'gemini-2.0-flash',
+    contents: prompt,
+    config: { temperature: 0.8 },
   });
 
-  const raw = (result.response.text() ?? '')
+  const raw = (result.text ?? '')
     .replace(/^```html?\n?/i, '')
     .replace(/\n?```$/i, '')
     .trim();

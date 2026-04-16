@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@google/genai": "^1.50.1",
     "@google/generative-ai": "^0.24.0",
     "axios": "^1.14.0",
     "lucide-react": "^1.7.0",
