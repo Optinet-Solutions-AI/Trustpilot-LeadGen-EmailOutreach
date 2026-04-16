@@ -163,10 +163,10 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
                     break
 
             if not captured:
-                # Fallback: clip to top portion only — hero card is ~350px tall
+                # Fallback: clip to profile card — skip top 90px navbar/breadcrumb
                 await page.screenshot(
                     path=screenshot_path,
-                    clip={'x': 0, 'y': 0, 'width': 1280, 'height': 350},
+                    clip={'x': 0, 'y': 90, 'width': 1280, 'height': 300},
                 )
         except Exception as e:
             # Last fallback: viewport screenshot

@@ -47,12 +47,12 @@ async function takeHeaderScreenshot(page, url, outputPath) {
       } catch {}
     }
 
-    // Fallback: crop viewport to top 350px
+    // Fallback: crop viewport skipping top 90px navbar/breadcrumb
     await page.screenshot({
       path: outputPath,
-      clip: { x: 0, y: 0, width: 1280, height: 350 },
+      clip: { x: 0, y: 90, width: 1280, height: 300 },
     });
-    console.log('  OK viewport crop (350px)');
+    console.log('  OK viewport crop (y=90, 300px)');
     return true;
   } catch (e) {
     console.log(`  FAIL: ${e.message}`);
