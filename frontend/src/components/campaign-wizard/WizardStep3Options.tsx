@@ -29,9 +29,10 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
         if (res.data.success) {
           const active = (res.data.data.accounts as EmailAccount[]).filter((a) => a.status === 'active');
           setAccounts(active);
-          // Auto-select the first active account if none is set yet
-          if (!schedule.senderAccountId && active.length > 0) {
-            onScheduleChange({ ...schedule, senderAccountId: active[0].id });
+          // Auto-select all active accounts if none are selected yet
+          const currentIds = schedule.senderAccountIds ?? (schedule.senderAccountId ? [schedule.senderAccountId] : []);
+          if (currentIds.length === 0 && active.length > 0) {
+            onScheduleChange({ ...schedule, senderAccountIds: active.map((a) => a.id) });
           }
         }
       })
@@ -39,6 +40,15 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
       .finally(() => setLoadingAccounts(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const selectedIds: string[] = schedule.senderAccountIds ?? (schedule.senderAccountId ? [schedule.senderAccountId] : []);
+
+  const toggleAccount = (id: string) => {
+    const next = selectedIds.includes(id)
+      ? selectedIds.filter((x) => x !== id)
+      : [...selectedIds, id];
+    onScheduleChange({ ...schedule, senderAccountIds: next });
+  };
 
   const set = <K extends keyof SendingSchedule>(key: K, value: SendingSchedule[K]) =>
     onScheduleChange({ ...schedule, [key]: value });
@@ -111,7 +121,7 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                 Sending Account
               </p>
               <p className="text-xs text-secondary">
-                Which Gmail account sends this campaign
+                Select one or more sender accounts — emails rotate evenly across all selected
               </p>
             </div>
           </div>
@@ -132,20 +142,26 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
             ) : (
               <div className="space-y-2">
                 {accounts.map((acc) => {
-                  const selected = schedule.senderAccountId === acc.id;
+                  const checked = selectedIds.includes(acc.id);
                   return (
                     <button
                       key={acc.id}
                       type="button"
-                      onClick={() => set('senderAccountId', acc.id)}
+                      onClick={() => toggleAccount(acc.id)}
                       className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl border-2 transition-all text-left ${
-                        selected
+                        checked
                           ? 'border-[#b0004a] bg-[#ffd9de]/20'
                           : 'border-slate-100 bg-surface-container hover:border-[#b0004a]/30'
                       }`}
                     >
+                      {/* Checkbox */}
+                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-all ${
+                        checked ? 'bg-[#b0004a] border-[#b0004a]' : 'bg-white border-slate-300'
+                      }`}>
+                        {checked && <span className="material-symbols-outlined text-white text-[14px]">check</span>}
+                      </div>
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                        selected ? 'primary-gradient text-on-primary' : 'bg-surface-container-high text-secondary'
+                        checked ? 'primary-gradient text-on-primary' : 'bg-surface-container-high text-secondary'
                       }`}>
                         <span className="material-symbols-outlined text-[16px]">mail</span>
                       </div>
@@ -153,15 +169,20 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                         <p className="text-sm font-bold text-on-surface truncate">{acc.email}</p>
                         <p className="text-xs text-secondary">{acc.from_name}{acc.source === 'env' ? ' · Primary' : ' · Added account'}</p>
                       </div>
-                      {selected && (
-                        <span className="material-symbols-outlined text-[#b0004a] text-[20px] shrink-0">check_circle</span>
-                      )}
                     </button>
                   );
                 })}
+                {selectedIds.length === 0 && (
+                  <p className="text-xs text-error font-semibold mt-1 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[13px]">warning</span>
+                    Select at least one account to continue.
+                  </p>
+                )}
                 <p className="text-xs text-secondary mt-3 flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[13px]">info</span>
-                  The selected account is used for both the test flight and the live send.
+                  {selectedIds.length > 1
+                    ? `${selectedIds.length} accounts selected — emails rotate evenly across all of them.`
+                    : 'Selected account is used for both the test flight and the live send.'}
                 </p>
               </div>
             )}

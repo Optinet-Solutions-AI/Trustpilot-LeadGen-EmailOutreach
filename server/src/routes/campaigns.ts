@@ -308,7 +308,9 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
 
     // Resolve the pinned sender account from the campaign's sending_schedule
     let senderAccount: import('../services/email-sender.js').GmailSenderAccount | undefined;
-    const pinnedId = (campaign.sending_schedule as Record<string, unknown> | null)?.senderAccountId as string | undefined;
+    const scheduleData = campaign.sending_schedule as Record<string, unknown> | null;
+    const pinnedIds = (scheduleData?.senderAccountIds as string[] | undefined) ?? [];
+    const pinnedId = pinnedIds.find((id) => id !== '__env__') ?? (scheduleData?.senderAccountId as string | undefined);
     if (pinnedId && pinnedId !== '__env__' && config.emailMode === 'gmail') {
       try {
         const { createGmailClientFromCredentials } = await import('../services/gmail-client.js');

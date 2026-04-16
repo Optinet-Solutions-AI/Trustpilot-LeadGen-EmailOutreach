@@ -75,7 +75,9 @@ export interface SendingSchedule {
   endHour: string;
   days: number[];
   dailyLimit: number;
-  /** ID of the email account to use for this campaign ('__env__' = primary env account, DB uuid = specific account) */
+  /** IDs of email accounts to rotate through for this campaign ('__env__' = primary env account, DB uuid = specific account) */
+  senderAccountIds?: string[];
+  /** @deprecated use senderAccountIds instead — kept for backward compat with saved campaigns */
   senderAccountId?: string;
 }
 

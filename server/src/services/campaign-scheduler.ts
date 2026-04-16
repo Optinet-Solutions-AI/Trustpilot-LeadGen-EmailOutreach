@@ -95,11 +95,16 @@ async function processDueSends(): Promise<void> {
 
   console.log(`[CampaignScheduler] ${actionable.length} emails due now`);
 
-  // Determine the pinned sender account from the first campaign's schedule
-  const firstCampaign = actionable[0]?.campaigns as { sending_schedule?: { senderAccountId?: string } } | undefined;
-  const pinnedAccountId = firstCampaign?.sending_schedule?.senderAccountId;
+  // Determine the sender accounts from the first campaign's schedule.
+  // Supports new senderAccountIds[] and falls back to legacy senderAccountId string.
+  const firstCampaign = actionable[0]?.campaigns as { sending_schedule?: { senderAccountIds?: string[]; senderAccountId?: string } } | undefined;
+  const schedule = firstCampaign?.sending_schedule;
+  const pinnedIds: string[] = schedule?.senderAccountIds ?? (schedule?.senderAccountId ? [schedule.senderAccountId] : []);
 
-  const senderPool = await buildSenderPool(pinnedAccountId);
+  const senderPool = await buildSenderPool(pinnedIds);
+
+  // Include env account in rotation if the user selected it (or selected nothing = all)
+  const includeEnv = pinnedIds.length === 0 || pinnedIds.includes('__env__');
 
   for (let i = 0; i < actionable.length; i++) {
     const cl = actionable[i];
@@ -110,7 +115,7 @@ async function processDueSends(): Promise<void> {
     }
 
     try {
-          const senderAccount = pickSender(senderPool, i);
+      const senderAccount = pickSender(senderPool, i, includeEnv);
       await sendScheduledEmail(cl, senderAccount);
     } catch (err) {
       console.error('[CampaignScheduler] Send failed for', cl.email_used, ':', err instanceof Error ? err.message : err);
@@ -128,9 +133,13 @@ async function processDueSends(): Promise<void> {
   }
 }
 
-async function buildSenderPool(pinnedAccountId?: string): Promise<SenderAccount[]> {
+async function buildSenderPool(pinnedIds: string[] = []): Promise<SenderAccount[]> {
   if (config.emailMode !== 'gmail') return [];
-  if (pinnedAccountId === '__env__') return []; // Use env primary — pool stays empty → pickSender returns undefined → email-sender uses env
+
+  // If the only selection is the env account, keep pool empty — email-sender uses env by default.
+  const dbIds = pinnedIds.filter((id) => id !== '__env__');
+  if (pinnedIds.length > 0 && dbIds.length === 0) return [];
+
   try {
     let query = getSupabase()
       .from('email_accounts')
@@ -138,8 +147,9 @@ async function buildSenderPool(pinnedAccountId?: string): Promise<SenderAccount[
       .eq('status', 'active')
       .in('auth_type', ['gmail_oauth', 'smtp', 'app_password']);
 
-    if (pinnedAccountId) {
-      query = query.eq('id', pinnedAccountId) as typeof query;
+    // Filter to specific IDs when the user pinned accounts; otherwise load all active
+    if (dbIds.length > 0) {
+      query = query.in('id', dbIds) as typeof query;
     }
 
     const { data: dbAccounts } = await query;
@@ -169,9 +179,13 @@ async function buildSenderPool(pinnedAccountId?: string): Promise<SenderAccount[
   }
 }
 
-function pickSender(pool: SenderAccount[], index: number): SenderAccount | undefined {
-  if (pool.length === 0) return undefined;
-  const slot = index % (pool.length + 1); // slot 0 = primary env account, 1..N = DB accounts
+function pickSender(pool: SenderAccount[], index: number, includeEnv: boolean): SenderAccount | undefined {
+  // Build the full rotation: env slot (undefined) + DB accounts
+  const total = pool.length + (includeEnv ? 1 : 0);
+  if (total === 0) return undefined;
+  if (!includeEnv) return pool[index % pool.length];
+  // Env account occupies slot 0; DB accounts fill slots 1..N
+  const slot = index % total;
   return slot === 0 ? undefined : pool[slot - 1];
 }
 

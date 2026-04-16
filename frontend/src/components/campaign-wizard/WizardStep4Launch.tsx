@@ -29,11 +29,14 @@ export default function WizardStep4Launch({
   const activeDays   = schedule.days.map((d) => DAY_LABELS[d]).join(', ') || 'None';
   const bodyPreview  = body.replace(/<[^>]+>/g, '').slice(0, 200).trim();
 
+  const senderCount = (schedule.senderAccountIds?.length ?? 0) || (schedule.senderAccountId ? 1 : 0);
+
   const checks = [
     { ok: name.trim().length > 0,         label: 'Campaign name set',                  icon: 'badge' },
     { ok: recipientCount > 0,             label: `${recipientCount} recipients selected`, icon: 'group' },
     { ok: subject.trim().length > 0,      label: 'Subject line written',                icon: 'subject' },
     { ok: body.trim().length > 0,         label: 'Email body written',                  icon: 'edit_note' },
+    { ok: senderCount > 0,               label: senderCount > 0 ? `${senderCount} sender account${senderCount !== 1 ? 's' : ''} selected` : 'No sender account selected', icon: 'alternate_email' },
     { ok: schedule.days.length > 0,       label: 'Sending days configured',             icon: 'event' },
     { ok: schedule.dailyLimit > 0,        label: `Daily limit: ${schedule.dailyLimit}`, icon: 'speed' },
   ];
@@ -149,6 +152,7 @@ export default function WizardStep4Launch({
                 { label: 'Window',       value: `${schedule.startHour} – ${schedule.endHour}` },
                 { label: 'Active Days',  value: activeDays },
                 { label: 'Daily Limit',  value: `${schedule.dailyLimit} emails / day` },
+                { label: 'Senders',      value: senderCount > 0 ? `${senderCount} account${senderCount !== 1 ? 's' : ''} (round-robin)` : 'None selected' },
               ].map(({ label, value }) => (
                 <div key={label}>
                   <p className="text-[10px] font-bold text-secondary uppercase tracking-wider">{label}</p>
