@@ -90,7 +90,9 @@ export default function Inbox() {
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
       const delta = dragRef.current.startX - ev.clientX;
-      const next = Math.min(Math.max(dragRef.current.startWidth + delta, 320), Math.floor(window.innerWidth * 0.72));
+      // Max = viewport minus left nav (224px) + message list (320px) + drag handle (6px) + 16px breathing room
+      const maxWidth = window.innerWidth - 224 - 320 - 6 - 16;
+      const next = Math.min(Math.max(dragRef.current.startWidth + delta, 320), maxWidth);
       setPanelWidth(next);
     };
     const onUp = () => {
