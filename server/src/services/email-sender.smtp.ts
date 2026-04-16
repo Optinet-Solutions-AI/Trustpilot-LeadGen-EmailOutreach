@@ -4,6 +4,7 @@
  * DreamHost uses port 465 with secure: true (SSL).
  */
 
+import fs from 'fs';
 import nodemailer from 'nodemailer';
 import type { SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
 
@@ -17,11 +18,30 @@ export interface SmtpSenderAccount {
   smtp_password: string;
 }
 
+async function fetchScreenshot(screenshotPath: string): Promise<Buffer | null> {
+  if (!screenshotPath) return null;
+  if (screenshotPath.startsWith('http')) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(screenshotPath);
+        if (res.ok) return Buffer.from(await res.arrayBuffer());
+        console.warn(`[SMTP] Screenshot fetch attempt ${attempt} failed: HTTP ${res.status}`);
+      } catch (e) {
+        console.warn(`[SMTP] Screenshot fetch attempt ${attempt} error:`, e instanceof Error ? e.message : e);
+      }
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1000));
+    }
+    return null;
+  }
+  if (fs.existsSync(screenshotPath)) return fs.readFileSync(screenshotPath);
+  return null;
+}
+
 export async function sendEmailSmtp(
   to: string,
   subject: string,
   html: string,
-  _options: SendEmailOptions = {},
+  options: SendEmailOptions = {},
   account: SmtpSenderAccount,
 ): Promise<SendEmailResult> {
   const secure = account.smtp_port === 465;
@@ -36,12 +56,33 @@ export async function sendEmailSmtp(
     },
   });
 
+  // Embed screenshot as CID inline attachment if provided
+  let bodyHtml = html;
+  const attachments: Array<{ filename: string; content: Buffer; contentType: string; cid: string; contentDisposition: 'inline' }> = [];
+
+  if (options.screenshotPath) {
+    const screenshotBuffer = await fetchScreenshot(options.screenshotPath);
+    if (screenshotBuffer) {
+      attachments.push({
+        filename: 'trustpilot-profile.png',
+        content: screenshotBuffer,
+        contentType: 'image/png',
+        cid: 'trustpilot-screenshot',
+        contentDisposition: 'inline',
+      });
+      bodyHtml = `${bodyHtml}\n<br/><img src="cid:trustpilot-screenshot" alt="Your Trustpilot Profile" style="width:100%;max-width:550px;height:auto;border:1px solid #e2e8f0;border-radius:8px;display:block;margin-top:12px;" />`;
+    } else {
+      console.warn('[SMTP] Screenshot not embedded — fetch returned null');
+    }
+  }
+
   try {
     const info = await transporter.sendMail({
       from: `"${account.fromName}" <${account.email}>`,
       to,
       subject,
-      html,
+      html: bodyHtml,
+      attachments,
     });
     console.log(`[SMTP] Sent to ${to} via ${account.smtp_host}: ${info.messageId}`);
     return { success: true, messageId: info.messageId };
