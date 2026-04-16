@@ -89,7 +89,7 @@ export default function Inbox() {
     dragRef.current = { startX: e.clientX, startWidth: panelWidth };
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
-      const delta = dragRef.current.startX - ev.clientX;
+      const delta = ev.clientX - dragRef.current.startX;
       // Max = viewport minus left nav (224px) + message list (320px) + drag handle (6px) + 16px breathing room
       const maxWidth = window.innerWidth - 224 - 320 - 6 - 16;
       const next = Math.min(Math.max(dragRef.current.startWidth + delta, 320), maxWidth);
@@ -287,13 +287,6 @@ export default function Inbox() {
           </div>
         ) : (
           <>
-            {/* Drag handle */}
-            <div
-              onMouseDown={onDragStart}
-              className="w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"
-              title="Drag to resize panel"
-            />
-
             {/* Detail panel — draggable width */}
             <div className="flex flex-col bg-white overflow-y-auto h-full flex-shrink-0 border-l border-slate-100" style={{ width: panelWidth }}>
 
@@ -433,6 +426,13 @@ export default function Inbox() {
             </div>
 
           </div>
+
+            {/* Drag handle — right edge of panel, drag right to expand */}
+            <div
+              onMouseDown={onDragStart}
+              className="w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"
+              title="Drag to resize panel"
+            />
           </>
         )}
       </div>
