@@ -5,7 +5,7 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
+const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 
 export interface GenerateTemplateOptions {
   country?: string;
@@ -40,7 +40,7 @@ export function domainToCompanyName(domain: string): string {
  */
 export async function generateEmailTemplate(options: GenerateTemplateOptions = {}): Promise<GenerateTemplateResult> {
   if (!API_KEY) {
-    throw new Error('VITE_GEMINI_API_KEY is not set. Add it to your .env file.');
+    throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not set. Add it to your .env file.');
   }
 
   const genAI = new GoogleGenerativeAI(API_KEY);
