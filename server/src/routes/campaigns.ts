@@ -306,26 +306,42 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       }
     }
 
-    // Resolve the pinned sender account from the campaign's sending_schedule
-    let senderAccount: import('../services/email-sender.js').GmailSenderAccount | undefined;
+    // Resolve the first pinned sender account from the campaign's sending_schedule.
+    // Supports Gmail OAuth2, App Password (OAuth), and SMTP account types.
+    let senderAccount: import('../services/email-sender.js').SenderAccount | undefined;
     const scheduleData = campaign.sending_schedule as Record<string, unknown> | null;
     const pinnedIds = (scheduleData?.senderAccountIds as string[] | undefined) ?? [];
     const pinnedId = pinnedIds.find((id) => id !== '__env__') ?? (scheduleData?.senderAccountId as string | undefined);
-    if (pinnedId && pinnedId !== '__env__' && config.emailMode === 'gmail') {
+    if (pinnedId && pinnedId !== '__env__') {
       try {
-        const { createGmailClientFromCredentials } = await import('../services/gmail-client.js');
         const { data: acc } = await (await import('../lib/supabase.js')).getSupabase()
           .from('email_accounts')
-          .select('email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+          .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password')
           .eq('id', pinnedId)
           .single();
-        if (acc?.gmail_client_id && acc?.gmail_client_secret && acc?.gmail_refresh_token) {
-          senderAccount = {
-            email: acc.email,
-            fromName: acc.from_name,
-            gmail: createGmailClientFromCredentials(acc.gmail_client_id, acc.gmail_client_secret, acc.gmail_refresh_token),
-          };
-          console.log(`[TestFlight] Using pinned sender: ${acc.email}`);
+        if (acc) {
+          if (acc.auth_type === 'smtp' && acc.smtp_host && acc.smtp_user && acc.smtp_password) {
+            senderAccount = {
+              email: acc.email,
+              fromName: acc.from_name,
+              auth_type: 'smtp' as const,
+              smtp_host: acc.smtp_host,
+              smtp_port: acc.smtp_port ?? 587,
+              smtp_user: acc.smtp_user,
+              smtp_password: acc.smtp_password,
+            };
+            console.log(`[TestFlight] Using pinned SMTP sender: ${acc.email}`);
+          } else if ((acc.auth_type === 'gmail_oauth' || acc.auth_type === 'app_password') && acc.gmail_client_id && acc.gmail_client_secret && acc.gmail_refresh_token) {
+            const { createGmailClientFromCredentials } = await import('../services/gmail-client.js');
+            senderAccount = {
+              email: acc.email,
+              fromName: acc.from_name,
+              gmail: createGmailClientFromCredentials(acc.gmail_client_id, acc.gmail_client_secret, acc.gmail_refresh_token),
+            };
+            console.log(`[TestFlight] Using pinned Gmail sender: ${acc.email}`);
+          } else {
+            console.warn(`[TestFlight] Pinned account ${acc.email} (${acc.auth_type}) has incomplete credentials — falling back to env account`);
+          }
         }
       } catch (e) {
         console.warn('[TestFlight] Could not load pinned account:', e instanceof Error ? e.message : e);
