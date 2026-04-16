@@ -223,15 +223,16 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     const renderedSubject = renderAndSpin(campaign.template_subject, lead);
     const renderedHtml    = renderAndSpin(campaign.template_body, lead);
 
-    // Screenshot handling — prefer Thum.io crop for compact summary card
+    // Screenshot handling — prefer stored screenshot_path (reliable Supabase URL);
+    // fall back to Thum.io only when no stored screenshot exists.
     const leadTrustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
+    const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
     let screenshotUrl: string | undefined;
     if (campaign.include_screenshot) {
-      if (leadTrustpilotUrl) {
+      if (leadScreenshotPath.startsWith('http')) {
+        screenshotUrl = leadScreenshotPath;
+      } else if (leadTrustpilotUrl) {
         screenshotUrl = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
-      } else {
-        const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
-        if (leadScreenshot.startsWith('http')) screenshotUrl = leadScreenshot;
       }
     }
 
@@ -550,18 +551,16 @@ router.post('/:id/send', async (req: Request, res: Response) => {
         let validScreenshotPath: string | undefined;
         if (campaign.include_screenshot) {
           const trustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
-          if (trustpilotUrl) {
-            // Use Thum.io to capture only the top summary card (crop/350 cuts off Company Details)
+          const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
+          if (leadScreenshotPath.startsWith('http')) {
+            // Prefer stored Supabase screenshot — reliable, no external dependency
+            validScreenshotPath = leadScreenshotPath;
+          } else if (leadScreenshotPath) {
+            const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
+            if (fs.existsSync(localPath)) validScreenshotPath = localPath;
+          } else if (trustpilotUrl) {
+            // Last resort: Thum.io live capture (may fail on Cloud Run)
             validScreenshotPath = `https://image.thum.io/get/width/800/crop/350/${trustpilotUrl}`;
-          } else {
-            // Fallback to stored screenshot if no trustpilot_url
-            const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
-            if (leadScreenshotPath.startsWith('http')) {
-              validScreenshotPath = leadScreenshotPath;
-            } else if (leadScreenshotPath) {
-              const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
-              if (fs.existsSync(localPath)) validScreenshotPath = localPath;
-            }
           }
         }
 

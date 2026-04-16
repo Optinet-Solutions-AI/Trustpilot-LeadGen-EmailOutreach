@@ -11,7 +11,7 @@
  */
 export function resolveSpintax(text: string): string {
   let result = text;
-  let maxIterations = 50; // safety limit to prevent infinite loops on malformed input
+  let maxIterations = 500; // AI-generated templates can have 35+ groups with deep nesting; 50 was too low
 
   while (maxIterations-- > 0) {
     // Find the innermost {…} group (no nested braces inside)
