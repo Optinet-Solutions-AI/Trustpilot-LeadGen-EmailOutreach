@@ -3,5 +3,10 @@
   "private": true,
   "scripts": {
     "build": "cd frontend && npm ci && npm run build"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.103.3",
+    "dotenv": "^17.4.2",
+    "playwright": "^1.59.1"
   }
 }
