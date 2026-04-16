@@ -267,7 +267,8 @@ router.post('/dreamhost', async (req: Request, res: Response) => {
     return;
   }
 
-  // 2. Test IMAP connection
+  // 2. Test IMAP connection (soft — warn but don't block save if IMAP is unreachable)
+  let imapWarning: string | null = null;
   try {
     const { ImapFlow } = await import('imapflow');
     const client = new ImapFlow({
@@ -276,13 +277,16 @@ router.post('/dreamhost', async (req: Request, res: Response) => {
       secure: true,
       auth: { user: email, pass: password },
       logger: false,
+      connectionTimeout: 10000,
     });
-    await client.connect();
-    await client.logout();
+    await Promise.race([
+      client.connect().then(() => client.logout()),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('IMAP connection timed out after 10s')), 10000)),
+    ]);
   } catch (err) {
     const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
-    res.status(400).json({ success: false, error: `IMAP connection failed: ${msg}` });
-    return;
+    imapWarning = `IMAP unavailable (${msg}) — reply tracking disabled. SMTP is working.`;
+    console.warn(`[DreamHost] IMAP soft-fail for ${email}:`, msg);
   }
 
   // 3. Save to DB
@@ -319,7 +323,7 @@ router.post('/dreamhost', async (req: Request, res: Response) => {
       return;
     }
 
-    res.json({ success: true, data });
+    res.json({ success: true, data, warning: imapWarning || undefined });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

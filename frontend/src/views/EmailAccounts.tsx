@@ -92,6 +92,7 @@ export default function EmailAccounts() {
   });
   const [dhSaving, setDhSaving] = useState(false);
   const [dhError, setDhError] = useState('');
+  const [dhWarning, setDhWarning] = useState('');
   const [warmupData, setWarmupData] = useState<{
     accounts: {
       email: string; fromName: string; warmupEnabled: boolean; warmupDailyTarget: number;
@@ -139,15 +140,17 @@ export default function EmailAccounts() {
   const openDreamhostModal = () => {
     setShowDreamhostModal(true);
     setDhError('');
+    setDhWarning('');
     setDhForm({ email: '', fromName: '', password: '', smtpHost: 'smtp.dreamhost.com', smtpPort: '465', imapHost: 'imap.dreamhost.com', imapPort: '993' });
   };
 
   const handleDreamhostSave = async () => {
     setDhError('');
+    setDhWarning('');
     if (!dhForm.email || !dhForm.password) { setDhError('Email and password are required.'); return; }
     setDhSaving(true);
     try {
-      await api.post('/email-accounts/dreamhost', {
+      const res = await api.post('/email-accounts/dreamhost', {
         email: dhForm.email,
         fromName: dhForm.fromName || dhForm.email,
         password: dhForm.password,
@@ -156,8 +159,14 @@ export default function EmailAccounts() {
         imapHost: dhForm.imapHost,
         imapPort: dhForm.imapPort,
       });
-      setShowDreamhostModal(false);
-      load();
+      if (res.data.warning) {
+        setDhWarning(res.data.warning);
+        load();
+        // Leave modal open so user sees the warning before closing
+      } else {
+        setShowDreamhostModal(false);
+        load();
+      }
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setDhError(msg || 'Failed to connect. Check your credentials.');
@@ -1016,23 +1025,31 @@ export default function EmailAccounts() {
                   {dhError}
                 </div>
               )}
+              {dhWarning && (
+                <div className="px-4 py-3 bg-amber-50 text-amber-800 text-sm font-medium rounded-xl border border-amber-200 flex items-start gap-3">
+                  <span className="material-symbols-outlined text-amber-600 text-[18px] mt-0.5 flex-shrink-0">warning</span>
+                  <span>{dhWarning}</span>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 px-6 pb-6 pt-4 border-t border-slate-100">
               <button
-                onClick={() => setShowDreamhostModal(false)}
+                onClick={() => { setShowDreamhostModal(false); setDhWarning(''); }}
                 className="py-2.5 px-5 rounded-xl border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container transition-colors"
               >
-                Cancel
+                {dhWarning ? 'Done' : 'Cancel'}
               </button>
-              <button
-                onClick={handleDreamhostSave}
-                disabled={dhSaving}
-                className="flex-1 py-2.5 primary-gradient text-on-primary rounded-xl text-sm font-bold ambient-shadow disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {dhSaving && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
-                {dhSaving ? 'Testing & Saving…' : 'Test & Connect'}
-              </button>
+              {!dhWarning && (
+                <button
+                  onClick={handleDreamhostSave}
+                  disabled={dhSaving}
+                  className="flex-1 py-2.5 primary-gradient text-on-primary rounded-xl text-sm font-bold ambient-shadow disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {dhSaving && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
+                  {dhSaving ? 'Testing & Saving…' : 'Test & Connect'}
+                </button>
+              )}
             </div>
           </div>
         </div>
