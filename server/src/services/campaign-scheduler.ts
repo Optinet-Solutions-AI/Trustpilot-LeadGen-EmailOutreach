@@ -199,12 +199,20 @@ async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefi
 
   let screenshotPath: string | undefined;
   const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
-  if (campaign.include_screenshot && leadScreenshot) {
+  const leadTrustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
+  if (campaign.include_screenshot) {
     if (leadScreenshot.startsWith('http')) {
       screenshotPath = leadScreenshot;
-    } else {
+    } else if (leadScreenshot) {
       const local = path.resolve(config.projectRoot, '.tmp', 'screenshots', path.basename(leadScreenshot));
-      if (fs.existsSync(local)) screenshotPath = local;
+      if (fs.existsSync(local)) {
+        screenshotPath = local;
+      } else if (leadTrustpilotUrl) {
+        // Local file gone (ephemeral container); fall back to Thum.io
+        screenshotPath = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
+      }
+    } else if (leadTrustpilotUrl) {
+      screenshotPath = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
     }
   }
 

@@ -553,13 +553,18 @@ router.post('/:id/send', async (req: Request, res: Response) => {
           const trustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
           const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
           if (leadScreenshotPath.startsWith('http')) {
-            // Prefer stored Supabase screenshot — reliable, no external dependency
+            // Stored Supabase Storage URL — most reliable
             validScreenshotPath = leadScreenshotPath;
           } else if (leadScreenshotPath) {
+            // Local path — only valid during the same Cloud Run session as the scrape
             const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
-            if (fs.existsSync(localPath)) validScreenshotPath = localPath;
+            if (fs.existsSync(localPath)) {
+              validScreenshotPath = localPath;
+            } else if (trustpilotUrl) {
+              // Local file is gone (ephemeral container); fall back to Thum.io
+              validScreenshotPath = `https://image.thum.io/get/width/800/crop/350/${trustpilotUrl}`;
+            }
           } else if (trustpilotUrl) {
-            // Last resort: Thum.io live capture (may fail on Cloud Run)
             validScreenshotPath = `https://image.thum.io/get/width/800/crop/350/${trustpilotUrl}`;
           }
         }
