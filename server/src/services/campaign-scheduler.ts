@@ -15,7 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import { config } from '../config.js';
 import { getSupabase } from '../lib/supabase.js';
-import { sendEmail, type GmailSenderAccount } from './email-sender.js';
+import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type SenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter } from './rate-limiter.js';
 import { renderAndSpin } from './template-engine.js';
@@ -110,7 +110,7 @@ async function processDueSends(): Promise<void> {
     }
 
     try {
-      const senderAccount = pickSender(senderPool, i);
+          const senderAccount = pickSender(senderPool, i);
       await sendScheduledEmail(cl, senderAccount);
     } catch (err) {
       console.error('[CampaignScheduler] Send failed for', cl.email_used, ':', err instanceof Error ? err.message : err);
@@ -128,41 +128,54 @@ async function processDueSends(): Promise<void> {
   }
 }
 
-async function buildSenderPool(pinnedAccountId?: string): Promise<GmailSenderAccount[]> {
+async function buildSenderPool(pinnedAccountId?: string): Promise<SenderAccount[]> {
   if (config.emailMode !== 'gmail') return [];
   if (pinnedAccountId === '__env__') return []; // Use env primary — pool stays empty → pickSender returns undefined → email-sender uses env
   try {
     let query = getSupabase()
       .from('email_accounts')
-      .select('id, email, from_name, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password')
       .eq('status', 'active')
-      .eq('auth_type', 'gmail_oauth')
-      .not('gmail_refresh_token', 'is', null);
+      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password']);
 
     if (pinnedAccountId) {
       query = query.eq('id', pinnedAccountId) as typeof query;
     }
 
     const { data: dbAccounts } = await query;
-    return (dbAccounts ?? [])
-      .filter((a: any) => a.gmail_client_id && a.gmail_client_secret && a.gmail_refresh_token)
-      .map((a: any) => ({
-        email: a.email,
-        fromName: a.from_name,
-        gmail: createGmailClientFromCredentials(a.gmail_client_id, a.gmail_client_secret, a.gmail_refresh_token),
-      }));
+    const accounts: SenderAccount[] = [];
+    for (const a of (dbAccounts ?? [])) {
+      if (a.auth_type === 'smtp' && a.smtp_host && a.smtp_user && a.smtp_password) {
+        accounts.push({
+          email: a.email,
+          fromName: a.from_name,
+          auth_type: 'smtp',
+          smtp_host: a.smtp_host,
+          smtp_port: a.smtp_port ?? 587,
+          smtp_user: a.smtp_user,
+          smtp_password: a.smtp_password,
+        } as SmtpSenderAccount);
+      } else if ((a.auth_type === 'gmail_oauth' || a.auth_type === 'app_password') && a.gmail_client_id && a.gmail_client_secret && a.gmail_refresh_token) {
+        accounts.push({
+          email: a.email,
+          fromName: a.from_name,
+          gmail: createGmailClientFromCredentials(a.gmail_client_id, a.gmail_client_secret, a.gmail_refresh_token),
+        } as GmailSenderAccount);
+      }
+    }
+    return accounts;
   } catch {
     return [];
   }
 }
 
-function pickSender(pool: GmailSenderAccount[], index: number): GmailSenderAccount | undefined {
+function pickSender(pool: SenderAccount[], index: number): SenderAccount | undefined {
   if (pool.length === 0) return undefined;
   const slot = index % (pool.length + 1); // slot 0 = primary env account, 1..N = DB accounts
   return slot === 0 ? undefined : pool[slot - 1];
 }
 
-async function sendScheduledEmail(cl: any, senderAccount: GmailSenderAccount | undefined): Promise<void> {
+async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefined): Promise<void> {
   const supabase = getSupabase();
   const campaign = cl.campaigns as Record<string, unknown>;
   const lead = cl.leads as Record<string, unknown>;

@@ -512,11 +512,6 @@ export default function EmailAccounts() {
                 </div>
               )}
 
-              {account.source === 'db' && (
-                <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs text-blue-700">
-                  Registered — wiring to active sender coming soon.
-                </div>
-              )}
             </div>
           </div>
         ))}
