@@ -19,7 +19,7 @@ Rating: {{star_rating}}</p>
 
 <p>Would you be open to a quick chat to see how we can strengthen your online reputation?</p>
 
-<p>Best regards,<br>OptiRate<br>www.optiratesolutions.com</p>`;
+<p>Best regards,<br>OptiRate Solutions</p>`;
 
 interface Props {
   leadIds: string[];

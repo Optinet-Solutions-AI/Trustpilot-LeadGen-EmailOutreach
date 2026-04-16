@@ -108,7 +108,7 @@ ${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{bus
 - Length: 3-4 short paragraphs
 ${bodyGuidance}
 - Close with heavy spintax on every element, e.g.:
-  "{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team}<br>{www.optiratesolutions.com|optiratesolutions.com}"
+  "{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team|OptiRate Solutions}"
 - Output ONLY the HTML body content (no <html>, <head>, <body> tags)
 - Use only <p>, <strong>, <br> tags — keep it email-safe
 

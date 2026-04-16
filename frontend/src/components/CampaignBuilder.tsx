@@ -16,8 +16,7 @@ Trustpilot Rating: {{star_rating}} ★</p>
 <p>{Would you be open to a quick chat|Could we schedule a brief call|Would a short conversation work for you} to {see how we can|discuss how to|explore ways to} {clean up your Trustpilot presence|improve your online reputation|boost your review profile} and {strengthen your online reputation|drive more customer trust}?</p>
 
 <p>{Best regards|Kind regards|Best},<br>
-OptiRate</p>
-<p>www.optiratesolutions.com</p>`;
+OptiRate Solutions</p>`;
 
 const COUNTRIES = [
   { code: '', name: 'All Countries' },

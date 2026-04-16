@@ -223,11 +223,16 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     const renderedSubject = renderAndSpin(campaign.template_subject, lead);
     const renderedHtml    = renderAndSpin(campaign.template_body, lead);
 
-    // Screenshot handling
-    const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
+    // Screenshot handling — prefer Thum.io crop for compact summary card
+    const leadTrustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
     let screenshotUrl: string | undefined;
-    if (campaign.include_screenshot && leadScreenshot?.startsWith('http')) {
-      screenshotUrl = leadScreenshot;
+    if (campaign.include_screenshot) {
+      if (leadTrustpilotUrl) {
+        screenshotUrl = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
+      } else {
+        const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
+        if (leadScreenshot.startsWith('http')) screenshotUrl = leadScreenshot;
+      }
     }
 
     // ── Platform mode: send test via Instantly ────────────────────────
@@ -295,16 +300,8 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     }
 
     // ── Direct mode: send via Gmail ───────────────────────────────────
-    let validScreenshotPath: string | undefined;
-    if (campaign.include_screenshot && leadScreenshot) {
-      if (leadScreenshot.startsWith('http')) {
-        validScreenshotPath = leadScreenshot;
-      } else {
-        const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
-        const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshot));
-        if (fs.existsSync(localPath)) validScreenshotPath = localPath;
-      }
-    }
+    // screenshotUrl already resolved above (Thum.io or stored URL)
+    const validScreenshotPath = screenshotUrl;
 
     // Resolve the first pinned sender account from the campaign's sending_schedule.
     // Supports Gmail OAuth2, App Password (OAuth), and SMTP account types.
@@ -550,14 +547,21 @@ router.post('/:id/send', async (req: Request, res: Response) => {
     const emails = pendingLeads
       .map((cl: { id: string; lead_id: string; email_used: string; leads: Record<string, unknown> }) => {
         const lead = cl.leads as Record<string, unknown>;
-        const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
         let validScreenshotPath: string | undefined;
-        if (campaign.include_screenshot && leadScreenshotPath) {
-          if (leadScreenshotPath.startsWith('http')) {
-            validScreenshotPath = leadScreenshotPath;
+        if (campaign.include_screenshot) {
+          const trustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
+          if (trustpilotUrl) {
+            // Use Thum.io to capture only the top summary card (crop/350 cuts off Company Details)
+            validScreenshotPath = `https://image.thum.io/get/width/800/crop/350/${trustpilotUrl}`;
           } else {
-            const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
-            if (fs.existsSync(localPath)) validScreenshotPath = localPath;
+            // Fallback to stored screenshot if no trustpilot_url
+            const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
+            if (leadScreenshotPath.startsWith('http')) {
+              validScreenshotPath = leadScreenshotPath;
+            } else if (leadScreenshotPath) {
+              const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
+              if (fs.existsSync(localPath)) validScreenshotPath = localPath;
+            }
           }
         }
 

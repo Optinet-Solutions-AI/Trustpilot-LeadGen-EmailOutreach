@@ -66,7 +66,7 @@ export default function WizardStep2Sequence({
     const newStep: FollowUpStepInput = {
       delayDays: followUpSteps.length === 0 ? 3 : followUpSteps[followUpSteps.length - 1].delayDays + 3,
       subject: `Follow-up: {Checking in|Quick follow-up|Just following up}`,
-      body: `<p>{Hi|Hello|Hey},</p><p>I just wanted to {follow up|circle back} on my previous email regarding your Trustpilot rating.</p><p>{Best regards|Kind regards},<br>OptiRate<br>www.optiratesolutions.com</p>`,
+      body: `<p>{Hi|Hello|Hey},</p><p>I just wanted to {follow up|circle back} on my previous email regarding your Trustpilot rating.</p><p>{Best regards|Kind regards},<br>OptiRate Solutions</p>`,
     };
     onFollowUpStepsChange([...followUpSteps, newStep]);
     setActiveStep(followUpSteps.length);
