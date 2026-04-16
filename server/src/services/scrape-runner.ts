@@ -24,6 +24,28 @@ export const scrapeEvents = new EventEmitter();
 // Track active Python processes for cancellation
 const activeProcesses = new Map<string, ChildProcess>();
 
+/**
+ * Parse the PROGRESS:upsert_done:SAVED/TOTAL line from upsert_leads.py stdout.
+ * Returns { saved, failed } with real DB counts instead of trusting array lengths.
+ */
+function parseUpsertResult(stdout: string): { saved: number; failed: number } {
+  const match = stdout.match(/PROGRESS:upsert_done:(\d+)\/(\d+)/);
+  if (match) {
+    const saved = parseInt(match[1], 10);
+    const total = parseInt(match[2], 10);
+    return { saved, failed: total - saved };
+  }
+  return { saved: 0, failed: 0 };
+}
+
+/**
+ * Parse the PROGRESS:enrich_done:N line from scrape_website.py stdout.
+ */
+function parseEnrichResult(stdout: string): number {
+  const match = stdout.match(/PROGRESS:enrich_done:(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
 // Watchdog: max seconds of silence before killing a hung Python process
 const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -300,6 +322,9 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
   const { jobId, country, category, minRating, maxRating, enrich, verify, forceRescrape } = params;
   const tmpDir = path.resolve(config.projectRoot, '.tmp');
   let failedCount = 0;
+  let totalSaved = 0;
+  let totalDbFailed = 0;
+  let totalEnriched = 0;
 
   try {
     await updateJob(jobId, { status: 'running', started_at: new Date().toISOString() });
@@ -381,20 +406,25 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
         const { promise: saveOnlyPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
           '--input', enrichOnlyFile,
         ]);
-        await saveOnlyPromise;
+        const saveOnlyStdout = await saveOnlyPromise;
+        const saveOnlyResult = parseUpsertResult(saveOnlyStdout);
 
-        let enrichedCount = 0;
-        try {
-          const enrichedData = JSON.parse(fs.readFileSync(enrichOnlyFile, 'utf-8'));
-          enrichedCount = enrichedData.length;
-        } catch {}
+        console.log(`[Scrape] Enrich-only job ${jobId} — saved: ${saveOnlyResult.saved}, dbFailed: ${saveOnlyResult.failed}`);
 
         await updateJob(jobId, {
           status: 'completed',
-          total_scraped: enrichedCount,
+          total_scraped: saveOnlyResult.saved,
+          total_failed: saveOnlyResult.failed,
           completed_at: new Date().toISOString(),
         });
-        emitProgress(jobId, 'completed', '');
+        emitProgress(jobId, 'completed', JSON.stringify({
+          totalFound: rawData.length,
+          skipped: skippedCount,
+          processed: 0,
+          saved: saveOnlyResult.saved,
+          enriched: saveOnlyResult.saved,
+          failed: saveOnlyResult.failed,
+        }));
         return;
       }
 
@@ -423,8 +453,9 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
     const { promise: checkpointPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
       '--input', enrichedOutput,
     ]);
-    await checkpointPromise;
-    emitProgress(jobId, 'checkpoint_done', 'Profile data saved');
+    const checkpointStdout = await checkpointPromise;
+    const checkpointResult = parseUpsertResult(checkpointStdout);
+    emitProgress(jobId, 'checkpoint_done', `Saved ${checkpointResult.saved} leads${checkpointResult.failed > 0 ? ` (${checkpointResult.failed} failed)` : ''}`);
 
     // Step 4b: Upload screenshots to Supabase Storage (persists across deploys)
     await uploadScreenshotsToStorage(screenshotsDir, enrichedOutput);
@@ -459,26 +490,26 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
         '--output', enrichedOutput,
         '--parallel', '3',
       ]);
-      await enrichPromise;
+      const enrichStdout = await enrichPromise;
+      const emailsFound = parseEnrichResult(enrichStdout);
 
       // Step 6: Final upsert with enriched emails
       emitProgress(jobId, 'final_save', 'Saving enriched data...');
       const { promise: finalUpsertPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
         '--input', enrichedOutput,
       ]);
-      await finalUpsertPromise;
+      const finalUpsertStdout = await finalUpsertPromise;
+      const finalResult = parseUpsertResult(finalUpsertStdout);
+      totalSaved = finalResult.saved;
+      totalDbFailed = finalResult.failed;
+      totalEnriched = emailsFound;
+    } else {
+      // No enrichment — use checkpoint counts as final
+      totalSaved = checkpointResult.saved;
+      totalDbFailed = checkpointResult.failed;
     }
 
-    // Count final results
-    let totalScraped = 0;
-    try {
-      const enrichedData = JSON.parse(fs.readFileSync(enrichedOutput, 'utf-8'));
-      totalScraped = enrichedData.length;
-    } catch (err) {
-      console.error(`Failed to read enriched output for job ${jobId}:`, err);
-    }
-
-    // Count failures from DB
+    // Count scraper-level failures (timeouts, page errors) from DB
     try {
       const supabase = getSupabase();
       const { count } = await supabase
@@ -491,13 +522,24 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       console.error(`Failed to count failures for job ${jobId}:`, err);
     }
 
+    const totalProcessed = leadsToScrape.length;
+    console.log(`[Scrape] Job ${jobId} complete — found: ${rawData.length}, skipped: ${skippedCount}, processed: ${totalProcessed}, saved: ${totalSaved}, dbFailed: ${totalDbFailed}, scraperFailed: ${failedCount}`);
+
     await updateJob(jobId, {
       status: 'completed',
-      total_scraped: totalScraped,
-      total_failed: failedCount,
+      total_scraped: totalSaved,
+      total_enriched: totalEnriched,
+      total_failed: failedCount + totalDbFailed,
       completed_at: new Date().toISOString(),
     });
-    emitProgress(jobId, 'completed', '');
+    emitProgress(jobId, 'completed', JSON.stringify({
+      totalFound: rawData.length,
+      skipped: skippedCount,
+      processed: totalProcessed,
+      saved: totalSaved,
+      enriched: totalEnriched,
+      failed: failedCount + totalDbFailed,
+    }));
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

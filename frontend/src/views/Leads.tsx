@@ -105,7 +105,7 @@ export default function Leads() {
   const [verifying, setVerifying] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [enrichJobId, setEnrichJobId] = useState<string | null>(() => localStorage.getItem('active_enrich_job'));
-  const [enrichResult, setEnrichResult] = useState<{ found: number; total: number } | null>(null);
+  const [enrichResult, setEnrichResult] = useState<{ found: number; total: number; failed: number } | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -162,7 +162,7 @@ export default function Leads() {
     let active = true;
     let interval: ReturnType<typeof setInterval> | null = null;
 
-    const finish = (success: boolean, result?: { found: number; total: number }, errMsg?: string) => {
+    const finish = (success: boolean, result?: { found: number; total: number; failed: number }, errMsg?: string) => {
       if (!active) return;
       active = false; // prevent any further polls immediately
       if (interval) clearInterval(interval);
@@ -178,8 +178,8 @@ export default function Leads() {
       if (!active) return;
       try {
         const res = await api.get(`/enrich/status?jobId=${enrichJobId}`);
-        const { status, found, total, error } = res.data.data;
-        if (status === 'done') finish(true, { found, total });
+        const { status, found, total, failed: failedCount, error } = res.data.data;
+        if (status === 'done') finish(true, { found, total, failed: failedCount ?? 0 });
         else if (status === 'failed') finish(false, undefined, `Enrichment failed: ${error || 'unknown error'}`);
         // 'running' → keep polling
       } catch (err: unknown) {
@@ -218,15 +218,24 @@ export default function Leads() {
 
       {/* Enrichment success banner — stays until dismissed */}
       {enrichResult && (
-        <div className="flex items-center gap-3 bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl px-5 py-3 text-sm text-[#006630]">
-          <span className="material-symbols-outlined text-[18px] text-[#006630]">check_circle</span>
+        <div className={`flex items-center gap-3 rounded-xl px-5 py-3 text-sm border ${
+          enrichResult.failed > 0
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]'
+        }`}>
+          <span className={`material-symbols-outlined text-[18px] ${enrichResult.failed > 0 ? 'text-amber-600' : 'text-[#006630]'}`}>
+            {enrichResult.failed > 0 ? 'warning' : 'check_circle'}
+          </span>
           <span className="font-semibold">Enrichment complete!</span>
           <span className="font-normal">
-            Found <strong>{enrichResult.found}</strong> email{enrichResult.found !== 1 ? 's' : ''} out of <strong>{enrichResult.total}</strong> lead{enrichResult.total !== 1 ? 's' : ''}. The table has been refreshed.
+            Found <strong>{enrichResult.found}</strong> email{enrichResult.found !== 1 ? 's' : ''} out of <strong>{enrichResult.total}</strong> lead{enrichResult.total !== 1 ? 's' : ''}.
+            {enrichResult.failed > 0 && (
+              <> <strong className="text-red-600">{enrichResult.failed}</strong> failed to save.</>
+            )}
           </span>
           <button
             onClick={() => setEnrichResult(null)}
-            className="ml-auto text-[#006630]/60 hover:text-[#006630] transition-colors"
+            className={`ml-auto transition-colors ${enrichResult.failed > 0 ? 'text-amber-600/60 hover:text-amber-800' : 'text-[#006630]/60 hover:text-[#006630]'}`}
           >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>

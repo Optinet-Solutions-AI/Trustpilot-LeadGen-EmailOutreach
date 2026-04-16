@@ -53,16 +53,27 @@ function parseProgressFraction(progress: ScrapeProgressType[]): { current: numbe
   return null;
 }
 
+interface CompletionMetrics {
+  totalFound?: number;
+  skipped?: number;
+  processed?: number;
+  saved?: number;
+  enriched?: number;
+  failed?: number;
+}
+
 function parseSummary(progress: ScrapeProgressType[]): {
   profilesFound?: number;
   emailsEnriched?: number;
   enrichSkipped?: string;
   enrichRan: boolean;
+  completion?: CompletionMetrics;
 } {
   let profilesFound: number | undefined;
   let emailsEnriched: number | undefined;
   let enrichSkipped: string | undefined;
   let enrichRan = false;
+  let completion: CompletionMetrics | undefined;
 
   for (const p of progress) {
     if (p.stage === 'profile_done' && p.detail) {
@@ -78,8 +89,14 @@ function parseSummary(progress: ScrapeProgressType[]): {
     if (p.stage === 'enrich_progress' && p.detail?.includes('0/')) {
       enrichSkipped = 'No leads had a website URL to enrich';
     }
+    // Parse honest completion metrics JSON
+    if (p.stage === 'completed' && p.detail) {
+      try {
+        completion = JSON.parse(p.detail) as CompletionMetrics;
+      } catch { /* detail is a plain string, not JSON — ignore */ }
+    }
   }
-  return { profilesFound, emailsEnriched, enrichSkipped, enrichRan };
+  return { profilesFound, emailsEnriched, enrichSkipped, enrichRan, completion };
 }
 
 function humanLabel(stage: string, detail: string): string {
@@ -95,7 +112,16 @@ function humanLabel(stage: string, detail: string): string {
     case 'enrich_done': return `Enrichment complete — ${detail} new website emails found`;
     case 'final_save': return 'Saving enriched data…';
     case 'upsert_done': return `Saved ${detail.split('/')[0]} leads to database ✓`;
-    case 'completed': return detail || 'All done ✓';
+    case 'completed': {
+      try {
+        const m = JSON.parse(detail) as CompletionMetrics;
+        const parts = [`Saved ${m.saved ?? 0} new leads`];
+        if ((m.skipped ?? 0) > 0) parts.push(`skipped ${m.skipped} duplicates`);
+        if ((m.enriched ?? 0) > 0) parts.push(`found ${m.enriched} emails`);
+        if ((m.failed ?? 0) > 0) parts.push(`${m.failed} failed`);
+        return parts.join(', ') + ' ✓';
+      } catch { return detail || 'All done ✓'; }
+    }
     case 'failed': return `Failed: ${detail}`;
     case 'item_failed': return `⚠ Failed: ${detail}`;
     default: return detail || stage;
@@ -220,13 +246,41 @@ export default function ScrapeProgress({
       {/* Summary cards (shown when done or if we have data) */}
       {(status === 'completed' || summary.profilesFound !== undefined || summary.emailsEnriched !== undefined) && (
         <div className="flex gap-3 mb-4 flex-wrap">
-          {summary.profilesFound !== undefined && (
+          {/* Honest completion metrics — shown when available */}
+          {summary.completion && (
+            <>
+              <div className="flex items-center gap-2 bg-green-50 border border-green-100 rounded-lg px-3 py-2 text-xs">
+                <span className="material-symbols-outlined text-[16px] text-green-600">save</span>
+                <span className="text-green-800 font-semibold">{summary.completion.saved} saved to DB</span>
+              </div>
+              {(summary.completion.skipped ?? 0) > 0 && (
+                <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs">
+                  <span className="material-symbols-outlined text-[16px] text-gray-500">filter_alt</span>
+                  <span className="text-gray-700 font-semibold">{summary.completion.skipped} duplicates skipped</span>
+                </div>
+              )}
+              {(summary.completion.enriched ?? 0) > 0 && (
+                <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs">
+                  <span className="material-symbols-outlined text-[16px] text-blue-600">language</span>
+                  <span className="text-blue-800 font-semibold">{summary.completion.enriched} emails found</span>
+                </div>
+              )}
+              {(summary.completion.failed ?? 0) > 0 && (
+                <div className="flex items-center gap-2 bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-xs">
+                  <span className="material-symbols-outlined text-[16px] text-red-600">error</span>
+                  <span className="text-red-800 font-semibold">{summary.completion.failed} failed</span>
+                </div>
+              )}
+            </>
+          )}
+          {/* Fallback to old-style metrics when completion JSON isn't available */}
+          {!summary.completion && summary.profilesFound !== undefined && (
             <div className="flex items-center gap-2 bg-green-50 border border-green-100 rounded-lg px-3 py-2 text-xs">
               <span className="material-symbols-outlined text-[16px] text-green-600">business</span>
               <span className="text-green-800 font-semibold">{summary.profilesFound} profiles scraped</span>
             </div>
           )}
-          {summary.enrichRan && summary.emailsEnriched !== undefined && (
+          {!summary.completion && summary.enrichRan && summary.emailsEnriched !== undefined && (
             <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs border ${
               summary.emailsEnriched > 0
                 ? 'bg-blue-50 border-blue-100'

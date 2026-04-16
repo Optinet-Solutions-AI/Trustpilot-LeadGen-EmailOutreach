@@ -51,7 +51,7 @@ router.get('/status', async (req: Request, res: Response) => {
   const supabase = getSupabase();
   const { data: job } = await supabase
     .from('scrape_jobs')
-    .select('id, status, total_found, total_enriched, error')
+    .select('id, status, total_found, total_enriched, total_failed, error')
     .eq('id', jobId)
     .eq('country', ENRICH_SENTINEL)
     .single();
@@ -68,6 +68,7 @@ router.get('/status', async (req: Request, res: Response) => {
       status: job.status === 'completed' ? 'done' : job.status === 'failed' ? 'failed' : 'running',
       total: job.total_found ?? 0,
       found: job.total_enriched ?? 0,
+      failed: job.total_failed ?? 0,
       ...(job.error ? { error: job.error } : {}),
     },
   });
@@ -152,27 +153,46 @@ router.post('/', async (req: Request, res: Response) => {
       '--output', tmpFile,
       '--parallel', '3',
     ])
-      .then((stdout) => {
-        const match = stdout.match(/PROGRESS:enrich_done:(\d+)/);
-        const found = match ? parseInt(match[1], 10) : 0;
-        return runPython('tools/db/upsert_leads.py', ['--input', tmpFile])
-          .then(() => found);
-      })
-      .then((found) => {
-        supabase.from('scrape_jobs').update({
+      .then(async (enrichStdout) => {
+        const enrichMatch = enrichStdout.match(/PROGRESS:enrich_done:(\d+)/);
+        const emailsFound = enrichMatch ? parseInt(enrichMatch[1], 10) : 0;
+
+        // Run upsert and parse its stdout for honest saved/failed counts
+        const upsertStdout = await runPython('tools/db/upsert_leads.py', ['--input', tmpFile]);
+        const upsertMatch = upsertStdout.match(/PROGRESS:upsert_done:(\d+)\/(\d+)/);
+        const saved = upsertMatch ? parseInt(upsertMatch[1], 10) : 0;
+        const upsertTotal = upsertMatch ? parseInt(upsertMatch[2], 10) : 0;
+        const dbFailed = upsertTotal - saved;
+
+        if (dbFailed > 0) {
+          console.error(`[enrich] Job ${jobId} — ${dbFailed} leads FAILED to save to Supabase`);
+        }
+
+        // Only count emails that were both found AND successfully saved
+        const successful = Math.min(emailsFound, saved);
+
+        const { error: updateError } = await supabase.from('scrape_jobs').update({
           status: 'completed',
-          total_enriched: found,
+          total_enriched: successful,
+          total_failed: dbFailed,
           completed_at: new Date().toISOString(),
-        }).eq('id', jobId).then(() => {});
-        console.log(`[enrich] Job ${jobId} done — found ${found}/${leads.length} emails`);
+        }).eq('id', jobId);
+
+        if (updateError) {
+          console.error(`[enrich] Job ${jobId} — failed to update job status:`, updateError.message);
+        }
+
+        console.log(`[enrich] Job ${jobId} done — attempted: ${leads.length}, emailsFound: ${emailsFound}, saved: ${saved}, dbFailed: ${dbFailed}`);
       })
       .catch((err: Error) => {
+        console.error(`[enrich] Job ${jobId} FAILED:`, err.message);
         supabase.from('scrape_jobs').update({
           status: 'failed',
           error: err.message.slice(0, 500),
           completed_at: new Date().toISOString(),
-        }).eq('id', jobId).then(() => {});
-        console.error(`[enrich] Job ${jobId} failed:`, err.message);
+        }).eq('id', jobId).then(({ error: updateErr }) => {
+          if (updateErr) console.error(`[enrich] Job ${jobId} — failed to mark job as failed:`, updateErr.message);
+        });
       })
       .finally(() => {
         try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
