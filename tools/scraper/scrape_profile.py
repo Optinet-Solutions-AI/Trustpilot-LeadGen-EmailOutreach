@@ -145,28 +145,29 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
             safe_slug = slug.replace('/', '_').replace('\\', '_')
             screenshot_path = os.path.join(screenshots_dir, f"{safe_slug}.png")
 
-            # Try progressively tighter selectors for the hero card only
-            # (company name + stars + rating number + review bars)
-            hero_selectors = [
-                # Trustpilot's hero/header section (above "Company details")
-                '[class*="heroBusinessInfo"]',
-                '[class*="businessUnitHeader"]',
-                '[class*="businessSummary"]',
-                'header[class*="business"]',
-            ]
+            # Clip the businessInfoGrid — captures both the info panel and
+            # the rating card side by side, with no navbar or breadcrumb.
             captured = False
-            for sel in hero_selectors:
-                section = await page.query_selector(sel)
-                if section:
-                    await section.screenshot(path=screenshot_path)
+            try:
+                clip_box = await page.evaluate("""() => {
+                    const grid = document.querySelector('div.styles_businessInfoGrid__T_git');
+                    if (!grid) return null;
+                    const r = grid.getBoundingClientRect();
+                    if (r.width < 200 || r.y < 0 || r.y > 400) return null;
+                    return { x: Math.round(r.x), y: Math.round(r.y) - 8,
+                             width: Math.round(r.width), height: 240 };
+                }""")
+                if clip_box:
+                    await page.screenshot(path=screenshot_path, clip=clip_box)
                     captured = True
-                    break
+            except Exception:
+                pass
 
             if not captured:
-                # Fallback: clip to profile card — skip top 90px navbar/breadcrumb
+                # Fallback: fixed clip skipping navbar/breadcrumb
                 await page.screenshot(
                     path=screenshot_path,
-                    clip={'x': 0, 'y': 90, 'width': 1280, 'height': 300},
+                    clip={'x': 40, 'y': 130, 'width': 1200, 'height': 240},
                 )
         except Exception as e:
             # Last fallback: viewport screenshot
