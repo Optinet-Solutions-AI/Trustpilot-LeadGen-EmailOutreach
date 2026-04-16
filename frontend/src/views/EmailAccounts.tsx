@@ -73,6 +73,7 @@ const AUTH_TYPES: { type: AuthType; label: string; icon: string; desc: string }[
 export default function EmailAccounts() {
   const [data, setData] = useState<AccountsData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [dnsResult, setDnsResult] = useState<{ mx: boolean; spf: boolean; dmarc: boolean } | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -106,7 +107,22 @@ export default function EmailAccounts() {
   const load = () => {
     setLoading(true);
     api.get('/email-accounts')
-      .then((res) => setData(res.data.data))
+      .then((res) => {
+        const d: AccountsData = res.data.data;
+        setData(d);
+        // Auto-fetch DNS status using the first custom SMTP account's domain
+        const smtpAccount = d.accounts.find((a) => a.source === 'db' && a.auth_type === 'smtp');
+        if (smtpAccount) {
+          const domain = smtpAccount.email.split('@')[1];
+          if (domain) {
+            api.get(`/settings/dns-check?domain=${encodeURIComponent(domain)}`)
+              .then((r) => setDnsResult(r.data.data))
+              .catch(() => setDnsResult(null));
+          }
+        } else {
+          setDnsResult(null);
+        }
+      })
       .catch(() => setData(null))
       .finally(() => setLoading(false));
     api.get('/warmup/status')
@@ -386,7 +402,7 @@ export default function EmailAccounts() {
               Currently sending via <span className="font-bold">{accounts[0]?.email || 'your Gmail account'}</span>.
               All outgoing emails are redirected to your test address.
               {data?.manualLeadsOnly && ' Only manually entered recipients are permitted.'}
-              {' '}When ready to scale, add lookalike domain accounts and enable the Instantly.ai platform.
+              {' '}When ready to scale, connect a lookalike domain SMTP account and configure DKIM/SPF/DMARC.
             </p>
           </div>
         </div>
@@ -535,40 +551,75 @@ export default function EmailAccounts() {
           </div>
           <h3 className="font-bold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>Connect New Account</h3>
           <p className="text-xs text-slate-400 mt-2 max-w-[180px] leading-relaxed">
-            Add Gmail, SMTP, or Instantly-managed account for outreach rotation.
+            Add Gmail OAuth2, App Password, or custom SMTP account for outreach rotation.
           </p>
         </button>
       </div>
 
       {/* Production Roadmap */}
-      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
-        <h3 className="text-xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
-          Production Readiness Checklist
-        </h3>
-        <p className="text-sm text-secondary mb-6">Steps to scale from test phase to full production outreach.</p>
-        <div className="space-y-4">
-          {[
-            { done: !!accounts[0]?.email, step: `Personal email configured (${accounts[0]?.email || 'not set'})`,    note: 'Active — sending via Gmail' },
-            { done: false, step: 'Add lookalike domain (e.g. optirate-solutions.com)',                                 note: 'Dreamhost DNS + new domain purchase' },
-            { done: false, step: 'Configure DKIM, DMARC, SPF for sending domain',                                     note: 'Required before Instantly activation' },
-            { done: false, step: 'Connect sending account to Instantly.ai',                                           note: 'Enable EMAIL_PLATFORM=instantly in Cloud Run' },
-            { done: false, step: 'Start warm-up at 20 emails/day, scale over 4 weeks',                               note: 'Instantly handles automatically' },
-            { done: false, step: 'Run first live campaign with lookalike account',                                    note: 'Target: 500+ leads, 1-2 follow-up sequences' },
-          ].map(({ done, step, note }) => (
-            <div key={step} className="flex items-start gap-4">
-              <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-[#8ff9a8]/30' : 'bg-surface-container-high'}`}>
-                {done
-                  ? <span className="material-symbols-outlined text-[14px] text-[#006630]">check</span>
-                  : <span className="w-2 h-2 rounded-full bg-slate-300 inline-block" />}
-              </div>
-              <div>
-                <p className={`text-sm font-bold ${done ? 'text-secondary line-through' : 'text-on-surface'}`}>{step}</p>
-                <p className="text-xs text-secondary mt-0.5">{note}</p>
-              </div>
+      {(() => {
+        const hasSmtpAccount = accounts.some((a) => a.source === 'db' && a.auth_type === 'smtp');
+        const smtpDomain = (() => {
+          const a = accounts.find((ac) => ac.source === 'db' && ac.auth_type === 'smtp');
+          return a ? a.email.split('@')[1] : null;
+        })();
+        const dnsReady = !!(dnsResult?.spf && dnsResult?.dmarc);
+        const warmupActive = !!(warmupData?.accounts.some((a) => a.warmupEnabled));
+
+        const steps: { done: boolean; step: string; note: string }[] = [
+          {
+            done: !!accounts[0]?.email,
+            step: `Personal email configured (${accounts[0]?.email || 'not set'})`,
+            note: 'Active — sending via Gmail',
+          },
+          {
+            done: hasSmtpAccount,
+            step: 'Add lookalike domain (e.g. optirate-solutions.com)',
+            note: hasSmtpAccount && smtpDomain ? `Custom SMTP connected — ${smtpDomain}` : 'Connect via DreamHost Email button above',
+          },
+          {
+            done: dnsReady,
+            step: 'Configure DKIM, DMARC, SPF for sending domain',
+            note: dnsResult
+              ? `MX: ${dnsResult.mx ? '✓' : '✗'} · SPF: ${dnsResult.spf ? '✓' : '✗'} · DMARC: ${dnsResult.dmarc ? '✓' : '✗'}${smtpDomain ? ` (${smtpDomain})` : ''}`
+              : hasSmtpAccount ? 'Checking DNS…' : 'Connect a custom SMTP account first',
+          },
+          {
+            done: warmupActive,
+            step: 'Start warm-up at 20 emails/day, scale over 4 weeks',
+            note: warmupActive ? `Warmup pool active — ${warmupData?.poolSize} account${warmupData?.poolSize !== 1 ? 's' : ''}` : 'Enable warmup toggle on a Gmail OAuth2 account',
+          },
+          {
+            done: false,
+            step: 'Run first live campaign with lookalike account',
+            note: 'Target: 500+ leads, 1–2 follow-up sequences',
+          },
+        ];
+
+        return (
+          <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+            <h3 className="text-xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
+              Production Readiness Checklist
+            </h3>
+            <p className="text-sm text-secondary mb-6">Steps to scale from test phase to full production outreach.</p>
+            <div className="space-y-4">
+              {steps.map(({ done, step, note }) => (
+                <div key={step} className="flex items-start gap-4">
+                  <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${done ? 'bg-[#8ff9a8]/30' : 'bg-surface-container-high'}`}>
+                    {done
+                      ? <span className="material-symbols-outlined text-[14px] text-[#006630]">check</span>
+                      : <span className="w-2 h-2 rounded-full bg-slate-300 inline-block" />}
+                  </div>
+                  <div>
+                    <p className={`text-sm font-bold ${done ? 'text-secondary line-through' : 'text-on-surface'}`}>{step}</p>
+                    <p className="text-xs text-secondary mt-0.5">{note}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
+        );
+      })()}
 
       {/* ── Add Account Modal ── */}
       {showModal && (

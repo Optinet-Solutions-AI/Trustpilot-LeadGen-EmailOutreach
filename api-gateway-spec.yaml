@@ -524,3 +524,10 @@ paths:
       responses:
         "200":
           description: OK
+  /api/settings/dns-check:
+    get:
+      operationId: checkDomainDNS
+      security: []
+      responses:
+        "200":
+          description: OK
