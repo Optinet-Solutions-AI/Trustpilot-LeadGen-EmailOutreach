@@ -239,122 +239,9 @@ export default function Inbox() {
         </div>
       </div>
 
-      {/* Right — thread / detail pane */}
+      {/* Right — thread / detail pane (matches CampaignDetail panel style) */}
       <div className="flex-1 flex flex-col bg-[#f8f9fa] overflow-hidden">
-        {threadLoading ? (
-          <div className="flex-1 flex items-center justify-center gap-2 text-secondary text-sm">
-            <span className="material-symbols-outlined text-[#b0004a] text-[20px] animate-spin">progress_activity</span>
-            Loading thread…
-          </div>
-        ) : thread ? (
-          <div className="flex flex-col h-full">
-            {/* Thread header */}
-            <div className="px-6 py-4 border-b border-slate-100 bg-white">
-              <h3 className="text-base font-extrabold text-on-surface leading-tight" style={{ fontFamily: 'Manrope, sans-serif' }}>
-                {thread.messages[0]?.subject || '(no subject)'}
-              </h3>
-              <div className="flex items-center gap-3 mt-1">
-                <p className="text-xs text-secondary">{thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''}</p>
-                {selectedMsg && (
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_BADGE[selectedMsg.status]?.classes || ''}`}>
-                    {STATUS_BADGE[selectedMsg.status]?.label || selectedMsg.status}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-              {thread.messages.map((msg, idx) => {
-                const { name: fromName, email: fromEmail } = parseDisplayName(msg.from);
-                const isLast = idx === thread.messages.length - 1;
-                return (
-                  <div key={msg.id} className={`bg-white rounded-xl ambient-shadow overflow-hidden ${isLast ? 'ring-1 ring-[#b0004a]/10' : ''}`}>
-                    <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-4">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-9 h-9 rounded-full bg-[#ffd9de] flex items-center justify-center flex-shrink-0 text-[#b0004a] font-extrabold text-sm">
-                          {(fromName || fromEmail).charAt(0).toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-bold text-on-surface truncate">{fromName || fromEmail}</p>
-                          <p className="text-xs text-secondary truncate">{fromEmail !== fromName ? fromEmail : ''}</p>
-                          <p className="text-xs text-slate-400 mt-0.5">To: {msg.to}</p>
-                        </div>
-                      </div>
-                      <span className="text-xs text-slate-400 flex-shrink-0 mt-0.5">
-                        {new Date(msg.date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
-                      </span>
-                    </div>
-                    <div className="px-5 py-4">
-                      {msg.body ? (
-                        msg.bodyType === 'html' ? (
-                          <div
-                            className="prose prose-sm max-w-none text-on-surface text-sm leading-relaxed overflow-auto"
-                            style={{ maxHeight: '400px' }}
-                            dangerouslySetInnerHTML={{ __html: msg.body }}
-                          />
-                        ) : (
-                          <pre className="text-sm text-on-surface leading-relaxed whitespace-pre-wrap font-sans overflow-auto" style={{ maxHeight: '400px' }}>
-                            {msg.body}
-                          </pre>
-                        )
-                      ) : (
-                        <p className="text-sm text-secondary italic">{msg.snippet}</p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : selectedMsg ? (
-          /* Selected but no gmail_thread_id — show what we know */
-          <div className="flex-1 flex flex-col p-6 space-y-4">
-            <div className="bg-white rounded-xl ambient-shadow p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-[#ffd9de] flex items-center justify-center text-[#b0004a] font-extrabold">
-                  {selectedMsg.company_name.charAt(0).toUpperCase()}
-                </div>
-                <div>
-                  <p className="font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>{selectedMsg.company_name}</p>
-                  <p className="text-xs text-secondary">{selectedMsg.email_used}</p>
-                </div>
-                <span className={`ml-auto text-[11px] font-bold px-2.5 py-1 rounded-full ${STATUS_BADGE[selectedMsg.status]?.classes || ''}`}>
-                  {STATUS_BADGE[selectedMsg.status]?.label || selectedMsg.status}
-                </span>
-              </div>
-              <div className="border-t border-slate-100 pt-4 space-y-2">
-                <div className="flex gap-2 text-xs">
-                  <span className="font-bold text-secondary w-28">Campaign:</span>
-                  <span className="text-on-surface">{selectedMsg.campaign_name}</span>
-                </div>
-                <div className="flex gap-2 text-xs">
-                  <span className="font-bold text-secondary w-28">Sent to:</span>
-                  <span className="text-on-surface">{selectedMsg.email_used || '—'}</span>
-                </div>
-                <div className="flex gap-2 text-xs">
-                  <span className="font-bold text-secondary w-28">Sent at:</span>
-                  <span className="text-on-surface">{selectedMsg.sent_at ? new Date(selectedMsg.sent_at).toLocaleString() : '—'}</span>
-                </div>
-                {selectedMsg.reply_snippet && (
-                  <div className="mt-3 bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-3">
-                    <p className="text-xs font-bold text-[#006630] mb-1 flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[13px]">reply</span>
-                      Reply:
-                    </p>
-                    <p className="text-xs text-[#006630]">{selectedMsg.reply_snippet}</p>
-                  </div>
-                )}
-                {!selectedMsg.gmail_thread_id && (
-                  <p className="text-[11px] text-slate-400 mt-3 flex items-center gap-1">
-                    <span className="material-symbols-outlined text-[13px]">info</span>
-                    Full thread not available — Gmail thread ID not recorded for this send.
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
+        {!selectedMsg ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
             <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center mb-5">
               <span className="material-symbols-outlined text-[32px] text-secondary">
@@ -371,6 +258,146 @@ export default function Inbox() {
                   ? 'When leads reply to your outreach emails, they will appear here.'
                   : 'Sent outreach emails will appear here once campaigns are running.'}
             </p>
+          </div>
+        ) : (
+          /* Compact detail panel — same style as CampaignDetail */
+          <div className="w-full max-w-[420px] flex flex-col bg-white border-l border-slate-100 overflow-y-auto h-full">
+
+            {/* Panel header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
+              <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                {thread ? `Thread (${thread.messages.length} message${thread.messages.length !== 1 ? 's' : ''})` : 'Message Detail'}
+              </p>
+              <button onClick={() => { setSelectedId(null); setSelectedMsg(null); setThread(null); }} className="p-1.5 rounded-lg hover:bg-surface-container transition-colors">
+                <span className="material-symbols-outlined text-[18px] text-secondary">close</span>
+              </button>
+            </div>
+
+            {/* Lead info */}
+            <div className="px-5 py-4 flex items-center gap-3 border-b border-slate-100">
+              <div className="w-10 h-10 rounded-full bg-[#ffd9de] flex items-center justify-center text-[#b0004a] font-extrabold text-base flex-shrink-0">
+                {(selectedMsg.company_name || selectedMsg.email_used || '?').charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-on-surface truncate">{selectedMsg.company_name || '—'}</p>
+                <p className="text-xs text-secondary truncate">{selectedMsg.email_used || '—'}</p>
+              </div>
+              <span className={`flex-shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full ${STATUS_BADGE[selectedMsg.status]?.classes || ''}`}>
+                {STATUS_BADGE[selectedMsg.status]?.label || selectedMsg.status}
+              </span>
+            </div>
+
+            {/* Message body */}
+            <div className="flex-1">
+              {threadLoading ? (
+                <div className="flex items-center justify-center py-14 gap-2 text-secondary text-sm">
+                  <span className="material-symbols-outlined text-[#b0004a] text-[20px] animate-spin">progress_activity</span>
+                  Loading thread…
+                </div>
+              ) : thread && thread.messages.length > 0 ? (
+                <div>
+                  {thread.messages.map((msg, idx) => {
+                    const { name: fromName, email: fromEmail } = parseDisplayName(msg.from);
+                    return (
+                      <div key={msg.id} className={idx > 0 ? 'border-t border-slate-100' : ''}>
+                        {idx === 0 ? (
+                          <div className="px-5 pt-4 pb-2">
+                            <p className="text-sm font-bold text-on-surface leading-snug">{msg.subject}</p>
+                          </div>
+                        ) : (
+                          <div className="px-5 pt-4 pb-2 flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-[#ffd9de] flex items-center justify-center text-[#b0004a] text-[10px] font-bold flex-shrink-0">
+                              {(fromName || fromEmail).charAt(0).toUpperCase()}
+                            </div>
+                            <p className="text-xs font-bold text-on-surface flex-1 truncate">{fromName || fromEmail}</p>
+                            <span className="text-[10px] text-slate-400 flex-shrink-0">
+                              {new Date(msg.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                            </span>
+                          </div>
+                        )}
+                        <div className="px-5 pb-4">
+                          {msg.body ? (
+                            <div
+                              className="email-body text-secondary text-xs overflow-auto"
+                              style={{ maxHeight: idx === 0 ? '240px' : '160px' }}
+                              dangerouslySetInnerHTML={{ __html: msg.bodyType === 'html' ? msg.body : msg.body.replace(/\n/g, '<br>') }}
+                            />
+                          ) : (
+                            <p className="text-xs text-secondary italic">{msg.snippet}</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* No thread — show reply snippet if available */
+                <div className="px-5 pt-4 pb-4">
+                  {selectedMsg.reply_snippet && (
+                    <div className="bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-3 mb-3">
+                      <p className="text-xs font-bold text-[#006630] mb-1 flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[13px]">reply</span>
+                        Reply received:
+                      </p>
+                      <p className="text-xs text-[#006630]">{selectedMsg.reply_snippet}</p>
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-400 flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[13px]">info</span>
+                    Full thread not available — Gmail thread ID not recorded for this send.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Metadata */}
+            <div className="border-t border-slate-100 px-5 py-4">
+              <p className="text-[10px] font-extrabold text-secondary uppercase tracking-wider mb-3">Metadata</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                <div>
+                  <p className="text-[10px] text-secondary">Campaign</p>
+                  <p className="text-xs font-semibold text-on-surface truncate">{selectedMsg.campaign_name || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Time Sent</p>
+                  <p className="text-xs font-semibold text-on-surface">
+                    {selectedMsg.sent_at
+                      ? new Date(selectedMsg.sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+                      : '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Send Account</p>
+                  <p className="text-xs font-semibold text-on-surface truncate">{thread?.senderAccount || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-secondary">Thread ID</p>
+                  <p className="text-xs font-semibold text-on-surface font-mono truncate">
+                    {selectedMsg.gmail_thread_id ? `${selectedMsg.gmail_thread_id.slice(0, 10)}…` : '—'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Copy button */}
+            <div className="border-t border-slate-100 px-5 py-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const firstMsg = thread?.messages[0];
+                  const subject = firstMsg?.subject || '';
+                  const body = firstMsg
+                    ? (firstMsg.bodyType === 'html' ? firstMsg.body.replace(/<[^>]+>/g, '') : firstMsg.body)
+                    : selectedMsg.reply_snippet || '';
+                  navigator.clipboard?.writeText(`Subject: ${subject}\n\n${body}`);
+                }}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-secondary border border-slate-200 rounded-lg py-2 hover:bg-surface-container transition-colors"
+              >
+                <span className="material-symbols-outlined text-[13px]">content_copy</span>
+                Copy Message
+              </button>
+            </div>
+
           </div>
         )}
       </div>
