@@ -34,8 +34,10 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
     logger: false,
   });
 
+  let connected = false;
   try {
     await client.connect();
+    connected = true;
 
     // Get sent campaign leads for this account that haven't been marked replied
     const { data: sentLeads, error } = await supabase
@@ -44,10 +46,7 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
       .eq('status', 'sent')
       .eq('email_used', account.email);
 
-    if (error || !sentLeads?.length) {
-      await client.logout();
-      return { repliesFound: 0 };
-    }
+    if (error || !sentLeads?.length) return { repliesFound: 0 };
 
     const leadEmails = new Set(sentLeads.map((l) => l.email_used?.toLowerCase()));
 
@@ -96,11 +95,13 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
     } finally {
       lock.release();
     }
-
-    await client.logout();
   } catch (err) {
     console.error(`[ImapReplyTracker] Error for ${account.email}:`, err instanceof Error ? err.message : err);
-    try { await client.logout(); } catch { /* ignore */ }
+  } finally {
+    // Always close the connection — never leave a zombie IMAP socket open.
+    if (connected) {
+      try { await client.logout(); } catch { /* ignore */ }
+    }
   }
 
   return { repliesFound };

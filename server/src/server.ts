@@ -179,9 +179,9 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
   }
 
-  // Start Gmail reply tracking poll (every 5 minutes) when in gmail mode
+  // Start Gmail reply tracking poll (every 15 minutes) when in gmail mode
   if (config.emailMode === 'gmail') {
-    const REPLY_CHECK_INTERVAL = 5 * 60 * 1000;
+    const REPLY_CHECK_INTERVAL = 15 * 60 * 1000;
     setInterval(async () => {
       try {
         const { checkForReplies } = await import('./services/reply-tracker.js');
@@ -191,7 +191,7 @@ const server = app.listen(config.port, async () => {
         console.error('[ReplyTracker] Poll error:', e instanceof Error ? e.message : e);
       }
     }, REPLY_CHECK_INTERVAL);
-    console.log('Reply tracker: polling every 5 minutes');
+    console.log('Reply tracker: polling every 15 minutes');
   }
 });
 

@@ -37,16 +37,18 @@ async function fetchScreenshot(screenshotPath: string): Promise<Buffer | null> {
   return null;
 }
 
-export async function sendEmailSmtp(
-  to: string,
-  subject: string,
-  html: string,
-  options: SendEmailOptions = {},
-  account: SmtpSenderAccount,
-): Promise<SendEmailResult> {
-  const secure = account.smtp_port === 465;
+// Persistent pooled transporters keyed by SMTP user — avoids a new TLS handshake per send.
+const transporterCache = new Map<string, nodemailer.Transporter>();
 
+function getTransporter(account: SmtpSenderAccount): nodemailer.Transporter {
+  const cached = transporterCache.get(account.smtp_user);
+  if (cached) return cached;
+
+  const secure = account.smtp_port === 465;
   const transporter = nodemailer.createTransport({
+    pool: true,
+    maxConnections: 2,
+    maxMessages: 100,
     host: account.smtp_host,
     port: account.smtp_port,
     secure,
@@ -55,6 +57,18 @@ export async function sendEmailSmtp(
       pass: account.smtp_password,
     },
   });
+  transporterCache.set(account.smtp_user, transporter);
+  return transporter;
+}
+
+export async function sendEmailSmtp(
+  to: string,
+  subject: string,
+  html: string,
+  options: SendEmailOptions = {},
+  account: SmtpSenderAccount,
+): Promise<SendEmailResult> {
+  const transporter = getTransporter(account);
 
   // Embed screenshot as CID inline attachment if provided
   let bodyHtml = html;
