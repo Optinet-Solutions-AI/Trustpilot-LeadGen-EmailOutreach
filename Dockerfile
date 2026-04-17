@@ -40,9 +40,9 @@ COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt && \
     python3 -m playwright install chromium
 
-# ── Node: install dependencies ────────────────────────────────
+# ── Node: install dependencies + Playwright Chromium ──────────
 COPY server/package*.json ./server/
-RUN cd server && npm ci
+RUN cd server && npm ci && npx playwright install chromium
 
 # ── Node: copy source + compile TypeScript ────────────────────
 COPY server/ ./server/

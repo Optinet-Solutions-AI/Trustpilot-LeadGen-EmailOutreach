@@ -18,6 +18,7 @@ import { config } from '../config.js';
 import { updateJob } from '../db/scrape-jobs.js';
 import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
+import { enrichLeads, type EnrichableLead } from './scrapers/website-enricher.js';
 
 export const scrapeEvents = new EventEmitter();
 
@@ -39,11 +40,34 @@ function parseUpsertResult(stdout: string): { saved: number; failed: number } {
 }
 
 /**
- * Parse the PROGRESS:enrich_done:N line from scrape_website.py stdout.
+ * Run the TypeScript website enricher against a JSON file in-place.
+ * Reads the file, enriches any lead with website_url but no website_email,
+ * writes the updated list back, and emits per-item progress.
+ * Returns the number of emails newly found.
  */
-function parseEnrichResult(stdout: string): number {
-  const match = stdout.match(/PROGRESS:enrich_done:(\d+)/);
-  return match ? parseInt(match[1], 10) : 0;
+async function runTsEnricher(jobId: string, jsonFile: string): Promise<number> {
+  const leads = JSON.parse(fs.readFileSync(jsonFile, 'utf-8')) as EnrichableLead[];
+  const total = leads.filter((l) => l.website_url && !l.website_email).length;
+  if (total === 0) return 0;
+
+  const results = await enrichLeads(leads, {
+    concurrency: 3,
+    onProgress: (done, totalItems) => {
+      emitProgress(jobId, 'enrich_progress', `${done}/${totalItems}`);
+    },
+  });
+
+  let newFound = 0;
+  for (let i = 0; i < leads.length; i++) {
+    const r = results[i];
+    if (r.foundEmail && !leads[i].website_email) {
+      leads[i] = { ...leads[i], website_email: r.foundEmail };
+      newFound++;
+    }
+  }
+
+  fs.writeFileSync(jsonFile, JSON.stringify(leads, null, 2), 'utf-8');
+  return newFound;
 }
 
 // Watchdog: max seconds of silence before killing a hung Python process
@@ -395,12 +419,7 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
         const enrichOnlyFile = path.join(tmpDir, `${jobId}_enriched.json`);
         fs.writeFileSync(enrichOnlyFile, JSON.stringify(unEnriched, null, 2));
 
-        const { promise: enrichOnlyPromise } = runPython(jobId, 'tools/scraper/scrape_website.py', [
-          '--input', enrichOnlyFile,
-          '--output', enrichOnlyFile,
-          '--parallel', '3',
-        ]);
-        await enrichOnlyPromise;
+        await runTsEnricher(jobId, enrichOnlyFile);
 
         emitProgress(jobId, 'final_save', 'Saving enriched data...');
         const { promise: saveOnlyPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
@@ -485,13 +504,8 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
         emitProgress(jobId, 'enrich_start', '');
       }
 
-      const { promise: enrichPromise } = runPython(jobId, 'tools/scraper/scrape_website.py', [
-        '--input', enrichedOutput,
-        '--output', enrichedOutput,
-        '--parallel', '3',
-      ]);
-      const enrichStdout = await enrichPromise;
-      const emailsFound = parseEnrichResult(enrichStdout);
+      const emailsFound = await runTsEnricher(jobId, enrichedOutput);
+      emitProgress(jobId, 'enrich_done', String(emailsFound));
 
       // Step 6: Final upsert with enriched emails
       emitProgress(jobId, 'final_save', 'Saving enriched data...');
