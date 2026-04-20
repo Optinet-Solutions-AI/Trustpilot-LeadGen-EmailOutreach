@@ -110,15 +110,16 @@ const server = app.listen(config.port, async () => {
   }
 
   // Reset orphaned 'running' scrape jobs to 'failed' on startup.
-  // Scrapers are Python subprocesses tied to THIS Node instance — a fresh Node
-  // process means any DB row still marked 'running' is an orphan from the
-  // previous revision (Cloud Run kills the old container on redeploy and
-  // SIGTERM cleanup is not guaranteed to complete in the 10s shutdown window).
-  // A 2-minute grace window avoids racing the brand-new job a user may have
-  // just triggered against a stale server instance.
+  // Scrapers are Python subprocesses spawned by THIS Node instance. A fresh
+  // Node process has no reference to any prior subprocess — so any DB row
+  // still marked 'running' at boot is orphaned by definition (SIGTERM cleanup
+  // from the old Cloud Run container is not guaranteed to finish in the 10s
+  // shutdown window). No grace period: the cost of a false positive (racing
+  // a brand-new job) is one "failed" label the user can retry; the cost of a
+  // false negative (stuck "running" forever) is a misleading UI and wasted
+  // time waiting on a dead scrape.
   try {
     const { getSupabase } = await import('./lib/supabase.js');
-    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const { data, error } = await getSupabase()
       .from('scrape_jobs')
       .update({
@@ -127,12 +128,11 @@ const server = app.listen(config.port, async () => {
         completed_at: new Date().toISOString(),
       })
       .eq('status', 'running')
-      .lt('started_at', twoMinAgo)
       .select('id');
     if (error) console.warn('[Startup] Failed to reset orphaned scrape jobs:', error.message);
     else {
       const count = data?.length ?? 0;
-      if (count > 0) console.log(`[Startup] Reset ${count} orphaned scrape jobs (started >2min ago) to failed`);
+      if (count > 0) console.log(`[Startup] Marked ${count} orphaned scrape job(s) as failed`);
       else console.log('[Startup] No orphaned scrape jobs found');
     }
   } catch (e) {
