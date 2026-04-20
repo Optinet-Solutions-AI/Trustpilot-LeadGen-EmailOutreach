@@ -109,22 +109,30 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Campaign orphan check error:', e instanceof Error ? e.message : e);
   }
 
-  // Reset truly orphaned 'running' scrape jobs to 'failed' on startup.
-  // Only mark jobs as orphaned if they started more than 30 minutes ago,
-  // to avoid killing jobs that are actively running on this or another instance.
+  // Reset orphaned 'running' scrape jobs to 'failed' on startup.
+  // Scrapers are Python subprocesses tied to THIS Node instance — a fresh Node
+  // process means any DB row still marked 'running' is an orphan from the
+  // previous revision (Cloud Run kills the old container on redeploy and
+  // SIGTERM cleanup is not guaranteed to complete in the 10s shutdown window).
+  // A 2-minute grace window avoids racing the brand-new job a user may have
+  // just triggered against a stale server instance.
   try {
     const { getSupabase } = await import('./lib/supabase.js');
-    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const { data, error } = await getSupabase()
       .from('scrape_jobs')
-      .update({ status: 'failed', error: 'Server restarted during job' })
+      .update({
+        status: 'failed',
+        error: 'Orphaned: server restarted mid-scrape (Cloud Run redeploy)',
+        completed_at: new Date().toISOString(),
+      })
       .eq('status', 'running')
-      .lt('started_at', thirtyMinAgo)
+      .lt('started_at', twoMinAgo)
       .select('id');
     if (error) console.warn('[Startup] Failed to reset orphaned scrape jobs:', error.message);
     else {
       const count = data?.length ?? 0;
-      if (count > 0) console.log(`[Startup] Reset ${count} orphaned scrape jobs (started >30min ago) to failed`);
+      if (count > 0) console.log(`[Startup] Reset ${count} orphaned scrape jobs (started >2min ago) to failed`);
       else console.log('[Startup] No orphaned scrape jobs found');
     }
   } catch (e) {
