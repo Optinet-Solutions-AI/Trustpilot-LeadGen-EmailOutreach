@@ -224,14 +224,20 @@ const server = app.listen(config.port, async () => {
 });
 
 // Graceful shutdown — Cloud Run sends SIGTERM before killing the instance.
-// Kill active Python processes and mark running jobs as failed.
+// Kill active Python processes spawned BY THIS INSTANCE and mark those jobs as failed.
+// Jobs being driven by other live instances (common during revision rollovers, where
+// old + new revisions briefly coexist) must NOT be touched — the heartbeat-based
+// orphan reaper on startup is the authority for those.
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received — killing active scrapers and shutting down');
 
-  // Kill all active Python scraper processes
+  const ownedJobIds: string[] = [];
+
+  // Kill active Python scraper processes owned by this instance
   try {
     const { getActiveProcesses } = await import('./services/scrape-runner.js');
     for (const [jobId, proc] of getActiveProcesses()) {
+      ownedJobIds.push(jobId);
       console.log(`  Killing scraper process for job ${jobId} (PID ${proc.pid})`);
       try {
         if (process.platform === 'win32') {
@@ -244,16 +250,20 @@ process.on('SIGTERM', async () => {
     }
   } catch {}
 
-  // Mark all running scrape jobs as failed in DB
-  try {
-    const { getSupabase } = await import('./lib/supabase.js');
-    const supabase = getSupabase();
-    await supabase
-      .from('scrape_jobs')
-      .update({ status: 'failed', error: 'Server shutdown during job' })
-      .eq('status', 'running');
-  } catch (e) {
-    console.error('Failed to clean up running jobs on shutdown:', e);
+  // Mark ONLY this instance's jobs as failed — never touch jobs that other
+  // instances are still driving.
+  if (ownedJobIds.length > 0) {
+    try {
+      const { getSupabase } = await import('./lib/supabase.js');
+      const supabase = getSupabase();
+      await supabase
+        .from('scrape_jobs')
+        .update({ status: 'failed', error: 'Server shutdown during job' })
+        .in('id', ownedJobIds)
+        .eq('status', 'running');
+    } catch (e) {
+      console.error('Failed to clean up running jobs on shutdown:', e);
+    }
   }
   server.close(() => process.exit(0));
 });
