@@ -6,6 +6,17 @@
  *   2. On bot-detection failure, escalate to tier 3 (datacenter proxy) if configured
  *   3. Still blocked → tier 4 (residential proxy) if configured
  *   4. Final fallback — MX-validated guess (info@/contact@/support@ @ domain)
+ *
+ * Extraction strategies (in order per page):
+ *   A. mailto: links + data-email attributes
+ *   B. JSON-LD structured data (Schema.org Organization.contactPoint.email)
+ *   C. Inline <script> block scanning (window configs, split strings)
+ *   D. Body innerText + raw HTML regex
+ *   E. Obfuscated patterns: user [at] domain [dot] com
+ *
+ * URL discovery strategies:
+ *   1. Guessed contact paths (expanded list)
+ *   2. Sitemap.xml crawl → find real contact/about page URLs
  */
 
 import type { Browser, BrowserContext, Page } from 'playwright';
@@ -68,10 +79,28 @@ const INVALID_TLDS = new Set([
 // ─── Contact sub-paths to probe when homepage yields nothing ────────────────
 
 const CONTACT_PATHS = [
-  '/contact', '/contact-us', '/contact_us',
-  '/about', '/about-us',
-  '/impressum', '/kontakt', '/contacto',
-  '/support', '/help',
+  // English
+  '/contact', '/contact-us', '/contact_us', '/contacts',
+  '/about', '/about-us', '/about_us',
+  '/support', '/help', '/help-center',
+  '/team', '/our-team', '/meet-the-team',
+  '/legal', '/privacy', '/privacy-policy',
+  // German
+  '/impressum', '/kontakt', '/datenschutz', '/ueber-uns',
+  // Spanish / French / Italian
+  '/contacto', '/contactez-nous', '/contatti', '/contato',
+  // Other common patterns
+  '/reach-us', '/get-in-touch', '/write-to-us',
+  '/company', '/company/contact', '/company/about',
+  '/en/contact', '/en/contact-us', '/en/about',
+  '/de/kontakt', '/de/impressum',
+];
+
+// Keywords that identify a sitemap URL as a contact/about page worth visiting
+const SITEMAP_CONTACT_KEYWORDS = [
+  'contact', 'kontakt', 'contacto', 'about', 'ueber', 'impressum',
+  'legal', 'support', 'help', 'team', 'privacy', 'datenschutz',
+  'reach', 'touch', 'company', 'write', 'contatti', 'contato',
 ];
 
 // ─── MX fallback guesses (ordered — best cold-outreach address first) ───────
@@ -102,7 +131,6 @@ function looksLikeCodeFragment(email: string): boolean {
   const tld = domainPart.split('.').pop()?.toLowerCase() || '';
   if (INVALID_TLDS.has(tld)) return true;
   // Domain body (without TLD) too short — real company domains are 3+ chars
-  // ("bp.com" is an exception but rare; we accept losing those to avoid noise)
   const domainBody = domainPart.slice(0, domainPart.lastIndexOf('.'));
   if (domainBody.length < 3) return true;
   return false;
@@ -170,9 +198,35 @@ async function filterByMx(emails: string[]): Promise<string[]> {
   return kept;
 }
 
+/**
+ * Recursively walk a parsed JSON-LD object and collect all string values
+ * that look like email addresses, or values under keys containing "email".
+ */
+function extractEmailsFromJsonLd(obj: unknown): string[] {
+  if (!obj || typeof obj !== 'object') return [];
+  const found: string[] = [];
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      // Any key named "email" / "emailAddress" etc.
+      if (k.toLowerCase().includes('email') && v.includes('@')) {
+        found.push(v.toLowerCase().trim());
+      }
+      // Also scan string values regardless of key — catches contactPoint.telephone style nesting
+      const matches = v.matchAll(EMAIL_RE);
+      for (const m of matches) found.push(m[0].toLowerCase());
+    } else if (Array.isArray(v)) {
+      for (const item of v) found.push(...extractEmailsFromJsonLd(item));
+    } else if (v && typeof v === 'object') {
+      found.push(...extractEmailsFromJsonLd(v));
+    }
+  }
+  return found;
+}
+
 async function findEmailsOnPage(page: Page): Promise<string[]> {
   const collected = new Set<string>();
   try {
+    // ── Strategy A: mailto links + data attributes + body text ──────────────
     const pageData = await page.evaluate(() => {
       const mailtoEmails: string[] = [];
       document.querySelectorAll('a[href^="mailto:"]').forEach((el) => {
@@ -195,8 +249,46 @@ async function findEmailsOnPage(page: Page): Promise<string[]> {
     pageData.dataAttrEmails.forEach((e) => collected.add(e));
     extractEmailsFromText(pageData.bodyText).forEach((e) => collected.add(e));
 
+    // ── Strategy B: JSON-LD structured data ─────────────────────────────────
+    // Schema.org Organization / ContactPoint often embed email here
+    const jsonLdBlocks = await page.evaluate(() => {
+      const blocks: string[] = [];
+      document.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+        if (s.textContent?.trim()) blocks.push(s.textContent);
+      });
+      return blocks;
+    });
+    for (const block of jsonLdBlocks) {
+      try {
+        const parsed = JSON.parse(block);
+        extractEmailsFromJsonLd(parsed).forEach((e) => collected.add(e));
+      } catch { /* malformed JSON-LD — skip */ }
+    }
+
+    // ── Strategy C: inline <script> block scanning ──────────────────────────
+    // Catches window.__config = { email: "..." } and other inline data blobs.
+    // Only scans scripts WITHOUT a src= (external files handled by raw HTML scan).
+    const inlineScriptEmails = await page.evaluate(() => {
+      const found: string[] = [];
+      const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+      document.querySelectorAll('script:not([src])').forEach((s) => {
+        const type = (s.getAttribute('type') || '').toLowerCase();
+        // JSON-LD already handled above — skip to avoid double-counting
+        if (type === 'application/ld+json') return;
+        const text = s.textContent || '';
+        if (!text.trim()) return;
+        const matches = text.matchAll(emailRe);
+        for (const m of matches) found.push(m[0].toLowerCase());
+      });
+      return found;
+    });
+    inlineScriptEmails.forEach((e) => collected.add(e));
+
+    // ── Strategy D: raw HTML regex ───────────────────────────────────────────
+    // Catches emails in HTML comments, encoded attributes, style blocks, etc.
     const html = await page.content();
     extractEmailsFromText(html).forEach((e) => collected.add(e));
+
   } catch (err) {
     console.log(`    [enricher] email extraction error: ${(err as Error).message.slice(0, 100)}`);
   }
@@ -258,7 +350,66 @@ function getDomain(url: string): string {
   }
 }
 
-// ─── MX-validated guess fallback ────────────────────────────────────────────
+// ─── Sitemap crawl — find real contact/about page URLs ──────────────────────
+
+/**
+ * Fetch /sitemap.xml (and /sitemap_index.xml fallback) and extract URLs that
+ * look like contact or about pages. Returns up to 5 unique URLs, deduplicated
+ * against paths we already plan to check.
+ */
+async function fetchContactUrlsFromSitemap(
+  page: Page,
+  baseUrl: string,
+  timeout: number,
+): Promise<string[]> {
+  const base = baseUrl.replace(/\/$/, '');
+  const sitemapCandidates = [
+    `${base}/sitemap.xml`,
+    `${base}/sitemap_index.xml`,
+    `${base}/sitemap-index.xml`,
+  ];
+
+  for (const sitemapUrl of sitemapCandidates) {
+    try {
+      const resp = await page.goto(sitemapUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeout, 10_000) });
+      if (!resp || !resp.ok()) continue;
+
+      const xmlText = await page.evaluate(() => document.body?.innerText || document.documentElement?.innerText || '');
+      if (!xmlText.includes('<loc>')) continue;
+
+      // Extract all <loc> URLs
+      const locMatches = [...xmlText.matchAll(/<loc>\s*(https?:\/\/[^\s<]+)\s*<\/loc>/gi)];
+      const contactUrls: string[] = [];
+
+      for (const m of locMatches) {
+        const url = m[1].trim().toLowerCase();
+        // Only keep URLs from the same origin
+        try {
+          const parsed = new URL(url);
+          const origin = new URL(base).origin.toLowerCase();
+          if (parsed.origin.toLowerCase() !== origin) continue;
+        } catch { continue; }
+
+        const path = new URL(url).pathname.toLowerCase();
+        const isContact = SITEMAP_CONTACT_KEYWORDS.some((kw) => path.includes(kw));
+        if (isContact) {
+          // Deduplicate against the static CONTACT_PATHS list
+          const alreadyInList = CONTACT_PATHS.some((p) => path === p || path.startsWith(p + '/'));
+          if (!alreadyInList) contactUrls.push(m[1].trim());
+          if (contactUrls.length >= 5) break;
+        }
+      }
+
+      if (contactUrls.length > 0) {
+        console.log(`    [enricher] sitemap found ${contactUrls.length} contact URL(s)`);
+        return contactUrls;
+      }
+    } catch { /* sitemap not found or malformed — try next */ }
+  }
+  return [];
+}
+
+// ─── MX fallback ────────────────────────────────────────────────────────────
 
 async function mxRecordExists(domain: string): Promise<boolean> {
   const result = await checkMx(domain);
@@ -269,7 +420,6 @@ async function mxValidatedGuess(websiteUrl: string): Promise<string | null> {
   const domain = getDomain(websiteUrl);
   if (!domain) return null;
   if (!(await mxRecordExists(domain))) return null;
-  // Return the top-priority guess — caller treats this as a low-confidence candidate
   return `${GUESS_PREFIXES[0]}@${domain}`;
 }
 
@@ -300,11 +450,21 @@ async function scrapeSite(page: Page, websiteUrl: string, timeout: number): Prom
     return { found: pickBestEmail([...all])!, candidates: [...all] };
   }
 
-  // 2. Contact sub-pages
-  const base = url.replace(/\/$/, '');
-  for (const path of CONTACT_PATHS) {
+  // 2. Sitemap-discovered contact URLs (real paths, not guessed)
+  const sitemapUrls = await fetchContactUrlsFromSitemap(page, url, timeout);
+
+  // 3. Combined URL list: sitemap hits first (more likely real), then static guesses
+  const urlsToProbe = [
+    ...sitemapUrls,
+    ...CONTACT_PATHS.map((p) => `${url.replace(/\/$/, '')}${p}`),
+  ];
+
+  for (const probeUrl of urlsToProbe) {
     try {
-      const resp = await page.goto(`${base}${path}`, { waitUntil: 'domcontentloaded', timeout: Math.min(timeout, 15_000) });
+      const resp = await page.goto(probeUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: Math.min(timeout, 15_000),
+      });
       if (resp && resp.ok()) {
         await dismissPopups(page);
         const emails = await findEmailsOnPage(page);
@@ -332,8 +492,6 @@ async function enrichSingleLeadWithTiers(
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
     if (t === startTier || !availableTiers.includes(t)) {
-      // Skip proxy tiers if no env configured — launchBrowser falls back silently, so we
-      // avoid wasting a tier slot by only including them when actually available.
       if (t === 3 && !process.env.SCRAPER_DC_PROXY_URL) continue;
       if (t === 4 && !process.env.SCRAPER_RES_PROXY_URL) continue;
       availableTiers.push(t);
