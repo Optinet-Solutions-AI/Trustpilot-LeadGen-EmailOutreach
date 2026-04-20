@@ -25,6 +25,39 @@ export const scrapeEvents = new EventEmitter();
 // Track active Python processes for cancellation
 const activeProcesses = new Map<string, ChildProcess>();
 
+// Heartbeat interval — written to scrape_jobs.last_heartbeat_at while a job is
+// running so the startup orphan-reaper can distinguish live jobs (possibly
+// running on another Cloud Run instance) from genuinely dead ones.
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const activeHeartbeats = new Map<string, NodeJS.Timeout>();
+
+async function writeHeartbeat(jobId: string): Promise<void> {
+  try {
+    await getSupabase()
+      .from('scrape_jobs')
+      .update({ last_heartbeat_at: new Date().toISOString() })
+      .eq('id', jobId);
+  } catch (err) {
+    console.warn(`[Heartbeat] Failed for job ${jobId}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+function startHeartbeat(jobId: string): void {
+  if (activeHeartbeats.has(jobId)) return;
+  // Beat immediately so a job that dies within the first 20s still has a timestamp
+  void writeHeartbeat(jobId);
+  const iv = setInterval(() => { void writeHeartbeat(jobId); }, HEARTBEAT_INTERVAL_MS);
+  activeHeartbeats.set(jobId, iv);
+}
+
+function stopHeartbeat(jobId: string): void {
+  const iv = activeHeartbeats.get(jobId);
+  if (iv) {
+    clearInterval(iv);
+    activeHeartbeats.delete(jobId);
+  }
+}
+
 /**
  * Parse the PROGRESS:upsert_done:SAVED/TOTAL line from upsert_leads.py stdout.
  * Returns { saved, failed } with real DB counts instead of trusting array lengths.
@@ -269,6 +302,8 @@ export async function cancelScrapeJob(jobId: string): Promise<void> {
     activeProcesses.delete(jobId);
   }
 
+  stopHeartbeat(jobId);
+
   await updateJob(jobId, {
     status: 'failed',
     error: 'Cancelled by user',
@@ -351,7 +386,12 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
   let totalEnriched = 0;
 
   try {
-    await updateJob(jobId, { status: 'running', started_at: new Date().toISOString() });
+    await updateJob(jobId, {
+      status: 'running',
+      started_at: new Date().toISOString(),
+      last_heartbeat_at: new Date().toISOString(),
+    });
+    startHeartbeat(jobId);
     emitProgress(jobId, 'started', '');
 
     // Step 1: Category scrape
@@ -565,5 +605,7 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       completed_at: new Date().toISOString(),
     });
     emitProgress(jobId, 'failed', message.slice(0, 200));
+  } finally {
+    stopHeartbeat(jobId);
   }
 }

@@ -110,30 +110,50 @@ const server = app.listen(config.port, async () => {
   }
 
   // Reset orphaned 'running' scrape jobs to 'failed' on startup.
-  // Scrapers are Python subprocesses spawned by THIS Node instance. A fresh
-  // Node process has no reference to any prior subprocess — so any DB row
-  // still marked 'running' at boot is orphaned by definition (SIGTERM cleanup
-  // from the old Cloud Run container is not guaranteed to finish in the 10s
-  // shutdown window). No grace period: the cost of a false positive (racing
-  // a brand-new job) is one "failed" label the user can retry; the cost of a
-  // false negative (stuck "running" forever) is a misleading UI and wasted
-  // time waiting on a dead scrape.
+  // Cloud Run can run multiple instances concurrently (or spin a fresh one while
+  // the previous is still alive), so "this process didn't spawn it" is NOT the
+  // same as "no process is driving it". We use the scrape-runner heartbeat
+  // (scrape_jobs.last_heartbeat_at, refreshed every 20s) as the liveness signal:
+  //   - heartbeat > 3 min stale  → genuinely dead, kill it
+  //   - no heartbeat yet AND started_at > 2 min ago → never beat at all, kill it
+  //   - everything else → leave alone, another instance is driving it
   try {
     const { getSupabase } = await import('./lib/supabase.js');
-    const { data, error } = await getSupabase()
+    const now = Date.now();
+    const staleHeartbeat = new Date(now - 3 * 60 * 1000).toISOString();
+    const graceStarted = new Date(now - 2 * 60 * 1000).toISOString();
+    const supabase = getSupabase();
+
+    const { data: running, error: fetchErr } = await supabase
       .from('scrape_jobs')
-      .update({
-        status: 'failed',
-        error: 'Orphaned: server restarted mid-scrape (Cloud Run redeploy)',
-        completed_at: new Date().toISOString(),
-      })
-      .eq('status', 'running')
-      .select('id');
-    if (error) console.warn('[Startup] Failed to reset orphaned scrape jobs:', error.message);
-    else {
-      const count = data?.length ?? 0;
-      if (count > 0) console.log(`[Startup] Marked ${count} orphaned scrape job(s) as failed`);
-      else console.log('[Startup] No orphaned scrape jobs found');
+      .select('id, started_at, last_heartbeat_at')
+      .eq('status', 'running');
+
+    if (fetchErr) {
+      console.warn('[Startup] Failed to query running scrape jobs:', fetchErr.message);
+    } else {
+      const orphanIds = (running ?? [])
+        .filter((j) => {
+          if (j.last_heartbeat_at) return j.last_heartbeat_at < staleHeartbeat;
+          // Never beat — only orphan if the grace window has elapsed since start
+          return j.started_at ? j.started_at < graceStarted : true;
+        })
+        .map((j) => j.id);
+
+      if (orphanIds.length > 0) {
+        const { error: updErr } = await supabase
+          .from('scrape_jobs')
+          .update({
+            status: 'failed',
+            error: 'Orphaned: no heartbeat (scraper died or Cloud Run instance cycled)',
+            completed_at: new Date().toISOString(),
+          })
+          .in('id', orphanIds);
+        if (updErr) console.warn('[Startup] Failed to reset orphaned scrape jobs:', updErr.message);
+        else console.log(`[Startup] Marked ${orphanIds.length} orphaned scrape job(s) as failed`);
+      } else {
+        console.log(`[Startup] No orphaned scrape jobs (${running?.length ?? 0} running, all heartbeats fresh)`);
+      }
     }
   } catch (e) {
     console.error('[Startup] Scrape job orphan reset error:', e instanceof Error ? e.message : e);

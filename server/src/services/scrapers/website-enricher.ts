@@ -411,16 +411,20 @@ async function fetchContactUrlsFromSitemap(
 
 // ─── MX fallback ────────────────────────────────────────────────────────────
 
-async function mxRecordExists(domain: string): Promise<boolean> {
-  const result = await checkMx(domain);
-  return result === 'has_mx';
-}
-
+/**
+ * Produce an `info@<domain>` guess unless DNS definitively says the domain
+ * has no MX records. `'unknown'` (DNS timeout / refused) is NOT a definitive
+ * answer — on Cloud Run outbound DNS to 8.8.8.8 is occasionally flaky, and
+ * rejecting on that basis meant every enrichment returned zero emails on a
+ * slow DNS day. A guess that ZeroBounce later flags as invalid is recoverable;
+ * a silently-dropped guess is not.
+ */
 async function mxValidatedGuess(websiteUrl: string): Promise<string | null> {
   const domain = getDomain(websiteUrl);
   if (!domain) return null;
-  if (!(await mxRecordExists(domain))) return null;
-  return `${GUESS_PREFIXES[0]}@${domain}`;
+  const mx = await checkMx(domain);
+  if (mx === 'no_mx') return null;  // definitive — skip
+  return `${GUESS_PREFIXES[0]}@${domain}`;  // has_mx or unknown → guess
 }
 
 // ─── Per-lead enrichment ────────────────────────────────────────────────────
