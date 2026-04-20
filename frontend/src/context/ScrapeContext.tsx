@@ -24,6 +24,7 @@ interface ScrapeContextValue {
   retryFailed: (id: string) => Promise<string | null>;
   fetchJobs: () => Promise<void>;
   deleteJob: (id: string) => Promise<void>;
+  cleanupEmptyJobs: () => Promise<number>;
 }
 
 const ScrapeContext = createContext<ScrapeContextValue | null>(null);
@@ -250,6 +251,31 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const cleanupEmptyJobs = useCallback(async () => {
+    try {
+      const res = await api.post('/scrape/cleanup-empty');
+      const deletedCount: number = res.data.data.deletedCount ?? 0;
+      const deletedIds = new Set<string>((res.data.data.deleted || []).map((d: { id: string }) => d.id));
+      if (deletedCount > 0) {
+        setJobs((prev) => prev.filter((j) => !deletedIds.has(j.id)));
+        if (jobIdRef.current && deletedIds.has(jobIdRef.current)) {
+          setJobId(null);
+          jobIdRef.current = null;
+          setStatus(null);
+          statusRef.current = null;
+          setProgress([]);
+          setError(null);
+          localStorage.removeItem('active_scrape_job');
+        }
+      }
+      return deletedCount;
+    } catch (e) {
+      const axiosMsg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(axiosMsg || (e instanceof Error ? e.message : 'Failed to clean up jobs'));
+      return 0;
+    }
+  }, []);
+
   const fetchJobs = useCallback(async () => {
     try {
       const res = await api.get('/scrape');
@@ -316,7 +342,7 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   return (
     <ScrapeContext.Provider value={{
       jobId, status, progress, error, jobs, failedCount,
-      startScrape, cancelJob, retryFailed, fetchJobs, deleteJob,
+      startScrape, cancelJob, retryFailed, fetchJobs, deleteJob, cleanupEmptyJobs,
     }}>
       {children}
     </ScrapeContext.Provider>

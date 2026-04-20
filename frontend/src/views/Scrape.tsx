@@ -10,9 +10,18 @@ import api from '../api/client';
 export default function Scrape() {
   const {
     jobId, status, progress, error, jobs, failedCount,
-    startScrape, cancelJob, retryFailed, fetchJobs, deleteJob,
+    startScrape, cancelJob, retryFailed, fetchJobs, deleteJob, cleanupEmptyJobs,
   } = useScrape();
   const [apiReady, setApiReady] = useState<boolean | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+
+  const handleCleanup = async () => {
+    if (!confirm('Delete all completed/failed scrape jobs whose country + category has zero leads in the Lead Matrix?')) return;
+    setCleaning(true);
+    const removed = await cleanupEmptyJobs();
+    setCleaning(false);
+    alert(removed > 0 ? `Removed ${removed} stale job${removed === 1 ? '' : 's'}.` : 'No stale jobs found.');
+  };
 
   useEffect(() => { fetchJobs(); }, [fetchJobs]);
 
@@ -160,9 +169,20 @@ export default function Scrape() {
             >
               Recent Scrape Jobs
             </h3>
-            <span className="text-xs text-secondary font-medium">
-              Showing {jobs.length} job{jobs.length !== 1 ? 's' : ''}
-            </span>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={handleCleanup}
+                disabled={cleaning}
+                className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-[#b0004a] hover:text-[#8a003a] disabled:text-slate-300 disabled:cursor-not-allowed transition-colors"
+                title="Delete jobs with no leads in the Lead Matrix"
+              >
+                <span className="material-symbols-outlined text-[16px]">cleaning_services</span>
+                {cleaning ? 'Cleaning…' : 'Clean Stale Jobs'}
+              </button>
+              <span className="text-xs text-secondary font-medium">
+                Showing {jobs.length} job{jobs.length !== 1 ? 's' : ''}
+              </span>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">

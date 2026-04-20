@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { createJob, getJob, getJobs, findActiveJobForParams, deleteJob } from '../db/scrape-jobs.js';
+import { createJob, getJob, getJobs, findActiveJobForParams, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
 
@@ -122,6 +122,23 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
     const jobId = param(req.params.id);
     await cancelScrapeJob(jobId);
     res.json({ success: true, data: { message: 'Job cancelled' } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/scrape/cleanup-empty — delete non-running jobs whose (country, category) has 0 leads
+router.post('/cleanup-empty', async (_req: Request, res: Response) => {
+  try {
+    const deleted = await deleteEmptyJobs();
+    res.json({
+      success: true,
+      data: {
+        deletedCount: deleted.length,
+        deleted: deleted.map(d => ({ id: d.id, country: d.country, category: d.category })),
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

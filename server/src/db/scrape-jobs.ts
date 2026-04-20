@@ -76,3 +76,51 @@ export async function deleteJob(id: string) {
     .eq('id', id);
   if (error) throw new Error(error.message);
 }
+
+/**
+ * Deletes every non-running scrape job whose (country, category) combination
+ * has zero leads in the leads table — i.e. the job looks completed in the
+ * Recent Jobs list but produced nothing that appears in the Lead Matrix.
+ * Returns the list of deleted job rows.
+ */
+export async function deleteEmptyJobs() {
+  const supabase = getSupabase();
+
+  const { data: jobs, error: jobsErr } = await supabase
+    .from('scrape_jobs')
+    .select('id, country, category, status')
+    .neq('country', '_enrich_')
+    .neq('status', 'running');
+  if (jobsErr) throw new Error(jobsErr.message);
+
+  const candidates = jobs || [];
+  if (candidates.length === 0) return [];
+
+  // Unique (country, category) pairs → single count query each
+  const pairs = new Map<string, { country: string; category: string }>();
+  for (const j of candidates) {
+    pairs.set(`${j.country}::${j.category}`, { country: j.country, category: j.category });
+  }
+
+  const emptyPairs = new Set<string>();
+  for (const [key, { country, category }] of pairs) {
+    const { count, error } = await supabase
+      .from('leads')
+      .select('id', { count: 'exact', head: true })
+      .eq('country', country)
+      .eq('category', category);
+    if (error) throw new Error(error.message);
+    if ((count ?? 0) === 0) emptyPairs.add(key);
+  }
+
+  const toDelete = candidates.filter(j => emptyPairs.has(`${j.country}::${j.category}`));
+  if (toDelete.length === 0) return [];
+
+  const { error: delErr } = await supabase
+    .from('scrape_jobs')
+    .delete()
+    .in('id', toDelete.map(j => j.id));
+  if (delErr) throw new Error(delErr.message);
+
+  return toDelete;
+}
