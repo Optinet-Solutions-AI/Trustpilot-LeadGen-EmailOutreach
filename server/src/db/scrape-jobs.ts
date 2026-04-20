@@ -67,3 +67,12 @@ export async function getJobs() {
   if (error) throw new Error(error.message);
   return data || [];
 }
+
+export async function deleteJob(id: string) {
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from('scrape_jobs')
+    .delete()
+    .eq('id', id);
+  if (error) throw new Error(error.message);
+}

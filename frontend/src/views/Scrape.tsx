@@ -10,7 +10,7 @@ import api from '../api/client';
 export default function Scrape() {
   const {
     jobId, status, progress, error, jobs, failedCount,
-    startScrape, cancelJob, retryFailed, fetchJobs,
+    startScrape, cancelJob, retryFailed, fetchJobs, deleteJob,
   } = useScrape();
   const [apiReady, setApiReady] = useState<boolean | null>(null);
 
@@ -168,9 +168,9 @@ export default function Scrape() {
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-slate-50/50">
-                  {['Category', 'Country', 'Rating', 'Status', 'Found', 'Scraped', 'Failed', 'Date'].map((h) => (
+                  {['Category', 'Country', 'Rating', 'Status', 'Found', 'Scraped', 'Failed', 'Date', ''].map((h, i) => (
                     <th
-                      key={h}
+                      key={h || `col-${i}`}
                       className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400"
                     >
                       {h}
@@ -201,6 +201,21 @@ export default function Scrape() {
                     </td>
                     <td className="px-6 py-4 text-xs text-secondary">
                       {new Date(job.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      {job.status !== 'running' && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Delete this ${job.category} / ${job.country} scrape job from the list? Leads already saved are kept.`)) {
+                              deleteJob(job.id);
+                            }
+                          }}
+                          className="material-symbols-outlined text-[18px] text-slate-300 hover:text-[#b0004a] transition-colors"
+                          title="Delete job"
+                        >
+                          delete
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

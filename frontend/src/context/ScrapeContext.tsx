@@ -23,6 +23,7 @@ interface ScrapeContextValue {
   cancelJob: (id: string) => Promise<void>;
   retryFailed: (id: string) => Promise<string | null>;
   fetchJobs: () => Promise<void>;
+  deleteJob: (id: string) => Promise<void>;
 }
 
 const ScrapeContext = createContext<ScrapeContextValue | null>(null);
@@ -230,6 +231,25 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     }
   }, [subscribeToJob]);
 
+  const deleteJob = useCallback(async (id: string) => {
+    try {
+      await api.delete(`/scrape/${id}`);
+      setJobs((prev) => prev.filter((j) => j.id !== id));
+      if (jobIdRef.current === id) {
+        setJobId(null);
+        jobIdRef.current = null;
+        setStatus(null);
+        statusRef.current = null;
+        setProgress([]);
+        setError(null);
+        localStorage.removeItem('active_scrape_job');
+      }
+    } catch (e) {
+      const axiosMsg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(axiosMsg || (e instanceof Error ? e.message : 'Failed to delete job'));
+    }
+  }, []);
+
   const fetchJobs = useCallback(async () => {
     try {
       const res = await api.get('/scrape');
@@ -296,7 +316,7 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   return (
     <ScrapeContext.Provider value={{
       jobId, status, progress, error, jobs, failedCount,
-      startScrape, cancelJob, retryFailed, fetchJobs,
+      startScrape, cancelJob, retryFailed, fetchJobs, deleteJob,
     }}>
       {children}
     </ScrapeContext.Provider>

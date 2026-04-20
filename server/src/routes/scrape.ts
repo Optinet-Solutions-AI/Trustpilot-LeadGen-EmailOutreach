@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { createJob, getJob, getJobs, findActiveJobForParams } from '../db/scrape-jobs.js';
+import { createJob, getJob, getJobs, findActiveJobForParams, deleteJob } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
 
@@ -122,6 +122,23 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
     const jobId = param(req.params.id);
     await cancelScrapeJob(jobId);
     res.json({ success: true, data: { message: 'Job cancelled' } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// DELETE /api/scrape/:id — remove a scrape job row from the Recent Jobs list
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const jobId = param(req.params.id);
+    const job = await getJob(jobId);
+    if (job.status === 'running') {
+      res.status(400).json({ success: false, error: 'Cancel the job before deleting it.' });
+      return;
+    }
+    await deleteJob(jobId);
+    res.json({ success: true, data: { message: 'Job deleted' } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

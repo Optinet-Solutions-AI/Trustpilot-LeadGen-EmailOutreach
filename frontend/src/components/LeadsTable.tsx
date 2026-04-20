@@ -1,15 +1,8 @@
 import { useState, useRef } from 'react';
 import type { Lead, LeadStatus } from '../types/lead';
 
-function getRelativeTime(date: Date): string {
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays < 7) return `${diffDays}d ago`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+function formatScrapedDate(date: Date): string {
+  return date.toLocaleDateString();
 }
 
 interface Props {
@@ -246,7 +239,7 @@ export default function LeadsTable({
         return (
           <td key={col} className="px-4 py-3 text-xs text-secondary whitespace-nowrap w-24">
             {date ? (
-              <span title={date.toLocaleString()}>{getRelativeTime(date)}</span>
+              <span title={date.toLocaleString()}>{formatScrapedDate(date)}</span>
             ) : (
               <span className="text-slate-300">—</span>
             )}
