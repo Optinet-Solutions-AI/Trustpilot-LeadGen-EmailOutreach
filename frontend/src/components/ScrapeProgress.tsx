@@ -1,6 +1,17 @@
-import { useState } from 'react';
-import { Loader2, CheckCircle2, XCircle, AlertTriangle, RotateCcw, Square } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Clock, Loader2, CheckCircle2, XCircle, AlertTriangle, RotateCcw, Square } from 'lucide-react';
 import type { ScrapeProgress as ScrapeProgressType } from '../types/scrape';
+
+function formatDuration(ms: number): string {
+  if (ms < 0 || !Number.isFinite(ms)) return '—';
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
 
 // The ordered phases of a scrape job
 const PHASES = [
@@ -110,6 +121,7 @@ function humanLabel(stage: string, detail: string): string {
     case 'checkpoint_done': return 'Profile data saved ✓';
     case 'enrich_start': return 'Starting website email enrichment…';
     case 'enrich_done': return `Enrichment complete — ${detail} new website emails found`;
+    case 'partial_save': return detail || 'Partial batch saved to Lead Matrix';
     case 'final_save': return 'Saving enriched data…';
     case 'upsert_done': return `Saved ${detail.split('/')[0]} leads to database ✓`;
     case 'completed': {
@@ -134,15 +146,26 @@ interface Props {
   error: string | null;
   failedCount?: number;
   jobId?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
   onCancel?: () => void;
   onRetryFailed?: () => void;
 }
 
 export default function ScrapeProgress({
   status, progress, error, failedCount = 0,
+  startedAt, completedAt,
   onCancel, onRetryFailed,
 }: Props) {
   const [cancelling, setCancelling] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Tick every second while running so elapsed + ETA stay live
+  useEffect(() => {
+    if (status !== 'running') return;
+    const iv = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, [status]);
 
   if (!status) return null;
 
@@ -160,6 +183,17 @@ export default function ScrapeProgress({
   const completedPhases = getCompletedPhases(progress);
   const fraction = parseProgressFraction(progress);
   const summary = parseSummary(progress);
+
+  // Elapsed + ETA. ETA is only meaningful once the profile phase has real
+  // per-item progress; before that we can't extrapolate honestly.
+  const startedMs = startedAt ? new Date(startedAt).getTime() : null;
+  const endedMs = completedAt ? new Date(completedAt).getTime() : null;
+  const elapsedMs = startedMs ? (endedMs ?? now) - startedMs : null;
+  let etaMs: number | null = null;
+  if (status === 'running' && elapsedMs !== null && fraction && fraction.current > 0 && activePhase === 'profile') {
+    const remaining = fraction.total - fraction.current;
+    etaMs = (elapsedMs / fraction.current) * remaining;
+  }
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6 mt-4">
@@ -204,6 +238,25 @@ export default function ScrapeProgress({
       </div>
 
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+
+      {/* Elapsed + ETA */}
+      {startedMs && (
+        <div className="flex items-center gap-4 mb-4 text-xs text-gray-600">
+          <span className="inline-flex items-center gap-1.5">
+            <Clock size={12} className="text-gray-400" />
+            Elapsed <span className="font-mono font-medium text-gray-800">{formatDuration(elapsedMs ?? 0)}</span>
+          </span>
+          {etaMs !== null && (
+            <span className="inline-flex items-center gap-1.5">
+              ETA <span className="font-mono font-medium text-gray-800">~{formatDuration(etaMs)}</span>
+              <span className="text-gray-400">remaining</span>
+            </span>
+          )}
+          {status === 'running' && etaMs === null && (
+            <span className="text-gray-400">ETA calculating…</span>
+          )}
+        </div>
+      )}
 
       {/* Phase Step Indicator */}
       <div className="flex items-center gap-1 mb-4 overflow-x-auto">

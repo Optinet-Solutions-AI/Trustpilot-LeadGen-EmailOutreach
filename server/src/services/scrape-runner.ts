@@ -320,6 +320,29 @@ export function getActiveProcesses(): Map<string, ChildProcess> {
 }
 
 /**
+ * Run upsert_leads.py on a partial JSON file produced by scrape_profile.py's
+ * periodic flush. Not tracked in activeProcesses (this is an auxiliary task
+ * that should not be killed on SIGTERM alongside the main scraper).
+ */
+async function runPartialUpsert(outputFile: string): Promise<{ saved: number; failed: number }> {
+  if (!fs.existsSync(outputFile)) return { saved: 0, failed: 0 };
+  return new Promise((resolve) => {
+    const pythonPath = path.isAbsolute(config.pythonPath)
+      ? config.pythonPath
+      : path.resolve(config.projectRoot, config.pythonPath);
+    const fullScript = path.resolve(config.projectRoot, 'tools/db/upsert_leads.py');
+    const proc = spawn(pythonPath, [fullScript, '--input', outputFile], {
+      cwd: config.projectRoot,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
+    });
+    let stdout = '';
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.on('close', () => resolve(parseUpsertResult(stdout)));
+    proc.on('error', () => resolve({ saved: 0, failed: 0 }));
+  });
+}
+
+/**
  * Fetch existing leads that have a website_url but no website_email yet.
  * Used to enrich leads that were previously scraped but not enriched.
  * Excludes URLs in the excludeUrls set (e.g. newly scraped leads already being enriched).
@@ -503,9 +526,38 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       '--input', profileInput,
       '--output', enrichedOutput,
       '--screenshots-dir', screenshotsDir,
-      '--parallel', '2',
+      '--parallel', '4',
+      '--flush-every', '25',
     ]);
-    await profilePromise;
+
+    // While the profile scraper runs, poll the partial output file it atomically
+    // rewrites every 25 profiles. Upsert those rows into Supabase and bump
+    // total_scraped so the UI's Recent Jobs table ticks up live instead of
+    // jumping from 0 to the final count at the end.
+    let partialRunning = false;
+    const partialInterval = setInterval(async () => {
+      if (partialRunning) return; // prevent pile-up
+      partialRunning = true;
+      try {
+        const result = await runPartialUpsert(enrichedOutput);
+        if (result.saved > 0) {
+          await updateJob(jobId, { total_scraped: result.saved });
+          emitProgress(jobId, 'partial_save', `${result.saved} saved so far`);
+        }
+      } catch (err) {
+        console.warn(`[PartialUpsert] Job ${jobId} error:`, err instanceof Error ? err.message : err);
+      } finally {
+        partialRunning = false;
+      }
+    }, 45_000);
+
+    try {
+      await profilePromise;
+    } finally {
+      clearInterval(partialInterval);
+      // Drain any in-flight partial upsert before moving on to the final upsert
+      while (partialRunning) await new Promise((r) => setTimeout(r, 500));
+    }
 
     // Step 4: Checkpoint — upsert profile results immediately
     emitProgress(jobId, 'checkpoint_save', 'Saving profile data...');

@@ -183,7 +183,19 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
     return contact_data
 
 
-async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, failed_list, start_idx, total):
+async def _flush_partial(results_dict, output_path, flush_lock):
+    """Atomically write the current results_dict (ordered by idx) to output_path."""
+    async with flush_lock:
+        ordered = [results_dict[i] for i in sorted(results_dict.keys())]
+        tmp_path = output_path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(ordered, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, output_path)
+        print(f"PROGRESS:partial_flush:{len(ordered)}", flush=True)
+
+
+async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, failed_list, start_idx, total,
+                         output_path=None, flush_every=25, flush_lock=None):
     """Scrape a batch of profiles using a single page (tab)."""
     page = await context.new_page()
     try:
@@ -222,6 +234,16 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
 
             print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
 
+            # Incremental flush so the orchestrator can batch-upsert partial results
+            if output_path and flush_lock and flush_every > 0:
+                completed = len(results_dict)
+                if completed > 0 and completed % flush_every == 0:
+                    try:
+                        await _flush_partial(results_dict, output_path, flush_lock)
+                    except Exception as flush_err:
+                        # Non-fatal — final write at end of phase will still capture everything
+                        print(f"  [flush] partial write failed: {flush_err}", flush=True)
+
             # Small delay between profiles within the same tab
             if i < len(slugs_batch) - 1:
                 await human_delay(1.5, 3.0)
@@ -234,10 +256,16 @@ async def scrape_profiles(
     screenshots_dir: str = '',
     parallel_tabs: int = 3,
     progress_callback=None,
+    output_path: str = '',
+    flush_every: int = 25,
 ) -> list[dict]:
     """
     Enrich leads with contact details from Trustpilot profiles.
     Uses multiple parallel browser tabs for speed.
+
+    If output_path is provided and flush_every > 0, the accumulated results are
+    atomically written to output_path every flush_every completed profiles so
+    an orchestrator can upsert partial results incrementally.
     """
     browser, context, _ = await launch_browser()
 
@@ -247,6 +275,7 @@ async def scrape_profiles(
     total = len(leads)
     results_dict: dict[int, dict] = {}
     failed_list: list[str] = []
+    flush_lock = asyncio.Lock() if output_path and flush_every > 0 else None
 
     try:
         # Split leads into groups for parallel tabs
@@ -261,7 +290,8 @@ async def scrape_profiles(
 
         # Run all tabs concurrently
         tasks = [
-            _scrape_batch(context, batch, screenshots_dir, results_dict, failed_list, 0, total)
+            _scrape_batch(context, batch, screenshots_dir, results_dict, failed_list, 0, total,
+                          output_path=output_path, flush_every=flush_every, flush_lock=flush_lock)
             for batch in batches
         ]
         await asyncio.gather(*tasks)
@@ -294,19 +324,23 @@ def main():
     parser.add_argument('--output', default='.tmp/enriched_leads.json', help='Output enriched leads JSON')
     parser.add_argument('--screenshots-dir', default='.tmp/screenshots', help='Directory to save profile screenshots')
     parser.add_argument('--parallel', type=int, default=3, help='Number of parallel browser tabs (default: 3)')
+    parser.add_argument('--flush-every', type=int, default=25,
+                        help='Write partial results to --output every N completed profiles (0 to disable)')
     args = parser.parse_args()
 
     with open(args.input, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
     print(f"Enriching {len(leads)} leads from profiles...", flush=True)
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     enriched = asyncio.run(scrape_profiles(
         leads,
         screenshots_dir=args.screenshots_dir,
         parallel_tabs=args.parallel,
+        output_path=args.output,
+        flush_every=args.flush_every,
     ))
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(enriched, f, indent=2, ensure_ascii=False)
 
