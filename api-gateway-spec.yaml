@@ -80,6 +80,18 @@ paths:
       responses:
         "200":
           description: OK
+  /api/scrape/{id}:
+    delete:
+      operationId: deleteScrapeJob
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/leads:
     get:
       operationId: listLeads
