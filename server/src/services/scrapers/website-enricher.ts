@@ -435,9 +435,16 @@ interface ScrapeSiteResult {
   blockReason?: string;
 }
 
-async function scrapeSite(page: Page, websiteUrl: string, timeout: number): Promise<ScrapeSiteResult> {
+async function scrapeSite(
+  page: Page,
+  websiteUrl: string,
+  timeout: number,
+  deadline?: number,
+): Promise<ScrapeSiteResult> {
   const url = normalizeUrl(websiteUrl);
   if (!url) return { found: null, blockReason: 'invalid_url' };
+
+  const outOfTime = () => deadline !== undefined && Date.now() > deadline;
 
   const all = new Set<string>();
 
@@ -455,6 +462,10 @@ async function scrapeSite(page: Page, websiteUrl: string, timeout: number): Prom
   }
 
   // 2. Sitemap-discovered contact URLs (real paths, not guessed)
+  if (outOfTime()) {
+    const best = pickBestEmail([...all]);
+    return best ? { found: best, candidates: [...all] } : { found: null, blockReason: 'deadline_exceeded' };
+  }
   const sitemapUrls = await fetchContactUrlsFromSitemap(page, url, timeout);
 
   // 3. Combined URL list: sitemap hits first (more likely real), then static guesses
@@ -464,6 +475,7 @@ async function scrapeSite(page: Page, websiteUrl: string, timeout: number): Prom
   ];
 
   for (const probeUrl of urlsToProbe) {
+    if (outOfTime()) break;
     try {
       const resp = await page.goto(probeUrl, {
         waitUntil: 'domcontentloaded',
@@ -473,7 +485,11 @@ async function scrapeSite(page: Page, websiteUrl: string, timeout: number): Prom
         await dismissPopups(page);
         const emails = await findEmailsOnPage(page);
         emails.forEach((e) => all.add(e));
+        // Stop on a top-priority email (contact/hello/sales); if we already have
+        // an acceptable one (info/support), we've probably also already paid the
+        // expensive probes — continuing rarely finds better.
         if ([...all].some((e) => rankEmail(e) === 0)) break;
+        if ([...all].some((e) => rankEmail(e) === 1)) break;
       }
     } catch { /* sub-path miss — try next */ }
     await new Promise((r) => setTimeout(r, 300));
@@ -489,10 +505,17 @@ const BLOCK_REASONS_THAT_ESCALATE = new Set([
   'cloudflare_challenge', 'access_denied', 'bot_detected', 'empty_page',
 ]);
 
+// Hard per-lead time budget. Without this a single slow site (Cloudflare
+// challenge loops, 28 contact paths each timing out at 15s) could stall a
+// worker for >7 minutes, blowing the Cloud Run 60-min request limit on
+// larger batches.
+const PER_LEAD_BUDGET_MS = 60_000;
+
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
 ): Promise<{ email: string | null; tier: Tier | 'mx' | 'none'; blockReason?: string }> {
+  const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
     if (t === startTier || !availableTiers.includes(t)) {
@@ -504,6 +527,7 @@ async function enrichSingleLeadWithTiers(
 
   let lastBlockReason: string | undefined;
   for (const tier of availableTiers) {
+    if (Date.now() > deadline) { lastBlockReason = 'per_lead_deadline'; break; }
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
     try {
@@ -511,7 +535,7 @@ async function enrichSingleLeadWithTiers(
       browser = bundle.browser;
       context = bundle.context;
       const page = await context.newPage();
-      const result = await scrapeSite(page, websiteUrl, TIER_CONFIGS[tier].timeout);
+      const result = await scrapeSite(page, websiteUrl, TIER_CONFIGS[tier].timeout, deadline);
       if (result.found) return { email: result.found, tier };
       const reason = result.blockReason ?? undefined;
       lastBlockReason = reason || lastBlockReason;

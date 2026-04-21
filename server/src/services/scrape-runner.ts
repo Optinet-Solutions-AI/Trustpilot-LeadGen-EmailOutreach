@@ -83,12 +83,34 @@ async function runTsEnricher(jobId: string, jsonFile: string): Promise<number> {
   const total = leads.filter((l) => l.website_url && !l.website_email).length;
   if (total === 0) return 0;
 
-  const results = await enrichLeads(leads, {
-    concurrency: 3,
+  // Total budget: per-lead budget (60s) ÷ concurrency, plus 5-min buffer for
+  // browser warmup and final MX lookups. Caps at 45min to leave headroom
+  // before Cloud Run's 60-min HTTP request timeout.
+  const concurrency = 3;
+  const totalBudgetMs = Math.min(
+    45 * 60 * 1000,
+    Math.ceil(total / concurrency) * 70_000 + 5 * 60 * 1000,
+  );
+
+  const enrichPromise = enrichLeads(leads, {
+    concurrency,
     onProgress: (done, totalItems) => {
       emitProgress(jobId, 'enrich_progress', `${done}/${totalItems}`);
     },
   });
+
+  let timedOut = false;
+  const watchdog = new Promise<null>((resolve) =>
+    setTimeout(() => { timedOut = true; resolve(null); }, totalBudgetMs),
+  );
+
+  const raced = await Promise.race([enrichPromise, watchdog]);
+  if (timedOut || raced === null) {
+    console.warn(`[Enricher] Watchdog fired after ${Math.round(totalBudgetMs / 60000)}min — aborting enrichment for job ${jobId}`);
+    emitProgress(jobId, 'enrich_timeout', `aborted after ${Math.round(totalBudgetMs / 60000)}min`);
+    return 0;
+  }
+  const results = raced;
 
   let newFound = 0;
   for (let i = 0; i < leads.length; i++) {
@@ -241,6 +263,11 @@ async function uploadScreenshotsToStorage(screenshotsDir: string, enrichedOutput
 
     console.log(`[Screenshots] Uploading ${files.length} screenshots to Supabase Storage...`);
 
+    // path.basename from the OS we're running on fails on cross-platform paths
+    // (e.g. Windows-style \ paths read on Linux). Strip both separators manually.
+    const basename = (p: string) => p.replace(/\\/g, '/').split('/').pop() || p;
+
+    let rewroteAny = false;
     for (const filename of files) {
       const filePath = path.join(screenshotsDir, filename);
       const fileBuffer = fs.readFileSync(filePath);
@@ -254,20 +281,30 @@ async function uploadScreenshotsToStorage(screenshotsDir: string, enrichedOutput
         continue;
       }
 
-      // Get public URL
       const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(filename);
       const publicUrl = urlData?.publicUrl;
       if (!publicUrl) continue;
 
-      // Find matching lead and update screenshot_path in DB
       const matchingLead = leads.find((l) =>
-        l.screenshot_path && path.basename(l.screenshot_path) === filename
+        l.screenshot_path && basename(l.screenshot_path) === filename,
       );
       if (matchingLead?.trustpilot_url) {
         await supabase
           .from('leads')
           .update({ screenshot_path: publicUrl })
           .eq('trustpilot_url', matchingLead.trustpilot_url);
+        // Rewrite in-memory so the final upsert (which re-reads enrichedOutput)
+        // doesn't overwrite the public URL with the local path.
+        matchingLead.screenshot_path = publicUrl;
+        rewroteAny = true;
+      }
+    }
+
+    if (rewroteAny) {
+      try {
+        fs.writeFileSync(enrichedOutput, JSON.stringify(leads, null, 2));
+      } catch (err) {
+        console.warn('[Screenshots] Could not rewrite enriched file with public URLs:', err);
       }
     }
 

@@ -26,9 +26,22 @@ CONTACT_EXTRACT_JS = r'''() => {
         phone: null,
     };
 
-    // Company name from h1
+    // Company name from h1. Trustpilot's h1 layout embeds a review-count
+    // badge ("Hard Rock Casino NL Reviews 225") — prefer the first text node,
+    // and strip any trailing "Reviews <n>" as a fallback.
     const h1 = document.querySelector('h1');
-    if (h1) result.company_name = h1.textContent.trim();
+    if (h1) {
+        let rawName = '';
+        for (const node of h1.childNodes) {
+            if (node.nodeType === 3 /* TEXT_NODE */ && node.textContent.trim()) {
+                rawName = node.textContent.trim();
+                break;
+            }
+        }
+        if (!rawName) rawName = h1.textContent.trim();
+        rawName = rawName.replace(/\s*Reviews\s+[\d,]+\s*$/i, '').trim();
+        result.company_name = rawName;
+    }
 
     // Domains to exclude from website_url (social/tracking/trustpilot)
     const EXCLUDED = [
