@@ -212,19 +212,31 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
   }
 
-  // Start Gmail reply tracking poll (every 15 minutes) when in gmail mode
+  // Reply tracking poll — runs every 15 minutes for BOTH Gmail OAuth accounts
+  // (via reply-tracker.ts) AND SMTP/IMAP accounts like Bluehost Titan
+  // (via reply-tracker.imap.ts). The IMAP path walks every active
+  // email_accounts row with auth_type='smtp' and valid IMAP creds.
   if (config.emailMode === 'gmail') {
     const REPLY_CHECK_INTERVAL = 15 * 60 * 1000;
     setInterval(async () => {
       try {
         const { checkForReplies } = await import('./services/reply-tracker.js');
         const { repliesFound } = await checkForReplies();
-        if (repliesFound > 0) console.log(`[ReplyTracker] Found ${repliesFound} new replies`);
+        if (repliesFound > 0) console.log(`[ReplyTracker] Gmail: ${repliesFound} new replies`);
       } catch (e) {
-        console.error('[ReplyTracker] Poll error:', e instanceof Error ? e.message : e);
+        console.error('[ReplyTracker] Gmail poll error:', e instanceof Error ? e.message : e);
+      }
+      try {
+        const { checkAllImapReplies } = await import('./services/reply-tracker.imap.js');
+        const { accountsChecked, repliesFound } = await checkAllImapReplies();
+        if (accountsChecked > 0) {
+          console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} new replies`);
+        }
+      } catch (e) {
+        console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
       }
     }, REPLY_CHECK_INTERVAL);
-    console.log('Reply tracker: polling every 15 minutes');
+    console.log('Reply tracker: polling Gmail + IMAP every 15 minutes');
   }
 });
 

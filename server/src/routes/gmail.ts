@@ -6,15 +6,24 @@ import { config } from '../config.js';
 
 const router = Router();
 
-// POST /api/gmail/check-replies — manually trigger reply check
+// POST /api/gmail/check-replies — manually trigger reply check (Gmail + IMAP)
 router.post('/check-replies', async (_req: Request, res: Response) => {
   try {
     if (config.emailMode !== 'gmail') {
       res.json({ success: true, data: { repliesFound: 0, message: 'Reply tracking only active in gmail mode' } });
       return;
     }
-    const result = await checkForReplies();
-    res.json({ success: true, data: result });
+    const gmailResult = await checkForReplies();
+    const { checkAllImapReplies } = await import('../services/reply-tracker.imap.js');
+    const imapResult = await checkAllImapReplies();
+    res.json({
+      success: true,
+      data: {
+        gmail: gmailResult,
+        imap: imapResult,
+        totalReplies: (gmailResult.repliesFound || 0) + imapResult.repliesFound,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
