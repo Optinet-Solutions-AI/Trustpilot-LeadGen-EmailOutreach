@@ -314,7 +314,7 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
       try {
         const { data: acc } = await (await import('../lib/supabase.js')).getSupabase()
           .from('email_accounts')
-          .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password')
+          .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass')
           .eq('id', pinnedId)
           .single();
         if (acc) {
@@ -327,6 +327,10 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
               smtp_port: acc.smtp_port ?? 587,
               smtp_user: acc.smtp_user,
               smtp_password: acc.smtp_password,
+              imap_host: acc.imap_host ?? null,
+              imap_port: acc.imap_port ?? null,
+              imap_user: acc.imap_user ?? null,
+              imap_pass: acc.imap_pass ?? null,
             };
             console.log(`[TestFlight] Using pinned SMTP sender: ${acc.email}`);
           } else if ((acc.auth_type === 'gmail_oauth' || acc.auth_type === 'app_password') && acc.gmail_client_id && acc.gmail_client_secret && acc.gmail_refresh_token) {

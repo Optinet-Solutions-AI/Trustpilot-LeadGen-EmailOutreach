@@ -163,7 +163,7 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
   try {
     let query = getSupabase()
       .from('email_accounts')
-      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, daily_cap, hourly_cap')
+      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, daily_cap, hourly_cap')
       .eq('status', 'active')
       .in('auth_type', ['gmail_oauth', 'smtp', 'app_password']);
 
@@ -186,6 +186,10 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
           smtp_port: (a.smtp_port as number | null) ?? 587,
           smtp_user: a.smtp_user as string,
           smtp_password: a.smtp_password as string,
+          imap_host: (a.imap_host as string | null) ?? null,
+          imap_port: (a.imap_port as number | null) ?? null,
+          imap_user: (a.imap_user as string | null) ?? null,
+          imap_pass: (a.imap_pass as string | null) ?? null,
           dailyCap, hourlyCap,
         } as AccountWithCaps<SmtpSenderAccount>);
       } else if ((a.auth_type === 'gmail_oauth' || a.auth_type === 'app_password') && a.gmail_client_id && a.gmail_client_secret && a.gmail_refresh_token) {

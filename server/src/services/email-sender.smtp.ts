@@ -1,11 +1,16 @@
 /**
  * Nodemailer SMTP email sender.
- * Used for DreamHost and other custom SMTP providers.
- * DreamHost uses port 465 with secure: true (SSL).
+ * Used for DreamHost, Bluehost Titan, and other custom SMTP providers.
+ * Port 465 → SSL, port 587 → STARTTLS.
+ *
+ * After a successful SMTP send, the raw MIME message is also IMAP-APPENDED
+ * to the account's Sent folder so webmail and native email clients see a
+ * copy of every outreach email (same behaviour as Gmail/Outlook clients).
  */
 
 import fs from 'fs';
 import nodemailer from 'nodemailer';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import type { SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
 
 export interface SmtpSenderAccount {
@@ -16,6 +21,11 @@ export interface SmtpSenderAccount {
   smtp_port: number;
   smtp_user: string;
   smtp_password: string;
+  // Optional IMAP creds — when present, sent messages are appended to the Sent folder
+  imap_host?: string | null;
+  imap_port?: number | null;
+  imap_user?: string | null;
+  imap_pass?: string | null;
 }
 
 async function fetchScreenshot(screenshotPath: string): Promise<Buffer | null> {
@@ -90,19 +100,75 @@ export async function sendEmailSmtp(
     }
   }
 
+  const mailOptions: nodemailer.SendMailOptions = {
+    from: `"${account.fromName}" <${account.email}>`,
+    to,
+    subject,
+    html: bodyHtml,
+    attachments,
+  };
+
   try {
-    const info = await transporter.sendMail({
-      from: `"${account.fromName}" <${account.email}>`,
-      to,
-      subject,
-      html: bodyHtml,
-      attachments,
-    });
+    const info = await transporter.sendMail(mailOptions);
     console.log(`[SMTP] Sent to ${to} via ${account.smtp_host}: ${info.messageId}`);
+
+    // Append to IMAP Sent folder so webmail + native clients see the sent copy.
+    // Fire-and-forget — a failure here must not turn a successful send into a failure.
+    if (account.imap_host && account.imap_user && account.imap_pass) {
+      appendToSentFolder(account, mailOptions).catch((err) => {
+        console.warn(`[SMTP→IMAP] Could not append to Sent for ${account.email}:`, err instanceof Error ? err.message : err);
+      });
+    }
+
     return { success: true, messageId: info.messageId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[SMTP] Failed to send to ${to}:`, msg);
     return { success: false, error: msg };
+  }
+}
+
+async function buildRawMessage(mailOptions: nodemailer.SendMailOptions): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    new MailComposer(mailOptions).compile().build((err, msg) => {
+      if (err) reject(err);
+      else resolve(msg);
+    });
+  });
+}
+
+async function appendToSentFolder(account: SmtpSenderAccount, mailOptions: nodemailer.SendMailOptions): Promise<void> {
+  const raw = await buildRawMessage(mailOptions);
+  const { ImapFlow } = await import('imapflow');
+  const client = new ImapFlow({
+    host: account.imap_host as string,
+    port: account.imap_port ?? 993,
+    secure: true,
+    auth: { user: account.imap_user as string, pass: account.imap_pass as string },
+    logger: false,
+    connectionTimeout: 10000,
+  });
+
+  try {
+    await client.connect();
+
+    // Find the Sent folder — try SPECIAL-USE flag first, then common name patterns
+    const mailboxes = await client.list();
+    const sentBox =
+      mailboxes.find((b) => b.specialUse === '\\Sent') ??
+      mailboxes.find((b) => /^sent$/i.test(b.name)) ??
+      mailboxes.find((b) => /^sent.messages$/i.test(b.name)) ??
+      mailboxes.find((b) => /^sent.items$/i.test(b.name)) ??
+      mailboxes.find((b) => /sent/i.test(b.name));
+
+    if (!sentBox) {
+      console.warn(`[SMTP→IMAP] No Sent folder found on ${account.imap_host} for ${account.email}`);
+      return;
+    }
+
+    await client.append(sentBox.path, raw, ['\\Seen']);
+    console.log(`[SMTP→IMAP] Appended to ${sentBox.path} for ${account.email}`);
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
   }
 }
