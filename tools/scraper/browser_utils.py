@@ -119,16 +119,71 @@ async def dismiss_popups(page: Page):
             continue
 
 
+# Max seconds we'll ever honor from a server-supplied Retry-After. Keeps a
+# misbehaving / hostile header from stalling the whole scrape indefinitely.
+_MAX_RETRY_AFTER_S = 120
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Return a seconds-delay parsed from a Retry-After header, or None."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    # HTTP-date form — fall back to email.utils
+    try:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone
+        when = parsedate_to_datetime(value)
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
 async def safe_goto(page: Page, url: str, retries: int = 3, timeout: int = 30000) -> bool:
-    """Navigate to URL with retry logic and exponential backoff."""
+    """Navigate to URL with retry logic, exponential backoff, and 429/Retry-After handling."""
     for attempt in range(retries):
         try:
             response = await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
-            if response and response.status == 403:
+            status = response.status if response else None
+
+            # 429 Too Many Requests — honor Retry-After when present, else exp backoff
+            if status == 429:
+                retry_after_header = None
+                try:
+                    retry_after_header = await response.header_value('retry-after')
+                except Exception:
+                    pass
+                parsed = _parse_retry_after(retry_after_header)
+                if parsed is not None:
+                    wait = min(parsed, _MAX_RETRY_AFTER_S)
+                    print(f"  429 on {url} — Retry-After={retry_after_header!r}, waiting {wait:.1f}s (attempt {attempt + 1}/{retries})")
+                else:
+                    wait = min((2 ** attempt) * 10, _MAX_RETRY_AFTER_S)
+                    print(f"  429 on {url} — no Retry-After, waiting {wait}s (attempt {attempt + 1}/{retries})")
+                await asyncio.sleep(wait)
+                continue
+
+            if status == 403:
                 wait = (2 ** attempt) * 5
                 print(f"  403 on {url} — retrying in {wait}s (attempt {attempt + 1}/{retries})")
                 await asyncio.sleep(wait)
                 continue
+
+            # 5xx — transient server error, back off and retry
+            if status is not None and 500 <= status < 600:
+                wait = (2 ** attempt) * 5
+                print(f"  {status} on {url} — retrying in {wait}s (attempt {attempt + 1}/{retries})")
+                await asyncio.sleep(wait)
+                continue
+
             await dismiss_popups(page)
             return True
         except Exception as e:

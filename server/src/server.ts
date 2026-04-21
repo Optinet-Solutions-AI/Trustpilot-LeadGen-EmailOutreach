@@ -33,7 +33,12 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions)); // Explicitly handle all preflight requests
 
-app.use(express.json());
+// Capture raw body so webhook handlers can verify HMAC signatures over the exact bytes.
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+}));
 
 // Webhook routes — BEFORE auth middleware (external platforms need to reach these)
 app.use('/api/webhooks', webhookRoutes);

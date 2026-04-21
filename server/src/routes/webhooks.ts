@@ -7,6 +7,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { config } from '../config.js';
 import { getSupabase } from '../lib/supabase.js';
 import { updateLead } from '../db/leads.js';
@@ -16,14 +17,42 @@ import type { PlatformWebhookEvent } from '../services/email-platform/types.js';
 
 const router = Router();
 
+// Constant-time compare that returns false for length mismatches instead of throwing.
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+// Verify webhook authenticity. Prefers HMAC-SHA256 over the raw body (x-webhook-signature)
+// and falls back to the legacy static-secret header for backward compatibility.
+// Supported signature formats: "sha256=<hex>" or plain "<hex>".
+function verifyWebhookAuth(req: Request, secret: string): boolean {
+  const sigHeader = req.headers['x-webhook-signature'] ?? req.headers['x-hub-signature-256'];
+  const signature = Array.isArray(sigHeader) ? sigHeader[0] : sigHeader;
+  if (typeof signature === 'string' && signature.length > 0) {
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody) return false;
+    const provided = signature.startsWith('sha256=') ? signature.slice('sha256='.length) : signature;
+    const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    return safeEqual(provided, expected);
+  }
+
+  // Legacy: static secret equality. Kept so existing senders keep working until they migrate.
+  const legacy = req.headers['x-webhook-secret'] ?? req.headers['authorization'];
+  const provided = Array.isArray(legacy) ? legacy[0] : legacy;
+  if (typeof provided !== 'string') return false;
+  return safeEqual(provided, secret) || safeEqual(provided, `Bearer ${secret}`);
+}
+
 router.post('/email-platform', async (req: Request, res: Response) => {
   try {
     // Validate webhook secret (if configured)
     const secret = config.instantly.webhookSecret;
     if (secret) {
-      const provided = req.headers['x-webhook-secret'] || req.headers['authorization'];
-      if (provided !== secret && provided !== `Bearer ${secret}`) {
-        res.status(401).json({ error: 'Invalid webhook secret' });
+      if (!verifyWebhookAuth(req, secret)) {
+        res.status(401).json({ error: 'Invalid webhook signature' });
         return;
       }
     }

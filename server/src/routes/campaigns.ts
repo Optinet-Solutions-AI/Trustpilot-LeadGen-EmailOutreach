@@ -74,10 +74,25 @@ router.get('/email-accounts', (_req: Request, res: Response) => {
   });
 });
 
+// Hard cap on how many recipients a single campaign POST may carry. Prevents a paste
+// of tens of thousands of rows from locking up the endpoint on a synchronous upsert.
+const MAX_CAMPAIGN_RECIPIENTS = 5000;
+
 // POST /api/campaigns
 router.post('/', async (req: Request, res: Response) => {
   try {
     const { name, templateSubject, templateBody, includeScreenshot = false, leadIds: rawLeadIds, manualEmails, filterCountry, filterCategory, followUpSteps, sendingSchedule } = req.body;
+
+    // Reject oversized arrays up front so we don't spend time parsing/validating them.
+    const inboundLeadCount = Array.isArray(rawLeadIds) ? rawLeadIds.length : 0;
+    const inboundManualCount = Array.isArray(manualEmails) ? manualEmails.length : 0;
+    if (inboundLeadCount + inboundManualCount > MAX_CAMPAIGN_RECIPIENTS) {
+      res.status(413).json({
+        success: false,
+        error: `Too many recipients (${inboundLeadCount + inboundManualCount}). Max ${MAX_CAMPAIGN_RECIPIENTS} per campaign — split into multiple campaigns or use filter-based assignment.`,
+      });
+      return;
+    }
 
     // Resolve manual email entries into lead IDs before creating the campaign
     let leadIds: string[] = Array.isArray(rawLeadIds) ? rawLeadIds : [];
