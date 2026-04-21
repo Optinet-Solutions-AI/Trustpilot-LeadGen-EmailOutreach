@@ -30,7 +30,6 @@ async def scrape_category(
     """
     browser, context, page = await launch_browser()
     results = []
-    consecutive_above = 0  # Track pages where ALL cards are above max_rating
 
     try:
         page_num = 1
@@ -155,23 +154,22 @@ async def scrape_category(
 
             print(f"PROGRESS:category_progress:{page_num}:{len(results)}")
 
-            # Smart skip: if all companies on page are above max_rating, jump ahead
-            if page_results == [] and lowest_on_page is not None and lowest_on_page > max_rating:
-                consecutive_above += 1
-                # Jump by larger increments: first skip by 5, then 10
-                skip = 5 if consecutive_above == 1 else 10
-                old_page = page_num
-                page_num = min(page_num + skip, max_pages)
-                print(f"  All above {max_rating}, skipping ahead from page {old_page} to {page_num}")
-                await human_delay(2.0, 5.0)
-                continue
-            else:
-                consecutive_above = 0
-
-            # Early stop: if all companies on page are below min_rating, we've gone too far
+            # Early stop: if every business on this page is below min_rating, we
+            # are past the useful range (Trustpilot exhausted; trailing 0★ / no-
+            # review rows). Don't short-circuit when only some are below — the
+            # middle of the catalogue often mixes ratings on the same page.
             if page_ratings and highest_on_page is not None and highest_on_page < min_rating:
                 print(f"  All companies below min_rating {min_rating}. Stopping.")
                 break
+
+            # NOTE: earlier revisions "smart-skipped" ahead whenever a page had
+            # all ratings above max_rating, assuming Trustpilot pages are
+            # monotonically sorted by rating. They aren't — ratings cluster by
+            # density and category size. For small countries (e.g. NO casino,
+            # ~2 pages of 1-3.5★ targets) the skip jumped clean past the
+            # relevant pages and returned 0 results. Always paginate one page
+            # at a time; the early-stop above still prevents running to the
+            # 50-page cap needlessly.
 
             if progress_callback:
                 progress_callback({
