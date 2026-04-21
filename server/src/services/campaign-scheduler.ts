@@ -102,21 +102,38 @@ async function processDueSends(): Promise<void> {
   const pinnedIds: string[] = schedule?.senderAccountIds ?? (schedule?.senderAccountId ? [schedule.senderAccountId] : []);
 
   const senderPool = await buildSenderPool(pinnedIds);
+  const sentCounts = await loadSentCounts();
 
   // Include env account in rotation if the user selected it (or selected nothing = all)
   const includeEnv = pinnedIds.length === 0 || pinnedIds.includes('__env__');
 
+  let sentThisTick = 0;
   for (let i = 0; i < actionable.length; i++) {
     const cl = actionable[i];
 
-    if (!rateLimiter.canSend()) {
-      console.log('[CampaignScheduler] Rate limit reached — remaining sends deferred to next tick');
+    const picked = pickSender(senderPool, sentThisTick, includeEnv, sentCounts);
+    if (picked === undefined) {
+      console.log('[CampaignScheduler] All sender accounts at cap — deferring remaining sends to next tick');
+      break;
+    }
+    const senderAccount: SenderAccount | undefined = picked === 'env' ? undefined : picked;
+
+    // Env account still uses the global rateLimiter (for warmup/legacy caps)
+    if (picked === 'env' && !rateLimiter.canSend()) {
+      console.log('[CampaignScheduler] Env account at cap — deferring');
       break;
     }
 
     try {
-      const senderAccount = pickSender(senderPool, i, includeEnv);
       await sendScheduledEmail(cl, senderAccount);
+      // Track this send in-tick so picker rotates fairly across multiple mailboxes
+      const key = (senderAccount?.email ?? config.gmail.fromEmail ?? '').toLowerCase();
+      if (key) {
+        if (!sentCounts[key]) sentCounts[key] = { daily: 0, hourly: 0 };
+        sentCounts[key].daily  += 1;
+        sentCounts[key].hourly += 1;
+      }
+      sentThisTick++;
     } catch (err) {
       console.error('[CampaignScheduler] Send failed for', cl.email_used, ':', err instanceof Error ? err.message : err);
     }
@@ -133,7 +150,10 @@ async function processDueSends(): Promise<void> {
   }
 }
 
-async function buildSenderPool(pinnedIds: string[] = []): Promise<SenderAccount[]> {
+// Attach per-account caps to the SenderAccount union so the picker can enforce them
+type AccountWithCaps<T> = T & { dailyCap: number; hourlyCap: number };
+
+async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCaps<SenderAccount>[]> {
   if (config.emailMode !== 'gmail') return [];
 
   // If the only selection is the env account, keep pool empty — email-sender uses env by default.
@@ -143,7 +163,7 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<SenderAccount[
   try {
     let query = getSupabase()
       .from('email_accounts')
-      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password')
+      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, daily_cap, hourly_cap')
       .eq('status', 'active')
       .in('auth_type', ['gmail_oauth', 'smtp', 'app_password']);
 
@@ -153,24 +173,28 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<SenderAccount[
     }
 
     const { data: dbAccounts } = await query;
-    const accounts: SenderAccount[] = [];
-    for (const a of (dbAccounts ?? [])) {
+    const accounts: AccountWithCaps<SenderAccount>[] = [];
+    for (const a of (dbAccounts ?? []) as Array<Record<string, unknown>>) {
+      const dailyCap  = (a.daily_cap  as number | null | undefined) ?? config.rateLimits.dailyCap;
+      const hourlyCap = (a.hourly_cap as number | null | undefined) ?? config.rateLimits.hourlyCap;
       if (a.auth_type === 'smtp' && a.smtp_host && a.smtp_user && a.smtp_password) {
         accounts.push({
-          email: a.email,
-          fromName: a.from_name,
+          email: a.email as string,
+          fromName: a.from_name as string,
           auth_type: 'smtp',
-          smtp_host: a.smtp_host,
-          smtp_port: a.smtp_port ?? 587,
-          smtp_user: a.smtp_user,
-          smtp_password: a.smtp_password,
-        } as SmtpSenderAccount);
+          smtp_host: a.smtp_host as string,
+          smtp_port: (a.smtp_port as number | null) ?? 587,
+          smtp_user: a.smtp_user as string,
+          smtp_password: a.smtp_password as string,
+          dailyCap, hourlyCap,
+        } as AccountWithCaps<SmtpSenderAccount>);
       } else if ((a.auth_type === 'gmail_oauth' || a.auth_type === 'app_password') && a.gmail_client_id && a.gmail_client_secret && a.gmail_refresh_token) {
         accounts.push({
-          email: a.email,
-          fromName: a.from_name,
-          gmail: createGmailClientFromCredentials(a.gmail_client_id, a.gmail_client_secret, a.gmail_refresh_token),
-        } as GmailSenderAccount);
+          email: a.email as string,
+          fromName: a.from_name as string,
+          gmail: createGmailClientFromCredentials(a.gmail_client_id as string, a.gmail_client_secret as string, a.gmail_refresh_token as string),
+          dailyCap, hourlyCap,
+        } as AccountWithCaps<GmailSenderAccount>);
       }
     }
     return accounts;
@@ -179,14 +203,55 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<SenderAccount[
   }
 }
 
-function pickSender(pool: SenderAccount[], index: number, includeEnv: boolean): SenderAccount | undefined {
-  // Build the full rotation: env slot (undefined) + DB accounts
+// Query real per-account send counts for the last 24h / 1h window
+async function loadSentCounts(): Promise<Record<string, { daily: number; hourly: number }>> {
+  const counts: Record<string, { daily: number; hourly: number }> = {};
+  try {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const since1h  = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { data } = await getSupabase()
+      .from('campaign_leads')
+      .select('sender_email, sent_at')
+      .eq('status', 'sent')
+      .gte('sent_at', since24h);
+    for (const row of (data ?? []) as Array<{ sender_email?: string; sent_at?: string }>) {
+      const key = row.sender_email?.toLowerCase();
+      if (!key || !row.sent_at) continue;
+      if (!counts[key]) counts[key] = { daily: 0, hourly: 0 };
+      counts[key].daily += 1;
+      if (row.sent_at >= since1h) counts[key].hourly += 1;
+    }
+  } catch {
+    // sender_email column missing — skip per-account enforcement
+  }
+  return counts;
+}
+
+// Pick the next sender that still has headroom in both hourly and daily caps.
+// `sentCounts` is authoritative (from campaign_leads), mutated as we send to track in-tick usage.
+function pickSender(
+  pool: AccountWithCaps<SenderAccount>[],
+  index: number,
+  includeEnv: boolean,
+  sentCounts: Record<string, { daily: number; hourly: number }>,
+): AccountWithCaps<SenderAccount> | undefined | 'env' {
   const total = pool.length + (includeEnv ? 1 : 0);
   if (total === 0) return undefined;
-  if (!includeEnv) return pool[index % pool.length];
-  // Env account occupies slot 0; DB accounts fill slots 1..N
-  const slot = index % total;
-  return slot === 0 ? undefined : pool[slot - 1];
+
+  // Try each slot starting from `index`, skipping anyone who has hit their cap.
+  for (let offset = 0; offset < total; offset++) {
+    const slot = (index + offset) % total;
+    const isEnvSlot = includeEnv && slot === 0;
+    if (isEnvSlot) return 'env'; // env account uses global rateLimiter check already done
+    const account = pool[includeEnv ? slot - 1 : slot];
+    if (!account) continue;
+    const key = account.email.toLowerCase();
+    const used = sentCounts[key] ?? { daily: 0, hourly: 0 };
+    if (used.daily >= account.dailyCap)   continue;
+    if (used.hourly >= account.hourlyCap) continue;
+    return account;
+  }
+  return undefined;
 }
 
 async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefined): Promise<void> {
@@ -223,10 +288,24 @@ async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefi
   if (result.success) {
     rateLimiter.recordSend();
 
-    await supabase
+    const senderEmail = senderAccount?.email ?? config.gmail.fromEmail ?? null;
+    const updatePayload: Record<string, unknown> = {
+      status: 'sent',
+      sent_at: new Date().toISOString(),
+    };
+    if (senderEmail) updatePayload.sender_email = senderEmail;
+
+    const { error: updateErr } = await supabase
       .from('campaign_leads')
-      .update({ status: 'sent', sent_at: new Date().toISOString() })
+      .update(updatePayload)
       .eq('id', cl.id);
+    // If sender_email column missing (pre-migration), retry without it so the send still gets marked
+    if (updateErr && /sender_email/.test(updateErr.message ?? '')) {
+      await supabase
+        .from('campaign_leads')
+        .update({ status: 'sent', sent_at: updatePayload.sent_at })
+        .eq('id', cl.id);
+    }
 
     // Store Gmail thread/message IDs so the reply tracker and bounce tracker can cross-reference
     if (result.messageId || result.threadId) {

@@ -142,7 +142,7 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
         if (result.success) {
           sent++;
           rateLimiter.recordSend();
-          await markSent(supabase, email, result, campaignId, campaignName, true);
+          await markSent(supabase, email, result, campaignId, campaignName, true, senderAccount?.email ?? config.gmail.fromEmail);
           emitProgress(campaignId, { stage: 'sent', emailIndex: i + 1, total, sent, failed, to: email.to, success: true });
         } else {
           failed++;
@@ -233,11 +233,21 @@ async function markSent(
   campaignId: string,
   campaignName: string,
   isTest: boolean,
+  senderEmail?: string,
 ) {
-  await supabase
+  const payload: Record<string, unknown> = { status: 'sent', sent_at: new Date().toISOString() };
+  if (senderEmail) payload.sender_email = senderEmail;
+  const { error } = await supabase
     .from('campaign_leads')
-    .update({ status: 'sent', sent_at: new Date().toISOString() })
+    .update(payload)
     .eq('id', email.campaignLeadId);
+  // If column missing pre-migration, retry without sender_email so the send still marks
+  if (error && /sender_email/.test(error.message ?? '')) {
+    await supabase
+      .from('campaign_leads')
+      .update({ status: 'sent', sent_at: payload.sent_at })
+      .eq('id', email.campaignLeadId);
+  }
 
   if (result.messageId || result.threadId) {
     await updateCampaignLeadGmailIds(email.campaignLeadId, result.messageId, result.threadId);

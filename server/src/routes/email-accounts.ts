@@ -2,16 +2,22 @@ import { Router, Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 import { rateLimiter } from '../services/rate-limiter.js';
+import { verifyDomainDNS } from '../services/dns-checker.js';
 
 const router = Router();
 
-// GET /api/email-accounts — list all configured accounts
+const DNS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const domainOf = (email: string) => email.split('@')[1]?.toLowerCase() ?? '';
+
+// GET /api/email-accounts — list all configured accounts with real per-account stats
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const supabase = getSupabase();
+    // Pull all columns — some may not exist if migration 016 hasn't been applied yet.
+    // We select('*') so missing columns just return undefined instead of failing the query.
     const { data: dbAccounts, error } = await supabase
       .from('email_accounts')
-      .select('id, email, from_name, provider, status, smtp_host, smtp_port, smtp_secure, auth_type, notes, created_at')
+      .select('*')
       .order('created_at', { ascending: true });
 
     if (error) throw new Error(error.message);
@@ -25,6 +31,29 @@ router.get('/', async (_req: Request, res: Response) => {
       config.emailMode === 'gmail' ? 'Gmail (OAuth2)' :
       config.emailMode === 'brevo' ? 'Brevo' : 'Mock';
 
+    // ── Per-account dailySent: count sends per sender_email for the last 24h ─────
+    const nowIso = new Date().toISOString();
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const since1h  = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const sentCounts: Record<string, { daily: number; hourly: number }> = {};
+    try {
+      const { data: sentRows } = await supabase
+        .from('campaign_leads')
+        .select('sender_email, sent_at')
+        .eq('status', 'sent')
+        .gte('sent_at', since24h);
+      for (const row of sentRows ?? []) {
+        const key = (row as { sender_email?: string }).sender_email?.toLowerCase();
+        const sentAt = (row as { sent_at?: string }).sent_at;
+        if (!key || !sentAt) continue;
+        if (!sentCounts[key]) sentCounts[key] = { daily: 0, hourly: 0 };
+        sentCounts[key].daily += 1;
+        if (sentAt >= since1h) sentCounts[key].hourly += 1;
+      }
+    } catch {
+      // sender_email column missing or query failed — leave counts empty
+    }
+
     const envAccount = envEmail ? {
       id: '__env__',
       email: envEmail,
@@ -32,34 +61,85 @@ router.get('/', async (_req: Request, res: Response) => {
       provider: providerLabel,
       auth_type: 'gmail_oauth',
       status: 'active',
-      dailySent: status.dailyCount,
+      dailySent: sentCounts[envEmail.toLowerCase()]?.daily ?? status.dailyCount,
+      hourlySent: sentCounts[envEmail.toLowerCase()]?.hourly ?? status.hourlyCount,
       dailyCap: status.dailyCap,
       hourlyCap: status.hourlyCap,
       warmupDay: warmup.day,
       warmupStatus: config.testMode.enabled
         ? `Day ${warmup.day} — Test Phase`
         : `Day ${warmup.day} — ${warmup.phase}`,
+      dns: null as null | { mx: boolean; spf: boolean; dmarc: boolean; checkedAt: string },
       source: 'env',
     } : null;
 
-    const formattedDb = (dbAccounts ?? []).map((a) => ({
-      id: a.id,
-      email: a.email,
-      from_name: a.from_name,
-      provider: a.provider,
-      auth_type: a.auth_type,
-      status: a.status,
-      smtp_host: a.smtp_host,
-      smtp_port: a.smtp_port,
-      smtp_secure: a.smtp_secure,
-      notes: a.notes,
-      dailySent: 0,
-      dailyCap: 50,
-      hourlyCap: 20,
-      warmupDay: 1,
-      warmupStatus: 'Active sender',
-      source: 'db',
-    }));
+    // ── DNS: refresh stale per-account caches in the background ─────────────────
+    const dnsTasks: Promise<void>[] = [];
+    for (const a of (dbAccounts ?? []) as Array<Record<string, unknown>>) {
+      if (a.auth_type !== 'smtp') continue;
+      const checkedAt = a.dns_checked_at as string | null | undefined;
+      const stale = !checkedAt || Date.now() - new Date(checkedAt).getTime() > DNS_CACHE_TTL_MS;
+      if (!stale) continue;
+      const domain = domainOf(String(a.email));
+      if (!domain) continue;
+      dnsTasks.push((async () => {
+        try {
+          const result = await verifyDomainDNS(domain);
+          await supabase.from('email_accounts').update({
+            dns_mx: result.mx,
+            dns_spf: result.spf,
+            dns_dmarc: result.dmarc,
+            dns_checked_at: nowIso,
+          }).eq('id', a.id as string);
+          a.dns_mx = result.mx;
+          a.dns_spf = result.spf;
+          a.dns_dmarc = result.dmarc;
+          a.dns_checked_at = nowIso;
+        } catch {
+          // Column missing (pre-migration) or DNS failure — ignore
+        }
+      })());
+    }
+    // Wait for DNS refreshes (usually <500ms; bounded by Promise.all)
+    await Promise.all(dnsTasks).catch(() => {});
+
+    const formattedDb = (dbAccounts ?? []).map((a: Record<string, unknown>) => {
+      const emailKey = String(a.email).toLowerCase();
+      const rawDailyCap  = a.daily_cap  as number | null | undefined;
+      const rawHourlyCap = a.hourly_cap as number | null | undefined;
+      const dailyCap  = rawDailyCap  != null ? rawDailyCap  : config.rateLimits.dailyCap;
+      const hourlyCap = rawHourlyCap != null ? rawHourlyCap : config.rateLimits.hourlyCap;
+      const counts = sentCounts[emailKey] ?? { daily: 0, hourly: 0 };
+
+      const hasDnsFields = a.dns_checked_at != null;
+      const dns = hasDnsFields ? {
+        mx:        !!a.dns_mx,
+        spf:       !!a.dns_spf,
+        dmarc:     !!a.dns_dmarc,
+        checkedAt: String(a.dns_checked_at),
+      } : null;
+
+      return {
+        id:          a.id,
+        email:       a.email,
+        from_name:   a.from_name,
+        provider:    a.provider,
+        auth_type:   a.auth_type,
+        status:      a.status,
+        smtp_host:   a.smtp_host,
+        smtp_port:   a.smtp_port,
+        smtp_secure: a.smtp_secure,
+        notes:       a.notes,
+        dailySent:   counts.daily,
+        hourlySent:  counts.hourly,
+        dailyCap,
+        hourlyCap,
+        warmupDay:    1,
+        warmupStatus: 'Active sender',
+        dns,
+        source: 'db',
+      };
+    });
 
     res.json({
       success: true,
@@ -68,6 +148,10 @@ router.get('/', async (_req: Request, res: Response) => {
         platform: config.emailPlatform,
         testMode: config.testMode.enabled,
         manualLeadsOnly: config.manualLeadsOnly,
+        defaults: {
+          dailyCap:  config.rateLimits.dailyCap,
+          hourlyCap: config.rateLimits.hourlyCap,
+        },
       },
     });
   } catch (err) {
@@ -185,6 +269,7 @@ router.post('/', async (req: Request, res: Response) => {
       appPassword,
       smtpHost, smtpPort, smtpUser, smtpPassword, smtpSecure,
       imapHost, imapPort,
+      dailyCap, hourlyCap,
       notes,
     } = req.body;
 
@@ -217,6 +302,8 @@ router.post('/', async (req: Request, res: Response) => {
         gmail_client_id: gmailClientId || null,
         gmail_client_secret: gmailClientSecret || null,
         gmail_refresh_token: gmailRefreshToken || null,
+        daily_cap:  dailyCap  != null ? Number(dailyCap)  : null,
+        hourly_cap: hourlyCap != null ? Number(hourlyCap) : null,
         notes: notes || null,
         status: 'active',
       })
@@ -423,6 +510,90 @@ router.post('/bluehost', async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, data, warning: imapWarning || undefined });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// PATCH /api/email-accounts/:id — update editable fields (caps, from_name, status)
+router.patch('/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (id === '__env__') {
+      res.status(400).json({ success: false, error: 'The env-configured account is read-only' });
+      return;
+    }
+    const { dailyCap, hourlyCap, fromName, status, notes } = req.body;
+
+    const patch: Record<string, unknown> = {};
+    if (dailyCap  !== undefined) patch.daily_cap  = dailyCap  === null || dailyCap  === '' ? null : Number(dailyCap);
+    if (hourlyCap !== undefined) patch.hourly_cap = hourlyCap === null || hourlyCap === '' ? null : Number(hourlyCap);
+    if (fromName  !== undefined) patch.from_name  = fromName;
+    if (status    !== undefined) patch.status     = status;
+    if (notes     !== undefined) patch.notes      = notes;
+
+    if (Object.keys(patch).length === 0) {
+      res.status(400).json({ success: false, error: 'No updatable fields provided' });
+      return;
+    }
+
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('email_accounts')
+      .update(patch)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    res.json({ success: true, data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/email-accounts/:id/dns-refresh — re-run DNS checks for this account's domain
+router.post('/:id/dns-refresh', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (id === '__env__') {
+      res.status(400).json({ success: false, error: 'DNS refresh is only supported for database accounts' });
+      return;
+    }
+    const supabase = getSupabase();
+    const { data: account, error: fetchErr } = await supabase
+      .from('email_accounts')
+      .select('email')
+      .eq('id', id)
+      .single();
+    if (fetchErr || !account) {
+      res.status(404).json({ success: false, error: 'Account not found' });
+      return;
+    }
+    const domain = String(account.email).split('@')[1]?.toLowerCase();
+    if (!domain) {
+      res.status(400).json({ success: false, error: 'Could not parse domain from email' });
+      return;
+    }
+    const result = await verifyDomainDNS(domain);
+    const nowIso = new Date().toISOString();
+    const { error: updErr } = await supabase
+      .from('email_accounts')
+      .update({
+        dns_mx: result.mx,
+        dns_spf: result.spf,
+        dns_dmarc: result.dmarc,
+        dns_checked_at: nowIso,
+      })
+      .eq('id', id);
+    if (updErr) throw new Error(updErr.message);
+
+    res.json({
+      success: true,
+      data: { domain, mx: result.mx, spf: result.spf, dmarc: result.dmarc, checkedAt: nowIso },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

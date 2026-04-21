@@ -3,6 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
 
+interface DnsStatus {
+  mx: boolean;
+  spf: boolean;
+  dmarc: boolean;
+  checkedAt: string;
+}
+
 interface EmailAccount {
   id: string;
   email: string;
@@ -11,6 +18,7 @@ interface EmailAccount {
   auth_type: string;
   status: string;
   dailySent: number;
+  hourlySent?: number;
   dailyCap: number;
   hourlyCap: number;
   warmupDay: number | null;
@@ -20,6 +28,7 @@ interface EmailAccount {
   smtp_port?: number;
   smtp_secure?: string;
   notes?: string;
+  dns?: DnsStatus | null;
 }
 
 interface AccountsData {
@@ -27,6 +36,7 @@ interface AccountsData {
   platform: string;
   testMode: boolean;
   manualLeadsOnly: boolean;
+  defaults?: { dailyCap: number; hourlyCap: number };
 }
 
 type AuthType = 'gmail_oauth' | 'app_password' | 'smtp' | 'instantly';
@@ -73,7 +83,10 @@ const AUTH_TYPES: { type: AuthType; label: string; icon: string; desc: string }[
 export default function EmailAccounts() {
   const [data, setData] = useState<AccountsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [dnsResult, setDnsResult] = useState<{ mx: boolean; spf: boolean; dmarc: boolean } | null>(null);
+  const [dnsRefreshingId, setDnsRefreshingId] = useState<string | null>(null);
+  const [editCapsId, setEditCapsId] = useState<string | null>(null);
+  const [capsDraft, setCapsDraft] = useState<{ dailyCap: string; hourlyCap: string }>({ dailyCap: '', hourlyCap: '' });
+  const [savingCapsId, setSavingCapsId] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -117,28 +130,52 @@ export default function EmailAccounts() {
 
   const load = () => {
     setLoading(true);
+    // Per-account DNS status is computed server-side and returned inline on each account.
+    // Stale rows (>6h) are refreshed in the background by the GET endpoint.
     api.get('/email-accounts')
-      .then((res) => {
-        const d: AccountsData = res.data.data;
-        setData(d);
-        // Auto-fetch DNS status using the first custom SMTP account's domain
-        const smtpAccount = d.accounts.find((a) => a.source === 'db' && a.auth_type === 'smtp');
-        if (smtpAccount) {
-          const domain = smtpAccount.email.split('@')[1];
-          if (domain) {
-            api.get(`/settings/dns-check?domain=${encodeURIComponent(domain)}`)
-              .then((r) => setDnsResult(r.data.data))
-              .catch(() => setDnsResult(null));
-          }
-        } else {
-          setDnsResult(null);
-        }
-      })
+      .then((res) => setData(res.data.data as AccountsData))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
     api.get('/warmup/status')
       .then((res) => setWarmupData(res.data.data))
       .catch(() => {});
+  };
+
+  const handleDnsRefresh = async (accountId: string) => {
+    setDnsRefreshingId(accountId);
+    try {
+      await api.post(`/email-accounts/${accountId}/dns-refresh`);
+      load();
+    } catch (e) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'DNS refresh failed';
+      alert(msg);
+    } finally {
+      setDnsRefreshingId(null);
+    }
+  };
+
+  const openCapsEditor = (account: EmailAccount) => {
+    setEditCapsId(account.id);
+    setCapsDraft({ dailyCap: String(account.dailyCap), hourlyCap: String(account.hourlyCap) });
+  };
+
+  const handleSaveCaps = async (accountId: string) => {
+    setSavingCapsId(accountId);
+    try {
+      const daily  = capsDraft.dailyCap.trim()  === '' ? null : parseInt(capsDraft.dailyCap, 10);
+      const hourly = capsDraft.hourlyCap.trim() === '' ? null : parseInt(capsDraft.hourlyCap, 10);
+      if (daily != null && (Number.isNaN(daily) || daily < 0))   throw new Error('Daily cap must be a positive number');
+      if (hourly != null && (Number.isNaN(hourly) || hourly < 0)) throw new Error('Hourly cap must be a positive number');
+      await api.patch(`/email-accounts/${accountId}`, { dailyCap: daily, hourlyCap: hourly });
+      setEditCapsId(null);
+      load();
+    } catch (e) {
+      const msg = (e as { message?: string; response?: { data?: { error?: string } } })?.response?.data?.error
+        || (e as Error)?.message || 'Failed to save caps';
+      alert(msg);
+    } finally {
+      setSavingCapsId(null);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -454,10 +491,13 @@ export default function EmailAccounts() {
               Test Phase — Personal Email Mode
             </h3>
             <p className="text-sm text-amber-700 leading-relaxed">
-              Currently sending via <span className="font-bold">{accounts[0]?.email || 'your Gmail account'}</span>.
-              All outgoing emails are redirected to your test address.
+              {accounts.length > 0 ? (
+                <>Sender pool: <span className="font-bold">{accounts.length}</span> account{accounts.length !== 1 ? 's' : ''} ({accounts.map(a => a.email).join(', ')}).</>
+              ) : (
+                <>No sending accounts configured yet.</>
+              )}
+              {' '}All outgoing emails are redirected to your test address.
               {data?.manualLeadsOnly && ' Only manually entered recipients are permitted.'}
-              {' '}When ready to scale, connect a lookalike domain SMTP account and configure DKIM/SPF/DMARC.
             </p>
           </div>
         </div>
@@ -518,9 +558,20 @@ export default function EmailAccounts() {
 
             <div className="space-y-4">
               <div>
-                <div className="flex justify-between text-xs font-bold mb-1">
+                <div className="flex justify-between items-center text-xs font-bold mb-1">
                   <span className="text-slate-500">Daily Quota</span>
-                  <span className="text-[#b0004a]">{account.dailySent} / {account.dailyCap} sent</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#b0004a]">{account.dailySent} / {account.dailyCap} sent</span>
+                    {account.source === 'db' && editCapsId !== account.id && (
+                      <button
+                        onClick={() => openCapsEditor(account)}
+                        className="text-slate-400 hover:text-[#b0004a] transition-colors"
+                        title="Edit daily / hourly caps"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">edit</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
                   <div
@@ -528,7 +579,97 @@ export default function EmailAccounts() {
                     style={{ width: `${Math.min(100, Math.round((account.dailySent / Math.max(account.dailyCap, 1)) * 100))}%` }}
                   />
                 </div>
+                {typeof account.hourlySent === 'number' && (
+                  <p className="text-[10px] text-slate-400 mt-1">Hourly: {account.hourlySent} / {account.hourlyCap}</p>
+                )}
               </div>
+
+              {/* Inline caps editor */}
+              {editCapsId === account.id && (
+                <div className="bg-surface-container-low border border-slate-100 rounded-lg p-3 space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Daily Cap</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={capsDraft.dailyCap}
+                        onChange={(e) => setCapsDraft((d) => ({ ...d, dailyCap: e.target.value }))}
+                        placeholder={String(data?.defaults?.dailyCap ?? 50)}
+                        className="w-full bg-white rounded-lg px-2 py-1.5 text-xs border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Hourly Cap</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={capsDraft.hourlyCap}
+                        onChange={(e) => setCapsDraft((d) => ({ ...d, hourlyCap: e.target.value }))}
+                        placeholder={String(data?.defaults?.hourlyCap ?? 20)}
+                        className="w-full bg-white rounded-lg px-2 py-1.5 text-xs border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400">Leave blank to use defaults ({data?.defaults?.dailyCap ?? 50}/day · {data?.defaults?.hourlyCap ?? 20}/hour).</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setEditCapsId(null)}
+                      className="flex-1 py-1.5 px-2 text-xs font-bold border border-slate-200 rounded-lg hover:bg-surface-container transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => handleSaveCaps(account.id)}
+                      disabled={savingCapsId === account.id}
+                      className="flex-1 py-1.5 px-2 text-xs font-bold primary-gradient text-on-primary rounded-lg disabled:opacity-50"
+                    >
+                      {savingCapsId === account.id ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Per-account DNS checklist (SMTP accounts only) */}
+              {account.auth_type === 'smtp' && (
+                <div className="border-t border-slate-50 pt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[14px] text-slate-400">verified</span>
+                      <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">DNS</span>
+                    </div>
+                    <button
+                      onClick={() => handleDnsRefresh(account.id)}
+                      disabled={dnsRefreshingId === account.id}
+                      className="text-[10px] font-bold text-slate-400 hover:text-[#b0004a] transition-colors flex items-center gap-1"
+                      title="Refresh DNS check"
+                    >
+                      <span className={`material-symbols-outlined text-[12px] ${dnsRefreshingId === account.id ? 'animate-spin' : ''}`}>refresh</span>
+                      {dnsRefreshingId === account.id ? 'Checking' : 'Refresh'}
+                    </button>
+                  </div>
+                  {account.dns ? (
+                    <>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(['mx', 'spf', 'dmarc'] as const).map((k) => {
+                          const ok = account.dns?.[k];
+                          return (
+                            <div key={k} className={`rounded px-1 py-1 flex items-center justify-center gap-1 ${ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                              <span className="material-symbols-outlined text-[12px]">{ok ? 'check_circle' : 'cancel'}</span>
+                              <span className="text-[10px] font-bold uppercase">{k}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1.5">
+                        Checked {new Date(account.dns.checkedAt).toLocaleString()}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-[10px] text-slate-400">Checking DNS…</p>
+                  )}
+                </div>
+              )}
 
               {/* Warmup row — only for Gmail OAuth2 accounts */}
               {account.auth_type === 'gmail_oauth' && (() => {
@@ -613,36 +754,40 @@ export default function EmailAccounts() {
 
       {/* Production Roadmap */}
       {(() => {
-        const hasSmtpAccount = accounts.some((a) => a.source === 'db' && a.auth_type === 'smtp');
-        const smtpDomain = (() => {
-          const a = accounts.find((ac) => ac.source === 'db' && ac.auth_type === 'smtp');
-          return a ? a.email.split('@')[1] : null;
-        })();
-        const dnsReady = !!(dnsResult?.spf && dnsResult?.dmarc);
+        const smtpAccounts = accounts.filter((a) => a.source === 'db' && a.auth_type === 'smtp');
+        const hasSmtpAccount = smtpAccounts.length > 0;
+        const smtpDomains = Array.from(new Set(smtpAccounts.map((a) => a.email.split('@')[1]).filter(Boolean)));
+        const dnsChecked = smtpAccounts.filter((a) => a.dns);
+        const dnsPassing = smtpAccounts.filter((a) => a.dns?.spf && a.dns?.dmarc && a.dns?.mx);
+        const dnsReady = hasSmtpAccount && dnsPassing.length === smtpAccounts.length;
         const warmupActive = !!(warmupData?.accounts.some((a) => a.warmupEnabled));
 
         const steps: { done: boolean; step: string; note: string }[] = [
           {
             done: !!accounts[0]?.email,
-            step: `Personal email configured (${accounts[0]?.email || 'not set'})`,
-            note: 'Active — sending via Gmail',
+            step: `Primary sender configured (${accounts[0]?.email || 'not set'})`,
+            note: accounts[0] ? `${accounts[0].provider} · ${accounts[0].from_name}` : 'Add a sending account to start',
           },
           {
             done: hasSmtpAccount,
-            step: 'Add lookalike domain (e.g. optirate-solutions.com)',
-            note: hasSmtpAccount && smtpDomain ? `Custom SMTP connected — ${smtpDomain}` : 'Connect via DreamHost Email button above',
+            step: 'Add lookalike domain mailbox(es)',
+            note: hasSmtpAccount
+              ? `${smtpAccounts.length} SMTP account${smtpAccounts.length !== 1 ? 's' : ''} connected · ${smtpDomains.join(', ')}`
+              : 'Use the Bluehost or DreamHost button above to connect a lookalike domain',
           },
           {
             done: dnsReady,
-            step: 'Configure DKIM, DMARC, SPF for sending domain',
-            note: dnsResult
-              ? `MX: ${dnsResult.mx ? '✓' : '✗'} · SPF: ${dnsResult.spf ? '✓' : '✗'} · DMARC: ${dnsResult.dmarc ? '✓' : '✗'}${smtpDomain ? ` (${smtpDomain})` : ''}`
-              : hasSmtpAccount ? 'Checking DNS…' : 'Connect a custom SMTP account first',
+            step: 'Configure MX, SPF, DKIM, DMARC for every sending domain',
+            note: hasSmtpAccount
+              ? `${dnsPassing.length}/${smtpAccounts.length} domain${smtpAccounts.length !== 1 ? 's' : ''} passing${dnsChecked.length < smtpAccounts.length ? ' · some still checking' : ''}`
+              : 'Connect a lookalike domain SMTP account first',
           },
           {
             done: warmupActive,
             step: 'Start warm-up at 20 emails/day, scale over 4 weeks',
-            note: warmupActive ? `Warmup pool active — ${warmupData?.poolSize} account${warmupData?.poolSize !== 1 ? 's' : ''}` : 'Enable warmup toggle on a Gmail OAuth2 account',
+            note: warmupActive
+              ? `Warmup pool active — ${warmupData?.poolSize} account${warmupData?.poolSize !== 1 ? 's' : ''}`
+              : 'Enable warmup toggle on a Gmail OAuth2 account (SMTP warmup not yet supported)',
           },
           {
             done: false,
