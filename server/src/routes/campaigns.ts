@@ -223,17 +223,16 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     const renderedSubject = renderAndSpin(campaign.template_subject, lead);
     const renderedHtml    = renderAndSpin(campaign.template_body, lead);
 
-    // Screenshot handling — prefer stored screenshot_path (reliable Supabase URL);
-    // fall back to Thum.io only when no stored screenshot exists.
-    const leadTrustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
+    // Screenshot handling — only use persistent public URLs (Supabase Storage).
+    // Legacy /app/.tmp/ paths are ephemeral Cloud Run container paths whose files
+    // are gone by the time a campaign sends, and Thum.io blocks Cloud Run egress IPs
+    // with 403. If there's no public URL, the email goes without a screenshot.
     const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
     let screenshotUrl: string | undefined;
-    if (campaign.include_screenshot) {
-      if (leadScreenshotPath.startsWith('http')) {
-        screenshotUrl = leadScreenshotPath;
-      } else if (leadTrustpilotUrl) {
-        screenshotUrl = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
-      }
+    if (campaign.include_screenshot && leadScreenshotPath.startsWith('http')) {
+      screenshotUrl = leadScreenshotPath;
+    } else if (campaign.include_screenshot && leadScreenshotPath) {
+      console.warn(`[TestFlight] Lead ${lead.id} has non-public screenshot_path (${leadScreenshotPath}) — sending without screenshot. Re-scrape or run fix_screenshots.mjs to backfill.`);
     }
 
     // ── Platform mode: send test via Instantly ────────────────────────
@@ -554,22 +553,19 @@ router.post('/:id/send', async (req: Request, res: Response) => {
         const lead = cl.leads as Record<string, unknown>;
         let validScreenshotPath: string | undefined;
         if (campaign.include_screenshot) {
-          const trustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
           const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
           if (leadScreenshotPath.startsWith('http')) {
-            // Stored Supabase Storage URL — most reliable
+            // Stored Supabase Storage URL — persistent and reliable
             validScreenshotPath = leadScreenshotPath;
           } else if (leadScreenshotPath) {
-            // Local path — only valid during the same Cloud Run session as the scrape
+            // Local path — valid only in the same container that scraped it
             const localPath = path.resolve(screenshotsDir, path.basename(leadScreenshotPath));
             if (fs.existsSync(localPath)) {
               validScreenshotPath = localPath;
-            } else if (trustpilotUrl) {
-              // Local file is gone (ephemeral container); fall back to Thum.io
-              validScreenshotPath = `https://image.thum.io/get/width/800/crop/350/${trustpilotUrl}`;
             }
-          } else if (trustpilotUrl) {
-            validScreenshotPath = `https://image.thum.io/get/width/800/crop/350/${trustpilotUrl}`;
+            // Thum.io fallback removed — Cloud Run egress IPs get 403'd. Leads with
+            // broken paths will send without a screenshot until they're re-scraped
+            // or fix_screenshots.mjs is run to backfill Supabase Storage uploads.
           }
         }
 

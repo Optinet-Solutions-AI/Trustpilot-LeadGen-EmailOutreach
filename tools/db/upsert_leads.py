@@ -9,10 +9,17 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from urllib.parse import quote
+
+import requests
 
 # Allow running from project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from tools.db.supabase_client import table
+
+SUPABASE_URL = os.getenv('SUPABASE_URL', '')
+SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+SCREENSHOT_BUCKET = 'screenshots'
 
 
 def resolve_primary_email(lead: dict) -> str | None:
@@ -20,12 +27,70 @@ def resolve_primary_email(lead: dict) -> str | None:
     return lead.get('website_email') or lead.get('trustpilot_email') or None
 
 
+def upload_screenshot_to_storage(local_path: str) -> str | None:
+    """Upload a local screenshot to Supabase Storage and return its public URL.
+    Returns None if the file doesn't exist or upload fails. Container paths
+    (e.g. /app/.tmp/screenshots/foo.png) are ephemeral — persisting them to
+    Storage so emails can embed the image long after the scrape container
+    has been recycled.
+    """
+    if not local_path or not os.path.exists(local_path):
+        return None
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+
+    filename = os.path.basename(local_path)
+    storage_url = f"{SUPABASE_URL}/storage/v1/object/{SCREENSHOT_BUCKET}/{quote(filename)}"
+    public_url  = f"{SUPABASE_URL}/storage/v1/object/public/{SCREENSHOT_BUCKET}/{quote(filename)}"
+
+    try:
+        with open(local_path, 'rb') as f:
+            data = f.read()
+        # upsert=true via x-upsert header so re-scrapes overwrite the same key
+        headers = {
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Content-Type': 'image/png',
+            'x-upsert': 'true',
+        }
+        resp = requests.post(storage_url, headers=headers, data=data, timeout=15)
+        if resp.status_code in (200, 201):
+            return public_url
+        # 409 "duplicate" means it exists and upsert wasn't honored — still usable
+        if resp.status_code == 409:
+            return public_url
+        print(f"  STORAGE UPLOAD FAIL {resp.status_code}: {resp.text[:120]}")
+        return None
+    except Exception as e:
+        print(f"  STORAGE UPLOAD ERROR: {e}")
+        return None
+
+
+def normalize_screenshot_path(raw_path: str | None) -> str | None:
+    """Convert a raw screenshot_path into a persistent public URL.
+    - Already http(s) URL → returned as-is
+    - Local file path with existing file → uploaded to Storage, returns public URL
+    - Local file path with missing file → None (don't write stale paths)
+    - None / empty → None
+    """
+    if not raw_path:
+        return None
+    if raw_path.startswith('http://') or raw_path.startswith('https://'):
+        return raw_path
+    # Local path — upload if file exists, otherwise drop
+    return upload_screenshot_to_storage(raw_path)
+
+
 def upsert_leads(leads: list[dict]) -> int:
     """Upsert leads into Supabase. Returns count of upserted rows."""
     rows = []
     now = datetime.now(timezone.utc).isoformat()
 
+    uploaded_count = 0
     for lead in leads:
+        raw_screenshot = lead.get('screenshot_path')
+        persistent_screenshot = normalize_screenshot_path(raw_screenshot)
+        if raw_screenshot and persistent_screenshot and persistent_screenshot != raw_screenshot:
+            uploaded_count += 1
         rows.append({
             'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
             'trustpilot_url': lead['trustpilot_url'],
@@ -37,9 +102,11 @@ def upsert_leads(leads: list[dict]) -> int:
             'country': lead.get('country'),
             'category': lead.get('category'),
             'star_rating': lead.get('star_rating') or lead.get('rating'),
-            'screenshot_path': lead.get('screenshot_path'),
+            'screenshot_path': persistent_screenshot,
             'scraped_at': now,
         })
+    if uploaded_count:
+        print(f"Uploaded {uploaded_count} screenshots to Supabase Storage.")
 
     if not rows:
         print("No leads to upsert.")

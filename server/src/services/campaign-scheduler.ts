@@ -268,20 +268,13 @@ async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefi
 
   let screenshotPath: string | undefined;
   const leadScreenshot = lead.screenshot_path ? String(lead.screenshot_path) : '';
-  const leadTrustpilotUrl = lead.trustpilot_url ? String(lead.trustpilot_url) : '';
   if (campaign.include_screenshot) {
     if (leadScreenshot.startsWith('http')) {
       screenshotPath = leadScreenshot;
     } else if (leadScreenshot) {
       const local = path.resolve(config.projectRoot, '.tmp', 'screenshots', path.basename(leadScreenshot));
-      if (fs.existsSync(local)) {
-        screenshotPath = local;
-      } else if (leadTrustpilotUrl) {
-        // Local file gone (ephemeral container); fall back to Thum.io
-        screenshotPath = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
-      }
-    } else if (leadTrustpilotUrl) {
-      screenshotPath = `https://image.thum.io/get/width/800/crop/350/${leadTrustpilotUrl}`;
+      if (fs.existsSync(local)) screenshotPath = local;
+      // No Thum.io fallback — Cloud Run egress gets 403'd. Email sends without image.
     }
   }
 
