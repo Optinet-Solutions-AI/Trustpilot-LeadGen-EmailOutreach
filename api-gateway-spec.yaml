@@ -445,9 +445,46 @@ paths:
       responses:
         "200":
           description: OK
+  /api/email-accounts/dreamhost:
+    post:
+      operationId: connectDreamhostAccount
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/email-accounts/bluehost:
+    post:
+      operationId: connectBluehostAccount
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/email-accounts/{id}:
+    patch:
+      operationId: updateEmailAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
     delete:
       operationId: deleteEmailAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/email-accounts/{id}/dns-refresh:
+    post:
+      operationId: refreshEmailAccountDns
       security: []
       parameters:
         - in: path
