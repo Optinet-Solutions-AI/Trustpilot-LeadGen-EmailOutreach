@@ -3,6 +3,7 @@ Shared browser utilities for all scrapers.
 Provides stealth Playwright browser launching, popup dismissal, and delay helpers.
 Adapted from BannerScrapper browser-launcher.ts and popup-handler.ts patterns.
 """
+from __future__ import annotations  # Enables PEP 604 `X | Y` unions on Python 3.9 (Debian Bullseye)
 
 import os
 import random
