@@ -70,16 +70,28 @@ def upsert_leads(leads: list[dict]) -> int:
     rows = [{k: v for k, v in row.items() if v is not None} for row in rows]
     print(f"Deduplicated to {len(rows)} unique leads.")
 
-    # Upsert in batches of 25 to avoid payload limits and timeouts
+    # Group rows by their exact key signature. PostgREST bulk upsert rejects
+    # arrays where objects have different key sets (error PGRST102: "All object
+    # keys must match"). Stripping None above intentionally creates heterogeneous
+    # rows (to avoid nulling existing DB columns), so we must batch by signature.
+    from collections import defaultdict
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for row in rows:
+        signature = tuple(sorted(row.keys()))
+        groups[signature].append(row)
+
+    # Build a flat list of same-shape batches
+    batch_size = 25
+    batches: list[list[dict]] = []
+    for group_rows in groups.values():
+        for i in range(0, len(group_rows), batch_size):
+            batches.append(group_rows[i:i + batch_size])
+
+    # Upsert each batch with retry
     count = 0
     failed_count = 0
-    batch_size = 25
-    total_batches = (len(rows) + batch_size - 1) // batch_size
-    for i in range(0, len(rows), batch_size):
-        batch = rows[i:i + batch_size]
-        batch_num = i // batch_size + 1
-        # Retry up to 3 times per batch
-        batch_ok = False
+    total_batches = len(batches)
+    for batch_num, batch in enumerate(batches, start=1):
         for attempt in range(3):
             try:
                 result = (
@@ -90,7 +102,6 @@ def upsert_leads(leads: list[dict]) -> int:
                 batch_count = len(result.data) if result.data else 0
                 count += batch_count
                 print(f"  Batch {batch_num}: upserted {batch_count} leads")
-                batch_ok = True
                 break
             except Exception as e:
                 if attempt < 2:
