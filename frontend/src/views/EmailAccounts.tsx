@@ -94,6 +94,17 @@ export default function EmailAccounts() {
   const [dhSaving, setDhSaving] = useState(false);
   const [dhError, setDhError] = useState('');
   const [dhWarning, setDhWarning] = useState('');
+
+  // Bluehost (Titan) modal
+  const [showBluehostModal, setShowBluehostModal] = useState(false);
+  const [bhForm, setBhForm] = useState({
+    email: '', fromName: '', password: '',
+    smtpHost: 'smtp.titan.email', smtpPort: '465',
+    imapHost: 'imap.titan.email', imapPort: '993',
+  });
+  const [bhSaving, setBhSaving] = useState(false);
+  const [bhError, setBhError] = useState('');
+  const [bhWarning, setBhWarning] = useState('');
   const [warmupData, setWarmupData] = useState<{
     accounts: {
       email: string; fromName: string; warmupEnabled: boolean; warmupDailyTarget: number;
@@ -160,6 +171,13 @@ export default function EmailAccounts() {
     setDhForm({ email: '', fromName: '', password: '', smtpHost: 'smtp.dreamhost.com', smtpPort: '465', imapHost: 'imap.dreamhost.com', imapPort: '993' });
   };
 
+  const openBluehostModal = () => {
+    setShowBluehostModal(true);
+    setBhError('');
+    setBhWarning('');
+    setBhForm({ email: '', fromName: '', password: '', smtpHost: 'smtp.titan.email', smtpPort: '465', imapHost: 'imap.titan.email', imapPort: '993' });
+  };
+
   const handleDreamhostSave = async () => {
     setDhError('');
     setDhWarning('');
@@ -188,6 +206,36 @@ export default function EmailAccounts() {
       setDhError(msg || 'Failed to connect. Check your credentials.');
     } finally {
       setDhSaving(false);
+    }
+  };
+
+  const handleBluehostSave = async () => {
+    setBhError('');
+    setBhWarning('');
+    if (!bhForm.email || !bhForm.password) { setBhError('Email and password are required.'); return; }
+    setBhSaving(true);
+    try {
+      const res = await api.post('/email-accounts/bluehost', {
+        email: bhForm.email,
+        fromName: bhForm.fromName || bhForm.email,
+        password: bhForm.password,
+        smtpHost: bhForm.smtpHost,
+        smtpPort: bhForm.smtpPort,
+        imapHost: bhForm.imapHost,
+        imapPort: bhForm.imapPort,
+      });
+      if (res.data.warning) {
+        setBhWarning(res.data.warning);
+        load();
+      } else {
+        setShowBluehostModal(false);
+        load();
+      }
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setBhError(msg || 'Failed to connect. Check your credentials.');
+    } finally {
+      setBhSaving(false);
     }
   };
 
@@ -366,6 +414,13 @@ export default function EmailAccounts() {
           >
             <span className="material-symbols-outlined text-[18px] text-[#b0004a]">dns</span>
             Connect DreamHost Email
+          </button>
+          <button
+            onClick={openBluehostModal}
+            className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
+          >
+            <span className="material-symbols-outlined text-[18px] text-[#b0004a]">mail</span>
+            Connect Bluehost Email
           </button>
           <button
             onClick={openModal}
@@ -1099,6 +1154,138 @@ export default function EmailAccounts() {
                 >
                   {dhSaving && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
                   {dhSaving ? 'Testing & Saving…' : 'Test & Connect'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bluehost (Titan) Modal ── */}
+      {showBluehostModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl ambient-shadow w-full max-w-lg mx-4 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                  Connect Bluehost Email
+                </h3>
+                <p className="text-xs text-secondary mt-0.5">Bluehost Professional Email runs on Titan. Tests SMTP + IMAP before saving.</p>
+              </div>
+              <button onClick={() => setShowBluehostModal(false)} className="text-slate-400 hover:text-slate-600">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="px-6 py-5 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Email Address *</label>
+                  <input
+                    type="email"
+                    value={bhForm.email}
+                    onChange={(e) => setBhForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="you@yourdomain.com"
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Display Name</label>
+                  <input
+                    type="text"
+                    value={bhForm.fromName}
+                    onChange={(e) => setBhForm((f) => ({ ...f, fromName: e.target.value }))}
+                    placeholder="OptiRate"
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Mailbox Password *</label>
+                <input
+                  type="password"
+                  value={bhForm.password}
+                  onChange={(e) => setBhForm((f) => ({ ...f, password: e.target.value }))}
+                  placeholder="Bluehost mailbox password"
+                  className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">SMTP Host</label>
+                  <input
+                    type="text"
+                    value={bhForm.smtpHost}
+                    onChange={(e) => setBhForm((f) => ({ ...f, smtpHost: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">SMTP Port</label>
+                  <input
+                    type="number"
+                    value={bhForm.smtpPort}
+                    onChange={(e) => setBhForm((f) => ({ ...f, smtpPort: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">IMAP Host</label>
+                  <input
+                    type="text"
+                    value={bhForm.imapHost}
+                    onChange={(e) => setBhForm((f) => ({ ...f, imapHost: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">IMAP Port</label>
+                  <input
+                    type="number"
+                    value={bhForm.imapPort}
+                    onChange={(e) => setBhForm((f) => ({ ...f, imapPort: e.target.value }))}
+                    className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700 leading-relaxed">
+                <span className="font-bold">Bluehost Titan defaults:</span> SMTP <span className="font-mono">smtp.titan.email:465</span> (SSL), IMAP <span className="font-mono">imap.titan.email:993</span> (TLS). Username is your full email address.
+              </div>
+
+              {bhError && (
+                <div className="px-4 py-3 bg-[#ffd9de] text-[#b0004a] text-sm font-medium rounded-xl border border-[#b0004a]/20">
+                  {bhError}
+                </div>
+              )}
+              {bhWarning && (
+                <div className="px-4 py-3 bg-amber-50 text-amber-800 text-sm font-medium rounded-xl border border-amber-200 flex items-start gap-3">
+                  <span className="material-symbols-outlined text-amber-600 text-[18px] mt-0.5 flex-shrink-0">warning</span>
+                  <span>{bhWarning}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 px-6 pb-6 pt-4 border-t border-slate-100">
+              <button
+                onClick={() => { setShowBluehostModal(false); setBhWarning(''); }}
+                className="py-2.5 px-5 rounded-xl border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container transition-colors"
+              >
+                {bhWarning ? 'Done' : 'Cancel'}
+              </button>
+              {!bhWarning && (
+                <button
+                  onClick={handleBluehostSave}
+                  disabled={bhSaving}
+                  className="flex-1 py-2.5 primary-gradient text-on-primary rounded-xl text-sm font-bold ambient-shadow disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {bhSaving && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
+                  {bhSaving ? 'Testing & Saving…' : 'Test & Connect'}
                 </button>
               )}
             </div>

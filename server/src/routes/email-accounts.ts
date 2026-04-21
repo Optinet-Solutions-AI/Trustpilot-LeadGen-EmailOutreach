@@ -330,6 +330,105 @@ router.post('/dreamhost', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/email-accounts/bluehost — test + save a Bluehost Professional Email (Titan) account
+router.post('/bluehost', async (req: Request, res: Response) => {
+  const {
+    email,
+    fromName,
+    password,
+    smtpHost = 'smtp.titan.email',
+    smtpPort = '465',
+    imapHost = 'imap.titan.email',
+    imapPort = '993',
+  } = req.body;
+
+  if (!email || !password) {
+    res.status(400).json({ success: false, error: 'email and password are required' });
+    return;
+  }
+
+  const parsedSmtpPort = parseInt(String(smtpPort), 10);
+  const parsedImapPort = parseInt(String(imapPort), 10);
+
+  // 1. Test SMTP connection
+  try {
+    const nodemailer = await import('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: parsedSmtpPort,
+      secure: parsedSmtpPort === 465,
+      auth: { user: email, pass: password },
+    });
+    await transporter.verify();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    res.status(400).json({ success: false, error: `SMTP connection failed: ${msg}` });
+    return;
+  }
+
+  // 2. Test IMAP connection (soft-fail — warn but don't block save)
+  let imapWarning: string | null = null;
+  try {
+    const { ImapFlow } = await import('imapflow');
+    const client = new ImapFlow({
+      host: imapHost,
+      port: parsedImapPort,
+      secure: true,
+      auth: { user: email, pass: password },
+      logger: false,
+      connectionTimeout: 10000,
+    });
+    await Promise.race([
+      client.connect().then(() => client.logout()),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('IMAP connection timed out after 10s')), 10000)),
+    ]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    imapWarning = `IMAP unavailable (${msg}) — reply tracking disabled. SMTP is working.`;
+    console.warn(`[Bluehost] IMAP soft-fail for ${email}:`, msg);
+  }
+
+  // 3. Save to DB
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('email_accounts')
+      .insert({
+        email,
+        from_name: fromName || email,
+        provider: 'Bluehost (Titan SMTP)',
+        auth_type: 'smtp',
+        email_provider: 'smtp',
+        smtp_host: smtpHost,
+        smtp_port: parsedSmtpPort,
+        smtp_user: email,
+        smtp_password: password,
+        smtp_secure: parsedSmtpPort === 465 ? 'ssl' : 'tls',
+        imap_host: imapHost,
+        imap_port: parsedImapPort,
+        imap_user: email,
+        imap_pass: password,
+        status: 'active',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        res.status(409).json({ success: false, error: 'An account with this email already exists' });
+      } else {
+        throw new Error(error.message);
+      }
+      return;
+    }
+
+    res.json({ success: true, data, warning: imapWarning || undefined });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // DELETE /api/email-accounts/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
