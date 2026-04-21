@@ -132,26 +132,30 @@ export function assignScheduledTimes(
     }
 
     // How many emails can we fit today with at least MIN_GAP_MINUTES between each?
-    const MIN_GAP_MINUTES = 5;
+    // 20 min minimum → sends look human-paced and don't trip spam filters that flag
+    // bursts. With a 24h window and 50 leads, that still leaves ~28 min slots on average.
+    const MIN_GAP_MINUTES = 20;
     const rawBatchSize = Math.min(remaining, dailyLimit);
     const batchSize = effectiveWindowMinutes >= rawBatchSize * MIN_GAP_MINUTES
       ? rawBatchSize
       : Math.max(1, Math.floor(effectiveWindowMinutes / MIN_GAP_MINUTES));
 
-    // Segmented distribution: divide the window into batchSize equal segments,
-    // then place each email at the segment midpoint ± small jitter.
-    // This guarantees emails are spread evenly (no two emails bunched together)
-    // while still being unpredictable.
-    // e.g. 6 emails in a 3-hour window → one email every ~30 min ± a few min jitter.
+    // Randomised spread: divide the window into batchSize equal segments, then
+    // pick a UNIFORMLY RANDOM minute inside each segment (clamped so adjacent
+    // segments always honour MIN_GAP_MINUTES). This looks nothing like a cron
+    // cadence — the gap between two consecutive emails can be anywhere from
+    // MIN_GAP_MINUTES up to nearly 2× the segment size.
+    // e.g. 50 emails / 24h window → ~28 min segments, actual gaps range 20–56 min.
     const segmentSize = Math.floor(effectiveWindowMinutes / batchSize);
+    const guardMinutes = Math.min(Math.floor(MIN_GAP_MINUTES / 2), Math.floor(segmentSize / 4));
     for (let i = 0; i < batchSize; i++) {
       const segmentStart = i * segmentSize;
       const segmentEnd   = i === batchSize - 1 ? effectiveWindowMinutes : segmentStart + segmentSize;
-      const mid          = (segmentStart + segmentEnd) / 2;
-      // Jitter: up to ±25% of segment size, capped at ±5 minutes
-      const halfJitter   = Math.min(Math.floor((segmentEnd - segmentStart) / 4), 5);
-      const jitter       = halfJitter > 0 ? Math.floor(Math.random() * (2 * halfJitter + 1)) - halfJitter : 0;
-      const randomOffset = Math.round(mid) + jitter;
+      // Keep a small guard band at both edges so we never land <MIN_GAP_MINUTES
+      // from the neighbouring segment's far edge
+      const lo = segmentStart + guardMinutes;
+      const hi = Math.max(lo, segmentEnd - guardMinutes);
+      const randomOffset = lo + Math.floor(Math.random() * (hi - lo + 1));
       const sendTimeMs   = effectiveStartMs + randomOffset * 60_000;
       results.push(new Date(sendTimeMs));
     }
