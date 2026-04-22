@@ -74,6 +74,37 @@ function plainToHtml(plain: string): string {
   return plain.split(/\n\n+/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
 }
 
+/**
+ * Rewrite `<img src="cid:xxx">` references to `data:` URIs using the parsed
+ * inline attachments. Browsers can't resolve `cid:` (that only works inside
+ * email clients), so without this the screenshots embedded in OptiRate
+ * outreach templates render as broken images in the Inbox viewer.
+ * Non-matching cid refs are left untouched.
+ */
+function inlineCidAttachments(
+  html: string,
+  attachments: Array<{ contentId?: string; content?: unknown; contentType?: string }>,
+): string {
+  if (!html || !attachments || attachments.length === 0) return html;
+  const cidMap = new Map<string, string>();
+  for (const att of attachments) {
+    const rawCid = att.contentId;
+    if (!rawCid || !att.content) continue;
+    const cid = rawCid.replace(/^<|>$/g, '').trim().toLowerCase();
+    if (!cid) continue;
+    const ct = att.contentType || 'application/octet-stream';
+    const buf = Buffer.isBuffer(att.content)
+      ? att.content
+      : Buffer.from(att.content as ArrayBufferLike);
+    cidMap.set(cid, `data:${ct};base64,${buf.toString('base64')}`);
+  }
+  if (cidMap.size === 0) return html;
+  return html.replace(/src=(["'])cid:([^"']+)\1/gi, (match, quote, cid) => {
+    const dataUri = cidMap.get(cid.trim().toLowerCase());
+    return dataUri ? `src=${quote}${dataUri}${quote}` : match;
+  });
+}
+
 interface CollectedMessage {
   uid: number;
   folder: string;
@@ -131,14 +162,20 @@ export async function fetchSmtpThread(
       mailboxes.find(b => /^sent.items$/i.test(b.name)) ??
       mailboxes.find(b => /sent/i.test(b.name));
     const inboxBox = mailboxes.find(b => /^inbox$/i.test(b.name)) ?? { path: 'INBOX' };
+    // Gmail tucks inbound replies into [Gmail]/All Mail even when the IMAP
+    // HEADER References search in INBOX misses them (Gmail's IMAP index is
+    // sometimes lazy on cross-label threading). Adding \\All as a third scan
+    // path closes that gap. Non-Gmail providers don't expose \\All, so this
+    // is a Gmail-only addition.
+    const allMailBox = mailboxes.find(b => b.specialUse === '\\All');
 
-    // Only the two folders that actually matter. Skipping archive/all-mail
-    // keeps search time bounded without losing coverage — the replies we care
-    // about land in INBOX before anything else.
-    const scanPaths = Array.from(new Set([sentBox?.path, inboxBox.path].filter(Boolean))) as string[];
+    const scanPaths = Array.from(new Set(
+      [sentBox?.path, inboxBox.path, allMailBox?.path].filter(Boolean),
+    )) as string[];
 
     const collected: CollectedMessage[] = [];
-    const seen = new Set<string>();  // dedupe key: folder:uid
+    const seen = new Set<string>();           // dedupe key: folder:uid (prevents same-UID re-reads)
+    const seenMessageIds = new Set<string>(); // dedupe key: Message-ID (collapses server-save + IMAP-append duplicates)
     const threadIds = new Set<string>([target]);
 
     // Header-scoped search: ask the server to filter for us.
@@ -201,6 +238,14 @@ export async function fetchSmtpThread(
           for (const r of references) threadIds.add(r);
 
           if (!msg.source) continue;
+          // Collapse duplicates that share a Message-ID across folders or UIDs
+          // (Bluehost/Titan server-side sent-save + our IMAP append land the
+          // same email in Sent twice; Gmail's All Mail also overlaps INBOX).
+          // Messages without a Message-ID fall through to always-push.
+          if (messageId) {
+            if (seenMessageIds.has(messageId)) continue;
+            seenMessageIds.add(messageId);
+          }
           collected.push({
             uid: msg.uid!,
             folder: path,
@@ -264,7 +309,8 @@ export async function fetchSmtpThread(
     const messages: ThreadMessage[] = [];
     for (const c of collected) {
       const parsed = await simpleParser(c.raw, { skipImageLinks: false, skipHtmlToText: false });
-      const html = parsed.html ? stripBodyWrapper(parsed.html) : (parsed.textAsHtml ?? '');
+      const rawHtml = parsed.html ? stripBodyWrapper(parsed.html) : (parsed.textAsHtml ?? '');
+      const html = inlineCidAttachments(rawHtml, parsed.attachments ?? []);
       const plain = parsed.text ?? '';
       const body = html || plainToHtml(plain);
 
@@ -341,10 +387,14 @@ export async function searchImapThreadByEmail(
       mailboxes.find(b => /^sent.items$/i.test(b.name)) ??
       mailboxes.find(b => /sent/i.test(b.name));
     const inboxBox = mailboxes.find(b => /^inbox$/i.test(b.name)) ?? { path: 'INBOX' };
+    const allMailBox = mailboxes.find(b => b.specialUse === '\\All');
 
-    const scanPaths = Array.from(new Set([sentBox?.path, inboxBox.path].filter(Boolean))) as string[];
+    const scanPaths = Array.from(new Set(
+      [sentBox?.path, inboxBox.path, allMailBox?.path].filter(Boolean),
+    )) as string[];
 
     const collected: CollectedMessage[] = [];
+    const seenMessageIds = new Set<string>();
     const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
 
     for (const path of scanPaths) {
@@ -363,6 +413,12 @@ export async function searchImapThreadByEmail(
         for await (const msg of client.fetch(uids, { envelope: true, uid: true, flags: true, source: true })) {
           if (!msg.source) continue;
           const messageId = normalizeId(msg.envelope?.messageId);
+          // Same dedup logic as fetchSmtpThread: collapse server-save + append
+          // duplicates and overlapping labels (Gmail INBOX vs All Mail).
+          if (messageId) {
+            if (seenMessageIds.has(messageId)) continue;
+            seenMessageIds.add(messageId);
+          }
           collected.push({
             uid: msg.uid!,
             folder: path,
@@ -385,7 +441,8 @@ export async function searchImapThreadByEmail(
     const messages: ThreadMessage[] = [];
     for (const c of collected) {
       const parsed = await simpleParser(c.raw, { skipImageLinks: false, skipHtmlToText: false });
-      const html = parsed.html ? stripBodyWrapper(parsed.html) : (parsed.textAsHtml ?? '');
+      const rawHtml = parsed.html ? stripBodyWrapper(parsed.html) : (parsed.textAsHtml ?? '');
+      const html = inlineCidAttachments(rawHtml, parsed.attachments ?? []);
       const plain = parsed.text ?? '';
       const body = html || plainToHtml(plain);
       const fromAddr = parsed.from?.text ?? '';

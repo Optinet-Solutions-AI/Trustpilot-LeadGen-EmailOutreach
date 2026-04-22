@@ -89,6 +89,11 @@ function plainToHtml(plain: string): string {
 function extractBody(payload: any): { html: string; plain: string } {
   let html = '';
   let plain = '';
+  // Collect inline image parts keyed by their Content-ID so we can rewrite
+  // `<img src="cid:xxx">` to `data:` URIs — browsers can't resolve `cid:`.
+  // Only parts with inline body.data are captured; large attachments returned
+  // as attachmentId-only would require a second round trip (deferred).
+  const cidMap = new Map<string, string>();
 
   function walk(part: any) {
     if (!part) return;
@@ -96,6 +101,19 @@ function extractBody(payload: any): { html: string; plain: string } {
       html = decodeBase64Url(part.body.data);
     } else if (part.mimeType === 'text/plain' && part.body?.data) {
       plain = decodeBase64Url(part.body.data);
+    } else if (part.mimeType?.startsWith('image/') && part.body?.data) {
+      const headers = (part.headers ?? []) as { name?: string; value?: string }[];
+      const cidHeader = headers.find(h => h.name?.toLowerCase() === 'content-id');
+      const rawCid = cidHeader?.value;
+      if (rawCid) {
+        const cid = rawCid.replace(/^<|>$/g, '').trim().toLowerCase();
+        if (cid) {
+          // Gmail returns URL-safe base64; data URIs use standard base64.
+          // Round-trip through Buffer to re-encode.
+          const buf = Buffer.from(part.body.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+          cidMap.set(cid, `data:${part.mimeType};base64,${buf.toString('base64')}`);
+        }
+      }
     }
     if (part.parts) (part.parts as any[]).forEach(walk);
   }
@@ -103,6 +121,13 @@ function extractBody(payload: any): { html: string; plain: string } {
 
   // Strip outer HTML document wrapper so Gmail's injected styles don't override our CSS
   if (html) html = extractBodyContent(html);
+  // Rewrite cid: references to inline data URIs (broken images otherwise)
+  if (html && cidMap.size > 0) {
+    html = html.replace(/src=(["'])cid:([^"']+)\1/gi, (match, quote, cid) => {
+      const dataUri = cidMap.get(cid.trim().toLowerCase());
+      return dataUri ? `src=${quote}${dataUri}${quote}` : match;
+    });
+  }
   // If no HTML part, convert plain text to basic HTML paragraphs
   if (!html && plain) html = plainToHtml(plain);
 
