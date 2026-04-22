@@ -921,6 +921,12 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
       console.warn('[InboxReply] lead_note failed:', e instanceof Error ? e.message : e);
     }
 
+    // Return a fully-formed message object so the frontend can inject it into
+    // the thread immediately, without waiting for the IMAP Sent-folder append
+    // to propagate. The subsequent IMAP refetch then supplies the authoritative
+    // server copy (same Message-ID, so our dedup collapses them).
+    const nowIso = new Date().toISOString();
+    const snippet = body.replace(/\s+/g, ' ').trim().slice(0, 160);
     res.json({
       success: true,
       data: {
@@ -928,6 +934,19 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
         to: testApplied.to,
         subject: testApplied.subject,
         testMode: config.testMode.enabled,
+        message: {
+          id: result.messageId || `local:${Date.now()}`,
+          threadId: originalMsgId ?? (cl.gmail_thread_id as string | null) ?? '',
+          from: `${(acc.from_name as string | null) ?? 'OptiRate'} <${acc.email as string}>`,
+          to: testApplied.to,
+          subject: testApplied.subject,
+          date: nowIso,
+          snippet,
+          body: testApplied.html,
+          bodyType: 'html',
+          unread: false,
+          labels: ['Sent'],
+        },
       },
     });
   } catch (err) {

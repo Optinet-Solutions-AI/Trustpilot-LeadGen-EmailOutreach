@@ -171,8 +171,26 @@ export default function Inbox() {
           : `Sent to ${data.to}`,
       });
       setReplyBody('');
-      // Re-pull the thread so the new outgoing message shows up immediately
-      // (backend invalidates its cache before we get here).
+
+      // Optimistically append the backend-returned synthetic message so the
+      // user sees their reply in the thread instantly, even if the IMAP
+      // Sent-folder append is still propagating.
+      if (data.message) {
+        setThread((prev) => {
+          if (!prev) return prev;
+          const merged = {
+            ...prev,
+            messages: [...prev.messages, data.message],
+          };
+          // Expand only the new message — collapses earlier ones Gmail-style.
+          setExpandedMsgIds(new Set([data.message.id]));
+          return merged;
+        });
+      }
+
+      // Schedule a background refetch a few seconds later: by then IMAP will
+      // have indexed the new Sent entry, and the authoritative thread
+      // (deduped by Message-ID) will replace our optimistic copy.
       const gmail = selectedMsg.sender_auth_type === 'gmail_oauth' || selectedMsg.sender_auth_type === 'app_password';
       const primaryUrl = gmail && selectedMsg.gmail_thread_id
         ? `/inbox/thread/${selectedMsg.gmail_thread_id}`
@@ -180,10 +198,12 @@ export default function Inbox() {
           ? `/inbox/thread-smtp/${selectedMsg.id}`
           : null;
       if (primaryUrl) {
-        try {
-          const refresh = await api.get(primaryUrl);
-          if (refresh.data?.data) setThread(refresh.data.data);
-        } catch { /* ignore — status banner already tells the user it sent */ }
+        setTimeout(async () => {
+          try {
+            const refresh = await api.get(primaryUrl);
+            if (refresh.data?.data) setThread(refresh.data.data);
+          } catch { /* ignore — optimistic copy already shown */ }
+        }, 3000);
       }
       setTimeout(() => setReplyStatus(null), 4000);
     } catch (err: unknown) {
