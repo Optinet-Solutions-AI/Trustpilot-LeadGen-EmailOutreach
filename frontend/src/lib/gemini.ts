@@ -107,6 +107,8 @@ ${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{bus
 - Tone: professional, empathetic, consultative — NOT pushy or salesy
 - Length: 3-4 short paragraphs
 ${bodyGuidance}
+- The sender is ALWAYS "OptiRate" — never write "[Your Name]", "[Name]", "[Your Company]", "[Company]", "[Signature]", or any square-bracket placeholder. If you reference a sender, write "OptiRate" literally (or use it inside spintax, e.g. "{OptiRate|The OptiRate Team}").
+- If the body introduces a person (e.g. "My name is …"), REWRITE to speak from the company voice instead ("I'm reaching out from OptiRate …"). Never leave a human-name placeholder.
 - Close with heavy spintax on every element, e.g.:
   "{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team|OptiRate Solutions}"
 - Output ONLY the HTML body content (no <html>, <head>, <body> tags)
