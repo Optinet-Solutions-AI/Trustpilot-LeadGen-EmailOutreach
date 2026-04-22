@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import api from '../api/client';
+import { useNotifications } from '../context/NotificationsContext';
 
 type Folder = 'replies' | 'sent';
 
@@ -9,6 +11,8 @@ const FOLDERS: { key: Folder; icon: string; label: string }[] = [
   { key: 'replies', icon: 'reply',  label: 'Replies'    },
   { key: 'sent',    icon: 'send',   label: 'Sent Emails' },
 ];
+
+type SenderAuthType = 'gmail_oauth' | 'app_password' | 'smtp' | 'unknown';
 
 interface CampaignMessage {
   id: string;
@@ -18,8 +22,12 @@ interface CampaignMessage {
   company_name: string;
   country: string;
   email_used: string | null;
+  sender_email: string | null;
+  sender_auth_type: SenderAuthType;
   status: string;
   sent_at: string | null;
+  replied_at: string | null;
+  reply_read_at: string | null;
   reply_snippet: string | null;
   gmail_thread_id: string | null;
   gmail_message_id: string | null;
@@ -62,6 +70,14 @@ function parseDisplayName(address: string): { name: string; email: string } {
   return { name: address, email: address };
 }
 
+function isSmtpAccount(authType: SenderAuthType): boolean {
+  return authType === 'smtp';
+}
+
+function isGmailAccount(authType: SenderAuthType): boolean {
+  return authType === 'gmail_oauth' || authType === 'app_password';
+}
+
 const STATUS_BADGE: Record<string, { label: string; classes: string }> = {
   replied:  { label: 'Replied',  classes: 'bg-[#8ff9a8]/30 text-[#006630]' },
   opened:   { label: 'Opened',   classes: 'bg-[#ffd9de]/60 text-[#b0004a]' },
@@ -71,18 +87,25 @@ const STATUS_BADGE: Record<string, { label: string; classes: string }> = {
 };
 
 export default function Inbox() {
+  const searchParams = useSearchParams();
+  const openParam = searchParams?.get('open') ?? null;
+
   const [folder, setFolder] = useState<Folder>('replies');
   const [messages, setMessages] = useState<CampaignMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadData | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
+  const [threadError, setThreadError] = useState<string | null>(null);
   const [selectedMsg, setSelectedMsg] = useState<CampaignMessage | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const { markRead, refresh: refreshNotifications } = useNotifications();
 
   // Draggable panel width
   const [panelWidth, setPanelWidth] = useState(480);
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const deeplinkHandledRef = useRef<string | null>(null);
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -90,7 +113,6 @@ export default function Inbox() {
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
       const delta = ev.clientX - dragRef.current.startX;
-      // Max = viewport minus left nav (224px) + message list (320px) + drag handle (6px) + 16px breathing room
       const maxWidth = window.innerWidth - 224 - 320 - 6 - 16;
       const next = Math.min(Math.max(dragRef.current.startWidth + delta, 320), maxWidth);
       setPanelWidth(next);
@@ -121,26 +143,62 @@ export default function Inbox() {
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
 
-  const openMessage = async (msg: CampaignMessage) => {
+  const openMessage = useCallback(async (msg: CampaignMessage) => {
     if (selectedId === msg.id) return;
     setSelectedId(msg.id);
     setSelectedMsg(msg);
     setThread(null);
+    setThreadError(null);
 
-    if (!msg.gmail_thread_id) return; // No thread to load
+    // Mark as read locally AND in the DB so the badges update immediately.
+    if (msg.status === 'replied' && !msg.reply_read_at) {
+      setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, reply_read_at: new Date().toISOString() } : m));
+      markRead([msg.id]);
+    }
+
+    const canTryGmail = isGmailAccount(msg.sender_auth_type) && !!msg.gmail_thread_id;
+    const canTrySmtp = isSmtpAccount(msg.sender_auth_type) && !!msg.gmail_message_id;
+
+    if (!canTryGmail && !canTrySmtp) return; // Nothing to load
 
     setThreadLoading(true);
     try {
-      const res = await api.get(`/inbox/thread/${msg.gmail_thread_id}`);
+      const url = canTryGmail
+        ? `/inbox/thread/${msg.gmail_thread_id}`
+        : `/inbox/thread-smtp/${msg.id}`;
+      const res = await api.get(url);
       setThread(res.data.data);
-    } catch {
+    } catch (err: unknown) {
+      const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        || (err instanceof Error ? err.message : 'Failed to load thread');
+      setThreadError(errMsg);
       setThread(null);
     } finally {
       setThreadLoading(false);
     }
-  };
+  }, [selectedId, markRead]);
+
+  // Deeplink from TopBar notification click: ?open=<campaignLeadId>
+  useEffect(() => {
+    if (!openParam || loading || deeplinkHandledRef.current === openParam) return;
+    // Deep-link always lands in the Replies folder, where the target lives
+    if (folder !== 'replies') {
+      setFolder('replies');
+      return; // fetchMessages will re-run and we'll re-enter this effect
+    }
+    const match = messages.find((m) => m.id === openParam);
+    if (match) {
+      deeplinkHandledRef.current = openParam;
+      openMessage(match);
+    }
+  }, [openParam, folder, messages, loading, openMessage]);
+
+  // When the user switches folders or refreshes, pull notifications again so badges
+  // mirror the current DB state.
+  useEffect(() => { refreshNotifications(); }, [folder, refreshNotifications]);
 
   const repliesCount = messages.filter(m => m.status === 'replied').length;
+  const unreadInList = messages.filter(m => m.status === 'replied' && !m.reply_read_at).length;
 
   return (
     <div className="flex h-full" style={{ height: 'calc(100vh - 4rem)' }}>
@@ -154,7 +212,7 @@ export default function Inbox() {
 
         <nav className="flex-1 px-2 py-4 space-y-0.5">
           {FOLDERS.map((f) => {
-            const badge = f.key === 'replies' ? repliesCount : 0;
+            const badge = f.key === 'replies' ? (folder === 'replies' ? unreadInList : repliesCount) : 0;
             return (
               <button
                 key={f.key}
@@ -232,19 +290,25 @@ export default function Inbox() {
             messages.map((msg) => {
               const isSelected = selectedId === msg.id;
               const badge = STATUS_BADGE[msg.status] || STATUS_BADGE.sent;
+              const isUnread = msg.status === 'replied' && !msg.reply_read_at;
               return (
                 <button
                   key={msg.id}
                   onClick={() => openMessage(msg)}
                   className={`w-full text-left px-4 py-3.5 border-b border-slate-100 transition-colors hover:bg-white ${
-                    isSelected ? 'bg-white border-l-2 border-l-[#b0004a]' : ''
+                    isSelected ? 'bg-white border-l-2 border-l-[#b0004a]' : isUnread ? 'bg-[#8ff9a8]/5' : ''
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-bold text-on-surface truncate max-w-[160px]">
-                      {msg.company_name}
-                    </span>
-                    <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.sent_at)}</span>
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      {isUnread && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#006630] flex-shrink-0" aria-label="Unread" />
+                      )}
+                      <span className={`text-sm truncate ${isUnread ? 'font-black text-on-surface' : 'font-bold text-on-surface'}`}>
+                        {msg.company_name}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.replied_at || msg.sent_at)}</span>
                   </div>
                   <p className="text-xs text-secondary truncate mb-1.5">{msg.campaign_name}</p>
                   <div className="flex items-center justify-between gap-2">
@@ -267,7 +331,6 @@ export default function Inbox() {
       <div className="flex-1 flex overflow-hidden bg-[#f8f9fa]">
 
         {!selectedMsg ? (
-          /* Empty state */
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
             <div className="w-16 h-16 rounded-full bg-surface-container flex items-center justify-center mb-5">
               <span className="material-symbols-outlined text-[32px] text-secondary">
@@ -287,20 +350,17 @@ export default function Inbox() {
           </div>
         ) : (
           <>
-            {/* Detail panel — draggable width */}
             <div className="flex flex-col bg-white overflow-y-auto h-full flex-shrink-0 border-l border-slate-100" style={{ width: panelWidth }}>
 
-            {/* Panel header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
               <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
                 {thread ? `Thread (${thread.messages.length} message${thread.messages.length !== 1 ? 's' : ''})` : 'Message Detail'}
               </p>
-              <button onClick={() => { setSelectedId(null); setSelectedMsg(null); setThread(null); }} className="p-1.5 rounded-lg hover:bg-surface-container transition-colors">
+              <button onClick={() => { setSelectedId(null); setSelectedMsg(null); setThread(null); setThreadError(null); }} className="p-1.5 rounded-lg hover:bg-surface-container transition-colors">
                 <span className="material-symbols-outlined text-[18px] text-secondary">close</span>
               </button>
             </div>
 
-            {/* Lead info */}
             <div className="px-5 py-4 flex items-center gap-3 border-b border-slate-100">
               <div className="w-10 h-10 rounded-full bg-[#ffd9de] flex items-center justify-center text-[#b0004a] font-extrabold text-base flex-shrink-0">
                 {(selectedMsg.company_name || selectedMsg.email_used || '?').charAt(0).toUpperCase()}
@@ -314,12 +374,11 @@ export default function Inbox() {
               </span>
             </div>
 
-            {/* Message body */}
             <div className="flex-1">
               {threadLoading ? (
                 <div className="flex items-center justify-center py-14 gap-2 text-secondary text-sm">
                   <span className="material-symbols-outlined text-[#b0004a] text-[20px] animate-spin">progress_activity</span>
-                  Loading thread…
+                  Loading thread{isSmtpAccount(selectedMsg.sender_auth_type) ? ' from IMAP' : ''}…
                 </div>
               ) : thread && thread.messages.length > 0 ? (
                 <div>
@@ -358,7 +417,6 @@ export default function Inbox() {
                   })}
                 </div>
               ) : (
-                /* No thread — show reply snippet if available */
                 <div className="px-5 pt-4 pb-4">
                   {selectedMsg.reply_snippet && (
                     <div className="bg-[#8ff9a8]/20 border border-[#006630]/20 rounded-xl p-3 mb-3">
@@ -369,15 +427,31 @@ export default function Inbox() {
                       <p className="text-xs text-[#006630]">{selectedMsg.reply_snippet}</p>
                     </div>
                   )}
-                  <p className="text-xs text-slate-400 flex items-center gap-1">
-                    <span className="material-symbols-outlined text-[13px]">info</span>
-                    Full thread not available — Gmail thread ID not recorded for this send.
-                  </p>
+                  {threadError ? (
+                    <p className="text-xs text-error flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px]">error_outline</span>
+                      {threadError}
+                    </p>
+                  ) : isSmtpAccount(selectedMsg.sender_auth_type) && !selectedMsg.gmail_message_id ? (
+                    <p className="text-xs text-slate-400 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px]">info</span>
+                      No Message-ID recorded for this SMTP send — full thread unavailable.
+                    </p>
+                  ) : isGmailAccount(selectedMsg.sender_auth_type) && !selectedMsg.gmail_thread_id ? (
+                    <p className="text-xs text-slate-400 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px]">info</span>
+                      Gmail thread ID was not recorded for this send.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-400 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px]">info</span>
+                      Full thread not available for this message.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
 
-            {/* Metadata */}
             <div className="border-t border-slate-100 px-5 py-4">
               <p className="text-[10px] font-extrabold text-secondary uppercase tracking-wider mb-3">Metadata</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -395,18 +469,32 @@ export default function Inbox() {
                 </div>
                 <div>
                   <p className="text-[10px] text-secondary">Send Account</p>
-                  <p className="text-xs font-semibold text-on-surface truncate">{thread?.senderAccount || '—'}</p>
+                  <p className="text-xs font-semibold text-on-surface truncate">
+                    {thread?.senderAccount || selectedMsg.sender_email || '—'}
+                    {isSmtpAccount(selectedMsg.sender_auth_type) && (
+                      <span className="ml-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">SMTP</span>
+                    )}
+                    {isGmailAccount(selectedMsg.sender_auth_type) && (
+                      <span className="ml-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">Gmail</span>
+                    )}
+                  </p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-secondary">Thread ID</p>
+                  <p className="text-[10px] text-secondary">
+                    {isSmtpAccount(selectedMsg.sender_auth_type) ? 'Message-ID' : 'Thread ID'}
+                  </p>
                   <p className="text-xs font-semibold text-on-surface font-mono truncate">
-                    {selectedMsg.gmail_thread_id ? `${selectedMsg.gmail_thread_id.slice(0, 10)}…` : '—'}
+                    {(() => {
+                      const id = isSmtpAccount(selectedMsg.sender_auth_type)
+                        ? selectedMsg.gmail_message_id
+                        : selectedMsg.gmail_thread_id;
+                      return id ? `${id.slice(0, 14)}…` : '—';
+                    })()}
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Copy button */}
             <div className="border-t border-slate-100 px-5 py-3 flex gap-2">
               <button
                 type="button"
@@ -427,7 +515,6 @@ export default function Inbox() {
 
           </div>
 
-            {/* Drag handle — right edge of panel, drag right to expand */}
             <div
               onMouseDown={onDragStart}
               className="w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"

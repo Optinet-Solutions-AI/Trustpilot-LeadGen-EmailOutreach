@@ -9,6 +9,7 @@
 
 import { Router, Request, Response } from 'express';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
+import { fetchSmtpThread } from '../services/imap-thread-fetcher.js';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 
@@ -309,6 +310,10 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
 // Returns campaign_leads enriched with lead + campaign info.
 // folder=replies → status='replied'
 // folder=sent    → status IN (sent, opened, replied, bounced)
+//
+// Joins against email_accounts so the frontend knows which thread endpoint to
+// hit (Gmail API vs IMAP) and exposes reply_read_at so the notifications badge
+// can track unseen replies.
 router.get('/campaign-replies', async (req: Request, res: Response) => {
   const folder = (req.query.folder as string) || 'replies';
   const statusFilter = folder === 'replies'
@@ -318,7 +323,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
   try {
     const { data, error } = await getSupabase()
       .from('campaign_leads')
-      .select('id, campaign_id, lead_id, email_used, status, sent_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name), leads(company_name, country)')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name), leads(company_name, country)')
       .in('status', statusFilter)
       .order('sent_at', { ascending: false })
       .limit(200);
@@ -328,22 +333,183 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       return;
     }
 
-    const messages = (data || []).map((row: Record<string, unknown>) => ({
+    // Resolve auth_type for each unique sender_email so the UI can branch on
+    // Gmail vs SMTP without issuing a lookup per message.
+    const senderEmails = Array.from(new Set(
+      (data || []).map((r: Record<string, unknown>) => (r.sender_email as string | null)?.toLowerCase()).filter(Boolean),
+    )) as string[];
+
+    const authByEmail = new Map<string, string>();
+    if (senderEmails.length > 0) {
+      const { data: accounts } = await getSupabase()
+        .from('email_accounts')
+        .select('email, auth_type')
+        .in('email', senderEmails);
+      for (const a of accounts ?? []) {
+        authByEmail.set((a.email as string).toLowerCase(), a.auth_type as string);
+      }
+    }
+
+    const messages = (data || []).map((row: Record<string, unknown>) => {
+      const sender = (row.sender_email as string | null)?.toLowerCase() ?? '';
+      const authType = authByEmail.get(sender) ?? (sender ? 'gmail_oauth' : 'unknown');
+      return {
+        id: row.id,
+        campaign_id: row.campaign_id,
+        campaign_name: (row.campaigns as { name?: string } | null)?.name || 'Unknown Campaign',
+        lead_id: row.lead_id,
+        company_name: (row.leads as { company_name?: string } | null)?.company_name || 'Unknown',
+        country: (row.leads as { country?: string } | null)?.country || '',
+        email_used: row.email_used,
+        sender_email: row.sender_email,
+        sender_auth_type: authType,  // 'gmail_oauth' | 'app_password' | 'smtp' | 'unknown'
+        status: row.status,
+        sent_at: row.sent_at,
+        replied_at: row.replied_at,
+        reply_read_at: row.reply_read_at,
+        reply_snippet: row.reply_snippet,
+        gmail_thread_id: row.gmail_thread_id,
+        gmail_message_id: row.gmail_message_id,
+      };
+    });
+
+    res.json({ success: true, data: messages });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── GET /api/inbox/thread-smtp/:campaignLeadId ────────────────────────────────
+// Resolves the campaign_lead → sender_email → IMAP creds, then reconstructs the
+// conversation from the RFC822 Message-ID we stored at send time.
+router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) => {
+  const { campaignLeadId } = req.params;
+
+  try {
+    const supabase = getSupabase();
+    const { data: cl, error: clErr } = await supabase
+      .from('campaign_leads')
+      .select('id, sender_email, gmail_message_id')
+      .eq('id', campaignLeadId)
+      .single();
+
+    if (clErr || !cl) {
+      res.status(404).json({ success: false, error: 'Campaign lead not found' });
+      return;
+    }
+    if (!cl.sender_email) {
+      res.status(400).json({ success: false, error: 'Send was not attributed to an account — cannot reconstruct thread' });
+      return;
+    }
+    if (!cl.gmail_message_id) {
+      res.status(400).json({ success: false, error: 'No Message-ID recorded for this send' });
+      return;
+    }
+
+    const { data: account, error: accErr } = await supabase
+      .from('email_accounts')
+      .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass')
+      .eq('email', cl.sender_email)
+      .eq('status', 'active')
+      .single();
+
+    if (accErr || !account) {
+      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found or inactive` });
+      return;
+    }
+    if (account.auth_type !== 'smtp') {
+      res.status(400).json({ success: false, error: `Account ${cl.sender_email} is not SMTP/IMAP — use /inbox/thread/:threadId` });
+      return;
+    }
+    if (!account.imap_host || !account.imap_user || !account.imap_pass) {
+      res.status(400).json({ success: false, error: `Account ${cl.sender_email} has no IMAP credentials configured` });
+      return;
+    }
+
+    const thread = await fetchSmtpThread(
+      {
+        imap_host: account.imap_host,
+        imap_port: account.imap_port ?? 993,
+        imap_user: account.imap_user,
+        imap_pass: account.imap_pass,
+      },
+      cl.gmail_message_id,
+      account.email,
+    );
+
+    if (!thread) {
+      res.status(404).json({ success: false, error: 'Could not locate message in mailbox (IMAP unreachable or message expired)' });
+      return;
+    }
+
+    res.json({ success: true, data: thread });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── GET /api/inbox/notifications ──────────────────────────────────────────────
+// Returns unread campaign replies for the notifications badge + TopBar dropdown.
+// Unread = status='replied' AND reply_read_at IS NULL.
+router.get('/notifications', async (_req: Request, res: Response) => {
+  try {
+    const { data, error } = await getSupabase()
+      .from('campaign_leads')
+      .select('id, campaign_id, lead_id, sender_email, reply_snippet, replied_at, campaigns(name), leads(company_name)')
+      .eq('status', 'replied')
+      .is('reply_read_at', null)
+      .order('replied_at', { ascending: false })
+      .limit(20);
+
+    if (error) {
+      res.status(500).json({ success: false, error: error.message });
+      return;
+    }
+
+    const items = (data || []).map((row: Record<string, unknown>) => ({
       id: row.id,
       campaign_id: row.campaign_id,
       campaign_name: (row.campaigns as { name?: string } | null)?.name || 'Unknown Campaign',
       lead_id: row.lead_id,
       company_name: (row.leads as { company_name?: string } | null)?.company_name || 'Unknown',
-      country: (row.leads as { country?: string } | null)?.country || '',
-      email_used: row.email_used,
-      status: row.status,
-      sent_at: row.sent_at,
+      sender_email: row.sender_email,
       reply_snippet: row.reply_snippet,
-      gmail_thread_id: row.gmail_thread_id,
-      gmail_message_id: row.gmail_message_id,
+      replied_at: row.replied_at,
     }));
 
-    res.json({ success: true, data: messages });
+    res.json({ success: true, data: { unreadCount: items.length, items } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── POST /api/inbox/mark-replies-read ─────────────────────────────────────────
+// Body: { ids?: string[] }  — IDs of campaign_leads to mark. Omit to mark all.
+router.post('/mark-replies-read', async (req: Request, res: Response) => {
+  const ids: string[] | undefined = Array.isArray(req.body?.ids) ? req.body.ids : undefined;
+  const now = new Date().toISOString();
+
+  try {
+    let query = getSupabase()
+      .from('campaign_leads')
+      .update({ reply_read_at: now })
+      .eq('status', 'replied')
+      .is('reply_read_at', null);
+
+    if (ids && ids.length > 0) {
+      query = query.in('id', ids) as typeof query;
+    }
+
+    const { data: updated, error } = await query.select('id');
+    if (error) {
+      res.status(500).json({ success: false, error: error.message });
+      return;
+    }
+
+    res.json({ success: true, data: { marked: updated?.length ?? 0 } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useScrape } from '../hooks/useScrape';
+import { useNotifications } from '../context/NotificationsContext';
 
 const NAV_ITEMS = [
   { href: '/scrape',          icon: 'search_check',     label: 'Lead Scraping' },
@@ -20,6 +21,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { status } = useScrape();
+  const { unreadCount } = useNotifications();
 
   return (
     <aside className="h-full w-64 fixed left-0 top-0 bg-slate-50 flex flex-col py-6 px-4 z-50">
@@ -66,6 +68,7 @@ export default function Sidebar() {
         {NAV_ITEMS.map(({ href, icon, label }) => {
           const isActive = href === '/' ? pathname === '/' : (pathname ?? '').startsWith(href);
           const isScrapeRunning = href === '/scrape' && status === 'running';
+          const showInboxBadge = href === '/inbox' && unreadCount > 0;
 
           return (
             <Link
@@ -89,6 +92,11 @@ export default function Sidebar() {
                 <span className="ml-auto flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-[#b0004a] opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-[#b0004a]" />
+                </span>
+              )}
+              {showInboxBadge && (
+                <span className="ml-auto text-[10px] font-black bg-[#b0004a] text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center leading-none">
+                  {unreadCount > 99 ? '99+' : unreadCount}
                 </span>
               )}
             </Link>

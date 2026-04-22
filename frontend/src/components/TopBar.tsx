@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useNotifications } from '../context/NotificationsContext';
 
 const HELP_ITEMS = [
   { icon: 'search',        label: 'Global Search',   desc: 'Type in the search bar → navigates to Lead Matrix with results' },
@@ -13,6 +14,21 @@ const HELP_ITEMS = [
   { icon: 'hub',           label: 'Enrichment Flow', desc: 'Scrape → Enrich → Verify → Campaign → Test Flight → Live Send' },
 ];
 
+function formatRelative(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const seconds = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
 export default function TopBar() {
   const router = useRouter();
   const [query, setQuery] = useState('');
@@ -20,6 +36,8 @@ export default function TopBar() {
   const [showNotif, setShowNotif] = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
+
+  const { unreadCount, items, loading, markRead, markAllRead } = useNotifications();
 
   // Close popovers on outside click
   useEffect(() => {
@@ -36,6 +54,12 @@ export default function TopBar() {
       router.push(`/leads?search=${encodeURIComponent(query.trim())}`);
       setQuery('');
     }
+  };
+
+  const openReply = (id: string) => {
+    markRead([id]);
+    setShowNotif(false);
+    router.push(`/inbox?open=${id}`);
   };
 
   return (
@@ -63,20 +87,81 @@ export default function TopBar() {
           <button
             onClick={() => { setShowNotif(!showNotif); setShowHelp(false); }}
             className="relative text-slate-500 hover:text-[#b0004a] transition-colors"
+            aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ''}`}
           >
             <span className="material-symbols-outlined">notifications</span>
-            <span className="absolute top-0 right-0 w-2 h-2 bg-[#b0004a] rounded-full border-2 border-white" />
+            {unreadCount > 0 && (
+              <span
+                className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 bg-[#b0004a] rounded-full border-2 border-white text-[9px] font-black text-white flex items-center justify-center leading-none"
+                aria-hidden
+              >
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
           </button>
 
           {showNotif && (
-            <div className="absolute right-0 top-10 w-72 bg-white rounded-xl ambient-shadow border border-slate-100 overflow-hidden z-50">
-              <div className="px-4 py-3 border-b border-slate-100">
-                <p className="text-xs font-extrabold uppercase tracking-wider text-slate-500">Notifications</p>
+            <div className="absolute right-0 top-10 w-80 bg-white rounded-xl ambient-shadow border border-slate-100 overflow-hidden z-50">
+              <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                <p className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                  Notifications {unreadCount > 0 && <span className="text-[#b0004a]">· {unreadCount}</span>}
+                </p>
+                {unreadCount > 0 && (
+                  <button
+                    onClick={() => markAllRead()}
+                    className="text-[10px] font-bold text-[#b0004a] hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                )}
               </div>
-              <div className="px-4 py-8 text-center">
-                <span className="material-symbols-outlined text-slate-300 text-[40px] block mb-2">notifications_none</span>
-                <p className="text-sm font-semibold text-secondary">All caught up</p>
-                <p className="text-xs text-slate-400 mt-1">Campaign alerts and reply notifications will appear here.</p>
+
+              {loading && items.length === 0 ? (
+                <div className="flex items-center justify-center py-10 gap-2 text-secondary text-sm">
+                  <span className="material-symbols-outlined text-[#b0004a] text-[18px] animate-spin">progress_activity</span>
+                  Loading…
+                </div>
+              ) : items.length === 0 ? (
+                <div className="px-4 py-8 text-center">
+                  <span className="material-symbols-outlined text-slate-300 text-[40px] block mb-2">notifications_none</span>
+                  <p className="text-sm font-semibold text-secondary">All caught up</p>
+                  <p className="text-xs text-slate-400 mt-1">New replies to your outreach appear here.</p>
+                </div>
+              ) : (
+                <div className="max-h-96 overflow-y-auto divide-y divide-slate-50">
+                  {items.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => openReply(item.id)}
+                      className="w-full text-left px-4 py-3 hover:bg-[#ffd9de]/10 transition-colors"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-full bg-[#8ff9a8]/30 flex items-center justify-center text-[#006630] flex-shrink-0 mt-0.5">
+                          <span className="material-symbols-outlined text-[16px]">reply</span>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2 mb-0.5">
+                            <p className="text-xs font-extrabold text-on-surface truncate">{item.company_name}</p>
+                            <span className="text-[10px] text-slate-400 flex-shrink-0">{formatRelative(item.replied_at)}</span>
+                          </div>
+                          <p className="text-[10px] text-secondary mb-1 truncate">{item.campaign_name}</p>
+                          {item.reply_snippet && (
+                            <p className="text-[11px] text-[#006630] line-clamp-2 italic">{item.reply_snippet}</p>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="px-4 py-2 border-t border-slate-100 bg-surface-container-low">
+                <button
+                  onClick={() => { setShowNotif(false); router.push('/inbox'); }}
+                  className="w-full text-xs font-bold text-[#b0004a] hover:underline py-1"
+                >
+                  Open Outreach Inbox →
+                </button>
               </div>
             </div>
           )}
