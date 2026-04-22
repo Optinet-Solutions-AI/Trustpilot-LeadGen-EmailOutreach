@@ -391,6 +391,48 @@ export async function fetchSmtpThread(
       }
     }
 
+    // TO-based Sent-folder fallback: mirror of the FROM-based inbound
+    // fallback above. Older manual replies sent before the awaited-IMAP-
+    // append fix landed may be in Sent without a findable headers chain
+    // (or their References header was malformed pre-fix and Gmail IMAP's
+    // HEADER index stopped matching). This pass scans the Sent folder for
+    // any message TO the lead address in the last 90 days so we still
+    // surface the user's prior reply in the thread even when header-based
+    // lookup misses it. Dedupe by Message-ID keeps it additive — anything
+    // already collected is not re-added.
+    if (leadEmail && sentBox?.path) {
+      const leadAddr = leadEmail.toLowerCase();
+      const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      try {
+        const lock = await client.getMailboxLock(sentBox.path);
+        try {
+          const uids = (await client.search({ to: leadAddr, since })) || [];
+          const list = Array.isArray(uids) ? uids : [];
+          for await (const msg of client.fetch(list, { envelope: true, uid: true, flags: true, source: true })) {
+            if (!msg.source) continue;
+            const messageId = normalizeId(msg.envelope?.messageId);
+            if (messageId && seenMessageIds.has(messageId)) continue;
+            if (messageId) seenMessageIds.add(messageId);
+            collected.push({
+              uid: msg.uid!,
+              folder: sentBox.path,
+              messageId,
+              inReplyTo: '',
+              references: [],
+              envelopeSubject: msg.envelope?.subject ?? '',
+              envelopeDate: msg.envelope?.date ?? null,
+              unread: !msg.flags?.has('\\Seen'),
+              raw: msg.source as Buffer,
+            });
+          }
+        } finally {
+          lock.release();
+        }
+      } catch (e) {
+        console.warn(`[ImapThreadFetcher] TO-based Sent fallback failed:`, e instanceof Error ? e.message : e);
+      }
+    }
+
     // Hack for the very first seed: if Message-ID header search missed our
     // outgoing message (some servers normalize angle brackets differently),
     // try a direct lookup in Sent by the literal ID without angles.
