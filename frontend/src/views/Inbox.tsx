@@ -180,15 +180,23 @@ export default function Inbox() {
         }
       }
       if (!data) {
-        const res = await api.get(fallbackUrl);
-        data = res.data.data;
+        try {
+          const res = await api.get(fallbackUrl);
+          data = res.data.data;
+        } catch (err: unknown) {
+          // 404 means "no matching thread in any connected mailbox" — that's
+          // expected for test-mode sends (recipient rewritten) and legacy
+          // rows without attribution. Fall through to the friendly empty-state
+          // copy below rather than surfacing an error.
+          const status = (err as { response?: { status?: number } })?.response?.status;
+          if (status !== 404) {
+            const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+              || (err instanceof Error ? err.message : 'Failed to load thread');
+            setThreadError(msg);
+          }
+        }
       }
       setThread(data);
-    } catch (err: unknown) {
-      const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-        || (err instanceof Error ? err.message : 'Failed to load thread');
-      setThreadError(errMsg);
-      setThread(null);
     } finally {
       setThreadLoading(false);
     }
