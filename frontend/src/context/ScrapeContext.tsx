@@ -44,6 +44,10 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   const statusRef = useRef<ScrapeJob['status'] | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Synchronous lock so a burst of clicks can't fire a second POST before
+  // React has propagated status='running'. Flipped true at the top of
+  // startScrape() and false on completion — predates setState by microseconds.
+  const submittingRef = useRef(false);
 
   // Keep refs in sync
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -166,6 +170,13 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   }, [closeEventSource, stopPolling, startPolling, markDone]);
 
   const startScrape = useCallback(async (params: ScrapeParams) => {
+    // Guard 0 (synchronous): the previous click's POST is still in flight.
+    // This is the defense against burst clicks before setState has propagated
+    // to status='running'.
+    if (submittingRef.current) {
+      return null;
+    }
+
     // Guard 1: block if a job is already running in this context
     if (statusRef.current === 'running') {
       setError('A scrape is already running. Wait for it to finish or cancel it first.');
@@ -183,6 +194,7 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       return null;
     }
 
+    submittingRef.current = true;
     setError(null);
     setProgress([]);
     setFailedCount(0);
@@ -202,6 +214,8 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
         setStatus('failed');
       }
       return null;
+    } finally {
+      submittingRef.current = false;
     }
   }, [subscribeToJob, jobs]);
 

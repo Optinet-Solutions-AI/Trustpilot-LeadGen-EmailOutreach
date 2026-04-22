@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import type { ScrapeParams } from '../types/scrape';
 
@@ -49,10 +49,26 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [enrich, setEnrich] = useState(false);
   const [verify, setVerify] = useState(false);
   const [forceRescrape, setForceRescrape] = useState(false);
+  // Synchronous click-lock so a burst of clicks can't queue up multiple POSTs
+  // before the parent `loading` prop has propagated from status='running'.
+  const submittingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ country, category, minRating, maxRating, enrich, verify, forceRescrape });
+    if (submittingRef.current || loading) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      onSubmit({ country, category, minRating, maxRating, enrich, verify, forceRescrape });
+    } finally {
+      // Release after one tick so quick double-clicks are absorbed but the button
+      // re-enables as soon as the POST is in flight and `loading` takes over.
+      setTimeout(() => {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+      }, 1500);
+    }
   };
 
   return (
@@ -107,10 +123,10 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         </label>
       </div>
 
-      <button type="submit" disabled={loading}
-        className="mt-4 inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+      <button type="submit" disabled={loading || isSubmitting}
+        className="mt-4 inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
         <Search size={16} />
-        {loading ? 'Scraping...' : 'Start Scrape'}
+        {loading || isSubmitting ? 'Scraping...' : 'Start Scrape'}
       </button>
     </form>
   );

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { createJob, getJob, getJobs, findActiveJobForParams, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
+import { createJob, getJob, getJobs, findActiveJobForParams, resolveDuplicateActiveJob, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
 
@@ -42,6 +42,21 @@ router.post('/', async (req: Request, res: Response) => {
       enrich,
       verify,
     });
+
+    // Resolve races where multiple POSTs all passed the pre-insert dedup check
+    // (common when a user clicks Start Scrape several times while the page is
+    // still loading). The oldest job wins; our row gets deleted if it lost.
+    if (!forceRescrape) {
+      const winnerId = await resolveDuplicateActiveJob(job.id, country, category);
+      if (winnerId !== job.id) {
+        res.status(409).json({
+          success: false,
+          error: `A scrape for "${category}" in ${country} is already running. Redirecting to the existing job.`,
+          data: { existingJobId: winnerId },
+        });
+        return;
+      }
+    }
 
     // Fire scraper asynchronously (don't await)
     runScrapeJob({

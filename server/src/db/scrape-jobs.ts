@@ -56,6 +56,36 @@ export async function findActiveJobForParams(country: string, category: string) 
   return data as { id: string; status: string; created_at: string; total_found: number } | null;
 }
 
+/**
+ * Check for any OTHER running job with the same country+category created
+ * before or concurrently with `selfJobId`. Used right after insert to
+ * resolve races where multiple POSTs all passed the pre-insert dedup check
+ * and created sibling jobs. The oldest one wins; newer ones are deleted.
+ * Returns the winning job id (may be selfJobId if it's the oldest).
+ */
+export async function resolveDuplicateActiveJob(
+  selfJobId: string,
+  country: string,
+  category: string,
+): Promise<string> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from('scrape_jobs')
+    .select('id, created_at')
+    .eq('country', country)
+    .eq('category', category)
+    .eq('status', 'running')
+    .order('created_at', { ascending: true });
+  const all = (data as Array<{ id: string; created_at: string }>) ?? [];
+  if (all.length <= 1) return selfJobId;
+  const winner = all[0].id;
+  if (winner === selfJobId) return selfJobId;
+  // We lost the race — delete our just-inserted row so the UI doesn't show
+  // two simultaneous "running" rows for the same country+category.
+  await supabase.from('scrape_jobs').delete().eq('id', selfJobId);
+  return winner;
+}
+
 export async function getJobs() {
   const supabase = getSupabase();
   const { data, error } = await supabase
