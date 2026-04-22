@@ -10,6 +10,7 @@
 import { Router, Request, Response } from 'express';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
 import { fetchSmtpThread, searchImapThreadByEmail } from '../services/imap-thread-fetcher.js';
+import { renderAndSpin } from '../services/template-engine.js';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 
@@ -557,6 +558,114 @@ router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response)
     }
 
     res.status(404).json({ success: false, error: `No thread found for ${leadEmail} in any connected mailbox` });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── GET /api/inbox/rendered-send/:campaignLeadId ──────────────────────────────
+// Final fallback: when neither the live thread endpoints nor search-thread can
+// locate the message (legacy sends without attribution, test-mode recipient
+// rewrites, disconnected mailboxes), reconstruct a synthetic "thread" from the
+// data we DO have — the stored campaign template rendered with the lead's
+// tokens, plus the reply_snippet if one was captured. Guarantees the user
+// always sees the outgoing content and any known reply, even when the live
+// conversation is unreachable.
+router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response) => {
+  const { campaignLeadId } = req.params;
+
+  try {
+    const supabase = getSupabase();
+    const { data: cl, error: clErr } = await supabase
+      .from('campaign_leads')
+      .select(`
+        id, email_used, sender_email, sent_at, replied_at, reply_snippet, status,
+        campaigns(name, template_subject, template_body),
+        leads(company_name, website_url, star_rating, review_count, category, country, primary_email)
+      `)
+      .eq('id', campaignLeadId)
+      .single();
+
+    if (clErr || !cl) {
+      res.status(404).json({ success: false, error: 'Campaign lead not found' });
+      return;
+    }
+
+    // Supabase's `.select(... campaigns(...), leads(...))` types these as
+    // arrays-or-single depending on the join cardinality; at runtime both come
+    // back as a single object, so normalize here.
+    const campaignRaw = cl.campaigns as unknown;
+    const campaign = (Array.isArray(campaignRaw) ? campaignRaw[0] : campaignRaw) as
+      | { name?: string; template_subject?: string; template_body?: string }
+      | null;
+    const leadRaw = cl.leads as unknown;
+    const lead = (Array.isArray(leadRaw) ? leadRaw[0] : leadRaw) as Record<string, unknown> | null;
+
+    if (!campaign || !campaign.template_subject || !campaign.template_body) {
+      res.status(404).json({ success: false, error: 'Campaign template not available' });
+      return;
+    }
+
+    const subject = renderAndSpin(campaign.template_subject, lead ?? {});
+    const body = renderAndSpin(campaign.template_body, lead ?? {});
+
+    const messages: Array<{
+      id: string;
+      threadId: string;
+      from: string;
+      to: string;
+      subject: string;
+      date: string;
+      snippet: string;
+      body: string;
+      bodyType: 'html' | 'plain';
+      unread: boolean;
+      labels: string[];
+    }> = [];
+
+    // The outgoing message we actually sent (or would have sent)
+    messages.push({
+      id: `rendered:${cl.id}:out`,
+      threadId: cl.id as string,
+      from: (cl.sender_email as string) || '(sent account unknown)',
+      to: (cl.email_used as string) || '(recipient unknown)',
+      subject,
+      date: (cl.sent_at as string) || new Date().toISOString(),
+      snippet: body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160),
+      body,
+      bodyType: 'html',
+      unread: false,
+      labels: ['rendered', 'sent'],
+    });
+
+    // The reply snippet the tracker captured, if any. Plain-text rendering —
+    // we don't have the full reply body, just the first 200 chars.
+    if (cl.status === 'replied' && cl.reply_snippet) {
+      messages.push({
+        id: `rendered:${cl.id}:reply`,
+        threadId: cl.id as string,
+        from: (cl.email_used as string) || '(reply sender)',
+        to: (cl.sender_email as string) || '',
+        subject: `Re: ${subject}`,
+        date: (cl.replied_at as string) || new Date().toISOString(),
+        snippet: cl.reply_snippet as string,
+        body: String(cl.reply_snippet),
+        bodyType: 'plain',
+        unread: false,
+        labels: ['rendered', 'reply'],
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        threadId: cl.id,
+        messages,
+        senderAccount: (cl.sender_email as string) || 'unknown',
+        rendered: true,  // frontend flag — this is reconstructed, not live
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

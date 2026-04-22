@@ -51,6 +51,7 @@ interface ThreadData {
   threadId: string;
   messages: ThreadMessage[];
   senderAccount: string;
+  rendered?: boolean;  // true = reconstructed from stored template, not live mailbox
 }
 
 function formatDate(dateStr: string | null): string {
@@ -156,9 +157,6 @@ export default function Inbox() {
       markRead([msg.id]);
     }
 
-    // Pick the most specific endpoint first, then fall back to the universal
-    // email-based search if the row lacks the IDs needed for the fast paths.
-    // This covers legacy sends where sender_email / gmail_thread_id are null.
     const canTryGmail = isGmailAccount(msg.sender_auth_type) && !!msg.gmail_thread_id;
     const canTrySmtp = isSmtpAccount(msg.sender_auth_type) && !!msg.gmail_message_id;
     const primaryUrl = canTryGmail
@@ -166,8 +164,13 @@ export default function Inbox() {
       : canTrySmtp
         ? `/inbox/thread-smtp/${msg.id}`
         : null;
-    const fallbackUrl = `/inbox/search-thread/${msg.id}`;
 
+    // Three-tier strategy:
+    //   1. Primary — stored IDs (Gmail thread, SMTP Message-ID)
+    //   2. Search — walk every connected mailbox for a matching conversation
+    //   3. Rendered — reconstruct from the stored campaign template + lead data
+    // (3) always succeeds for sends with an intact campaign + lead row, so the
+    // user never sees "thread not available" for a campaign they actually ran.
     setThreadLoading(true);
     try {
       let data = null;
@@ -175,25 +178,22 @@ export default function Inbox() {
         try {
           const res = await api.get(primaryUrl);
           data = res.data.data;
-        } catch {
-          // Primary miss — try the universal fallback below
-        }
+        } catch { /* fall through */ }
       }
       if (!data) {
         try {
-          const res = await api.get(fallbackUrl);
+          const res = await api.get(`/inbox/search-thread/${msg.id}`);
+          data = res.data.data;
+        } catch { /* fall through to rendered */ }
+      }
+      if (!data) {
+        try {
+          const res = await api.get(`/inbox/rendered-send/${msg.id}`);
           data = res.data.data;
         } catch (err: unknown) {
-          // 404 means "no matching thread in any connected mailbox" — that's
-          // expected for test-mode sends (recipient rewritten) and legacy
-          // rows without attribution. Fall through to the friendly empty-state
-          // copy below rather than surfacing an error.
-          const status = (err as { response?: { status?: number } })?.response?.status;
-          if (status !== 404) {
-            const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-              || (err instanceof Error ? err.message : 'Failed to load thread');
-            setThreadError(msg);
-          }
+          const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+            || (err instanceof Error ? err.message : 'Failed to load thread');
+          setThreadError(errMsg);
         }
       }
       setThread(data);
@@ -377,9 +377,20 @@ export default function Inbox() {
             <div className="flex flex-col bg-white overflow-y-auto h-full flex-shrink-0 border-l border-slate-100" style={{ width: panelWidth }}>
 
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-              <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
-                {thread ? `Thread (${thread.messages.length} message${thread.messages.length !== 1 ? 's' : ''})` : 'Message Detail'}
-              </p>
+              <div className="flex items-center gap-2 min-w-0">
+                <p className="text-sm font-extrabold text-on-surface truncate" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                  {thread ? `Thread (${thread.messages.length} message${thread.messages.length !== 1 ? 's' : ''})` : 'Message Detail'}
+                </p>
+                {thread?.rendered && (
+                  <span
+                    className="text-[9px] font-bold bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1 flex-shrink-0"
+                    title="Reconstructed from the stored campaign template — not a live mailbox thread. Happens for test-mode sends and legacy rows without mailbox attribution."
+                  >
+                    <span className="material-symbols-outlined text-[11px]">auto_fix</span>
+                    RECONSTRUCTED
+                  </span>
+                )}
+              </div>
               <button onClick={() => { setSelectedId(null); setSelectedMsg(null); setThread(null); setThreadError(null); }} className="p-1.5 rounded-lg hover:bg-surface-container transition-colors">
                 <span className="material-symbols-outlined text-[18px] text-secondary">close</span>
               </button>
