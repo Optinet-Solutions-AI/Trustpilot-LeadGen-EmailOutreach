@@ -853,21 +853,92 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
       subject = /^re:\s/i.test(tpl) ? tpl : `Re: ${tpl}`;
     }
 
-    // Escape then linewrap — plain text composer body → HTML paragraphs
+    const originalMsgId = (cl.gmail_message_id as string | null) ?? null;
+    const authType = acc.auth_type as string;
+    const senderEmailLower = (acc.email as string).toLowerCase();
+
+    // ── Thread-aware reply-chain construction ─────────────────────────────
+    // Gmail's threading engine (and Outlook's, and most clients) groups a
+    // reply with its conversation when three things line up:
+    //   1. Subject matches (the "Re:" prefix is already handled above)
+    //   2. In-Reply-To points to the latest message in the conversation
+    //   3. References contains the full breadcrumb trail
+    // If In-Reply-To points only at the original outgoing (our first
+    // campaign send), the recipient's client frequently fails to thread
+    // and starts a brand-new conversation — which is exactly what was
+    // happening before this fix. We fetch the thread here so we can pick
+    // the *latest inbound* Message-ID for In-Reply-To and build the full
+    // References chain. The 60s in-memory cache on fetchSmtpThread keeps
+    // this cheap when the user just viewed the thread.
+    let inReplyTo: string | null = originalMsgId;
+    let referencesHeader: string | null = originalMsgId;
+    let quotedHtml = '';
+
+    if ((authType === 'smtp' || authType === 'app_password') && originalMsgId) {
+      const imapHost = acc.imap_host as string | null;
+      const imapUser = acc.imap_user as string | null;
+      const imapPass = acc.imap_pass as string | null;
+      if (imapHost && imapUser && imapPass) {
+        try {
+          const thread = await fetchSmtpThread(
+            { imap_host: imapHost, imap_port: (acc.imap_port as number | null) ?? 993, imap_user: imapUser, imap_pass: imapPass },
+            originalMsgId,
+            acc.email as string,
+            cl.email_used as string,
+          );
+          if (thread && thread.messages.length > 0) {
+            const inbound = thread.messages.filter((m) => {
+              const addr = m.from.match(/<([^>]+)>/)?.[1] ?? m.from;
+              return addr.toLowerCase() !== senderEmailLower;
+            });
+            const latestInbound = inbound[inbound.length - 1];
+            if (latestInbound?.id) inReplyTo = latestInbound.id;
+            // References = every Message-ID in the thread, in chronological
+            // order, starting with the original. This is what Gmail emits
+            // when you reply from its web UI.
+            const chain = thread.messages
+              .map((m) => m.id)
+              .filter((id): id is string => !!id && !id.startsWith('rendered:') && !id.includes(':'));
+            if (chain.length > 0) referencesHeader = chain.join(' ');
+            // Quote the latest inbound so the reply reads with context
+            if (latestInbound) {
+              const quoteDate = (() => {
+                try {
+                  return new Date(latestInbound.date).toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
+                } catch { return latestInbound.date; }
+              })();
+              const quoteText = latestInbound.bodyType === 'html'
+                ? latestInbound.body.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+                : latestInbound.body;
+              const quoteSnippet = quoteText.slice(0, 600) + (quoteText.length > 600 ? '…' : '');
+              quotedHtml = `
+<br>
+<div style="color:#555;font-size:12px;border-left:3px solid #ddd;padding-left:12px;margin-top:24px;font-family:Arial,sans-serif;">
+  <p style="margin:0 0 8px;color:#888;">On ${quoteDate}, ${escapeHtmlFragment(latestInbound.from)} wrote:</p>
+  <p style="margin:0;white-space:pre-wrap;">${escapeHtmlFragment(quoteSnippet)}</p>
+</div>`;
+            }
+          }
+        } catch (e) {
+          console.warn('[InboxReply] thread-fetch for headers failed, falling back to original Message-ID chain:', e instanceof Error ? e.message : e);
+        }
+      }
+    }
+
+    // Escape then linewrap — plain text composer body → HTML paragraphs,
+    // followed by the quoted original if we found one.
     const escaped = body
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
-    const htmlBody = escaped
+    const userHtml = escaped
       .split(/\n\n+/)
       .map((p) => `<p style="margin:0 0 12px;font-family:Arial,sans-serif;font-size:14px;line-height:1.5;">${p.replace(/\n/g, '<br>')}</p>`)
       .join('');
+    const htmlBody = userHtml + quotedHtml;
 
     // Apply test-mode redirect so Inbox replies respect the same safety net as campaigns
     const testApplied = applyTestMode({ to: cl.email_used as string, subject, html: htmlBody });
-
-    const originalMsgId = (cl.gmail_message_id as string | null) ?? null;
-    const authType = acc.auth_type as string;
 
     let result: { success: boolean; messageId?: string; error?: string };
     if (authType === 'smtp' || authType === 'app_password') {
@@ -876,8 +947,8 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
         to: testApplied.to,
         subject: testApplied.subject,
         html: testApplied.html,
-        inReplyTo: originalMsgId,
-        references: originalMsgId,
+        inReplyTo,
+        references: referencesHeader,
       });
     } else if (authType === 'gmail_oauth') {
       result = await sendGmailReply({
@@ -885,8 +956,8 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
         to: testApplied.to,
         subject: testApplied.subject,
         html: testApplied.html,
-        inReplyTo: originalMsgId,
-        references: originalMsgId,
+        inReplyTo,
+        references: referencesHeader,
         threadId: (cl.gmail_thread_id as string | null) ?? null,
       });
     } else {
@@ -962,6 +1033,26 @@ function ensureAngles(id: string | null | undefined): string | null {
   return trimmed ? `<${trimmed}>` : null;
 }
 
+function escapeHtmlFragment(raw: string): string {
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Promise race with a timeout — resolves undefined when the operation exceeds
+ *  the budget so the caller can continue without waiting indefinitely. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | undefined> {
+  return Promise.race([
+    promise,
+    new Promise<undefined>((resolve) => setTimeout(() => {
+      console.warn(`[InboxReply] ${label} exceeded ${ms}ms — continuing without awaiting`);
+      resolve(undefined);
+    }, ms)),
+  ]);
+}
+
 async function sendSmtpReply(params: {
   account: Record<string, unknown>;
   to: string;
@@ -1015,11 +1106,21 @@ async function sendSmtpReply(params: {
     const imapUser = acc.imap_user as string | null;
     const imapPass = acc.imap_pass as string | null;
     if (imapHost && imapUser && imapPass) {
-      appendReplyToSent(
-        { imap_host: imapHost, imap_port: (acc.imap_port as number | null) ?? 993, imap_user: imapUser, imap_pass: imapPass },
-        mailOptions,
-        email,
-      ).catch((err) => console.warn(`[InboxReply→IMAP] append to Sent failed for ${email}:`, err instanceof Error ? err.message : err));
+      // Await with 5-second timeout: the user's send is already safely on
+      // the wire by this point, so the worst case is a quieter logline if
+      // IMAP is slow. Success guarantees the Sent folder has our copy
+      // before the frontend re-renders the thread.
+      await withTimeout(
+        appendReplyToSent(
+          { imap_host: imapHost, imap_port: (acc.imap_port as number | null) ?? 993, imap_user: imapUser, imap_pass: imapPass },
+          mailOptions,
+          email,
+        ).catch((err) => {
+          console.warn(`[InboxReply→IMAP] append to Sent failed for ${email}:`, err instanceof Error ? err.message : err);
+        }),
+        5000,
+        `IMAP append to Sent for ${email}`,
+      );
     }
 
     return { success: true, messageId };
