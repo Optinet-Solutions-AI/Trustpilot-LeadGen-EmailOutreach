@@ -4,14 +4,14 @@
 
 ## Project Overview
 
-A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via Gmail. Built on the WAT framework (Workflows → Agents → Tools).
+A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
 
 **Business purpose:** Sell reputation management services to companies with poor Trustpilot ratings. Brand: **OptiRate** / optiratesolutions.com.
 
 - **Frontend:** React + Vite + Tailwind CSS (port 5173) — deployed on Vercel
 - **Backend / API:** Node.js (Express) with TypeScript (port 3001) — deployed on Google Cloud Run (`trustpilot-crm`)
 - **Database:** Supabase (PostgreSQL, 8 tables)
-- **Email Platform:** Direct Gmail via OAuth2 (`EMAIL_PLATFORM=none`, `EMAIL_MODE=gmail`) — connected accounts from `email_accounts` table
+- **Email Sending:** Multi-provider via `email_accounts` table — Gmail OAuth, SMTP (Bluehost/Titan, DreamHost, generic), and Gmail app-password. `EMAIL_PLATFORM=none` (no Instantly). Each account carries its own `daily_cap`/`hourly_cap` and DNS status (MX/SPF/DMARC).
 - **Scraper Tools:** Python + Playwright (headless Chromium) + playwright-stealth
 - **Email Verify:** ZeroBounce (mock mode available)
 - **AI:** Google Gemini API (template generation)
@@ -39,11 +39,11 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
    ↓
 9. User creates campaign (5-step wizard: setup → template → follow-ups → recipients → review)
    ↓
-10. MANDATORY: Test flight → sends 1 email via Gmail to verify format/content
+10. MANDATORY: Test flight → sends 1 email via the pinned sender account to verify format/content
     ↓
-11. Live send → campaign-scheduler.ts polls every 60s → sends via connected Gmail OAuth accounts
+11. Live send → campaign-scheduler.ts polls every 60s → sends via each lead's assigned account (Gmail OAuth OR SMTP — Bluehost/Titan, DreamHost, etc.)
     ↓
-12. Stats tracked in campaign_leads table; opens/replies synced from Gmail
+12. Stats tracked in campaign_leads table (with `sender_email` for authoritative counts); replies synced via IMAP poller
 ```
 
 ---
@@ -65,12 +65,13 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
 └──────┬───────────────┬───────┘
        │               │
        ▼               ▼
-┌───────────┐    ┌─────────────────────────┐
-│ Python    │    │ Email Layer (Gmail)      │
-│ Scrapers  │    │ campaign-scheduler.ts   │
-│ Playwright│    │ → Gmail OAuth per acct  │
-│ + Stealth │    │   email_accounts table  │
-└───────────┘    └─────────────────────────┘
+┌───────────┐    ┌──────────────────────────────┐
+│ Python    │    │ Email Layer (multi-provider) │
+│ Scrapers  │    │ campaign-scheduler.ts        │
+│ Playwright│    │ → Gmail OAuth / SMTP /       │
+│ + Stealth │    │   app-password per account   │
+└───────────┘    │   (email_accounts table)     │
+                 └──────────────────────────────┘
 ```
 
 ### Golden Rules
@@ -183,18 +184,14 @@ trustpilot-leadgen/
 | `SUPABASE_URL` | Supabase project URL | set |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key | set |
 | `EMAIL_PLATFORM` | `instantly` / `none` / `mock` | `none` |
-| `EMAIL_MODE` | `gmail` or `mock` | `gmail` |
-| `GOOGLE_CLIENT_ID` | Gmail OAuth2 client ID | set |
-| `GOOGLE_CLIENT_SECRET` | Gmail OAuth2 client secret | set |
-| `GOOGLE_REFRESH_TOKEN` | Gmail OAuth2 refresh token | set |
-| `EMAIL_FROM` | Gmail sender address | `axeldray5@gmail.com` |
-| `EMAIL_FROM_NAME` | Display name | `OptiRate` |
-| `EMAIL_TEST_MODE` | `true` = redirect Gmail to TEST_EMAIL | `true` |
-| `TEST_EMAIL_ADDRESS` | Gmail test redirect target | set |
-| `EMAIL_DAILY_CAP` | Gmail daily limit | `50` |
-| `EMAIL_HOURLY_CAP` | Gmail hourly limit | `20` |
-| `EMAIL_MIN_DELAY` | Gmail min ms between sends | `30000` |
-| `EMAIL_MAX_DELAY` | Gmail max ms between sends | `90000` |
+| `EMAIL_MODE` | legacy fallback only; real sends resolve per-account from `email_accounts` | — |
+| `GOOGLE_CLIENT_ID` | OAuth2 client ID used for connecting Gmail accounts (NOT a sender) | set |
+| `GOOGLE_CLIENT_SECRET` | OAuth2 client secret used for connecting Gmail accounts | set |
+| `EMAIL_FROM_NAME` | Display-name fallback when an account has no `from_name` | `OptiRate` |
+| `EMAIL_TEST_MODE` | `true` = redirect outgoing mail to `TEST_EMAIL_ADDRESS` | `true` |
+| `TEST_EMAIL_ADDRESS` | Test-mode redirect target | set |
+| `EMAIL_MIN_DELAY` | Global min ms between sends (per-account cap takes precedence) | `30000` |
+| `EMAIL_MAX_DELAY` | Global max ms between sends (per-account cap takes precedence) | `90000` |
 | `PLAYWRIGHT_HEADLESS` | Headless browser in prod | `true` |
 | `PYTHON_PATH` | Python executable | `/usr/bin/python3` |
 | `API_SECRET_KEY` | Internal API auth | set |
@@ -258,9 +255,17 @@ Same as before — see `supabase/migrations/001_initial_schema.sql`.
 
 ---
 
-## Email Platform — Gmail Direct
+## Email Sending — Multi-Provider via `email_accounts`
 
-`EMAIL_PLATFORM=none`, `EMAIL_MODE=gmail`. Users connect Gmail accounts via OAuth in-app (stored in `email_accounts` table). Campaign sends go through `campaign-scheduler.ts` (polls every 60s) → `campaign-sender.ts` → Gmail API per connected account. Test flight sends 1 email directly via the pinned sender account.
+`EMAIL_PLATFORM=none`. There is **no single sender env var** — every send resolves to a row in the `email_accounts` table. Supported `auth_type` values:
+
+| `auth_type` | How it sends | Onboarding path |
+|---|---|---|
+| `gmail_oauth` | Gmail API with stored refresh token | "Connect Gmail" flow |
+| `smtp` | Nodemailer SMTP + IMAP for Sent/replies | One-click Bluehost (Titan), DreamHost, or generic SMTP form |
+| `app_password` | Gmail SMTP via app password | Manual Gmail SMTP entry |
+
+Campaign sends flow: `campaign-scheduler.ts` (polls every 60s) → `buildSenderPool()` pulls active accounts → picks the pinned `senderAccountId` (or rotates) → dispatches via the right sender module (`email-sender.gmail.ts` or `email-sender.smtp.ts`). Each account enforces its own `daily_cap`, `hourly_cap`, and DNS status (MX/SPF/DMARC) — capped accounts are skipped, not blocked. `campaign_leads.sender_email` records which account actually sent.
 
 The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not used in production**.
 
@@ -293,8 +298,10 @@ The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not us
 | `/api/campaigns/:id/steps` | GET | Follow-up steps |
 | `/api/campaigns/platform-status` | GET | Platform health + connected accounts |
 | `/api/campaigns/preview-recipients` | GET | Count leads matching filters |
-| `/api/campaigns/rate-limit` | GET | Gmail rate limit status |
-| `/api/gmail/check-replies` | POST | Manually scan for replies |
+| `/api/campaigns/rate-limit` | GET | Per-account rate limit status |
+| `/api/gmail/check-replies` | POST | Manually scan for replies (Gmail + IMAP for SMTP accounts) |
+| `/api/email-accounts` | GET/POST | List + create connected mailbox accounts |
+| `/api/email-accounts/bluehost` | POST | One-click Bluehost (Titan) SMTP/IMAP onboarding |
 | `/api/webhooks/email-platform` | POST | Incoming platform webhooks |
 | `/api/analytics` | GET | Dashboard aggregates |
 
@@ -341,8 +348,9 @@ See `docs/deployment.md` for complete reference.
 - Trustpilot blocks aggressive scrapers — use 2-5s randomized delays
 - Playwright required — Trustpilot pages are JS-rendered
 - ZeroBounce free tier: 100 credits/month
-- Gmail: connected accounts managed in-app via `email_accounts` table (OAuth per account)
-- Warmup: start at 10–20 emails/day per account, ramp up over 2–4 weeks
+- Connected mailbox accounts (Gmail OAuth, Bluehost/Titan SMTP, DreamHost, app-password) are all managed in-app via the `email_accounts` table. Personal-provider addresses (Gmail/Yahoo/Outlook/etc.) should be used only as custom-domain aliases — sending bulk cold mail directly from free Gmail inboxes is a spam trap.
+- Warmup: start at 10–20 emails/day per account, ramp up over 2–4 weeks. Each account has its own `daily_cap`/`hourly_cap` — respect them per-account, not globally.
+- Deliverability requires MX + SPF + DMARC configured on the sending domain. The Email Accounts page shows per-account DNS badges; fix red badges before sending volume.
 
 ---
 
