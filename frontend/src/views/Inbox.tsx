@@ -195,7 +195,7 @@ export default function Inbox() {
     }
   }, [selectedMsg, replyBody, replySubject, replySending]);
 
-  const { markRead, refresh: refreshNotifications } = useNotifications();
+  const { markRead, refresh: refreshNotifications, unreadCount } = useNotifications();
 
   // Draggable panel width
   const [panelWidth, setPanelWidth] = useState(480);
@@ -360,7 +360,16 @@ export default function Inbox() {
 
         <nav className="flex-1 px-2 py-4 space-y-0.5">
           {FOLDERS.map((f) => {
-            const badge = f.key === 'replies' ? (folder === 'replies' ? unreadInList : repliesCount) : 0;
+            // Replies folder badge always tracks UNREAD replies, never total
+            // replied count. When viewing Replies folder we can compute it
+            // from the current list (unreadInList), which gives optimistic
+            // feedback as the user clicks through. When viewing any other
+            // folder we fall back to the notifications context's server-
+            // authoritative count so the badge reflects actual unread state
+            // across the whole account.
+            const badge = f.key === 'replies'
+              ? (folder === 'replies' ? unreadInList : unreadCount)
+              : 0;
             return (
               <button
                 key={f.key}

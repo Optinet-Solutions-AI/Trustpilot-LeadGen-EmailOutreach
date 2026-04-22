@@ -820,7 +820,7 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     // blanket "not found or inactive" message.
     const { data: acc, error: accErr } = await supabase
       .from('email_accounts')
-      .select('email, status, auth_type, from_name, smtp_host, smtp_port, smtp_user, smtp_pass, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+      .select('email, status, auth_type, from_name, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
       .ilike('email', cl.sender_email as string)
       .limit(1)
       .maybeSingle();
@@ -955,7 +955,7 @@ async function sendSmtpReply(params: {
   const smtpHost = acc.smtp_host as string | null;
   const smtpPort = (acc.smtp_port as number | null) ?? 587;
   const smtpUser = (acc.smtp_user as string | null) ?? (acc.email as string);
-  const smtpPass = acc.smtp_pass as string | null;
+  const smtpPass = acc.smtp_password as string | null;
   const email = acc.email as string;
   const fromName = (acc.from_name as string | null) ?? 'OptiRate';
 
