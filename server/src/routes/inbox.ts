@@ -813,15 +813,29 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
       return;
     }
 
+    // Case-insensitive lookup — campaign_leads.sender_email and
+    // email_accounts.email can drift in case when the UI or DB migration
+    // normalizes one side but not the other. Drop the status filter so we
+    // can give a specific error (not-found vs paused) instead of a single
+    // blanket "not found or inactive" message.
     const { data: acc, error: accErr } = await supabase
       .from('email_accounts')
-      .select('email, auth_type, from_name, smtp_host, smtp_port, smtp_user, smtp_pass, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
-      .eq('email', cl.sender_email)
-      .eq('status', 'active')
-      .single();
+      .select('email, status, auth_type, from_name, smtp_host, smtp_port, smtp_user, smtp_pass, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+      .ilike('email', cl.sender_email as string)
+      .limit(1)
+      .maybeSingle();
 
-    if (accErr || !acc) {
-      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found or inactive` });
+    if (accErr) {
+      console.error(`[InboxReply] email_accounts lookup failed for ${cl.sender_email}:`, accErr.message);
+      res.status(500).json({ success: false, error: `Account lookup failed: ${accErr.message}` });
+      return;
+    }
+    if (!acc) {
+      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found — may have been deleted or renamed` });
+      return;
+    }
+    if (acc.status && acc.status !== 'active') {
+      res.status(400).json({ success: false, error: `Sender account ${cl.sender_email} is ${acc.status} (not active). Re-enable it on the Email Accounts page.` });
       return;
     }
 
