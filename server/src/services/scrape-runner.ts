@@ -564,7 +564,11 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       '--output', enrichedOutput,
       '--screenshots-dir', screenshotsDir,
       '--parallel', '4',
-      '--flush-every', '25',
+      // flush-every=5 (down from 25) so a Cloud Run instance cycle during
+      // scraping at worst loses ~4 profiles instead of ~24. Combined with the
+      // 20s partial-upsert poll below this means partial scrapes persist to
+      // Supabase within ~1 minute of every ~5 profiles completing.
+      '--flush-every', '5',
     ]);
 
     // While the profile scraper runs, poll the partial output file it atomically
@@ -586,7 +590,7 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       } finally {
         partialRunning = false;
       }
-    }, 45_000);
+    }, 20_000);
 
     try {
       await profilePromise;
