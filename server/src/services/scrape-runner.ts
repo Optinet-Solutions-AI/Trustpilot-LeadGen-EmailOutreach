@@ -380,30 +380,6 @@ async function runPartialUpsert(outputFile: string): Promise<{ saved: number; fa
 }
 
 /**
- * Fetch existing leads that have a website_url but no website_email yet.
- * Used to enrich leads that were previously scraped but not enriched.
- * Excludes URLs in the excludeUrls set (e.g. newly scraped leads already being enriched).
- */
-async function fetchUnenrichedLeads(
-  country: string,
-  category: string,
-  excludeUrls: Set<string> = new Set(),
-): Promise<Array<Record<string, unknown>>> {
-  const supabase = getSupabase();
-  const { data } = await supabase
-    .from('leads')
-    .select('company_name, trustpilot_url, website_url, trustpilot_email, website_email, country, category, star_rating')
-    .eq('country', country)
-    .eq('category', category)
-    .not('website_url', 'is', null)
-    .is('website_email', null);
-
-  return ((data || []) as Array<Record<string, unknown>>).filter(
-    (l) => !excludeUrls.has(l['trustpilot_url'] as string),
-  );
-}
-
-/**
  * Deduplicate leads against existing DB records.
  * Returns filtered list with already-scraped profiles removed.
  */
@@ -489,61 +465,14 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       emitProgress(jobId, 'dedup_done', `${skippedCount}/${rawData.length}`);
 
       if (leadsToScrape.length === 0) {
-        if (!enrich) {
-          // Nothing new and enrichment disabled — done
-          await updateJob(jobId, {
-            status: 'completed',
-            total_scraped: 0,
-            completed_at: new Date().toISOString(),
-          });
-          emitProgress(jobId, 'completed', `All ${rawData.length} profiles already in database`);
-          return;
-        }
-
-        // All new leads already in DB, but enrichment is ON — check for existing leads
-        // that have a website_url but never got a website_email yet.
-        emitProgress(jobId, 'enrich_start', '');
-        const unEnriched = await fetchUnenrichedLeads(country, category);
-        if (unEnriched.length === 0) {
-          await updateJob(jobId, {
-            status: 'completed',
-            total_scraped: 0,
-            completed_at: new Date().toISOString(),
-          });
-          emitProgress(jobId, 'completed', `All ${rawData.length} profiles already in database with emails found`);
-          return;
-        }
-
-        // Enrich only the existing un-enriched leads then save
-        emitProgress(jobId, 'enrich_start', `${unEnriched.length} existing leads need enrichment`);
-        const enrichOnlyFile = path.join(tmpDir, `${jobId}_enriched.json`);
-        fs.writeFileSync(enrichOnlyFile, JSON.stringify(unEnriched, null, 2));
-
-        await runTsEnricher(jobId, enrichOnlyFile);
-
-        emitProgress(jobId, 'final_save', 'Saving enriched data...');
-        const { promise: saveOnlyPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
-          '--input', enrichOnlyFile,
-        ]);
-        const saveOnlyStdout = await saveOnlyPromise;
-        const saveOnlyResult = parseUpsertResult(saveOnlyStdout);
-
-        console.log(`[Scrape] Enrich-only job ${jobId} — saved: ${saveOnlyResult.saved}, dbFailed: ${saveOnlyResult.failed}`);
-
+        // Nothing new on Trustpilot — scrape is done. Re-enrichment of existing
+        // leads lives on the Leads page (Enrich button / POST /api/enrich).
         await updateJob(jobId, {
           status: 'completed',
-          total_scraped: saveOnlyResult.saved,
-          total_failed: saveOnlyResult.failed,
+          total_scraped: 0,
           completed_at: new Date().toISOString(),
         });
-        emitProgress(jobId, 'completed', JSON.stringify({
-          totalFound: rawData.length,
-          skipped: skippedCount,
-          processed: 0,
-          saved: saveOnlyResult.saved,
-          enriched: saveOnlyResult.saved,
-          failed: saveOnlyResult.failed,
-        }));
+        emitProgress(jobId, 'completed', `All ${rawData.length} profiles already in database`);
         return;
       }
 
@@ -612,31 +541,11 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
     // Step 4b: Upload screenshots to Supabase Storage (persists across deploys)
     await uploadScreenshotsToStorage(screenshotsDir, enrichedOutput);
 
-    // Step 5: Website enrichment (optional)
+    // Step 5: Website enrichment (optional) — only for newly scraped leads.
+    // To enrich leads that were scraped earlier without emails, use the
+    // Enrich button on the Leads page (POST /api/enrich).
     if (enrich) {
-      // Also pull in existing leads (same country+category) that have website_url
-      // but never got a website_email — happens when enrichment was off on the original scrape,
-      // or when a previous enrichment failed (e.g. encoding crash).
-      try {
-        const newlyScrapedUrls = new Set(
-          (JSON.parse(fs.readFileSync(enrichedOutput, 'utf-8')) as Array<Record<string, unknown>>)
-            .map((l) => l['trustpilot_url'] as string)
-            .filter(Boolean),
-        );
-        const existingUnEnriched = await fetchUnenrichedLeads(country, category, newlyScrapedUrls);
-        if (existingUnEnriched.length > 0) {
-          const newlyScraped = JSON.parse(fs.readFileSync(enrichedOutput, 'utf-8')) as Array<Record<string, unknown>>;
-          const merged = [...newlyScraped, ...existingUnEnriched];
-          fs.writeFileSync(enrichedOutput, JSON.stringify(merged, null, 2));
-          console.log(`[Enrich] Merged ${existingUnEnriched.length} existing un-enriched leads into enrichment batch`);
-          emitProgress(jobId, 'enrich_start', `${merged.length} leads (${existingUnEnriched.length} existing + ${newlyScraped.length} new)`);
-        } else {
-          emitProgress(jobId, 'enrich_start', '');
-        }
-      } catch {
-        emitProgress(jobId, 'enrich_start', '');
-      }
-
+      emitProgress(jobId, 'enrich_start', '');
       const emailsFound = await runTsEnricher(jobId, enrichedOutput);
       emitProgress(jobId, 'enrich_done', String(emailsFound));
 
