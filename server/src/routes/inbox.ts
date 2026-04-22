@@ -870,8 +870,13 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     // the *latest inbound* Message-ID for In-Reply-To and build the full
     // References chain. The 60s in-memory cache on fetchSmtpThread keeps
     // this cheap when the user just viewed the thread.
+    // Default chain: just the original outgoing Message-ID, properly angle-
+    // wrapped. Gets replaced below with the full thread chain when we can
+    // fetch it.
     let inReplyTo: string | null = originalMsgId;
-    let referencesHeader: string | null = originalMsgId;
+    let referencesHeader: string | null = originalMsgId
+      ? `<${originalMsgId.replace(/^<|>$/g, '')}>`
+      : null;
     let quotedHtml = '';
 
     if ((authType === 'smtp' || authType === 'app_password') && originalMsgId) {
@@ -896,9 +901,15 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
             // References = every Message-ID in the thread, in chronological
             // order, starting with the original. This is what Gmail emits
             // when you reply from its web UI.
+            // Build a properly-formatted References header: each Message-ID
+            // wrapped in its own angle brackets, separated by single spaces.
+            // RFC 2822 §3.6.4 requires this shape; anything else (e.g.
+            // "<A B C>") is malformed and Gmail's threading engine silently
+            // drops it, which is why prior replies kept starting new threads.
             const chain = thread.messages
               .map((m) => m.id)
-              .filter((id): id is string => !!id && !id.startsWith('rendered:') && !id.includes(':'));
+              .filter((id): id is string => !!id && !id.startsWith('rendered:') && !id.includes(':'))
+              .map((id) => `<${id.replace(/^<|>$/g, '')}>`);
             if (chain.length > 0) referencesHeader = chain.join(' ');
             // Quote the latest inbound so the reply reads with context
             if (latestInbound) {
@@ -1033,8 +1044,23 @@ function ensureAngles(id: string | null | undefined): string | null {
   return trimmed ? `<${trimmed}>` : null;
 }
 
-function escapeHtmlFragment(raw: string): string {
+function decodeHtmlEntities(raw: string): string {
   return raw
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#0*34;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+function escapeHtmlFragment(raw: string): string {
+  // Decode first so already-encoded source text doesn't end up double-escaped.
+  // The IMAP body often arrives with &#39; for apostrophes etc.; without this
+  // step the quoted block renders "I&amp;#39;m" literally for the reader.
+  return decodeHtmlEntities(raw)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -1086,9 +1112,11 @@ async function sendSmtpReply(params: {
 
   const headers: Record<string, string> = {};
   const irt = ensureAngles(params.inReplyTo);
-  const refs = ensureAngles(params.references);
+  // params.references is already a properly-formatted "<A> <B>" chain built
+  // by the caller — do NOT call ensureAngles on it (which would collapse
+  // multiple IDs into a single malformed "<A B>" wrapper).
   if (irt) headers['In-Reply-To'] = irt;
-  if (refs) headers['References'] = refs;
+  if (params.references) headers['References'] = params.references;
 
   const mailOptions: nodemailer.SendMailOptions = {
     from: `"${fromName}" <${email}>`,
@@ -1197,9 +1225,10 @@ async function sendGmailReply(params: {
     'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
   };
   const irt = ensureAngles(params.inReplyTo);
-  const refs = ensureAngles(params.references);
+  // Same rule as SMTP — References is already correctly angle-wrapped by the
+  // caller; ensureAngles here would break a multi-ID chain.
   if (irt) headers['In-Reply-To'] = irt;
-  if (refs) headers['References'] = refs;
+  if (params.references) headers['References'] = params.references;
 
   const mailOptions: Record<string, unknown> = {
     from: `"${fromName}" <${email}>`,

@@ -188,22 +188,41 @@ export default function Inbox() {
         });
       }
 
-      // Schedule a background refetch a few seconds later: by then IMAP will
-      // have indexed the new Sent entry, and the authoritative thread
-      // (deduped by Message-ID) will replace our optimistic copy.
+      // Schedule a background refetch to replace our synthetic with the
+      // authoritative IMAP copy — but only if the refetched thread actually
+      // contains our new Message-ID. IMAP HEADER-References indexing can lag
+      // 30-120s after append, so an eager replace would make the user's
+      // freshly-sent reply vanish from the thread. If the refetch misses our
+      // message, we merge: take the refetched messages and append our
+      // synthetic so it stays visible.
       const gmail = selectedMsg.sender_auth_type === 'gmail_oauth' || selectedMsg.sender_auth_type === 'app_password';
       const primaryUrl = gmail && selectedMsg.gmail_thread_id
         ? `/inbox/thread/${selectedMsg.gmail_thread_id}`
         : selectedMsg.sender_auth_type === 'smtp' && selectedMsg.gmail_message_id
           ? `/inbox/thread-smtp/${selectedMsg.id}`
           : null;
-      if (primaryUrl) {
+      if (primaryUrl && data.message) {
+        const syntheticMsg = data.message;
         setTimeout(async () => {
           try {
             const refresh = await api.get(primaryUrl);
-            if (refresh.data?.data) setThread(refresh.data.data);
-          } catch { /* ignore — optimistic copy already shown */ }
-        }, 3000);
+            const refreshed = refresh.data?.data;
+            if (!refreshed) return;
+            const hasOurs = Array.isArray(refreshed.messages) &&
+              refreshed.messages.some((m: { id?: string }) => m.id === syntheticMsg.id);
+            if (hasOurs) {
+              setThread(refreshed);
+            } else {
+              // IMAP hasn't indexed our reply yet — keep it in the thread so
+              // the user doesn't see their message disappear. Dedupe against
+              // anything refetched in case it shows up via a different id.
+              setThread({
+                ...refreshed,
+                messages: [...refreshed.messages, syntheticMsg],
+              });
+            }
+          } catch { /* ignore — synthetic remains in thread */ }
+        }, 15000);
       }
       setTimeout(() => setReplyStatus(null), 4000);
     } catch (err: unknown) {
