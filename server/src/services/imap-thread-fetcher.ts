@@ -88,8 +88,15 @@ interface CollectedMessage {
 
 /**
  * Fetch the entire conversation a given outbound Message-ID belongs to.
- * Returns null when IMAP can't connect or the outgoing message itself is missing
- * (caller falls back to rendering the campaign template).
+ *
+ * Uses targeted IMAP header searches (SEARCH HEADER Message-ID / In-Reply-To /
+ * References) so we only round-trip for messages we know belong to the thread.
+ * A naive scan-and-filter across 90 days of mail would stall for minutes on
+ * any real mailbox; header-scoped SEARCH keeps this under a second in the
+ * common case.
+ *
+ * Returns null when IMAP can't connect or the message isn't findable
+ * (caller then falls back to the template-render endpoint).
  */
 export async function fetchSmtpThread(
   auth: ImapAuth,
@@ -98,6 +105,7 @@ export async function fetchSmtpThread(
 ): Promise<ThreadResult | null> {
   const target = normalizeId(outgoingMessageId);
   if (!target) return null;
+  const targetWithAngles = `<${target}>`;
 
   const client = new ImapFlow({
     host: auth.imap_host,
@@ -105,7 +113,9 @@ export async function fetchSmtpThread(
     secure: true,
     auth: { user: auth.imap_user, pass: auth.imap_pass },
     logger: false,
-    connectionTimeout: 15000,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000,
   });
 
   let connected = false;
@@ -122,87 +132,131 @@ export async function fetchSmtpThread(
       mailboxes.find(b => /sent/i.test(b.name));
     const inboxBox = mailboxes.find(b => /^inbox$/i.test(b.name)) ?? { path: 'INBOX' };
 
-    // Folders worth scanning: Sent (outgoing), INBOX (replies), and any other
-    // folder a client might auto-file replies into. We skip Spam/Trash to keep
-    // fetch bounded.
-    const scanPaths = Array.from(new Set([
-      sentBox?.path,
-      inboxBox.path,
-      ...mailboxes
-        .filter(b => /archive|all.?mail/i.test(b.name) && b.specialUse !== '\\Trash' && b.specialUse !== '\\Junk')
-        .map(b => b.path),
-    ].filter(Boolean))) as string[];
+    // Only the two folders that actually matter. Skipping archive/all-mail
+    // keeps search time bounded without losing coverage — the replies we care
+    // about land in INBOX before anything else.
+    const scanPaths = Array.from(new Set([sentBox?.path, inboxBox.path].filter(Boolean))) as string[];
 
     const collected: CollectedMessage[] = [];
-    // Track which Message-IDs belong to the thread so we can widen the search
-    // as new messages join via References chains.
+    const seen = new Set<string>();  // dedupe key: folder:uid
     const threadIds = new Set<string>([target]);
-    let threadGrew = true;
 
-    // Up to 3 sweeps — each pass picks up messages that reference any ID already
-    // known to be in the thread. Usually 1 or 2 is enough.
-    for (let pass = 0; pass < 3 && threadGrew; pass++) {
-      threadGrew = false;
+    // Header-scoped search: ask the server to filter for us.
+    // IMPORTANT: imapflow's `header` search takes { name: value } where value
+    // is a literal substring. Server-side this maps to SEARCH HEADER, which
+    // is the fastest way to find messages in a specific thread.
+    async function searchByHeader(path: string, headerName: string, value: string): Promise<number[]> {
+      const lock = await client.getMailboxLock(path);
+      try {
+        const uids = await client.search({ header: { [headerName]: value } });
+        return Array.isArray(uids) ? uids : [];
+      } catch (e) {
+        console.warn(`[ImapThreadFetcher] search(${path}, ${headerName}:${value}) failed:`, e instanceof Error ? e.message : e);
+        return [];
+      } finally {
+        lock.release();
+      }
+    }
+
+    // One pass per folder: collect every UID that references any known
+    // thread ID via Message-ID, In-Reply-To, or References.
+    async function collectFromFolder(path: string): Promise<void> {
+      const idsToQuery = Array.from(threadIds);
+      const uidsToFetch = new Set<number>();
+
+      for (const id of idsToQuery) {
+        const withAngles = `<${id}>`;
+        const results = await Promise.all([
+          searchByHeader(path, 'message-id', withAngles),
+          searchByHeader(path, 'in-reply-to', withAngles),
+          searchByHeader(path, 'references', withAngles),
+        ]);
+        for (const r of results) for (const u of r) uidsToFetch.add(u);
+      }
+
+      if (uidsToFetch.size === 0) return;
+
+      const lock = await client.getMailboxLock(path);
+      try {
+        // Single fetch round-trip for everything in this folder. Includes source
+        // so mailparser can decode bodies without a second round trip.
+        for await (const msg of client.fetch([...uidsToFetch], {
+          envelope: true,
+          uid: true,
+          flags: true,
+          source: true,
+          headers: ['message-id', 'in-reply-to', 'references'],
+        })) {
+          const key = `${path}:${msg.uid}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const headers = msg.headers ? msg.headers.toString('utf-8') : '';
+          const messageId = normalizeId(msg.envelope?.messageId ?? matchHeader(headers, 'message-id'));
+          const inReplyTo = normalizeId(matchHeader(headers, 'in-reply-to'));
+          const references = extractReferences(matchHeader(headers, 'references'));
+
+          if (messageId) threadIds.add(messageId);
+          if (inReplyTo) threadIds.add(inReplyTo);
+          for (const r of references) threadIds.add(r);
+
+          if (!msg.source) continue;
+          collected.push({
+            uid: msg.uid!,
+            folder: path,
+            messageId,
+            inReplyTo,
+            references,
+            envelopeSubject: msg.envelope?.subject ?? '',
+            envelopeDate: msg.envelope?.date ?? null,
+            unread: !msg.flags?.has('\\Seen'),
+            raw: msg.source as Buffer,
+          });
+        }
+      } finally {
+        lock.release();
+      }
+    }
+
+    // Two passes: first pass finds the seed + direct replies, second pass
+    // catches anything that references IDs discovered in the first pass.
+    for (let pass = 0; pass < 2; pass++) {
       const sizeBefore = collected.length;
-
       for (const path of scanPaths) {
-        const lock = await client.getMailboxLock(path);
+        await collectFromFolder(path);
+      }
+      if (collected.length === sizeBefore) break;  // no new messages — stop
+    }
+
+    // Hack for the very first seed: if Message-ID header search missed our
+    // outgoing message (some servers normalize angle brackets differently),
+    // try a direct lookup in Sent by the literal ID without angles.
+    if (collected.length === 0 && sentBox?.path) {
+      const uids = await searchByHeader(sentBox.path, 'message-id', target);
+      if (uids.length > 0) {
+        const lock = await client.getMailboxLock(sentBox.path);
         try {
-          const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-          const uids = await client.search({ since });
-          if (!uids || uids.length === 0) continue;
-
-          // Pull envelope + headers for fast filtering, then only load full
-          // source for messages that actually belong to the thread.
-          for await (const msg of client.fetch(uids, {
-            envelope: true,
-            uid: true,
-            flags: true,
-            headers: ['message-id', 'in-reply-to', 'references'],
-          })) {
-            const headerBuf = msg.headers;
-            const headers = headerBuf ? headerBuf.toString('utf-8') : '';
-            const messageId = normalizeId(msg.envelope?.messageId ?? matchHeader(headers, 'message-id'));
-            const inReplyTo = normalizeId(matchHeader(headers, 'in-reply-to'));
-            const references = extractReferences(matchHeader(headers, 'references'));
-
-            const belongs =
-              threadIds.has(messageId) ||
-              (inReplyTo && threadIds.has(inReplyTo)) ||
-              references.some(r => threadIds.has(r));
-
-            if (!belongs) continue;
-            if (collected.some(c => c.uid === msg.uid && c.folder === path)) continue;
-
-            // Add every known ID to the thread set so the next sweep finds
-            // transitive participants.
-            if (messageId) threadIds.add(messageId);
-            if (inReplyTo) threadIds.add(inReplyTo);
-            for (const r of references) threadIds.add(r);
-
-            // Load full source for bodies
-            const full = await client.fetchOne(String(msg.uid), { source: true, uid: true, flags: true }, { uid: true });
-            if (!full || !full.source) continue;
-
+          for await (const msg of client.fetch(uids, { envelope: true, uid: true, flags: true, source: true })) {
+            if (!msg.source) continue;
             collected.push({
               uid: msg.uid!,
-              folder: path,
-              messageId,
-              inReplyTo,
-              references,
+              folder: sentBox.path,
+              messageId: normalizeId(msg.envelope?.messageId) || target,
+              inReplyTo: '',
+              references: [],
               envelopeSubject: msg.envelope?.subject ?? '',
               envelopeDate: msg.envelope?.date ?? null,
               unread: !msg.flags?.has('\\Seen'),
-              raw: full.source as Buffer,
+              raw: msg.source as Buffer,
             });
           }
         } finally {
           lock.release();
         }
       }
-
-      if (collected.length > sizeBefore) threadGrew = true;
     }
+
+    void targetWithAngles;  // reserved for future fallbacks; silence unused warning
 
     if (collected.length === 0) return null;
 

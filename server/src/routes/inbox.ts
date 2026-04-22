@@ -582,13 +582,13 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
       .select(`
         id, email_used, sender_email, sent_at, replied_at, reply_snippet, status,
         campaigns(name, template_subject, template_body),
-        leads(company_name, website_url, star_rating, review_count, category, country, primary_email)
+        leads(company_name, website_url, star_rating, category, country, primary_email)
       `)
       .eq('id', campaignLeadId)
       .single();
 
     if (clErr || !cl) {
-      res.status(404).json({ success: false, error: 'Campaign lead not found' });
+      res.status(404).json({ success: false, error: `Campaign lead not found: ${clErr?.message ?? 'no data'}` });
       return;
     }
 

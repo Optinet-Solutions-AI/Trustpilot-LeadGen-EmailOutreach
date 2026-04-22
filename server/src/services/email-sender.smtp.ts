@@ -100,12 +100,20 @@ export async function sendEmailSmtp(
     }
   }
 
+  // Pre-generate a stable Message-ID so the outgoing copy AND the IMAP APPEND
+  // end up with the exact same header. Without this, Nodemailer and MailComposer
+  // each invent their own IDs — the DB stores one, the Sent folder gets another,
+  // and inbox thread-lookup by Message-ID can never correlate them.
+  const hostPart = account.email.split('@')[1] || 'localhost';
+  const messageId = `<${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}@${hostPart}>`;
+
   const mailOptions: nodemailer.SendMailOptions = {
     from: `"${account.fromName}" <${account.email}>`,
     to,
     subject,
     html: bodyHtml,
     attachments,
+    messageId,
   };
 
   try {
@@ -120,7 +128,10 @@ export async function sendEmailSmtp(
       });
     }
 
-    return { success: true, messageId: info.messageId };
+    // Return the pre-generated Message-ID rather than info.messageId — the two
+    // should be identical, but being explicit guarantees the DB stores what was
+    // actually sent (and what the IMAP APPEND wrote).
+    return { success: true, messageId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[SMTP] Failed to send to ${to}:`, msg);
