@@ -224,12 +224,15 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
 
             tp_url = lead.get('trustpilot_url', f"https://www.trustpilot.com/review/{slug}")
             print(f"  [{idx + 1}/{total}] {slug}", flush=True)
+            # Per-item start signal so the UI can say "Scanning acme.co…"
+            print(f"PROGRESS:profile_start:{idx + 1}|{total}|{slug}", flush=True)
 
             try:
                 contact = await scrape_single_profile(page, slug, screenshots_dir)
 
                 if not contact:
-                    print(f"FAILED:profile:{tp_url}:Empty response from profile page")
+                    # timeout is the most common cause of an empty response; classify so the UI renders a friendly line
+                    print(f"FAILED:profile|{tp_url}|empty_page|Profile page loaded no content", flush=True)
                     failed_list.append(tp_url)
                     results_dict[idx] = {**lead}
                 else:
@@ -239,12 +242,26 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
                         if contact.get(key):
                             enriched[key] = contact[key]
                     results_dict[idx] = enriched
+                    # Rich per-item done event: carries email source + screenshot flag + website presence for the UI
+                    email_src = 'trustpilot' if contact.get('trustpilot_email') else 'none'
+                    shot_flag = 'shot' if contact.get('screenshot_path') else 'noshot'
+                    site_flag = 'site' if contact.get('website_url') else 'nosite'
+                    print(f"PROGRESS:profile_saved:{idx + 1}|{total}|{slug}|{email_src}|{shot_flag}|{site_flag}", flush=True)
             except Exception as e:
-                error_msg = str(e).replace('\n', ' ')[:200]
-                print(f"FAILED:profile:{tp_url}:{error_msg}")
+                error_msg = str(e).replace('\n', ' ').replace('|', ' ')[:200]
+                # Classify into a reason code so the UI picks a friendly line (timeouts vs nav errors vs everything else)
+                err_lower = error_msg.lower()
+                if 'timeout' in err_lower or 'timed out' in err_lower:
+                    reason_code = 'timeout'
+                elif 'err_' in err_lower or 'net::' in err_lower or 'dns' in err_lower:
+                    reason_code = 'nav_error'
+                else:
+                    reason_code = 'error'
+                print(f"FAILED:profile|{tp_url}|{reason_code}|{error_msg}", flush=True)
                 failed_list.append(tp_url)
                 results_dict[idx] = {**lead}
 
+            # Keep the legacy fraction event — frontend uses it for the live progress bar
             print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
 
             # Incremental flush so the orchestrator can batch-upsert partial results

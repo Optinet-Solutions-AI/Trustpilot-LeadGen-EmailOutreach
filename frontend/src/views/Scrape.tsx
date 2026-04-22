@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useScrape } from '../hooks/useScrape';
 import ScrapeForm from '../components/ScrapeForm';
-import ScrapeProgress from '../components/ScrapeProgress';
+import JobProgress from '../components/JobProgress';
 import type { ScrapeParams } from '../types/scrape';
 import api from '../api/client';
 
@@ -147,12 +147,12 @@ export default function Scrape() {
           >
             Scrape Progress
           </h3>
-          <ScrapeProgress
+          <JobProgress
+            kind="scrape"
             status={status as 'running' | 'completed' | 'failed' | null}
             progress={progress}
             error={error}
             failedCount={failedCount}
-            jobId={jobId}
             startedAt={jobId ? jobs.find((j) => j.id === jobId)?.started_at ?? null : null}
             completedAt={jobId ? jobs.find((j) => j.id === jobId)?.completed_at ?? null : null}
             liveJob={jobId ? (() => {

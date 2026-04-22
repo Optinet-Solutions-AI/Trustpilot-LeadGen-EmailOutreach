@@ -575,9 +575,28 @@ export interface EnrichmentResult {
   blockReason?: string;
 }
 
+/**
+ * A structured per-item event emitted by the enricher. Callers (scrape-runner,
+ * /api/enrich route) subscribe to translate these into SSE + scrape_failures rows.
+ */
+export type EnricherEvent =
+  | { type: 'enrich_start'; index: number; total: number; domain: string }
+  | { type: 'enrich_email'; index: number; total: number; domain: string; email: string; tier: string }
+  | { type: 'enrich_no_email'; index: number; total: number; domain: string; reason?: string }
+  | { type: 'enrich_failed'; index: number; total: number; domain: string; reasonCode: string; message: string };
+
+function domainOf(url: string): string {
+  const stripped = url.replace(/^https?:\/\//, '').split('/')[0] || url;
+  return stripped.replace(/^www\./, '');
+}
+
 export async function enrichLeads(
   leads: EnrichableLead[],
-  opts: { concurrency?: number; onProgress?: (done: number, total: number) => void } = {},
+  opts: {
+    concurrency?: number;
+    onProgress?: (done: number, total: number) => void;
+    onEvent?: (event: EnricherEvent) => void;
+  } = {},
 ): Promise<EnrichmentResult[]> {
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 3, 5));
 
@@ -601,8 +620,11 @@ export async function enrichLeads(
       const i = cursor++;
       const { idx, lead } = queue[i];
       const websiteUrl = lead.website_url!;
+      const domain = domainOf(websiteUrl);
+      const itemIndex = i + 1;
 
       console.log(`  [enricher] [${done + 1}/${queue.length}] ${websiteUrl}`);
+      opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain });
       try {
         const { email, tier, blockReason } = await enrichSingleLeadWithTiers(websiteUrl);
         results[idx] = {
@@ -614,11 +636,19 @@ export async function enrichLeads(
         };
         if (email) {
           console.log(`    [enricher] ✓ ${email} (tier=${tier})`);
+          opts.onEvent?.({ type: 'enrich_email', index: itemIndex, total: queue.length, domain, email, tier: String(tier) });
+        } else if (blockReason && BLOCK_REASONS_THAT_ESCALATE.has(blockReason.replace(/^error:.*$/, 'bot_detected'))) {
+          // A real scanner block — surface as a failed item with a reason code
+          console.log(`    [enricher] ✗ blocked (${blockReason})`);
+          opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: blockReason, message: `Site blocked the scanner (${blockReason})` });
         } else {
           console.log(`    [enricher] ✗ no email (blockReason=${blockReason || 'none'})`);
+          opts.onEvent?.({ type: 'enrich_no_email', index: itemIndex, total: queue.length, domain, reason: blockReason });
         }
       } catch (err) {
-        console.error(`    [enricher] ERROR for ${websiteUrl}:`, (err as Error).message);
+        const message = (err as Error).message.slice(0, 200);
+        console.error(`    [enricher] ERROR for ${websiteUrl}:`, message);
+        opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: 'error', message });
       }
 
       done++;

@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead } from '../services/scrapers/website-enricher.js';
+import { scrapeEvents, translateEnricherEvent } from '../services/scrape-runner.js';
 
 const router = Router();
+const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
 
 // Sentinel value used in scrape_jobs to identify enrichment-only jobs
 const ENRICH_SENTINEL = '_enrich_';
@@ -39,6 +41,59 @@ router.get('/status', async (req: Request, res: Response) => {
       ...(job.error ? { error: job.error } : {}),
     },
   });
+});
+
+// ── GET /api/enrich/:id/stream — SSE stream of enrichment progress ───────────
+// Mirrors /api/scrape/:id/status: subscribes to the shared scrapeEvents emitter
+// filtered by jobId, so the frontend log panel works identically for enrich
+// jobs and scrape jobs.
+router.get('/:id/stream', async (req: Request, res: Response) => {
+  const jobId = param(req.params.id);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Initial snapshot
+  try {
+    const supabase = getSupabase();
+    const { data: job } = await supabase
+      .from('scrape_jobs')
+      .select('id, status, total_found, total_enriched, total_failed, error, started_at, completed_at')
+      .eq('id', jobId)
+      .eq('country', ENRICH_SENTINEL)
+      .single();
+
+    if (!job) {
+      res.write(`data: ${JSON.stringify({ stage: 'error', detail: 'Job not found' })}\n\n`);
+      res.end();
+      return;
+    }
+
+    res.write(`data: ${JSON.stringify({ stage: 'current', ...job })}\n\n`);
+
+    if (job.status === 'completed' || job.status === 'failed') {
+      res.end();
+      return;
+    }
+  } catch {
+    res.write(`data: ${JSON.stringify({ stage: 'error', detail: 'Job lookup failed' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  const handler = (event: { jobId: string; stage: string; detail: string; timestamp?: string }) => {
+    if (event.jobId === jobId) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.stage === 'completed' || event.stage === 'failed') {
+        setTimeout(() => { try { res.end(); } catch {} }, 1000);
+      }
+    }
+  };
+
+  scrapeEvents.on('progress', handler);
+  req.on('close', () => scrapeEvents.off('progress', handler));
 });
 
 // ── POST /api/enrich — start enrichment job using in-process TS enricher ─────
@@ -97,7 +152,25 @@ router.post('/', async (req: Request, res: Response) => {
     (async () => {
       try {
         console.log(`[enrich] Job ${jobId} — starting TS enrichment for ${leads.length} leads`);
-        const results = await enrichLeads(leads as EnrichableLead[], { concurrency: 3 });
+        // Announce the phase so the live-log panel on the Leads page lights up
+        scrapeEvents.emit('progress', {
+          jobId,
+          stage: 'enrich_start',
+          detail: String(leads.length),
+          timestamp: new Date().toISOString(),
+        });
+        const results = await enrichLeads(leads as EnrichableLead[], {
+          concurrency: 3,
+          onProgress: (done, totalItems) => {
+            scrapeEvents.emit('progress', {
+              jobId,
+              stage: 'enrich_progress',
+              detail: `${done}/${totalItems}`,
+              timestamp: new Date().toISOString(),
+            });
+          },
+          onEvent: (event) => translateEnricherEvent(jobId, event),
+        });
 
         // Filter to only leads that got a new email
         const enriched = results.filter((r) => r.foundEmail !== null);
@@ -148,6 +221,19 @@ router.post('/', async (req: Request, res: Response) => {
           console.error(`[enrich] Job ${jobId} — failed to update job status:`, jobUpdateErr.message);
         }
 
+        // Closing event for any connected SSE streams
+        scrapeEvents.emit('progress', {
+          jobId,
+          stage: 'completed',
+          detail: JSON.stringify({
+            totalFound: leads.length,
+            saved: successful,
+            enriched: successful,
+            failed: dbFailed,
+          }),
+          timestamp: new Date().toISOString(),
+        });
+
         console.log(`[enrich] Job ${jobId} DONE — attempted: ${leads.length}, scraped: ${enriched.length}, saved: ${successful}, dbFailed: ${dbFailed}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -157,6 +243,12 @@ router.post('/', async (req: Request, res: Response) => {
           error: message.slice(0, 500),
           completed_at: new Date().toISOString(),
         }).eq('id', jobId);
+        scrapeEvents.emit('progress', {
+          jobId,
+          stage: 'failed',
+          detail: message.slice(0, 200),
+          timestamp: new Date().toISOString(),
+        });
       }
     })();
 

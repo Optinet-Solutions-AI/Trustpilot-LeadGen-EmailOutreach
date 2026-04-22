@@ -18,7 +18,7 @@ import { config } from '../config.js';
 import { updateJob } from '../db/scrape-jobs.js';
 import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
-import { enrichLeads, type EnrichableLead } from './scrapers/website-enricher.js';
+import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
 
 export const scrapeEvents = new EventEmitter();
 
@@ -73,6 +73,36 @@ function parseUpsertResult(stdout: string): { saved: number; failed: number } {
 }
 
 /**
+ * Translate a structured enricher event into the SSE stream + failure log.
+ * Shared by the in-scrape enrichment path and the standalone /api/enrich route,
+ * so both produce identical events for the frontend log.
+ */
+export function translateEnricherEvent(jobId: string, event: EnricherEvent): void {
+  switch (event.type) {
+    case 'enrich_start':
+      emitProgress(jobId, 'enrich_start_item', `${event.index}|${event.total}|${event.domain}`);
+      break;
+    case 'enrich_email':
+      emitProgress(jobId, 'enrich_email', `${event.index}|${event.total}|${event.domain}|${event.email}|${event.tier}`);
+      break;
+    case 'enrich_no_email':
+      emitProgress(jobId, 'enrich_no_email', `${event.index}|${event.total}|${event.domain}`);
+      break;
+    case 'enrich_failed': {
+      // Persist the failure so the Retry Failed button can revisit the URL later
+      insertFailure({
+        job_id: jobId,
+        url: event.domain,
+        stage: 'website',
+        error_message: `${event.reasonCode}: ${event.message}`,
+      });
+      emitProgress(jobId, 'item_failed', `website|${event.domain}|${event.reasonCode}|${event.message}`);
+      break;
+    }
+  }
+}
+
+/**
  * Run the TypeScript website enricher against a JSON file in-place.
  * Reads the file, enriches any lead with website_url but no website_email,
  * writes the updated list back, and emits per-item progress.
@@ -97,6 +127,7 @@ async function runTsEnricher(jobId: string, jsonFile: string): Promise<number> {
     onProgress: (done, totalItems) => {
       emitProgress(jobId, 'enrich_progress', `${done}/${totalItems}`);
     },
+    onEvent: (event) => translateEnricherEvent(jobId, event),
   });
 
   let timedOut = false;
@@ -202,13 +233,31 @@ function runPython(
           const parts = trimmed.split(':');
           emitProgress(jobId, parts[1], parts.slice(2).join(':'));
         } else if (trimmed.startsWith('FAILED:')) {
-          const parts = trimmed.split(':');
-          const stage = parts[1] || 'unknown';
-          const url = parts[2] || '';
-          const errorMsg = parts.slice(3).join(':') || 'Unknown error';
+          // New pipe-delimited format from Python scrapers:
+          //   FAILED:{stage}|{url}|{reason_code}|{msg}
+          // Legacy colon-only format (predates this change) is still supported for safety:
+          //   FAILED:{stage}:{url}:{msg}   — url is broken for http://... urls but we accept it
+          const rest = trimmed.slice('FAILED:'.length);
+          let stage = 'unknown';
+          let url = '';
+          let reasonCode = 'error';
+          let errorMsg = 'Unknown error';
+          if (rest.includes('|')) {
+            const parts = rest.split('|');
+            stage = parts[0] || 'unknown';
+            url = parts[1] || '';
+            reasonCode = parts[2] || 'error';
+            errorMsg = parts.slice(3).join('|') || 'Unknown error';
+          } else {
+            const parts = rest.split(':');
+            stage = parts[0] || 'unknown';
+            url = parts[1] || '';
+            errorMsg = parts.slice(2).join(':') || 'Unknown error';
+          }
           // Insert failure record asynchronously (don't block)
           insertFailure({ job_id: jobId, url, stage, error_message: errorMsg });
-          emitProgress(jobId, 'item_failed', `${stage}:${url}`);
+          // Rich item_failed payload: phase|url|reason_code|msg — frontend translates to a friendly line
+          emitProgress(jobId, 'item_failed', `${stage}|${url}|${reasonCode}|${errorMsg}`);
         }
 
         if (trimmed) console.log(`  [PY] ${trimmed}`);

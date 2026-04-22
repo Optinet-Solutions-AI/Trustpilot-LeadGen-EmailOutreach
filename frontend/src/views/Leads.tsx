@@ -8,6 +8,8 @@ import LeadPipeline from '../components/LeadPipeline';
 import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
 import QuickSendModal from '../components/QuickSendModal';
+import JobProgress from '../components/JobProgress';
+import { useEnrichJob } from '../hooks/useEnrichJob';
 
 type View = 'table' | 'pipeline';
 
@@ -103,11 +105,17 @@ export default function Leads() {
   };
 
   const [verifying, setVerifying] = useState(false);
-  const [enriching, setEnriching] = useState(false);
-  const [enrichJobId, setEnrichJobId] = useState<string | null>(() => localStorage.getItem('active_enrich_job'));
+  const [enrichJobId, setEnrichJobId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('active_enrich_job');
+  });
+  const [enrichStartedAt, setEnrichStartedAt] = useState<string | null>(null);
   const [enrichResult, setEnrichResult] = useState<{ found: number; total: number; failed: number } | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const enrichJob = useEnrichJob(enrichJobId);
+  const enriching = enrichJob.status === 'running';
 
   const notify = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
@@ -130,89 +138,62 @@ export default function Leads() {
   };
 
   const startEnrich = async (leadIds?: string[]) => {
-    setEnriching(true);
     try {
       const body = leadIds && leadIds.length > 0 ? { leadIds } : {};
       const res = await api.post('/enrich', body);
       const { jobId, total: t } = res.data.data;
       if (!jobId) {
         notify('success', 'No leads needed enrichment (all already have website emails)');
-        setEnriching(false);
         return;
       }
-      notify('success', `Scraping websites for ${t} lead${t !== 1 ? 's' : ''} — results appear in a few minutes…`);
+      notify('success', `Scanning websites for ${t} lead${t !== 1 ? 's' : ''} — watch the live log below`);
       localStorage.setItem('active_enrich_job', jobId);
       setEnrichJobId(jobId);
-      setEnriching(true);
+      setEnrichStartedAt(new Date().toISOString());
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Enrichment failed');
-      setEnriching(false);
     }
   };
 
   const handleBulkEnrich = () => startEnrich(selectedIds);
   const handleEnrichAll  = () => startEnrich();
 
-  // Poll enrichment job status until done or failed.
-  // enrichJobId is initialised from localStorage so this resumes after page refresh.
+  // React to the enrichment job reaching a terminal state — clear storage,
+  // surface the result banner, and refresh the leads table so new emails show.
   useEffect(() => {
     if (!enrichJobId) return;
-    setEnriching(true);
-
-    let active = true;
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const finish = (success: boolean, result?: { found: number; total: number; failed: number }, errMsg?: string) => {
-      if (!active) return;
-      active = false; // prevent any further polls immediately
-      if (interval) clearInterval(interval);
-      if (success && result) setEnrichResult(result);
-      else if (errMsg) notify('error', errMsg);
-      setEnriching(false);
+    if (enrichJob.status === 'completed') {
+      setEnrichResult({
+        total: enrichJob.summary.total,
+        found: enrichJob.summary.found,
+        failed: enrichJob.summary.failed,
+      });
       setEnrichJobId(null);
+      setEnrichStartedAt(null);
       localStorage.removeItem('active_enrich_job');
       loadLeads();
-    };
-
-    const poll = async () => {
-      if (!active) return;
-      try {
-        const res = await api.get(`/enrich/status?jobId=${enrichJobId}`);
-        const { status, found, total, failed: failedCount, error } = res.data.data;
-        if (status === 'done') finish(true, { found, total, failed: failedCount ?? 0 });
-        else if (status === 'failed') finish(false, undefined, `Enrichment failed: ${error || 'unknown error'}`);
-        // 'running' → keep polling
-      } catch (err: unknown) {
-        const httpStatus = (err as { response?: { status?: number } })?.response?.status;
-        if (httpStatus === 404) {
-          // Stale job ID — clear it and reload the table (enrichment may have finished)
-          if (!active) return;
-          active = false;
-          if (interval) clearInterval(interval);
-          setEnriching(false);
-          setEnrichJobId(null);
-          localStorage.removeItem('active_enrich_job');
-          loadLeads();
-        }
-        // Other network errors: keep polling
-      }
-    };
-
-    // Check immediately on mount (don't wait 5s to detect stale IDs)
-    poll();
-    interval = setInterval(poll, 5000);
-    return () => { active = false; if (interval) clearInterval(interval); };
-  }, [enrichJobId]);
+    } else if (enrichJob.status === 'failed') {
+      notify('error', `Enrichment failed: ${enrichJob.error || 'unknown error'}`);
+      setEnrichJobId(null);
+      setEnrichStartedAt(null);
+      localStorage.removeItem('active_enrich_job');
+      loadLeads();
+    }
+  }, [enrichJob.status, enrichJob.summary, enrichJob.error, enrichJobId, loadLeads]);
 
   return (
     <div className="px-10 py-10 space-y-8">
 
-      {/* Enrichment running banner */}
-      {enriching && enrichJobId && (
-        <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 text-sm text-blue-800">
-          <span className="material-symbols-outlined text-[18px] text-blue-500 animate-spin" style={{ animationDuration: '1.5s' }}>progress_activity</span>
-          <span className="font-semibold">Website enrichment in progress</span>
-          <span className="text-blue-600 font-normal">— visiting company websites to find contact emails. This can take several minutes.</span>
+      {/* Live enrichment progress — inline log panel */}
+      {enrichJobId && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <JobProgress
+            kind="enrichment"
+            status={enrichJob.status === 'idle' ? 'running' : enrichJob.status}
+            progress={enrichJob.progress}
+            error={enrichJob.error}
+            startedAt={enrichStartedAt}
+          />
         </div>
       )}
 

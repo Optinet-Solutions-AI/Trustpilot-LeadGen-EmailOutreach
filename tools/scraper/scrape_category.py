@@ -153,6 +153,8 @@ async def scrape_category(
                 print(f"  Page rating range: {lowest_on_page}-{highest_on_page}")
 
             print(f"PROGRESS:category_progress:{page_num}:{len(results)}")
+            # Per-page rich event for the UI: "Page 5 · 42 companies added (237 total so far)"
+            print(f"PROGRESS:category_page_done:{page_num}|{len(page_results)}|{len(results)}", flush=True)
 
             # Early stop: if every business on this page is below min_rating, we
             # are past the useful range (Trustpilot exhausted; trailing 0★ / no-

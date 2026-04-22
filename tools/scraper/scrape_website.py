@@ -266,24 +266,40 @@ async def _enrich_batch(context, batch: list[tuple[int, dict]], results_dict: di
     try:
         for i, (idx, lead) in enumerate(batch):
             website_url = lead.get('website_url')
+            domain = (website_url or 'unknown').replace('https://', '').replace('http://', '').split('/')[0]
             print(f"\n  [{idx + 1}/{total}] Enriching: {website_url or '(no website)'}")
+            # Rich per-item start so the UI can say "Scanning acme.co…"
+            # Use `enrich_start_item` to avoid colliding with the phase-level `enrich_start` the scrape runner fires.
+            print(f"PROGRESS:enrich_start_item:{idx + 1}|{total}|{domain}", flush=True)
 
             try:
                 best_email, all_candidates = await scrape_website_email(page, website_url)
                 updated_lead = {**lead}
                 if best_email:
                     updated_lead['website_email'] = best_email
+                    rank = 'top' if rank_email(best_email) == 0 else ('acceptable' if rank_email(best_email) == 1 else 'other')
                     print(f"    >> SET website_email = {best_email}")
+                    print(f"PROGRESS:enrich_email:{idx + 1}|{total}|{domain}|{best_email}|{rank}", flush=True)
                 else:
                     print(f"    >> No email found")
+                    print(f"PROGRESS:enrich_no_email:{idx + 1}|{total}|{domain}", flush=True)
             except Exception as e:
-                error_msg = str(e).replace('\n', ' ')[:200]
-                print(f"FAILED:website:{website_url or 'unknown'}:{error_msg}")
+                error_msg = str(e).replace('\n', ' ').replace('|', ' ')[:200]
+                err_lower = error_msg.lower()
+                if 'timeout' in err_lower or 'timed out' in err_lower:
+                    reason_code = 'timeout'
+                elif 'err_' in err_lower or 'net::' in err_lower or 'dns' in err_lower:
+                    reason_code = 'nav_error'
+                elif 'cloudflare' in err_lower or '403' in err_lower or 'forbidden' in err_lower:
+                    reason_code = 'access_denied'
+                else:
+                    reason_code = 'error'
+                print(f"FAILED:website|{website_url or 'unknown'}|{reason_code}|{error_msg}", flush=True)
                 failed_list.append(website_url or 'unknown')
                 updated_lead = {**lead}
 
             results_dict[idx] = updated_lead
-            print(f"PROGRESS:enrich_progress:{idx + 1}/{total}")
+            print(f"PROGRESS:enrich_progress:{idx + 1}/{total}", flush=True)
 
             if i < len(batch) - 1:
                 await human_delay(1.0, 2.5)
