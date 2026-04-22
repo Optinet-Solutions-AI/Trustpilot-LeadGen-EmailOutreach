@@ -212,12 +212,12 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
   }
 
-  // Reply tracking poll — runs every 15 minutes for BOTH Gmail OAuth accounts
+  // Reply tracking poll — runs every 10 minutes for BOTH Gmail OAuth accounts
   // (via reply-tracker.ts) AND SMTP/IMAP accounts like Bluehost Titan
   // (via reply-tracker.imap.ts). The IMAP path walks every active
   // email_accounts row with auth_type='smtp' and valid IMAP creds.
   if (config.emailMode === 'gmail') {
-    const REPLY_CHECK_INTERVAL = 15 * 60 * 1000;
+    const REPLY_CHECK_INTERVAL = 10 * 60 * 1000;
     setInterval(async () => {
       try {
         const { checkForReplies } = await import('./services/reply-tracker.js');
@@ -236,7 +236,7 @@ const server = app.listen(config.port, async () => {
         console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
       }
     }, REPLY_CHECK_INTERVAL);
-    console.log('Reply tracker: polling Gmail + IMAP every 15 minutes');
+    console.log('Reply tracker: polling Gmail + IMAP every 10 minutes');
   }
 });
 

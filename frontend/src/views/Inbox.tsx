@@ -100,6 +100,8 @@ export default function Inbox() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [selectedMsg, setSelectedMsg] = useState<CampaignMessage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [checkingMailbox, setCheckingMailbox] = useState(false);
+  const [checkStatus, setCheckStatus] = useState<string | null>(null);
 
   const { markRead, refresh: refreshNotifications } = useNotifications();
 
@@ -143,6 +145,29 @@ export default function Inbox() {
   }, [folder]);
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
+
+  // Manual mailbox poll — hits /gmail/check-replies which runs the same
+  // Gmail + IMAP scan the 10-min background job does, then refreshes the list
+  // and top-bar notification badges.
+  const checkMailbox = useCallback(async () => {
+    if (checkingMailbox) return;
+    setCheckingMailbox(true);
+    setCheckStatus(null);
+    try {
+      const res = await api.post('/gmail/check-replies');
+      const total = res?.data?.data?.totalReplies ?? 0;
+      setCheckStatus(total > 0 ? `${total} new repl${total === 1 ? 'y' : 'ies'} found` : 'No new replies');
+      fetchMessages();
+      refreshNotifications();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        || (err instanceof Error ? err.message : 'Failed to check mailbox');
+      setCheckStatus(msg);
+    } finally {
+      setCheckingMailbox(false);
+      setTimeout(() => setCheckStatus(null), 4000);
+    }
+  }, [checkingMailbox, fetchMessages, refreshNotifications]);
 
   const openMessage = useCallback(async (msg: CampaignMessage) => {
     if (selectedId === msg.id) return;
@@ -269,19 +294,38 @@ export default function Inbox() {
       {/* Center — message list */}
       <div className="w-80 border-r border-slate-100 flex flex-col bg-[#f8f9fa] shrink-0 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-100 bg-white flex items-center justify-between">
-          <p className="text-xs font-extrabold uppercase tracking-wider text-secondary">
-            {loading ? 'Loading…' : `${messages.length} message${messages.length !== 1 ? 's' : ''}`}
+          <p className="text-xs font-extrabold uppercase tracking-wider text-secondary truncate">
+            {loading
+              ? 'Loading…'
+              : checkStatus
+                ? checkStatus
+                : `${messages.length} message${messages.length !== 1 ? 's' : ''}`}
           </p>
-          <button
-            onClick={fetchMessages}
-            disabled={loading}
-            className="text-secondary hover:text-[#b0004a] transition-colors disabled:opacity-40"
-            title="Refresh"
-          >
-            <span className={`material-symbols-outlined text-[16px] ${loading ? 'animate-spin' : ''}`}>
-              {loading ? 'progress_activity' : 'refresh'}
-            </span>
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {folder === 'replies' && (
+              <button
+                onClick={checkMailbox}
+                disabled={checkingMailbox || loading}
+                className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-secondary hover:text-[#b0004a] border border-slate-200 hover:border-[#b0004a]/40 rounded-md px-2 py-1 transition-colors disabled:opacity-40"
+                title="Poll Gmail + IMAP for new replies now (otherwise runs every 10 min in the background)"
+              >
+                <span className={`material-symbols-outlined text-[13px] ${checkingMailbox ? 'animate-spin' : ''}`}>
+                  {checkingMailbox ? 'progress_activity' : 'cloud_sync'}
+                </span>
+                {checkingMailbox ? 'Checking…' : 'Check Mailbox'}
+              </button>
+            )}
+            <button
+              onClick={fetchMessages}
+              disabled={loading}
+              className="text-secondary hover:text-[#b0004a] transition-colors disabled:opacity-40 p-1"
+              title="Refresh list"
+            >
+              <span className={`material-symbols-outlined text-[16px] ${loading ? 'animate-spin' : ''}`}>
+                {loading ? 'progress_activity' : 'refresh'}
+              </span>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
