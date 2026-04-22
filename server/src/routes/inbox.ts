@@ -8,9 +8,15 @@
  */
 
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
+import { ImapFlow } from 'imapflow';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
-import { fetchSmtpThread, searchImapThreadByEmail } from '../services/imap-thread-fetcher.js';
+import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache } from '../services/imap-thread-fetcher.js';
 import { renderAndSpin } from '../services/template-engine.js';
+import { applyTestMode } from '../services/test-mode.js';
+import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 
@@ -763,6 +769,334 @@ router.post('/mark-replies-read', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: message });
   }
 });
+
+// ── POST /api/inbox/reply/:campaignLeadId ─────────────────────────────────────
+// Send a direct reply on an existing outreach thread. Routes through the same
+// sender account that was attributed to the campaign send, preserves RFC822
+// threading (In-Reply-To + References) so Gmail/Titan groups the new message
+// with the original conversation, and — for SMTP accounts — appends the sent
+// copy to the mailbox's Sent folder so webmail mirrors it.
+//
+// Body: { body: string, subject?: string, includeQuote?: boolean }
+router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
+  const { campaignLeadId } = req.params;
+  const { body, subject: overrideSubject } = (req.body ?? {}) as { body?: string; subject?: string };
+
+  if (!body || typeof body !== 'string' || !body.trim()) {
+    res.status(400).json({ success: false, error: 'Reply body is required' });
+    return;
+  }
+
+  try {
+    const supabase = getSupabase();
+
+    const { data: cl, error: clErr } = await supabase
+      .from('campaign_leads')
+      .select(`
+        id, lead_id, campaign_id, sender_email, email_used, gmail_message_id, gmail_thread_id,
+        campaigns(template_subject, name),
+        leads(company_name, website_url, primary_email, category, country, star_rating)
+      `)
+      .eq('id', campaignLeadId)
+      .single();
+
+    if (clErr || !cl) {
+      res.status(404).json({ success: false, error: 'Campaign lead not found' });
+      return;
+    }
+    if (!cl.sender_email) {
+      res.status(400).json({ success: false, error: 'No sender account attributed to this send' });
+      return;
+    }
+    if (!cl.email_used) {
+      res.status(400).json({ success: false, error: 'No recipient email on this send' });
+      return;
+    }
+
+    const { data: acc, error: accErr } = await supabase
+      .from('email_accounts')
+      .select('email, auth_type, from_name, smtp_host, smtp_port, smtp_user, smtp_pass, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+      .eq('email', cl.sender_email)
+      .eq('status', 'active')
+      .single();
+
+    if (accErr || !acc) {
+      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found or inactive` });
+      return;
+    }
+
+    // Subject resolution: prefer explicit override → rendered campaign subject → fallback
+    const campaign = (Array.isArray(cl.campaigns) ? cl.campaigns[0] : cl.campaigns) as
+      | { template_subject?: string; name?: string }
+      | null;
+    const lead = (Array.isArray(cl.leads) ? cl.leads[0] : cl.leads) as Record<string, unknown> | null;
+
+    let subject = overrideSubject;
+    if (!subject) {
+      const tpl = campaign?.template_subject
+        ? renderAndSpin(campaign.template_subject, lead ?? {})
+        : (campaign?.name ?? 'your message');
+      subject = /^re:\s/i.test(tpl) ? tpl : `Re: ${tpl}`;
+    }
+
+    // Escape then linewrap — plain text composer body → HTML paragraphs
+    const escaped = body
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const htmlBody = escaped
+      .split(/\n\n+/)
+      .map((p) => `<p style="margin:0 0 12px;font-family:Arial,sans-serif;font-size:14px;line-height:1.5;">${p.replace(/\n/g, '<br>')}</p>`)
+      .join('');
+
+    // Apply test-mode redirect so Inbox replies respect the same safety net as campaigns
+    const testApplied = applyTestMode({ to: cl.email_used as string, subject, html: htmlBody });
+
+    const originalMsgId = (cl.gmail_message_id as string | null) ?? null;
+    const authType = acc.auth_type as string;
+
+    let result: { success: boolean; messageId?: string; error?: string };
+    if (authType === 'smtp' || authType === 'app_password') {
+      result = await sendSmtpReply({
+        account: acc as Record<string, unknown>,
+        to: testApplied.to,
+        subject: testApplied.subject,
+        html: testApplied.html,
+        inReplyTo: originalMsgId,
+        references: originalMsgId,
+      });
+    } else if (authType === 'gmail_oauth') {
+      result = await sendGmailReply({
+        account: acc as Record<string, unknown>,
+        to: testApplied.to,
+        subject: testApplied.subject,
+        html: testApplied.html,
+        inReplyTo: originalMsgId,
+        references: originalMsgId,
+        threadId: (cl.gmail_thread_id as string | null) ?? null,
+      });
+    } else {
+      res.status(400).json({ success: false, error: `Unsupported account auth_type: ${authType}` });
+      return;
+    }
+
+    if (!result.success) {
+      res.status(500).json({ success: false, error: result.error ?? 'Send failed' });
+      return;
+    }
+
+    // Invalidate the in-memory thread cache for this account so the next GET
+    // picks up the freshly-appended Sent copy instead of serving a 60-second
+    // stale snapshot.
+    invalidateThreadCache(cl.sender_email as string);
+
+    try {
+      await createNote(cl.lead_id as string, {
+        type: 'email_replied_manually',
+        content: `Manual reply sent via Inbox composer`,
+        metadata: {
+          campaign_id: cl.campaign_id,
+          to: testApplied.to,
+          subject: testApplied.subject,
+          message_id: result.messageId,
+          body_preview: body.slice(0, 200),
+          test_mode: config.testMode.enabled,
+        },
+      });
+    } catch (e) {
+      console.warn('[InboxReply] lead_note failed:', e instanceof Error ? e.message : e);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        messageId: result.messageId,
+        to: testApplied.to,
+        subject: testApplied.subject,
+        testMode: config.testMode.enabled,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[InboxReply] error:', message);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+function ensureAngles(id: string | null | undefined): string | null {
+  if (!id) return null;
+  const trimmed = id.trim().replace(/^<|>$/g, '');
+  return trimmed ? `<${trimmed}>` : null;
+}
+
+async function sendSmtpReply(params: {
+  account: Record<string, unknown>;
+  to: string;
+  subject: string;
+  html: string;
+  inReplyTo: string | null;
+  references: string | null;
+}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const acc = params.account;
+  const smtpHost = acc.smtp_host as string | null;
+  const smtpPort = (acc.smtp_port as number | null) ?? 587;
+  const smtpUser = (acc.smtp_user as string | null) ?? (acc.email as string);
+  const smtpPass = acc.smtp_pass as string | null;
+  const email = acc.email as string;
+  const fromName = (acc.from_name as string | null) ?? 'OptiRate';
+
+  if (!smtpHost || !smtpPass) {
+    return { success: false, error: 'SMTP credentials missing on sender account' };
+  }
+
+  const secure = smtpPort === 465;
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: smtpPort,
+    secure,
+    auth: { user: smtpUser, pass: smtpPass },
+  });
+
+  const hostPart = email.split('@')[1] || 'localhost';
+  const messageId = `<${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}@${hostPart}>`;
+
+  const headers: Record<string, string> = {};
+  const irt = ensureAngles(params.inReplyTo);
+  const refs = ensureAngles(params.references);
+  if (irt) headers['In-Reply-To'] = irt;
+  if (refs) headers['References'] = refs;
+
+  const mailOptions: nodemailer.SendMailOptions = {
+    from: `"${fromName}" <${email}>`,
+    to: params.to,
+    subject: params.subject,
+    html: params.html,
+    messageId,
+    headers,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+
+    const imapHost = acc.imap_host as string | null;
+    const imapUser = acc.imap_user as string | null;
+    const imapPass = acc.imap_pass as string | null;
+    if (imapHost && imapUser && imapPass) {
+      appendReplyToSent(
+        { imap_host: imapHost, imap_port: (acc.imap_port as number | null) ?? 993, imap_user: imapUser, imap_pass: imapPass },
+        mailOptions,
+        email,
+      ).catch((err) => console.warn(`[InboxReply→IMAP] append to Sent failed for ${email}:`, err instanceof Error ? err.message : err));
+    }
+
+    return { success: true, messageId };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function appendReplyToSent(
+  auth: { imap_host: string; imap_port: number; imap_user: string; imap_pass: string },
+  mailOptions: nodemailer.SendMailOptions,
+  email: string,
+): Promise<void> {
+  const raw = await new Promise<Buffer>((resolve, reject) => {
+    new MailComposer(mailOptions).compile().build((err, msg) => {
+      if (err) reject(err);
+      else resolve(msg);
+    });
+  });
+
+  const client = new ImapFlow({
+    host: auth.imap_host,
+    port: auth.imap_port,
+    secure: true,
+    auth: { user: auth.imap_user, pass: auth.imap_pass },
+    logger: false,
+    connectionTimeout: 10000,
+  });
+
+  try {
+    await client.connect();
+    const mailboxes = await client.list();
+    const sentBox =
+      mailboxes.find((b) => b.specialUse === '\\Sent') ??
+      mailboxes.find((b) => /^sent$/i.test(b.name)) ??
+      mailboxes.find((b) => /^sent.messages$/i.test(b.name)) ??
+      mailboxes.find((b) => /sent/i.test(b.name));
+    if (!sentBox) {
+      console.warn(`[InboxReply→IMAP] no Sent folder on ${auth.imap_host} for ${email}`);
+      return;
+    }
+    await client.append(sentBox.path, raw, ['\\Seen']);
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
+  }
+}
+
+async function sendGmailReply(params: {
+  account: Record<string, unknown>;
+  to: string;
+  subject: string;
+  html: string;
+  inReplyTo: string | null;
+  references: string | null;
+  threadId: string | null;
+}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const acc = params.account;
+  const clientId = (acc.gmail_client_id as string | null) ?? config.gmail?.clientId ?? null;
+  const clientSecret = (acc.gmail_client_secret as string | null) ?? config.gmail?.clientSecret ?? null;
+  const refreshToken = acc.gmail_refresh_token as string | null;
+  const email = acc.email as string;
+  const fromName = (acc.from_name as string | null) ?? 'OptiRate';
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    return { success: false, error: 'Gmail OAuth credentials missing on sender account' };
+  }
+
+  const gmail = createGmailClientFromCredentials(clientId, clientSecret, refreshToken);
+  const senderDomain = email.split('@')[1] || 'gmail.com';
+  const messageId = `<${crypto.randomUUID()}@${senderDomain}>`;
+
+  const headers: Record<string, string> = {
+    'List-Unsubscribe': `<mailto:${email}?subject=unsubscribe>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
+  const irt = ensureAngles(params.inReplyTo);
+  const refs = ensureAngles(params.references);
+  if (irt) headers['In-Reply-To'] = irt;
+  if (refs) headers['References'] = refs;
+
+  const mailOptions: Record<string, unknown> = {
+    from: `"${fromName}" <${email}>`,
+    to: params.to,
+    subject: params.subject,
+    html: params.html,
+    messageId,
+    headers,
+  };
+
+  try {
+    const raw = await new Promise<string>((resolve, reject) => {
+      new MailComposer(mailOptions).compile().build((err, msg) => {
+        if (err) return reject(err);
+        resolve(msg.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+      });
+    });
+
+    const body: Record<string, unknown> = { raw };
+    if (params.threadId) body.threadId = params.threadId;
+
+    await (gmail.users.messages.send as (args: Record<string, unknown>) => Promise<unknown>)({
+      userId: 'me',
+      requestBody: body,
+    });
+
+    return { success: true, messageId };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 // ── POST /api/inbox/mark-read — body: { messageId, account } ─────────────────
 router.post('/mark-read', async (req: Request, res: Response) => {

@@ -130,6 +130,21 @@ function getCachedThread(key: string): ThreadResult | null {
   return entry.result;
 }
 
+/** Drop one cached thread (or everything, if no key given). Called after a
+ * reply is sent so the freshly-appended Sent entry shows up on next fetch. */
+export function invalidateThreadCache(accountEmail?: string, outgoingMessageId?: string): void {
+  if (!accountEmail) {
+    threadCache.clear();
+    return;
+  }
+  if (!outgoingMessageId) {
+    const prefix = `${accountEmail.toLowerCase()}:`;
+    for (const k of threadCache.keys()) if (k.startsWith(prefix)) threadCache.delete(k);
+    return;
+  }
+  threadCache.delete(`${accountEmail.toLowerCase()}:${normalizeId(outgoingMessageId)}`);
+}
+
 function setCachedThread(key: string, result: ThreadResult): void {
   if (threadCache.size >= THREAD_CACHE_MAX) {
     // Evict expired entries first; if still at cap, drop oldest insertion

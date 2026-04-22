@@ -87,6 +87,11 @@ const STATUS_BADGE: Record<string, { label: string; classes: string }> = {
   pending:  { label: 'Pending',  classes: 'bg-surface-container text-secondary' },
 };
 
+// Muted variant for replied-AND-read rows: the status stays accurate but the
+// visual weight drops so the user can distinguish "new reply" from "already
+// read reply" at a glance — without losing the status label entirely.
+const REPLIED_READ_BADGE = { label: 'Replied', classes: 'bg-slate-100 text-slate-400' };
+
 export default function Inbox() {
   const searchParams = useSearchParams();
   const openParam = searchParams?.get('open') ?? null;
@@ -103,6 +108,12 @@ export default function Inbox() {
   const [checkingMailbox, setCheckingMailbox] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+  // Reply composer state — scoped to the currently-selected thread. Clears on
+  // thread change or successful send.
+  const [replyBody, setReplyBody] = useState('');
+  const [replySubject, setReplySubject] = useState('');
+  const [replySending, setReplySending] = useState(false);
+  const [replyStatus, setReplyStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   // Gmail-style: only the latest message in a thread is expanded by default.
   // Earlier messages collapse to one-liners (avatar + name + snippet + date)
@@ -124,6 +135,65 @@ export default function Inbox() {
       return next;
     });
   }, []);
+
+  // Reset composer when thread changes — a stale draft for one lead must never
+  // leak into another lead's compose pane. Pre-fill subject from the loaded
+  // thread (first message's subject, prefixed with Re: if needed).
+  useEffect(() => {
+    setReplyBody('');
+    setReplyStatus(null);
+    if (thread && thread.messages.length > 0) {
+      const s = thread.messages[0].subject || '';
+      setReplySubject(/^re:\s/i.test(s) ? s : `Re: ${s}`);
+    } else {
+      setReplySubject('');
+    }
+  }, [thread]);
+
+  const sendReply = useCallback(async () => {
+    if (!selectedMsg || replySending) return;
+    if (!replyBody.trim()) {
+      setReplyStatus({ kind: 'err', text: 'Reply body is empty' });
+      return;
+    }
+    setReplySending(true);
+    setReplyStatus(null);
+    try {
+      const res = await api.post(`/inbox/reply/${selectedMsg.id}`, {
+        body: replyBody,
+        subject: replySubject || undefined,
+      });
+      const data = res?.data?.data ?? {};
+      setReplyStatus({
+        kind: 'ok',
+        text: data.testMode
+          ? `Sent in test mode to ${data.to}`
+          : `Sent to ${data.to}`,
+      });
+      setReplyBody('');
+      // Re-pull the thread so the new outgoing message shows up immediately
+      // (backend invalidates its cache before we get here).
+      const gmail = selectedMsg.sender_auth_type === 'gmail_oauth' || selectedMsg.sender_auth_type === 'app_password';
+      const primaryUrl = gmail && selectedMsg.gmail_thread_id
+        ? `/inbox/thread/${selectedMsg.gmail_thread_id}`
+        : selectedMsg.sender_auth_type === 'smtp' && selectedMsg.gmail_message_id
+          ? `/inbox/thread-smtp/${selectedMsg.id}`
+          : null;
+      if (primaryUrl) {
+        try {
+          const refresh = await api.get(primaryUrl);
+          if (refresh.data?.data) setThread(refresh.data.data);
+        } catch { /* ignore — status banner already tells the user it sent */ }
+      }
+      setTimeout(() => setReplyStatus(null), 4000);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        || (err instanceof Error ? err.message : 'Failed to send reply');
+      setReplyStatus({ kind: 'err', text: msg });
+    } finally {
+      setReplySending(false);
+    }
+  }, [selectedMsg, replyBody, replySubject, replySending]);
 
   const { markRead, refresh: refreshNotifications } = useNotifications();
 
@@ -199,9 +269,16 @@ export default function Inbox() {
     setThreadError(null);
 
     // Mark as read locally AND in the DB so the badges update immediately.
+    // The awaited markRead posts to mark-replies-read; refreshNotifications
+    // forces a re-fetch of the sidebar + bell badge so the number drops even
+    // if the optimistic update and the 30s poll disagree.
     if (msg.status === 'replied' && !msg.reply_read_at) {
       setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, reply_read_at: new Date().toISOString() } : m));
-      markRead([msg.id]);
+      try {
+        await markRead([msg.id]);
+      } finally {
+        refreshNotifications();
+      }
     }
 
     const canTryGmail = isGmailAccount(msg.sender_auth_type) && !!msg.gmail_thread_id;
@@ -247,7 +324,7 @@ export default function Inbox() {
     } finally {
       setThreadLoading(false);
     }
-  }, [selectedId, markRead]);
+  }, [selectedId, markRead, refreshNotifications]);
 
   // Deeplink from TopBar notification click: ?open=<campaignLeadId>
   useEffect(() => {
@@ -379,8 +456,10 @@ export default function Inbox() {
           ) : (
             messages.map((msg) => {
               const isSelected = selectedId === msg.id;
-              const badge = STATUS_BADGE[msg.status] || STATUS_BADGE.sent;
               const isUnread = msg.status === 'replied' && !msg.reply_read_at;
+              const badge = msg.status === 'replied' && !isUnread
+                ? REPLIED_READ_BADGE
+                : STATUS_BADGE[msg.status] || STATUS_BADGE.sent;
               return (
                 <button
                   key={msg.id}
@@ -649,6 +728,74 @@ export default function Inbox() {
               className="w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"
               title="Drag to resize panel"
             />
+
+            {/* Right-side reply composer. Fills the remaining space. Always
+                visible when a thread is selected so follow-up haggling is
+                one keystroke away. */}
+            <div className="flex-1 flex flex-col bg-surface-container-lowest overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-secondary">
+                    Reply
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                    to {selectedMsg.email_used || '(unknown recipient)'} · from {selectedMsg.sender_email || '(unknown sender)'}
+                  </p>
+                </div>
+                {replyStatus && (
+                  <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${
+                    replyStatus.kind === 'ok'
+                      ? 'bg-[#8ff9a8]/30 text-[#006630]'
+                      : 'bg-red-50 text-error'
+                  }`}>
+                    {replyStatus.text}
+                  </span>
+                )}
+              </div>
+
+              <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2">
+                <span className="text-[11px] font-bold text-secondary uppercase tracking-wider w-14 flex-shrink-0">Subject</span>
+                <input
+                  type="text"
+                  value={replySubject}
+                  onChange={(e) => setReplySubject(e.target.value)}
+                  placeholder="Re: …"
+                  className="flex-1 text-xs bg-transparent outline-none border-0 text-on-surface placeholder:text-slate-400"
+                />
+              </div>
+
+              <textarea
+                value={replyBody}
+                onChange={(e) => setReplyBody(e.target.value)}
+                placeholder="Write your reply…"
+                disabled={replySending}
+                className="flex-1 px-5 py-4 text-sm text-on-surface bg-transparent outline-none border-0 resize-none placeholder:text-slate-400 disabled:opacity-50"
+                style={{ fontFamily: 'Arial, sans-serif', lineHeight: '1.5' }}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    sendReply();
+                  }
+                }}
+              />
+
+              <div className="border-t border-slate-100 px-5 py-3 flex items-center justify-between gap-3">
+                <p className="text-[10px] text-slate-400">
+                  <span className="font-bold">⌘/Ctrl + Enter</span> to send
+                </p>
+                <button
+                  type="button"
+                  onClick={sendReply}
+                  disabled={replySending || !replyBody.trim()}
+                  className="flex items-center gap-1.5 text-xs font-extrabold text-white bg-[#b0004a] hover:bg-[#8a003a] rounded-lg px-4 py-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span className={`material-symbols-outlined text-[15px] ${replySending ? 'animate-spin' : ''}`}>
+                    {replySending ? 'progress_activity' : 'send'}
+                  </span>
+                  {replySending ? 'Sending…' : 'Send Reply'}
+                </button>
+              </div>
+            </div>
           </>
         )}
       </div>
