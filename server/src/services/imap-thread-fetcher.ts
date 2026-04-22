@@ -79,30 +79,68 @@ function plainToHtml(plain: string): string {
  * inline attachments. Browsers can't resolve `cid:` (that only works inside
  * email clients), so without this the screenshots embedded in OptiRate
  * outreach templates render as broken images in the Inbox viewer.
- * Non-matching cid refs are left untouched.
+ *
+ * Mailparser's attachment objects expose the Content-ID either as `contentId`
+ * or (in older builds) as `cid` — we accept both. Also falls back to matching
+ * by filename when the CID map is empty but the HTML references cid: names
+ * that look like attachment filenames.
  */
 function inlineCidAttachments(
   html: string,
-  attachments: Array<{ contentId?: string; content?: unknown; contentType?: string }>,
+  attachments: Array<{ contentId?: string; cid?: string; filename?: string; content?: unknown; contentType?: string }>,
 ): string {
   if (!html || !attachments || attachments.length === 0) return html;
   const cidMap = new Map<string, string>();
   for (const att of attachments) {
-    const rawCid = att.contentId;
-    if (!rawCid || !att.content) continue;
-    const cid = rawCid.replace(/^<|>$/g, '').trim().toLowerCase();
-    if (!cid) continue;
+    const rawCid = att.contentId || att.cid;
+    if (!att.content) continue;
+    const keys: string[] = [];
+    if (rawCid) keys.push(rawCid.replace(/^<|>$/g, '').trim().toLowerCase());
+    if (att.filename) keys.push(att.filename.trim().toLowerCase());
+    if (keys.length === 0) continue;
     const ct = att.contentType || 'application/octet-stream';
     const buf = Buffer.isBuffer(att.content)
       ? att.content
       : Buffer.from(att.content as ArrayBufferLike);
-    cidMap.set(cid, `data:${ct};base64,${buf.toString('base64')}`);
+    const dataUri = `data:${ct};base64,${buf.toString('base64')}`;
+    for (const k of keys) if (k) cidMap.set(k, dataUri);
   }
   if (cidMap.size === 0) return html;
   return html.replace(/src=(["'])cid:([^"']+)\1/gi, (match, quote, cid) => {
     const dataUri = cidMap.get(cid.trim().toLowerCase());
     return dataUri ? `src=${quote}${dataUri}${quote}` : match;
   });
+}
+
+// In-memory thread cache: 60s TTL per (account, outgoingMessageId). Most user
+// flows click a thread, read, then move on — occasional re-clicks should not
+// re-run the full IMAP sequence. Cap size at 200 entries; oldest purged when
+// the cap is hit.
+const threadCache = new Map<string, { result: ThreadResult; expiresAt: number }>();
+const THREAD_CACHE_TTL_MS = 60 * 1000;
+const THREAD_CACHE_MAX = 200;
+
+function getCachedThread(key: string): ThreadResult | null {
+  const entry = threadCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    threadCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCachedThread(key: string, result: ThreadResult): void {
+  if (threadCache.size >= THREAD_CACHE_MAX) {
+    // Evict expired entries first; if still at cap, drop oldest insertion
+    const now = Date.now();
+    for (const [k, v] of threadCache) if (v.expiresAt < now) threadCache.delete(k);
+    if (threadCache.size >= THREAD_CACHE_MAX) {
+      const firstKey = threadCache.keys().next().value;
+      if (firstKey) threadCache.delete(firstKey);
+    }
+  }
+  threadCache.set(key, { result, expiresAt: Date.now() + THREAD_CACHE_TTL_MS });
 }
 
 interface CollectedMessage {
@@ -133,10 +171,20 @@ export async function fetchSmtpThread(
   auth: ImapAuth,
   outgoingMessageId: string,
   accountEmail: string,
+  leadEmail?: string,
 ): Promise<ThreadResult | null> {
   const target = normalizeId(outgoingMessageId);
   if (!target) return null;
   const targetWithAngles = `<${target}>`;
+
+  // Serve from in-memory cache when hot (60s TTL). Key scopes by account so
+  // two accounts with the same Message-ID (extremely rare) still get isolated
+  // results. Leademail doesn't factor in because the thread content is the
+  // same regardless — the lead email only gates the FROM fallback path,
+  // which populates the same ThreadResult shape.
+  const cacheKey = `${accountEmail.toLowerCase()}:${target}`;
+  const cached = getCachedThread(cacheKey);
+  if (cached) return cached;
 
   const client = new ImapFlow({
     host: auth.imap_host,
@@ -273,6 +321,61 @@ export async function fetchSmtpThread(
       if (collected.length === sizeBefore) break;  // no new messages — stop
     }
 
+    // FROM-based reply fallback: Gmail IMAP's HEADER References index can be
+    // lazy and mail clients don't always preserve References on reply. When
+    // the References search finds our outgoing copy but no inbound reply,
+    // scan INBOX + All Mail for any message FROM the lead address within the
+    // last 30 days — this is the same strategy reply-tracker.imap.ts uses
+    // successfully to flip status='replied', so it's the proven detection
+    // path. Only runs when we have a leadEmail and found no inbound yet.
+    if (leadEmail) {
+      const leadAddr = leadEmail.toLowerCase();
+      const accountAddr = accountEmail.toLowerCase();
+      const hasInbound = collected.some((c) => {
+        // Cheap check: if the folder is INBOX, it's inbound by definition.
+        // For All Mail, inspect the raw headers for a From: != our account.
+        if (/inbox/i.test(c.folder)) return true;
+        return false;
+      });
+      if (!hasInbound) {
+        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const inboundPaths = scanPaths.filter(p => !/sent/i.test(p));
+        for (const path of inboundPaths) {
+          try {
+            const lock = await client.getMailboxLock(path);
+            try {
+              const uids = (await client.search({ from: leadAddr, since })) || [];
+              const list = Array.isArray(uids) ? uids : [];
+              if (list.length === 0) continue;
+              for await (const msg of client.fetch(list, { envelope: true, uid: true, flags: true, source: true })) {
+                if (!msg.source) continue;
+                const fromAddr = msg.envelope?.from?.[0]?.address?.toLowerCase() ?? '';
+                if (fromAddr === accountAddr) continue;  // skip our own sends
+                const messageId = normalizeId(msg.envelope?.messageId);
+                if (messageId && seenMessageIds.has(messageId)) continue;
+                if (messageId) seenMessageIds.add(messageId);
+                collected.push({
+                  uid: msg.uid!,
+                  folder: path,
+                  messageId,
+                  inReplyTo: '',
+                  references: [],
+                  envelopeSubject: msg.envelope?.subject ?? '',
+                  envelopeDate: msg.envelope?.date ?? null,
+                  unread: !msg.flags?.has('\\Seen'),
+                  raw: msg.source as Buffer,
+                });
+              }
+            } finally {
+              lock.release();
+            }
+          } catch (e) {
+            console.warn(`[ImapThreadFetcher] FROM-fallback search failed on ${path}:`, e instanceof Error ? e.message : e);
+          }
+        }
+      }
+    }
+
     // Hack for the very first seed: if Message-ID header search missed our
     // outgoing message (some servers normalize angle brackets differently),
     // try a direct lookup in Sent by the literal ID without angles.
@@ -334,7 +437,9 @@ export async function fetchSmtpThread(
 
     messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    return { threadId: target, messages, senderAccount: accountEmail };
+    const result = { threadId: target, messages, senderAccount: accountEmail };
+    setCachedThread(cacheKey, result);
+    return result;
   } catch (err) {
     console.error(`[ImapThreadFetcher] ${accountEmail} error:`, err instanceof Error ? err.message : err);
     return null;
