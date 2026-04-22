@@ -148,13 +148,16 @@ interface Props {
   jobId?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
+  /** Authoritative DB-derived counters from the jobs poll — fallback when SSE events
+   *  don't arrive (e.g. Google API Gateway dropping server-sent events). */
+  liveJob?: { total_found: number; total_scraped: number } | null;
   onCancel?: () => void;
   onRetryFailed?: () => void;
 }
 
 export default function ScrapeProgress({
   status, progress, error, failedCount = 0,
-  startedAt, completedAt,
+  startedAt, completedAt, liveJob,
   onCancel, onRetryFailed,
 }: Props) {
   const [cancelling, setCancelling] = useState(false);
@@ -181,8 +184,15 @@ export default function ScrapeProgress({
 
   const activePhase = getActivePhase(progress);
   const completedPhases = getCompletedPhases(progress);
-  const fraction = parseProgressFraction(progress);
   const summary = parseSummary(progress);
+
+  // Prefer fine-grained SSE fraction; fall back to the jobs-poll counters so the
+  // progress bar still ticks up even when server-sent events aren't flowing.
+  const sseFraction = parseProgressFraction(progress);
+  const pollFraction = (!sseFraction && liveJob && liveJob.total_found > 0 && liveJob.total_scraped > 0)
+    ? { current: liveJob.total_scraped, total: liveJob.total_found }
+    : null;
+  const fraction = sseFraction ?? pollFraction;
 
   // Elapsed + ETA. ETA is only meaningful once the profile phase has real
   // per-item progress; before that we can't extrapolate honestly.

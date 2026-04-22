@@ -155,6 +155,10 @@ export default function Scrape() {
             jobId={jobId}
             startedAt={jobId ? jobs.find((j) => j.id === jobId)?.started_at ?? null : null}
             completedAt={jobId ? jobs.find((j) => j.id === jobId)?.completed_at ?? null : null}
+            liveJob={jobId ? (() => {
+              const j = jobs.find((jj) => jj.id === jobId);
+              return j ? { total_found: j.total_found, total_scraped: j.total_scraped } : null;
+            })() : null}
             onCancel={jobId ? () => cancelJob(jobId) : undefined}
             onRetryFailed={jobId ? () => retryFailed(jobId) : undefined}
           />

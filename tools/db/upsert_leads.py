@@ -66,18 +66,20 @@ def upload_screenshot_to_storage(local_path: str) -> str | None:
 
 
 def normalize_screenshot_path(raw_path: str | None) -> str | None:
-    """Convert a raw screenshot_path into a persistent public URL.
+    """Convert a raw screenshot_path into something safe to store.
+
     - Already http(s) URL → returned as-is
-    - Local file path with existing file → uploaded to Storage, returns public URL
-    - Local file path with missing file → None (don't write stale paths)
+    - Local /app/.tmp/ path → returned as-is (TypeScript uploadScreenshotsToStorage
+      in scrape-runner.ts uploads all screenshots in one batch AFTER the profile
+      scrape finishes and rewrites each row's screenshot_path to the public URL).
+      Doing the upload here too would re-upload every file on every partial
+      save and pile up the 20s partial-upsert loop, which is why live
+      `total_scraped` wasn't ticking up during the scrape.
     - None / empty → None
     """
     if not raw_path:
         return None
-    if raw_path.startswith('http://') or raw_path.startswith('https://'):
-        return raw_path
-    # Local path — upload if file exists, otherwise drop
-    return upload_screenshot_to_storage(raw_path)
+    return raw_path
 
 
 def upsert_leads(leads: list[dict]) -> int:
