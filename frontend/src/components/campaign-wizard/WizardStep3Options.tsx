@@ -60,10 +60,20 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
     set('days', days);
   };
 
-  const startIdx = HOURS.indexOf(schedule.startHour);
-  const endIdx   = HOURS.indexOf(schedule.endHour);
-  const hoursPerDay = endIdx > startIdx ? endIdx - startIdx : 0;
-  const estimatedPerDay = Math.min(schedule.dailyLimit, hoursPerDay * 3);
+  const toMinutes = (hhmm: string) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const windowMinutes = Math.max(0, toMinutes(schedule.endHour) - toMinutes(schedule.startHour));
+  const hoursPerDay   = windowMinutes / 60;
+  const estimatedPerDay = Math.min(schedule.dailyLimit, Math.max(1, Math.floor(hoursPerDay * 3)));
+  const is247 =
+    schedule.startHour === '00:00' &&
+    schedule.endHour   === '23:59' &&
+    schedule.days.length === 7;
+
+  const enable247 = () =>
+    onScheduleChange({ ...schedule, startHour: '00:00', endHour: '23:59', days: [0, 1, 2, 3, 4, 5, 6] });
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-10">
@@ -228,9 +238,22 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
 
               {/* Time window */}
               <div>
-                <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
-                  Sending Window
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-extrabold text-secondary uppercase tracking-wider">
+                    Sending Window
+                  </label>
+                  <button
+                    type="button"
+                    onClick={enable247}
+                    className={`text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg transition-all ${
+                      is247
+                        ? 'primary-gradient text-on-primary ambient-shadow'
+                        : 'bg-surface-container text-secondary hover:bg-surface-container-high'
+                    }`}
+                  >
+                    {is247 ? '✓ 24/7' : 'Send 24/7'}
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <p className="text-[10px] text-secondary font-semibold mb-1">From</p>

@@ -131,23 +131,42 @@ export function assignScheduledTimes(
       continue;
     }
 
-    // How many emails can we fit today with at least MIN_GAP_MINUTES between each?
-    // 20 min minimum → sends look human-paced and don't trip spam filters that flag
-    // bursts. With a 24h window and 50 leads, that still leaves ~28 min slots on average.
-    const MIN_GAP_MINUTES = 20;
+    // Ideal spacing: 20 min between sends → human-paced, avoids spam-filter bursts.
+    // But when a user hits Send mid-window (e.g. 4:41pm on a 4-5pm campaign),
+    // the remaining window may be too short for 20-min gaps. In that case,
+    // shrink the gap down to MIN_ACCEPTABLE_GAP_MINUTES so today's batch fits
+    // today instead of spilling a week out.
+    const IDEAL_GAP_MINUTES = 20;
+    const MIN_ACCEPTABLE_GAP_MINUTES = 2;
     const rawBatchSize = Math.min(remaining, dailyLimit);
-    const batchSize = effectiveWindowMinutes >= rawBatchSize * MIN_GAP_MINUTES
-      ? rawBatchSize
-      : Math.max(1, Math.floor(effectiveWindowMinutes / MIN_GAP_MINUTES));
+
+    let batchSize: number;
+    let gapMinutes: number;
+    if (effectiveWindowMinutes >= rawBatchSize * IDEAL_GAP_MINUTES) {
+      // Plenty of room — use the ideal cadence
+      batchSize  = rawBatchSize;
+      gapMinutes = IDEAL_GAP_MINUTES;
+    } else {
+      // Window is tight for the ideal gap. Try to fit everything at a smaller gap.
+      const gapIfAllFit = Math.floor(effectiveWindowMinutes / rawBatchSize);
+      if (gapIfAllFit >= MIN_ACCEPTABLE_GAP_MINUTES) {
+        batchSize  = rawBatchSize;
+        gapMinutes = gapIfAllFit;
+      } else {
+        // Still too tight even at the floor — fit as many as possible at the floor,
+        // the rest spill to the next allowed day.
+        batchSize  = Math.max(1, Math.floor(effectiveWindowMinutes / MIN_ACCEPTABLE_GAP_MINUTES));
+        gapMinutes = MIN_ACCEPTABLE_GAP_MINUTES;
+      }
+    }
 
     // Randomised spread: divide the window into batchSize equal segments, then
     // pick a UNIFORMLY RANDOM minute inside each segment (clamped so adjacent
-    // segments always honour MIN_GAP_MINUTES). This looks nothing like a cron
+    // segments always honour gapMinutes). This looks nothing like a cron
     // cadence — the gap between two consecutive emails can be anywhere from
-    // MIN_GAP_MINUTES up to nearly 2× the segment size.
-    // e.g. 50 emails / 24h window → ~28 min segments, actual gaps range 20–56 min.
+    // gapMinutes up to nearly 2× the segment size.
     const segmentSize = Math.floor(effectiveWindowMinutes / batchSize);
-    const guardMinutes = Math.min(Math.floor(MIN_GAP_MINUTES / 2), Math.floor(segmentSize / 4));
+    const guardMinutes = Math.min(Math.floor(gapMinutes / 2), Math.floor(segmentSize / 4));
     for (let i = 0; i < batchSize; i++) {
       const segmentStart = i * segmentSize;
       const segmentEnd   = i === batchSize - 1 ? effectiveWindowMinutes : segmentStart + segmentSize;
