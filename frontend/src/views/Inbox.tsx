@@ -102,6 +102,28 @@ export default function Inbox() {
   const [error, setError] = useState<string | null>(null);
   const [checkingMailbox, setCheckingMailbox] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
+  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+
+  // Gmail-style: only the latest message in a thread is expanded by default.
+  // Earlier messages collapse to one-liners (avatar + name + snippet + date)
+  // and expand on click. Resets whenever the thread changes.
+  useEffect(() => {
+    if (thread && thread.messages.length > 0) {
+      const latest = thread.messages[thread.messages.length - 1];
+      setExpandedMsgIds(new Set([latest.id]));
+    } else {
+      setExpandedMsgIds(new Set());
+    }
+  }, [thread]);
+
+  const toggleMsgExpanded = useCallback((id: string) => {
+    setExpandedMsgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const { markRead, refresh: refreshNotifications } = useNotifications();
 
@@ -461,36 +483,64 @@ export default function Inbox() {
                 </div>
               ) : thread && thread.messages.length > 0 ? (
                 <div>
-                  {thread.messages.map((msg, idx) => {
+                  {/* Subject shown once at the top of the thread */}
+                  <div className="px-5 pt-4 pb-3 border-b border-slate-100">
+                    <p className="text-sm font-bold text-on-surface leading-snug">
+                      {thread.messages[0].subject}
+                    </p>
+                  </div>
+                  {thread.messages.map((msg) => {
                     const { name: fromName, email: fromEmail } = parseDisplayName(msg.from);
+                    const isExpanded = expandedMsgIds.has(msg.id);
+                    const displayName = fromName || fromEmail;
+                    const senderAccount = thread.senderAccount?.toLowerCase() || '';
+                    const isOutgoing = senderAccount !== '' && fromEmail.toLowerCase() === senderAccount;
                     return (
-                      <div key={msg.id} className={idx > 0 ? 'border-t border-slate-100' : ''}>
-                        {idx === 0 ? (
-                          <div className="px-5 pt-4 pb-2">
-                            <p className="text-sm font-bold text-on-surface leading-snug">{msg.subject}</p>
+                      <div key={msg.id} className="border-b border-slate-100 last:border-b-0">
+                        <button
+                          type="button"
+                          onClick={() => toggleMsgExpanded(msg.id)}
+                          className={`w-full flex items-center gap-2 px-5 py-3 text-left transition-colors ${
+                            isExpanded ? 'bg-white' : 'bg-[#f8f9fa] hover:bg-slate-100'
+                          }`}
+                        >
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0 ${
+                            isOutgoing ? 'bg-blue-50 text-blue-700' : 'bg-[#ffd9de] text-[#b0004a]'
+                          }`}>
+                            {displayName.charAt(0).toUpperCase()}
                           </div>
-                        ) : (
-                          <div className="px-5 pt-4 pb-2 flex items-center gap-2">
-                            <div className="w-6 h-6 rounded-full bg-[#ffd9de] flex items-center justify-center text-[#b0004a] text-[10px] font-bold flex-shrink-0">
-                              {(fromName || fromEmail).charAt(0).toUpperCase()}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-xs font-bold text-on-surface truncate">
+                                {isOutgoing ? 'me' : displayName}
+                              </p>
+                              {isOutgoing && (
+                                <span className="text-[9px] text-slate-400 font-semibold truncate">&lt;{fromEmail}&gt;</span>
+                              )}
                             </div>
-                            <p className="text-xs font-bold text-on-surface flex-1 truncate">{fromName || fromEmail}</p>
-                            <span className="text-[10px] text-slate-400 flex-shrink-0">
-                              {new Date(msg.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                            </span>
+                            {!isExpanded && (
+                              <p className="text-[11px] text-secondary truncate mt-0.5">
+                                {msg.snippet || '(no preview)'}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-400 flex-shrink-0">
+                            {new Date(msg.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          </span>
+                        </button>
+                        {isExpanded && (
+                          <div className="px-5 pb-4 bg-white">
+                            {msg.body ? (
+                              <div
+                                className="email-body text-secondary text-xs overflow-auto"
+                                style={{ maxHeight: '400px' }}
+                                dangerouslySetInnerHTML={{ __html: msg.bodyType === 'html' ? msg.body : msg.body.replace(/\n/g, '<br>') }}
+                              />
+                            ) : (
+                              <p className="text-xs text-secondary italic">{msg.snippet}</p>
+                            )}
                           </div>
                         )}
-                        <div className="px-5 pb-4">
-                          {msg.body ? (
-                            <div
-                              className="email-body text-secondary text-xs overflow-auto"
-                              style={{ maxHeight: idx === 0 ? '240px' : '160px' }}
-                              dangerouslySetInnerHTML={{ __html: msg.bodyType === 'html' ? msg.body : msg.body.replace(/\n/g, '<br>') }}
-                            />
-                          ) : (
-                            <p className="text-xs text-secondary italic">{msg.snippet}</p>
-                          )}
-                        </div>
                       </div>
                     );
                   })}
