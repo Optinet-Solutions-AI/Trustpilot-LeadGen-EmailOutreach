@@ -9,7 +9,7 @@
 
 import { Router, Request, Response } from 'express';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
-import { fetchSmtpThread } from '../services/imap-thread-fetcher.js';
+import { fetchSmtpThread, searchImapThreadByEmail } from '../services/imap-thread-fetcher.js';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 
@@ -444,6 +444,119 @@ router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) =
     }
 
     res.json({ success: true, data: thread });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── GET /api/inbox/search-thread/:campaignLeadId ──────────────────────────────
+// Universal fallback for rows that lack the IDs we need for the dedicated
+// endpoints: no gmail_thread_id (so /thread/:threadId can't run) and/or no
+// sender_email (so /thread-smtp/:id can't resolve an account). Scans every
+// connected Gmail inbox + Sent and every IMAP/SMTP account for any message
+// to or from the lead's email address, returns the most recent thread we can
+// reconstruct. Handles the "legacy send before attribution existed" case.
+router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response) => {
+  const { campaignLeadId } = req.params;
+
+  try {
+    const supabase = getSupabase();
+    const { data: cl, error: clErr } = await supabase
+      .from('campaign_leads')
+      .select('id, email_used, lead_id, sender_email')
+      .eq('id', campaignLeadId)
+      .single();
+
+    if (clErr || !cl) {
+      res.status(404).json({ success: false, error: 'Campaign lead not found' });
+      return;
+    }
+
+    // Prefer email_used (what we actually sent to); fall back to lead primary email
+    let leadEmail = (cl.email_used as string | null)?.toLowerCase() ?? '';
+    if (!leadEmail) {
+      const { data: lead } = await supabase
+        .from('leads')
+        .select('primary_email, website_email, trustpilot_email')
+        .eq('id', cl.lead_id)
+        .single();
+      leadEmail = (lead?.primary_email || lead?.website_email || lead?.trustpilot_email || '').toLowerCase();
+    }
+
+    if (!leadEmail) {
+      res.status(400).json({ success: false, error: 'No email address recorded for this lead' });
+      return;
+    }
+
+    // 1) Try every connected Gmail account
+    const gmailClients = await getAllConnectedGmailClients();
+    for (const { email, gmail } of gmailClients) {
+      try {
+        const q = `from:${leadEmail} OR to:${leadEmail}`;
+        const listRes = await gmail.users.threads.list({ userId: 'me', q, maxResults: 1 });
+        const threadId = listRes.data.threads?.[0]?.id;
+        if (!threadId) continue;
+
+        const threadRes = await (gmail.users.threads.get as (params: Record<string, unknown>) => Promise<{ data: any }>)({
+          userId: 'me',
+          id: threadId,
+          format: 'full',
+        });
+
+        const messages = ((threadRes.data.messages ?? []) as any[]).map((msg: any) => {
+          const headers = (msg.payload?.headers ?? []) as { name: string; value: string }[];
+          const { html, plain } = extractBody(msg.payload);
+          return {
+            id: msg.id,
+            threadId: msg.threadId,
+            from: parseHeader(headers, 'From'),
+            to: parseHeader(headers, 'To'),
+            subject: parseHeader(headers, 'Subject'),
+            date: parseHeader(headers, 'Date'),
+            snippet: msg.snippet ?? '',
+            body: html || plain,
+            bodyType: html ? 'html' : 'plain',
+            unread: (msg.labelIds ?? []).includes('UNREAD'),
+            labels: msg.labelIds ?? [],
+          };
+        });
+
+        res.json({ success: true, data: { threadId, messages, senderAccount: email } });
+        return;
+      } catch (e) {
+        console.warn(`[search-thread] Gmail miss on ${email}:`, e instanceof Error ? e.message : e);
+      }
+    }
+
+    // 2) Try every connected IMAP/SMTP account
+    const { data: imapAccounts } = await supabase
+      .from('email_accounts')
+      .select('email, imap_host, imap_port, imap_user, imap_pass')
+      .eq('auth_type', 'smtp')
+      .eq('status', 'active')
+      .not('imap_host', 'is', null)
+      .not('imap_user', 'is', null)
+      .not('imap_pass', 'is', null);
+
+    for (const acc of imapAccounts ?? []) {
+      const thread = await searchImapThreadByEmail(
+        {
+          imap_host: acc.imap_host,
+          imap_port: acc.imap_port ?? 993,
+          imap_user: acc.imap_user,
+          imap_pass: acc.imap_pass,
+        },
+        leadEmail,
+        acc.email,
+      );
+      if (thread && thread.messages.length > 0) {
+        res.json({ success: true, data: thread });
+        return;
+      }
+    }
+
+    res.status(404).json({ success: false, error: `No thread found for ${leadEmail} in any connected mailbox` });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

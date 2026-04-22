@@ -250,3 +250,117 @@ function matchHeader(rawHeaders: string, name: string): string {
   const m = rawHeaders.match(rx);
   return m ? m[1].replace(/\r?\n\s+/g, ' ').trim() : '';
 }
+
+/**
+ * Fallback when we don't have a Message-ID for the original send (legacy rows
+ * with null gmail_message_id). Scans Sent + INBOX for any message to/from the
+ * given email address within the last 180 days, returns whatever conversation
+ * we can find — best effort.
+ */
+export async function searchImapThreadByEmail(
+  auth: ImapAuth,
+  leadEmail: string,
+  accountEmail: string,
+): Promise<ThreadResult | null> {
+  const target = leadEmail.toLowerCase();
+  if (!target) return null;
+
+  const client = new ImapFlow({
+    host: auth.imap_host,
+    port: auth.imap_port,
+    secure: true,
+    auth: { user: auth.imap_user, pass: auth.imap_pass },
+    logger: false,
+    connectionTimeout: 15000,
+  });
+
+  let connected = false;
+  try {
+    await client.connect();
+    connected = true;
+
+    const mailboxes = await client.list();
+    const sentBox =
+      mailboxes.find(b => b.specialUse === '\\Sent') ??
+      mailboxes.find(b => /^sent$/i.test(b.name)) ??
+      mailboxes.find(b => /^sent.messages$/i.test(b.name)) ??
+      mailboxes.find(b => /^sent.items$/i.test(b.name)) ??
+      mailboxes.find(b => /sent/i.test(b.name));
+    const inboxBox = mailboxes.find(b => /^inbox$/i.test(b.name)) ?? { path: 'INBOX' };
+
+    const scanPaths = Array.from(new Set([sentBox?.path, inboxBox.path].filter(Boolean))) as string[];
+
+    const collected: CollectedMessage[] = [];
+    const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+
+    for (const path of scanPaths) {
+      const lock = await client.getMailboxLock(path);
+      try {
+        // IMAP SEARCH: messages where FROM or TO contains the target address.
+        // Both terms are OR'd and scoped to the time window.
+        const fromMatches = (await client.search({ from: target, since })) || [];
+        const toMatches = (await client.search({ to: target, since })) || [];
+        const uids = Array.from(new Set<number>([
+          ...(Array.isArray(fromMatches) ? fromMatches : []),
+          ...(Array.isArray(toMatches) ? toMatches : []),
+        ]));
+        if (uids.length === 0) continue;
+
+        for await (const msg of client.fetch(uids, { envelope: true, uid: true, flags: true, source: true })) {
+          if (!msg.source) continue;
+          const messageId = normalizeId(msg.envelope?.messageId);
+          collected.push({
+            uid: msg.uid!,
+            folder: path,
+            messageId,
+            inReplyTo: '',
+            references: [],
+            envelopeSubject: msg.envelope?.subject ?? '',
+            envelopeDate: msg.envelope?.date ?? null,
+            unread: !msg.flags?.has('\\Seen'),
+            raw: msg.source as Buffer,
+          });
+        }
+      } finally {
+        lock.release();
+      }
+    }
+
+    if (collected.length === 0) return null;
+
+    const messages: ThreadMessage[] = [];
+    for (const c of collected) {
+      const parsed = await simpleParser(c.raw, { skipImageLinks: false, skipHtmlToText: false });
+      const html = parsed.html ? stripBodyWrapper(parsed.html) : (parsed.textAsHtml ?? '');
+      const plain = parsed.text ?? '';
+      const body = html || plainToHtml(plain);
+      const fromAddr = parsed.from?.text ?? '';
+      const toAddr = Array.isArray(parsed.to) ? parsed.to.map(t => t.text).join(', ') : parsed.to?.text ?? '';
+
+      messages.push({
+        id: c.messageId || `${c.folder}:${c.uid}`,
+        threadId: target,
+        from: fromAddr,
+        to: toAddr,
+        subject: parsed.subject ?? c.envelopeSubject,
+        date: (parsed.date ?? c.envelopeDate ?? new Date()).toISOString(),
+        snippet: htmlToSnippet(body, plain),
+        body,
+        bodyType: html ? 'html' : 'plain',
+        unread: c.unread,
+        labels: [c.folder],
+      });
+    }
+
+    messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    return { threadId: target, messages, senderAccount: accountEmail };
+  } catch (err) {
+    console.error(`[ImapThreadFetcher:search] ${accountEmail} error:`, err instanceof Error ? err.message : err);
+    return null;
+  } finally {
+    if (connected) {
+      try { await client.logout(); } catch { /* ignore */ }
+    }
+  }
+}

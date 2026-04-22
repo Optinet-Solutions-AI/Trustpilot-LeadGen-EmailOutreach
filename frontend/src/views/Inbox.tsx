@@ -156,18 +156,34 @@ export default function Inbox() {
       markRead([msg.id]);
     }
 
+    // Pick the most specific endpoint first, then fall back to the universal
+    // email-based search if the row lacks the IDs needed for the fast paths.
+    // This covers legacy sends where sender_email / gmail_thread_id are null.
     const canTryGmail = isGmailAccount(msg.sender_auth_type) && !!msg.gmail_thread_id;
     const canTrySmtp = isSmtpAccount(msg.sender_auth_type) && !!msg.gmail_message_id;
-
-    if (!canTryGmail && !canTrySmtp) return; // Nothing to load
+    const primaryUrl = canTryGmail
+      ? `/inbox/thread/${msg.gmail_thread_id}`
+      : canTrySmtp
+        ? `/inbox/thread-smtp/${msg.id}`
+        : null;
+    const fallbackUrl = `/inbox/search-thread/${msg.id}`;
 
     setThreadLoading(true);
     try {
-      const url = canTryGmail
-        ? `/inbox/thread/${msg.gmail_thread_id}`
-        : `/inbox/thread-smtp/${msg.id}`;
-      const res = await api.get(url);
-      setThread(res.data.data);
+      let data = null;
+      if (primaryUrl) {
+        try {
+          const res = await api.get(primaryUrl);
+          data = res.data.data;
+        } catch {
+          // Primary miss — try the universal fallback below
+        }
+      }
+      if (!data) {
+        const res = await api.get(fallbackUrl);
+        data = res.data.data;
+      }
+      setThread(data);
     } catch (err: unknown) {
       const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
         || (err instanceof Error ? err.message : 'Failed to load thread');
