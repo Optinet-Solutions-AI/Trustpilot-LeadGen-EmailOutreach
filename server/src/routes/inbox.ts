@@ -1161,6 +1161,13 @@ async function sendSmtpReply(params: {
   // multiple IDs into a single malformed "<A B>" wrapper).
   if (irt) headers['In-Reply-To'] = irt;
   if (params.references) headers['References'] = params.references;
+  console.log('[InboxReply][SMTP] outbound headers:', JSON.stringify({
+    messageId,
+    inReplyTo: headers['In-Reply-To'] ?? null,
+    references: headers['References'] ?? null,
+    to: params.to,
+    subject: params.subject,
+  }));
 
   const mailOptions: nodemailer.SendMailOptions = {
     from: `"${fromName}" <${email}>`,
