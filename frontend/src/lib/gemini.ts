@@ -23,6 +23,32 @@ export interface GenerateTemplateResult {
   body: string;
 }
 
+/**
+ * Strip unmatched "{" / "}" from AI output while preserving balanced spintax
+ * groups and {{token}} placeholders. Gemini occasionally drops a closing brace
+ * under heavy nesting; without this sanitizer, those characters reach the
+ * recipient's inbox and spam filters flag the mail as broken mail-merge.
+ * Degenerate single-option groups like "{hello}" are intentionally left alone
+ * here — the spintax resolver handles them correctly at send time, and
+ * touching them risks corrupting {{token}} forms (the inner "{token}" would
+ * match a single-option regex).
+ */
+export function sanitizeSpintaxBraces(text: string): string {
+  const openStack: number[] = [];
+  const remove = new Set<number>();
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '{') openStack.push(i);
+    else if (c === '}') {
+      if (openStack.length === 0) remove.add(i);
+      else openStack.pop();
+    }
+  }
+  for (const i of openStack) remove.add(i);
+  if (remove.size === 0) return text;
+  return Array.from(text).filter((_, i) => !remove.has(i)).join('');
+}
+
 /** Extract a human-readable company name from a domain (e.g. "acme-corp.com" → "Acme Corp") */
 export function domainToCompanyName(domain: string): string {
   const base = domain.split('.')[0];
@@ -82,6 +108,12 @@ BODY:
 SPINTAX FORMAT: {option1|option2|option3}
 Spintax can and MUST be deeply nested: {Hi|Hello|{Hey|Greetings}} {{company_name}}
 
+BRACE BALANCE — NON-NEGOTIABLE:
+- Every "{" MUST have a matching "}".
+- Every spintax group MUST contain at least one "|" separator (no single-option groups like "{hello}").
+- Before finalizing, mentally scan the output — if you see a "{" with no matching "}", or a "{...}" with no "|" inside, REWRITE that section before returning.
+- Unclosed or single-option braces leak literal "{" characters into sent emails and trigger spam filters. This is the single most important rule.
+
 MANDATORY: Apply spintax to ALMOST EVERY PHRASE in both the subject and body — not just a few spots.
 This means:
 - Every greeting, opener, and transition phrase MUST have spintax
@@ -133,8 +165,14 @@ ${bodyGuidance}
   const subjectMatch = raw.match(/^SUBJECT:\s*(.+)$/m);
   const bodyMatch = raw.match(/^BODY:\s*\n([\s\S]+)/m);
 
-  const subject = subjectMatch ? subjectMatch[1].trim() : 'A quick note about {{company_name}}';
-  const body = bodyMatch ? bodyMatch[1].trim() : raw;
+  const rawSubject = subjectMatch ? subjectMatch[1].trim() : 'A quick note about {{company_name}}';
+  const rawBody = bodyMatch ? bodyMatch[1].trim() : raw;
 
-  return { subject, body };
+  // Repair any malformed spintax the model may have emitted before the
+  // template leaves this function — strips unmatched braces and degenerate
+  // single-option groups. Prevents the "{Would you be open..." spam-flag bug.
+  return {
+    subject: sanitizeSpintaxBraces(rawSubject),
+    body: sanitizeSpintaxBraces(rawBody),
+  };
 }

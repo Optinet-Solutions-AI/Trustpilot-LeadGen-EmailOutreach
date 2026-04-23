@@ -26,5 +26,9 @@ export function resolveSpintax(text: string): string {
     result = result.replace(fullMatch, chosen);
   }
 
-  return result;
+  // Safety net: any "{" or "}" surviving the loop above is unmatched —
+  // balanced groups would have been resolved. Strip them so malformed
+  // AI-generated templates never ship raw mail-merge artifacts into a
+  // sent email, where spam filters treat them as broken personalization.
+  return result.replace(/[{}]/g, '');
 }
