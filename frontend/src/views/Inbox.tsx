@@ -108,6 +108,10 @@ export default function Inbox() {
   const [checkingMailbox, setCheckingMailbox] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+  // Which message in the thread the reply will thread under. Defaults to the
+  // latest inbound message (matches the server's fallback), but the user can
+  // click a different message to retarget. Null means "use server default".
+  const [replyTargetMsgId, setReplyTargetMsgId] = useState<string | null>(null);
   // Reply composer state — scoped to the currently-selected thread. Clears on
   // thread change or successful send.
   const [replyBody, setReplyBody] = useState('');
@@ -118,16 +122,30 @@ export default function Inbox() {
   // Gmail-style: only the latest message in a thread is expanded by default.
   // Earlier messages collapse to one-liners (avatar + name + snippet + date)
   // and expand on click. Resets whenever the thread changes.
+  // Reply target also resets here — default to the latest INBOUND message
+  // (the most recent thing the prospect sent), which matches what the server
+  // would pick on its own and what the user most often wants to reply to.
   useEffect(() => {
     if (thread && thread.messages.length > 0) {
       const latest = thread.messages[thread.messages.length - 1];
       setExpandedMsgIds(new Set([latest.id]));
+      const senderAccount = thread.senderAccount?.toLowerCase() ?? '';
+      const latestInbound = [...thread.messages].reverse().find((m) => {
+        const fromEmail = (m.from.match(/<([^>]+)>/)?.[1] ?? m.from).toLowerCase();
+        return senderAccount !== '' && fromEmail !== senderAccount;
+      });
+      setReplyTargetMsgId((latestInbound ?? latest).id);
     } else {
       setExpandedMsgIds(new Set());
+      setReplyTargetMsgId(null);
     }
   }, [thread]);
 
-  const toggleMsgExpanded = useCallback((id: string) => {
+  // Clicking a message row expands it AND pins it as the reply target.
+  // If the clicked row is already expanded, collapse it (existing behavior),
+  // but keep the reply target pinned so the composer stays in a stable state.
+  const selectMsg = useCallback((id: string) => {
+    setReplyTargetMsgId(id);
     setExpandedMsgIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -162,6 +180,7 @@ export default function Inbox() {
       const res = await api.post(`/inbox/reply/${selectedMsg.id}`, {
         body: replyBody,
         subject: replySubject || undefined,
+        replyToMessageId: replyTargetMsgId || undefined,
       });
       const data = res?.data?.data ?? {};
       setReplyStatus({
@@ -232,7 +251,7 @@ export default function Inbox() {
     } finally {
       setReplySending(false);
     }
-  }, [selectedMsg, replyBody, replySubject, replySending]);
+  }, [selectedMsg, replyBody, replySubject, replySending, replyTargetMsgId]);
 
   const { markRead, refresh: refreshNotifications, unreadCount } = useNotifications();
 
@@ -622,11 +641,15 @@ export default function Inbox() {
                     const displayName = fromName || fromEmail;
                     const senderAccount = thread.senderAccount?.toLowerCase() || '';
                     const isOutgoing = senderAccount !== '' && fromEmail.toLowerCase() === senderAccount;
+                    const isReplyTarget = msg.id === replyTargetMsgId;
                     return (
-                      <div key={msg.id} className="border-b border-slate-100 last:border-b-0">
+                      <div key={msg.id} className={`border-b border-slate-100 last:border-b-0 ${
+                        isReplyTarget ? 'border-l-[3px] border-l-[#b0004a]' : ''
+                      }`}>
                         <button
                           type="button"
-                          onClick={() => toggleMsgExpanded(msg.id)}
+                          onClick={() => selectMsg(msg.id)}
+                          title={isReplyTarget ? 'Reply will thread under this message' : 'Click to reply to this message'}
                           className={`w-full flex items-center gap-2 px-5 py-3 text-left transition-colors ${
                             isExpanded ? 'bg-white' : 'bg-[#f8f9fa] hover:bg-slate-100'
                           }`}
@@ -643,6 +666,12 @@ export default function Inbox() {
                               </p>
                               {isOutgoing && (
                                 <span className="text-[9px] text-slate-400 font-semibold truncate">&lt;{fromEmail}&gt;</span>
+                              )}
+                              {isReplyTarget && (
+                                <span className="flex-shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-[#b0004a] bg-[#ffd9de]/60 px-1.5 py-0.5 rounded">
+                                  <span className="material-symbols-outlined text-[11px]">reply</span>
+                                  Reply target
+                                </span>
                               )}
                             </div>
                             {!isExpanded && (
@@ -782,13 +811,26 @@ export default function Inbox() {
                 one keystroke away. */}
             <div className="flex-1 flex flex-col bg-surface-container-lowest overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-                <div>
+                <div className="min-w-0">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-secondary">
                     Reply
                   </p>
                   <p className="text-[11px] text-slate-400 mt-0.5 truncate">
                     to {selectedMsg.email_used || '(unknown recipient)'} · from {selectedMsg.sender_email || '(unknown sender)'}
                   </p>
+                  {(() => {
+                    const targetMsg = thread?.messages.find((m) => m.id === replyTargetMsgId);
+                    if (!targetMsg) return null;
+                    const { name: tgtName, email: tgtEmail } = parseDisplayName(targetMsg.from);
+                    const tgtLabel = tgtName || tgtEmail;
+                    const tgtDate = new Date(targetMsg.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+                    return (
+                      <p className="text-[11px] text-[#b0004a] mt-1 truncate flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[12px]">reply</span>
+                        Threading under: <span className="font-semibold">{tgtLabel}</span> · {tgtDate}
+                      </p>
+                    );
+                  })()}
                 </div>
                 {replyStatus && (
                   <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${

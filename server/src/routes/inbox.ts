@@ -777,10 +777,18 @@ router.post('/mark-replies-read', async (req: Request, res: Response) => {
 // with the original conversation, and — for SMTP accounts — appends the sent
 // copy to the mailbox's Sent folder so webmail mirrors it.
 //
-// Body: { body: string, subject?: string, includeQuote?: boolean }
+// Body: { body: string, subject?: string, replyToMessageId?: string }
+// When replyToMessageId is provided, the reply threads under that specific
+// message (In-Reply-To + trimmed References chain + quoted body of that
+// message). Otherwise falls back to the latest inbound — which is what the
+// UI defaults to when the user hasn't clicked a specific row.
 router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
   const { campaignLeadId } = req.params;
-  const { body, subject: overrideSubject } = (req.body ?? {}) as { body?: string; subject?: string };
+  const { body, subject: overrideSubject, replyToMessageId } = (req.body ?? {}) as {
+    body?: string;
+    subject?: string;
+    replyToMessageId?: string;
+  };
 
   if (!body || typeof body !== 'string' || !body.trim()) {
     res.status(400).json({ success: false, error: 'Reply body is required' });
@@ -892,40 +900,50 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
             cl.email_used as string,
           );
           if (thread && thread.messages.length > 0) {
+            // Target selection: user-clicked message wins; otherwise default to
+            // the latest inbound so the behavior matches "reply to the prospect".
+            // If the provided ID isn't in the thread (stale UI state), silently
+            // fall back to latestInbound instead of failing the send.
+            const targetedId = replyToMessageId?.trim();
+            const targeted = targetedId
+              ? thread.messages.find((m) => m.id === targetedId)
+              : undefined;
             const inbound = thread.messages.filter((m) => {
               const addr = m.from.match(/<([^>]+)>/)?.[1] ?? m.from;
               return addr.toLowerCase() !== senderEmailLower;
             });
             const latestInbound = inbound[inbound.length - 1];
-            if (latestInbound?.id) inReplyTo = latestInbound.id;
-            // References = every Message-ID in the thread, in chronological
-            // order, starting with the original. This is what Gmail emits
-            // when you reply from its web UI.
-            // Build a properly-formatted References header: each Message-ID
-            // wrapped in its own angle brackets, separated by single spaces.
-            // RFC 2822 §3.6.4 requires this shape; anything else (e.g.
-            // "<A B C>") is malformed and Gmail's threading engine silently
-            // drops it, which is why prior replies kept starting new threads.
-            const chain = thread.messages
+            const target = targeted ?? latestInbound;
+            if (target?.id) inReplyTo = target.id;
+            // References = chain up to AND INCLUDING the targeted message.
+            // Including messages after the target would imply we're replying
+            // to something later than we actually are — semantically wrong
+            // and confuses some clients. Format per RFC 2822 §3.6.4: each
+            // Message-ID in its own angle brackets, single-space separated.
+            const targetIdx = target ? thread.messages.findIndex((m) => m.id === target.id) : -1;
+            const chainSource = targetIdx >= 0
+              ? thread.messages.slice(0, targetIdx + 1)
+              : thread.messages;
+            const chain = chainSource
               .map((m) => m.id)
               .filter((id): id is string => !!id && !id.startsWith('rendered:') && !id.includes(':'))
               .map((id) => `<${id.replace(/^<|>$/g, '')}>`);
             if (chain.length > 0) referencesHeader = chain.join(' ');
-            // Quote the latest inbound so the reply reads with context
-            if (latestInbound) {
+            // Quote the target message (clicked or latestInbound fallback).
+            if (target) {
               const quoteDate = (() => {
                 try {
-                  return new Date(latestInbound.date).toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
-                } catch { return latestInbound.date; }
+                  return new Date(target.date).toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
+                } catch { return target.date; }
               })();
-              const quoteText = latestInbound.bodyType === 'html'
-                ? latestInbound.body.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-                : latestInbound.body;
+              const quoteText = target.bodyType === 'html'
+                ? target.body.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+                : target.body;
               const quoteSnippet = quoteText.slice(0, 600) + (quoteText.length > 600 ? '…' : '');
               quotedHtml = `
 <br>
 <div style="color:#555;font-size:12px;border-left:3px solid #ddd;padding-left:12px;margin-top:24px;font-family:Arial,sans-serif;">
-  <p style="margin:0 0 8px;color:#888;">On ${quoteDate}, ${escapeHtmlFragment(latestInbound.from)} wrote:</p>
+  <p style="margin:0 0 8px;color:#888;">On ${quoteDate}, ${escapeHtmlFragment(target.from)} wrote:</p>
   <p style="margin:0;white-space:pre-wrap;">${escapeHtmlFragment(quoteSnippet)}</p>
 </div>`;
             }
@@ -934,6 +952,16 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
           console.warn('[InboxReply] thread-fetch for headers failed, falling back to original Message-ID chain:', e instanceof Error ? e.message : e);
         }
       }
+    }
+
+    // Gmail OAuth path doesn't fetch the thread above (it relies on Gmail's
+    // own threading via the threadId parameter), so if the frontend pinned a
+    // specific replyToMessageId, honor it here as a direct In-Reply-To
+    // override. Gmail will still group the reply via threadId; the override
+    // just makes the "In-Reply-To" header point at the specific message the
+    // user clicked instead of the original campaign send.
+    if (authType === 'gmail_oauth' && replyToMessageId?.trim()) {
+      inReplyTo = replyToMessageId.trim();
     }
 
     // Escape then linewrap — plain text composer body → HTML paragraphs,
