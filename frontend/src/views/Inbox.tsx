@@ -119,32 +119,70 @@ export default function Inbox() {
   const [replySending, setReplySending] = useState(false);
   const [replyStatus, setReplyStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
-  // Gmail-style: only the latest message in a thread is expanded by default.
-  // Earlier messages collapse to one-liners (avatar + name + snippet + date)
-  // and expand on click. Resets whenever the thread changes.
-  // Reply target also resets here — default to the latest INBOUND message
-  // (the most recent thing the prospect sent), which matches what the server
-  // would pick on its own and what the user most often wants to reply to.
+  // Refs for logic that must not itself trigger re-renders or effect re-runs:
+  //   - prevThreadIdRef distinguishes "user switched threads" (reset state)
+  //     from "same thread refetched" (preserve the user's manual target).
+  //   - userPinnedTargetRef flips true the first time the user clicks a
+  //     message row. Without this, a new reply arriving mid-compose would
+  //     silently steal the reply target and the user would send to the
+  //     wrong message.
+  const prevThreadIdRef = useRef<string | null>(null);
+  const userPinnedTargetRef = useRef(false);
+
+  // Thread-load + refetch handler. Two distinct behaviors:
+  //   1. Thread switch (different threadId) — fresh state: expand latest,
+  //      default target to latest inbound, clear the pin flag.
+  //   2. Same-thread refetch (e.g. new reply arrived, optimistic append) —
+  //      merge in the new latest without clobbering a user-pinned target.
   useEffect(() => {
-    if (thread && thread.messages.length > 0) {
-      const latest = thread.messages[thread.messages.length - 1];
-      setExpandedMsgIds(new Set([latest.id]));
-      const senderAccount = thread.senderAccount?.toLowerCase() ?? '';
-      const latestInbound = [...thread.messages].reverse().find((m) => {
-        const fromEmail = (m.from.match(/<([^>]+)>/)?.[1] ?? m.from).toLowerCase();
-        return senderAccount !== '' && fromEmail !== senderAccount;
-      });
-      setReplyTargetMsgId((latestInbound ?? latest).id);
-    } else {
+    if (!thread || thread.messages.length === 0) {
+      prevThreadIdRef.current = null;
+      userPinnedTargetRef.current = false;
       setExpandedMsgIds(new Set());
       setReplyTargetMsgId(null);
+      return;
     }
+
+    const latest = thread.messages[thread.messages.length - 1];
+    const senderAccount = thread.senderAccount?.toLowerCase() ?? '';
+    const latestInbound = [...thread.messages].reverse().find((m) => {
+      const fromEmail = (m.from.match(/<([^>]+)>/)?.[1] ?? m.from).toLowerCase();
+      return senderAccount !== '' && fromEmail !== senderAccount;
+    });
+    const defaultTarget = (latestInbound ?? latest).id;
+
+    const threadChanged = prevThreadIdRef.current !== thread.threadId;
+    if (threadChanged) {
+      prevThreadIdRef.current = thread.threadId;
+      userPinnedTargetRef.current = false;
+      setExpandedMsgIds(new Set([latest.id]));
+      setReplyTargetMsgId(defaultTarget);
+      return;
+    }
+
+    // Same thread refetched. Ensure the new latest is expanded (helps when a
+    // just-arrived reply shows up) without collapsing rows the user opened.
+    setExpandedMsgIds((prev) => {
+      if (prev.has(latest.id)) return prev;
+      const next = new Set(prev);
+      next.add(latest.id);
+      return next;
+    });
+    // Preserve the user's pinned target if it still exists in the refetched
+    // thread; otherwise retarget to the new latest inbound.
+    setReplyTargetMsgId((current) => {
+      if (userPinnedTargetRef.current && current && thread.messages.some((m) => m.id === current)) {
+        return current;
+      }
+      return defaultTarget;
+    });
   }, [thread]);
 
   // Clicking a message row expands it AND pins it as the reply target.
-  // If the clicked row is already expanded, collapse it (existing behavior),
-  // but keep the reply target pinned so the composer stays in a stable state.
+  // The pin flag survives same-thread refetches so a new reply arriving
+  // mid-compose can't silently redirect where the message will thread.
   const selectMsg = useCallback((id: string) => {
+    userPinnedTargetRef.current = true;
     setReplyTargetMsgId(id);
     setExpandedMsgIds((prev) => {
       const next = new Set(prev);
