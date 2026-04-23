@@ -32,5 +32,12 @@ export function useAffiliates() {
     setAffiliates((prev) => prev.filter((a) => !ids.includes(a.id)));
   }, []);
 
-  return { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkDelete };
+  const updateAffiliate = useCallback(async (id: string, patch: Partial<Omit<Affiliate, 'id' | 'created_at'>>): Promise<Affiliate> => {
+    const res = await api.patch<{ success: boolean; data: Affiliate }>(`/affiliates/${id}`, patch);
+    const updated = res.data.data;
+    setAffiliates((prev) => prev.map((a) => (a.id === id ? updated : a)));
+    return updated;
+  }, []);
+
+  return { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkDelete, updateAffiliate };
 }

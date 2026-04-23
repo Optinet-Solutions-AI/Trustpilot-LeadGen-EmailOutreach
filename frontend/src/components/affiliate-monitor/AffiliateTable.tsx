@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Affiliate, COUNTRY_META } from './AffiliateData';
 
 interface AffiliateTableProps {
@@ -12,6 +12,7 @@ interface AffiliateTableProps {
   onToggleSelect: (id: string) => void;
   onToggleAll: () => void;
   onDelete: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<Omit<Affiliate, 'id' | 'created_at'>>) => Promise<Affiliate>;
 }
 
 function StarRating({ rating }: { rating: number | null }) {
@@ -34,6 +35,98 @@ function StarRating({ rating }: { rating: number | null }) {
       </div>
       <span className="text-xs text-slate-400">{rating}</span>
     </div>
+  );
+}
+
+function InlineNumberEdit({
+  value,
+  onSave,
+  format,
+  min,
+  max,
+  step,
+  align = 'left',
+  widthClass = 'w-20',
+  display,
+}: {
+  value: number | null;
+  onSave: (v: number | null) => Promise<void>;
+  format: 'int' | 'float';
+  min?: number;
+  max?: number;
+  step?: number;
+  align?: 'left' | 'center' | 'right';
+  widthClass?: string;
+  display: React.ReactNode;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string>(value == null ? '' : String(value));
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const begin = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(value == null ? '' : String(value));
+    setEditing(true);
+  };
+
+  const commit = async () => {
+    const trimmed = draft.trim();
+    let next: number | null;
+    if (trimmed === '') next = null;
+    else if (format === 'int') next = parseInt(trimmed, 10);
+    else next = parseFloat(trimmed);
+    if (next != null && Number.isNaN(next)) { setEditing(false); return; }
+    if (next === value) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch {
+      // keep editing open so user can retry
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={onKey}
+        onClick={(e) => e.stopPropagation()}
+        disabled={saving}
+        className={`${widthClass} border border-[#b0004a] rounded px-2 py-1 text-sm outline-none ${align === 'right' ? 'text-right' : ''}`}
+      />
+    );
+  }
+  return (
+    <span
+      onClick={begin}
+      title="Click to edit"
+      className="cursor-pointer hover:bg-[#b0004a]/10 rounded px-1 -mx-1 transition-colors inline-block"
+    >
+      {display}
+    </span>
   );
 }
 
@@ -106,6 +199,7 @@ export default function AffiliateTable({
   onToggleSelect,
   onToggleAll,
   onDelete,
+  onUpdate,
 }: AffiliateTableProps) {
   const allSelected = data.length > 0 && data.every((e) => selectedIds.has(e.id));
   const someSelected = data.some((e) => selectedIds.has(e.id));
@@ -212,13 +306,31 @@ export default function AffiliateTable({
                       <span className="text-xs text-slate-400">—</span>
                     )}
                   </td>
-                  <td className="px-5 py-3.5">
-                    <span className="text-sm font-bold text-[#b0004a]">
-                      {entry.reviews != null ? entry.reviews.toLocaleString() : '—'}
-                    </span>
+                  <td className="px-5 py-3.5" onClick={(e) => e.stopPropagation()}>
+                    <InlineNumberEdit
+                      value={entry.reviews}
+                      format="int"
+                      min={0}
+                      widthClass="w-24"
+                      display={
+                        <span className="text-sm font-bold text-[#b0004a]">
+                          {entry.reviews != null ? entry.reviews.toLocaleString() : '—'}
+                        </span>
+                      }
+                      onSave={async (v) => { await onUpdate(entry.id, { reviews: v }); }}
+                    />
                   </td>
-                  <td className="px-5 py-3.5 hidden md:table-cell">
-                    <StarRating rating={entry.rating} />
+                  <td className="px-5 py-3.5 hidden md:table-cell" onClick={(e) => e.stopPropagation()}>
+                    <InlineNumberEdit
+                      value={entry.rating}
+                      format="float"
+                      min={0}
+                      max={5}
+                      step={0.1}
+                      widthClass="w-20"
+                      display={<StarRating rating={entry.rating} />}
+                      onSave={async (v) => { await onUpdate(entry.id, { rating: v }); }}
+                    />
                   </td>
                   <td className="px-5 py-3.5">
                     <div className="flex flex-wrap gap-1">

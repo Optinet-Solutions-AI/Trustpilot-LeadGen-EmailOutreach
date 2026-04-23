@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import { Affiliate } from './AffiliateData';
 
 interface PageChartTableProps {
@@ -8,9 +9,79 @@ interface PageChartTableProps {
   onToggleSelect: (id: string) => void;
   onToggleAll: () => void;
   onDelete: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<Omit<Affiliate, 'id' | 'created_at'>>) => Promise<Affiliate>;
 }
 
-export default function PageChartTable({ data, selectedIds, onToggleSelect, onToggleAll, onDelete }: PageChartTableProps) {
+function InlineDescriptionEdit({
+  value,
+  onSave,
+}: {
+  value: string | null;
+  onSave: (v: string | null) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? '');
+  const [saving, setSaving] = useState(false);
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (editing && ref.current) {
+      ref.current.focus();
+      ref.current.select();
+    }
+  }, [editing]);
+
+  const begin = () => {
+    setDraft(value ?? '');
+    setEditing(true);
+  };
+
+  const commit = async () => {
+    const trimmed = draft.trim();
+    const next = trimmed === '' ? null : trimmed;
+    if (next === (value ?? null)) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch {
+      // stay open for retry
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
+  };
+
+  if (editing) {
+    return (
+      <textarea
+        ref={ref}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={onKey}
+        disabled={saving}
+        rows={3}
+        className="w-full border border-[#b0004a] rounded px-2 py-1 text-sm outline-none resize-y"
+      />
+    );
+  }
+  return (
+    <span
+      onClick={begin}
+      title="Click to edit"
+      className="block cursor-pointer hover:bg-[#b0004a]/10 rounded px-1 -mx-1 py-0.5 transition-colors min-h-[1.25rem]"
+    >
+      {value ?? <span className="text-slate-400 italic">Click to add description</span>}
+    </span>
+  );
+}
+
+export default function PageChartTable({ data, selectedIds, onToggleSelect, onToggleAll, onDelete, onUpdate }: PageChartTableProps) {
   const allSelected = data.length > 0 && data.every((e) => selectedIds.has(e.id));
   const someSelected = data.some((e) => selectedIds.has(e.id));
 
@@ -95,7 +166,10 @@ export default function PageChartTable({ data, selectedIds, onToggleSelect, onTo
                   </div>
                 </td>
                 <td className="px-5 py-3.5 text-sm text-slate-500 max-w-[400px] hidden md:table-cell">
-                  {entry.description ?? '—'}
+                  <InlineDescriptionEdit
+                    value={entry.description}
+                    onSave={async (v) => { await onUpdate(entry.id, { description: v }); }}
+                  />
                 </td>
                 <td className="px-5 py-3.5">
                   {entry.tp_url ? (

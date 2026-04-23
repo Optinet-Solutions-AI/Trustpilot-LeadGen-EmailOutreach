@@ -203,7 +203,7 @@ function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
 // ── Main View ────────────────────────────────────────────────────────────────
 
 export default function AffiliateMonitor() {
-  const { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkDelete } = useAffiliates();
+  const { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkDelete, updateAffiliate } = useAffiliates();
   const [activeTab, setActiveTab] = useState<'chart' | 'dashboard'>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [geoFilter, setGeoFilter] = useState('All');
@@ -370,6 +370,7 @@ export default function AffiliateMonitor() {
           onToggleSelect={handleToggleSelect}
           onToggleAll={handleToggleAll}
           onDelete={handleDelete}
+          onUpdate={updateAffiliate}
         />
       )}
 
@@ -399,6 +400,7 @@ export default function AffiliateMonitor() {
             onToggleSelect={handleToggleSelect}
             onToggleAll={handleToggleAll}
             onDelete={handleDelete}
+            onUpdate={updateAffiliate}
           />
         </>
       )}
