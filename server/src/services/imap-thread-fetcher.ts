@@ -396,11 +396,20 @@ export async function fetchSmtpThread(
     // append fix landed may be in Sent without a findable headers chain
     // (or their References header was malformed pre-fix and Gmail IMAP's
     // HEADER index stopped matching). This pass scans the Sent folder for
-    // any message TO the lead address in the last 90 days so we still
-    // surface the user's prior reply in the thread even when header-based
-    // lookup misses it. Dedupe by Message-ID keeps it additive — anything
-    // already collected is not re-added.
+    // any message TO the lead address in the last 90 days and filters by
+    // normalized subject match so outgoing messages from *other* campaigns
+    // to the same lead don't leak into this thread. Dedupe by Message-ID
+    // keeps it additive.
     if (leadEmail && sentBox?.path) {
+      // Pull the seed subject out of whatever we already collected via the
+      // header-based search. That's the authoritative "this conversation's
+      // subject" — used below to filter Sent search results down to just
+      // the conversation the caller asked for.
+      const normalizeSubject = (s: string) =>
+        s.replace(/^\s*(re|fwd|fw)\s*:\s*/i, '').trim().toLowerCase();
+      const seed = collected.find((c) => c.messageId === target) ?? collected[0];
+      const targetSubject = seed ? normalizeSubject(seed.envelopeSubject) : '';
+
       const leadAddr = leadEmail.toLowerCase();
       const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
       try {
@@ -412,6 +421,14 @@ export async function fetchSmtpThread(
             if (!msg.source) continue;
             const messageId = normalizeId(msg.envelope?.messageId);
             if (messageId && seenMessageIds.has(messageId)) continue;
+            // Subject filter: include only messages whose normalized subject
+            // matches the seed conversation's subject. Skip when we have no
+            // seed subject to compare against (better to include than drop
+            // the whole fallback).
+            if (targetSubject) {
+              const subj = normalizeSubject(msg.envelope?.subject ?? '');
+              if (subj !== targetSubject) continue;
+            }
             if (messageId) seenMessageIds.add(messageId);
             collected.push({
               uid: msg.uid!,
