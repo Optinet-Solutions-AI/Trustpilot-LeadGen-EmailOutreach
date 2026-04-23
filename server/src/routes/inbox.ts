@@ -908,6 +908,14 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
             const targeted = targetedId
               ? thread.messages.find((m) => m.id === targetedId)
               : undefined;
+            // Diagnostic log — shows what the client pinned and whether the
+            // server found it in the fetched thread. Grep Cloud Run logs for
+            // "[InboxReply] target" to verify click-to-target is wiring through.
+            console.log('[InboxReply] target resolution:', JSON.stringify({
+              clientPinned: targetedId ?? null,
+              threadMessageIds: thread.messages.map((m) => m.id),
+              foundInThread: !!targeted,
+            }));
             const inbound = thread.messages.filter((m) => {
               const addr = m.from.match(/<([^>]+)>/)?.[1] ?? m.from;
               return addr.toLowerCase() !== senderEmailLower;
@@ -915,6 +923,12 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
             const latestInbound = inbound[inbound.length - 1];
             const target = targeted ?? latestInbound;
             if (target?.id) inReplyTo = target.id;
+            console.log('[InboxReply] final threading:', JSON.stringify({
+              inReplyTo,
+              usedClientPin: !!targeted,
+              targetFrom: target?.from ?? null,
+              targetDate: target?.date ?? null,
+            }));
             // References = chain up to AND INCLUDING the targeted message.
             // Including messages after the target would imply we're replying
             // to something later than we actually are — semantically wrong
