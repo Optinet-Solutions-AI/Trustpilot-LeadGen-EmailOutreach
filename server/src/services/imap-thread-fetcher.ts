@@ -55,6 +55,19 @@ function normalizeId(id: string | undefined | null): string {
   return id ? stripAngle(id).toLowerCase() : '';
 }
 
+/**
+ * Strip angles but PRESERVE CASE. Use for any Message-ID that gets stored on
+ * ThreadMessage.id and eventually flows into outbound In-Reply-To / References
+ * headers. RFC 5322 treats Message-IDs as case-sensitive opaque strings —
+ * lowercasing "CADxxx@mail.gmail.com" to "cadxxx@mail.gmail.com" causes Gmail
+ * (and any strict MUA) to miss the reference and start a brand-new thread
+ * instead of joining the existing conversation. normalizeId() stays for
+ * dedup Set keys and cache lookups where case-insensitive matching is fine.
+ */
+function preserveId(id: string | undefined | null): string {
+  return id ? stripAngle(id) : '';
+}
+
 function extractReferences(header: string | undefined): string[] {
   if (!header) return [];
   return header.split(/\s+/).map(stripAngle).map(s => s.toLowerCase()).filter(Boolean);
@@ -292,11 +305,13 @@ export async function fetchSmtpThread(
           seen.add(key);
 
           const headers = msg.headers ? msg.headers.toString('utf-8') : '';
-          const messageId = normalizeId(msg.envelope?.messageId ?? matchHeader(headers, 'message-id'));
+          const messageIdRaw = msg.envelope?.messageId ?? matchHeader(headers, 'message-id');
+          const messageId = preserveId(messageIdRaw);       // original case, for storage + outbound headers
+          const messageIdKey = normalizeId(messageIdRaw);   // lowercased, for Set dedup + IMAP thread tracking
           const inReplyTo = normalizeId(matchHeader(headers, 'in-reply-to'));
           const references = extractReferences(matchHeader(headers, 'references'));
 
-          if (messageId) threadIds.add(messageId);
+          if (messageIdKey) threadIds.add(messageIdKey);
           if (inReplyTo) threadIds.add(inReplyTo);
           for (const r of references) threadIds.add(r);
 
@@ -305,9 +320,9 @@ export async function fetchSmtpThread(
           // (Bluehost/Titan server-side sent-save + our IMAP append land the
           // same email in Sent twice; Gmail's All Mail also overlaps INBOX).
           // Messages without a Message-ID fall through to always-push.
-          if (messageId) {
-            if (seenMessageIds.has(messageId)) continue;
-            seenMessageIds.add(messageId);
+          if (messageIdKey) {
+            if (seenMessageIds.has(messageIdKey)) continue;
+            seenMessageIds.add(messageIdKey);
           }
           collected.push({
             uid: msg.uid!,
@@ -366,9 +381,10 @@ export async function fetchSmtpThread(
                 if (!msg.source) continue;
                 const fromAddr = msg.envelope?.from?.[0]?.address?.toLowerCase() ?? '';
                 if (fromAddr === accountAddr) continue;  // skip our own sends
-                const messageId = normalizeId(msg.envelope?.messageId);
-                if (messageId && seenMessageIds.has(messageId)) continue;
-                if (messageId) seenMessageIds.add(messageId);
+                const messageId = preserveId(msg.envelope?.messageId);
+                const messageIdKey = normalizeId(msg.envelope?.messageId);
+                if (messageIdKey && seenMessageIds.has(messageIdKey)) continue;
+                if (messageIdKey) seenMessageIds.add(messageIdKey);
                 collected.push({
                   uid: msg.uid!,
                   folder: path,
@@ -407,7 +423,9 @@ export async function fetchSmtpThread(
       // the conversation the caller asked for.
       const normalizeSubject = (s: string) =>
         s.replace(/^\s*(re|fwd|fw)\s*:\s*/i, '').trim().toLowerCase();
-      const seed = collected.find((c) => c.messageId === target) ?? collected[0];
+      // target is lowercased; c.messageId now preserves original case, so
+      // compare case-insensitively to find the seed outbound message.
+      const seed = collected.find((c) => c.messageId.toLowerCase() === target) ?? collected[0];
       const targetSubject = seed ? normalizeSubject(seed.envelopeSubject) : '';
 
       const leadAddr = leadEmail.toLowerCase();
@@ -419,8 +437,9 @@ export async function fetchSmtpThread(
           const list = Array.isArray(uids) ? uids : [];
           for await (const msg of client.fetch(list, { envelope: true, uid: true, flags: true, source: true })) {
             if (!msg.source) continue;
-            const messageId = normalizeId(msg.envelope?.messageId);
-            if (messageId && seenMessageIds.has(messageId)) continue;
+            const messageId = preserveId(msg.envelope?.messageId);
+            const messageIdKey = normalizeId(msg.envelope?.messageId);
+            if (messageIdKey && seenMessageIds.has(messageIdKey)) continue;
             // Subject filter: include only messages whose normalized subject
             // matches the seed conversation's subject. Skip when we have no
             // seed subject to compare against (better to include than drop
@@ -429,7 +448,7 @@ export async function fetchSmtpThread(
               const subj = normalizeSubject(msg.envelope?.subject ?? '');
               if (subj !== targetSubject) continue;
             }
-            if (messageId) seenMessageIds.add(messageId);
+            if (messageIdKey) seenMessageIds.add(messageIdKey);
             collected.push({
               uid: msg.uid!,
               folder: sentBox.path,
@@ -463,7 +482,7 @@ export async function fetchSmtpThread(
             collected.push({
               uid: msg.uid!,
               folder: sentBox.path,
-              messageId: normalizeId(msg.envelope?.messageId) || target,
+              messageId: preserveId(msg.envelope?.messageId) || target,
               inReplyTo: '',
               references: [],
               envelopeSubject: msg.envelope?.subject ?? '',
@@ -591,12 +610,13 @@ export async function searchImapThreadByEmail(
 
         for await (const msg of client.fetch(uids, { envelope: true, uid: true, flags: true, source: true })) {
           if (!msg.source) continue;
-          const messageId = normalizeId(msg.envelope?.messageId);
+          const messageId = preserveId(msg.envelope?.messageId);
+          const messageIdKey = normalizeId(msg.envelope?.messageId);
           // Same dedup logic as fetchSmtpThread: collapse server-save + append
           // duplicates and overlapping labels (Gmail INBOX vs All Mail).
-          if (messageId) {
-            if (seenMessageIds.has(messageId)) continue;
-            seenMessageIds.add(messageId);
+          if (messageIdKey) {
+            if (seenMessageIds.has(messageIdKey)) continue;
+            seenMessageIds.add(messageIdKey);
           }
           collected.push({
             uid: msg.uid!,
