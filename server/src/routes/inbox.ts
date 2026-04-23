@@ -923,12 +923,6 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
             const latestInbound = inbound[inbound.length - 1];
             const target = targeted ?? latestInbound;
             if (target?.id) inReplyTo = target.id;
-            console.log('[InboxReply] final threading:', JSON.stringify({
-              inReplyTo,
-              usedClientPin: !!targeted,
-              targetFrom: target?.from ?? null,
-              targetDate: target?.date ?? null,
-            }));
             // References = chain up to AND INCLUDING the targeted message.
             // Including messages after the target would imply we're replying
             // to something later than we actually are — semantically wrong
@@ -943,6 +937,14 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
               .filter((id): id is string => !!id && !id.startsWith('rendered:') && !id.includes(':'))
               .map((id) => `<${id.replace(/^<|>$/g, '')}>`);
             if (chain.length > 0) referencesHeader = chain.join(' ');
+            console.log('[InboxReply] final threading:', JSON.stringify({
+              inReplyTo,
+              references: referencesHeader,
+              usedClientPin: !!targeted,
+              targetFrom: target?.from ?? null,
+              targetDate: target?.date ?? null,
+              chainLength: chain.length,
+            }));
             // Quote the target message (clicked or latestInbound fallback).
             if (target) {
               const quoteDate = (() => {
