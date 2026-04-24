@@ -5,7 +5,7 @@ import { CheckCircle2, Loader2, XCircle, AlertTriangle, RotateCcw, Square } from
 import type { ScrapeProgress as ScrapeProgressType } from '../types/scrape';
 import { translate, summarize, type FeedLine } from './jobProgress/messages';
 
-export type JobKind = 'scrape' | 'enrichment';
+export type JobKind = 'scrape' | 'enrichment' | 'verify';
 
 interface Props {
   kind: JobKind;
@@ -38,6 +38,11 @@ const SCRAPE_PHASES: PhaseDef[] = [
 const ENRICH_PHASES: PhaseDef[] = [
   { key: 'enrich', label: 'Check websites' },
   { key: 'final', label: 'Finalize' },
+];
+
+const VERIFY_PHASES: PhaseDef[] = [
+  { key: 'verify', label: 'Check emails' },
+  { key: 'final', label: 'Save results' },
 ];
 
 function formatDuration(ms: number): string {
@@ -80,7 +85,7 @@ export default function JobProgress({
     feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [progress, autoScroll]);
 
-  const phases = kind === 'scrape' ? SCRAPE_PHASES : ENRICH_PHASES;
+  const phases = kind === 'scrape' ? SCRAPE_PHASES : kind === 'verify' ? VERIFY_PHASES : ENRICH_PHASES;
   const summary = useMemo(() => summarize(progress), [progress]);
   const feed: FeedLine[] = useMemo(() => {
     const lines: FeedLine[] = [];
@@ -98,7 +103,11 @@ export default function JobProgress({
 
   // Progress bar driver — prefer SSE fraction, fall back to DB counters
   const fraction = (() => {
-    if (kind === 'enrichment') {
+    if (kind === 'verify') {
+      if (summary.verifiesTotal > 0) {
+        return { current: summary.verifiesChecked, total: summary.verifiesTotal, label: 'Emails verified' };
+      }
+    } else if (kind === 'enrichment') {
       if (summary.sitesTotal > 0) {
         return { current: summary.sitesChecked, total: summary.sitesTotal, label: 'Websites checked' };
       }
@@ -137,8 +146,16 @@ export default function JobProgress({
   };
 
   const headline = (() => {
-    if (status === 'running') return kind === 'enrichment' ? 'Finding website emails…' : 'Scraping in progress…';
-    if (status === 'completed') return kind === 'enrichment' ? 'Enrichment finished' : 'Scrape finished';
+    if (status === 'running') {
+      if (kind === 'enrichment') return 'Finding website emails…';
+      if (kind === 'verify') return 'Verifying email addresses…';
+      return 'Scraping in progress…';
+    }
+    if (status === 'completed') {
+      if (kind === 'enrichment') return 'Enrichment finished';
+      if (kind === 'verify') return 'Verification finished';
+      return 'Scrape finished';
+    }
     if (status === 'failed') return 'Stopped';
     return '';
   })();
@@ -230,8 +247,19 @@ export default function JobProgress({
       </div>
 
       {/* Summary cards */}
-      <div className={`grid gap-3 ${kind === 'scrape' ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-3'}`}>
-        {kind === 'scrape' ? (
+      <div className={`grid gap-3 ${kind === 'scrape' ? 'grid-cols-2 md:grid-cols-4' : kind === 'verify' ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-3'}`}>
+        {kind === 'verify' ? (
+          <>
+            <Card
+              label="Emails checked"
+              value={summary.verifiesTotal > 0 ? `${summary.verifiesChecked} / ${summary.verifiesTotal}` : summary.verifiesChecked}
+              accent="#004b7f"
+            />
+            <Card label="Valid" value={summary.verifiesValid} accent="#006630" hint="deliverable addresses" />
+            <Card label="Invalid" value={summary.verifiesInvalid} accent="#b0004a" hint="will bounce" />
+            <Card label="Catch-all" value={summary.verifiedCatchAll} accent="#b35500" hint="domain accepts all mail" />
+          </>
+        ) : kind === 'scrape' ? (
           <>
             <Card
               label="Companies found"
@@ -409,7 +437,7 @@ function isPhaseDone(
     if (e.stage === 'completed' && (key === 'final' || currentPhase !== 'failed')) return true;
   }
   // Phase order — if current phase is later, the given phase is done
-  const ORDER = ['category', 'dedup', 'profile', 'checkpoint', 'enrich', 'final', 'done'];
+  const ORDER = ['category', 'dedup', 'profile', 'checkpoint', 'enrich', 'verify', 'final', 'done'];
   const keyIdx = ORDER.indexOf(key);
   const curIdx = ORDER.indexOf(currentPhase);
   if (keyIdx >= 0 && curIdx >= 0 && curIdx > keyIdx) return true;

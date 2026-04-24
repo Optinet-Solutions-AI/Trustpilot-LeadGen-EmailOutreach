@@ -10,6 +10,7 @@ import api from '../api/client';
 import QuickSendModal from '../components/QuickSendModal';
 import JobProgress from '../components/JobProgress';
 import { useEnrichJob } from '../hooks/useEnrichJob';
+import { useVerifyJob } from '../hooks/useVerifyJob';
 
 type View = 'table' | 'pipeline';
 
@@ -104,7 +105,12 @@ export default function Leads() {
     await updateLead(id, { outreach_status: status });
   };
 
-  const [verifying, setVerifying] = useState(false);
+  const [verifyJobId, setVerifyJobId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('active_verify_job');
+  });
+  const [verifyStartedAt, setVerifyStartedAt] = useState<string | null>(null);
+  const [verifyResult, setVerifyResult] = useState<{ total: number; verified: number; invalid: number; catchAll: number } | null>(null);
   const [enrichJobId, setEnrichJobId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('active_enrich_job');
@@ -114,6 +120,8 @@ export default function Leads() {
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  const verifyJob = useVerifyJob(verifyJobId);
+  const verifying = verifyJob.status === 'running';
   const enrichJob = useEnrichJob(enrichJobId);
   const enriching = enrichJob.status === 'running';
 
@@ -124,16 +132,19 @@ export default function Leads() {
 
   const handleBulkVerify = async () => {
     if (selectedIds.length === 0) return;
-    setVerifying(true);
     try {
       const res = await api.post('/verify', { leadIds: selectedIds });
-      const { verified, invalid, catchAll } = res.data.data;
-      notify('success', `Verified ${selectedIds.length} leads — ${verified} valid, ${invalid} invalid, ${catchAll} catch-all`);
-      loadLeads();
+      const { jobId, total } = res.data.data;
+      if (!jobId) {
+        notify('success', 'No leads needed verification');
+        return;
+      }
+      notify('success', `Verifying ${total} email address${total !== 1 ? 'es' : ''} — watch the live log below`);
+      localStorage.setItem('active_verify_job', jobId);
+      setVerifyJobId(jobId);
+      setVerifyStartedAt(new Date().toISOString());
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Verification failed');
-    } finally {
-      setVerifying(false);
     }
   };
 
@@ -157,6 +168,28 @@ export default function Leads() {
 
   const handleBulkEnrich = () => startEnrich(selectedIds);
   const handleEnrichAll  = () => startEnrich();
+
+  // React to verify job reaching a terminal state
+  useEffect(() => {
+    if (!verifyJobId) return;
+    if (verifyJob.status === 'completed') {
+      setVerifyResult({
+        total: verifyJob.summary.total,
+        verified: verifyJob.summary.verified,
+        invalid: verifyJob.summary.invalid,
+        catchAll: verifyJob.summary.catchAll,
+      });
+      setVerifyJobId(null);
+      setVerifyStartedAt(null);
+      localStorage.removeItem('active_verify_job');
+      loadLeads();
+    } else if (verifyJob.status === 'failed') {
+      notify('error', `Verification failed: ${verifyJob.error || 'unknown error'}`);
+      setVerifyJobId(null);
+      setVerifyStartedAt(null);
+      localStorage.removeItem('active_verify_job');
+    }
+  }, [verifyJob.status, verifyJob.summary, verifyJob.error, verifyJobId, loadLeads]);
 
   // React to the enrichment job reaching a terminal state — clear storage,
   // surface the result banner, and refresh the leads table so new emails show.
@@ -183,6 +216,42 @@ export default function Leads() {
 
   return (
     <div className="px-10 py-10 space-y-8">
+
+      {/* Live verification progress — inline log panel */}
+      {verifyJobId && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <JobProgress
+            kind="verify"
+            status={verifyJob.status === 'idle' ? 'running' : verifyJob.status}
+            progress={verifyJob.progress}
+            error={verifyJob.error}
+            startedAt={verifyStartedAt}
+          />
+        </div>
+      )}
+
+      {/* Verification result banner */}
+      {verifyResult && (
+        <div className={`flex items-center gap-3 rounded-xl px-5 py-3 text-sm border ${
+          verifyResult.invalid > 0
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]'
+        }`}>
+          <span className={`material-symbols-outlined text-[18px] ${verifyResult.invalid > 0 ? 'text-amber-600' : 'text-[#006630]'}`}>
+            {verifyResult.invalid > 0 ? 'warning' : 'verified_user'}
+          </span>
+          <span className="font-semibold">Verification complete!</span>
+          <span className="font-normal">
+            <strong>{verifyResult.verified}</strong> valid, <strong>{verifyResult.invalid}</strong> invalid, <strong>{verifyResult.catchAll}</strong> catch-all out of <strong>{verifyResult.total}</strong> address{verifyResult.total !== 1 ? 'es' : ''}.
+          </span>
+          <button
+            onClick={() => setVerifyResult(null)}
+            className={`ml-auto transition-colors ${verifyResult.invalid > 0 ? 'text-amber-600/60 hover:text-amber-800' : 'text-[#006630]/60 hover:text-[#006630]'}`}
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
 
       {/* Live enrichment progress — inline log panel */}
       {enrichJobId && (

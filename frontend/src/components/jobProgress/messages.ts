@@ -23,6 +23,7 @@ const SILENT_STAGES = new Set([
   'profile_progress',
   'enrich_progress',
   'upsert_progress',
+  'verify_batch_start',
   'current',
 ]);
 
@@ -235,6 +236,22 @@ export function translate(event: ScrapeProgress): FeedLine | null {
       }
     }
 
+    // ── Verify stages ──────────────────────────────────────────────────────
+    case 'verify_start':
+      return { kind: 'phase', text: `Starting email verification for ${detail} address${parseInt(detail) === 1 ? '' : 'es'}…`, timestamp };
+
+    case 'verify_batch_done': {
+      // detail = "{batchNum}|{totalBatches}|{done}|{total}"
+      const [batchNum, totalBatches, done, total] = splitPipes(detail);
+      if (totalBatches === '1') {
+        return { kind: 'success', text: `Verified all ${total} emails`, timestamp };
+      }
+      return { kind: 'success', text: `Batch ${batchNum} of ${totalBatches} done — ${done} of ${total} checked`, timestamp };
+    }
+
+    case 'verify_saving':
+      return { kind: 'phase', text: `Saving verification results to your database…`, timestamp };
+
     case 'failed':
       return { kind: 'error', text: `Stopped — ${detail || 'something went wrong'}`, timestamp };
     case 'error':
@@ -258,7 +275,13 @@ export interface JobSummary {
   sitesTotal: number;
   emailsFound: number;
   failures: number;
-  currentPhase: 'idle' | 'category' | 'dedup' | 'profile' | 'checkpoint' | 'enrich' | 'final' | 'done' | 'failed';
+  // verify-specific
+  verifiesChecked: number;
+  verifiesTotal: number;
+  verifiesValid: number;
+  verifiesInvalid: number;
+  verifiedCatchAll: number;
+  currentPhase: 'idle' | 'category' | 'dedup' | 'profile' | 'checkpoint' | 'enrich' | 'verify' | 'final' | 'done' | 'failed';
 }
 
 const EMPTY_SUMMARY: JobSummary = {
@@ -270,6 +293,11 @@ const EMPTY_SUMMARY: JobSummary = {
   sitesTotal: 0,
   emailsFound: 0,
   failures: 0,
+  verifiesChecked: 0,
+  verifiesTotal: 0,
+  verifiesValid: 0,
+  verifiesInvalid: 0,
+  verifiedCatchAll: 0,
   currentPhase: 'idle',
 };
 
@@ -348,9 +376,47 @@ export function summarize(events: ScrapeProgress[]): JobSummary {
       case 'final_save':
         s.currentPhase = 'final';
         break;
-      case 'completed':
+
+      case 'verify_start': {
+        s.currentPhase = 'verify';
+        const n = parseInt(e.detail, 10);
+        if (Number.isFinite(n)) s.verifiesTotal = n;
+        break;
+      }
+      case 'verify_batch_start':
+        s.currentPhase = 'verify';
+        break;
+      case 'verify_batch_done': {
+        // detail = "{batchNum}|{totalBatches}|{done}|{total}"
+        const parts = splitPipes(e.detail);
+        const done = parseInt(parts[2], 10);
+        const total = parseInt(parts[3], 10);
+        if (Number.isFinite(done)) s.verifiesChecked = done;
+        if (Number.isFinite(total)) s.verifiesTotal = total;
+        s.currentPhase = 'verify';
+        break;
+      }
+      case 'verify_saving':
+        s.currentPhase = 'final';
+        break;
+      case 'completed': {
+        // Handle verify-specific completed payload
+        try {
+          const m = JSON.parse(e.detail || '{}') as {
+            verified?: number;
+            invalid?: number;
+            catchAll?: number;
+            unknown?: number;
+            total?: number;
+          };
+          if (typeof m.verified === 'number') s.verifiesValid = m.verified;
+          if (typeof m.invalid === 'number') s.verifiesInvalid = m.invalid;
+          if (typeof m.catchAll === 'number') s.verifiedCatchAll = m.catchAll;
+          if (typeof m.total === 'number') s.verifiesTotal = m.total;
+        } catch { /* non-JSON completed detail is fine */ }
         s.currentPhase = 'done';
         break;
+      }
       case 'failed':
         s.currentPhase = 'failed';
         break;
