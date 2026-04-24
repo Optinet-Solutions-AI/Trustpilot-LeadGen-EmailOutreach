@@ -61,9 +61,28 @@ export function useVerifyJob(jobId: string | null): VerifyJobState {
     esRef.current = es;
 
     es.onmessage = (event) => {
-      const data = JSON.parse(event.data) as ScrapeProgress & { status?: string };
+      const data = JSON.parse(event.data) as ScrapeProgress & {
+        status?: string;
+        total?: number;
+        verified?: number;
+        invalid?: number;
+        catchAll?: number;
+        unknown?: number;
+      };
 
       if (data.stage === 'current') {
+        // Snapshot spreads the whole job object — read counters here so we don't
+        // lose final values when the job completes before SSE connects.
+        setState((prev) => ({
+          ...prev,
+          summary: {
+            total: data.total ?? prev.summary.total,
+            verified: data.verified ?? prev.summary.verified,
+            invalid: data.invalid ?? prev.summary.invalid,
+            catchAll: data.catchAll ?? prev.summary.catchAll,
+            unknown: data.unknown ?? prev.summary.unknown,
+          },
+        }));
         if (data.status === 'completed') markDone('completed');
         else if (data.status === 'failed') markDone('failed');
         return;
