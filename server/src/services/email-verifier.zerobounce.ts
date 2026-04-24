@@ -32,10 +32,18 @@ interface ZBBatchResponse {
 
 function mapStatus(zbStatus: string): ZBStatus {
   switch (zbStatus.toLowerCase()) {
-    case 'valid':      return 'valid';
-    case 'invalid':    return 'invalid';
-    case 'catch-all':  return 'catch-all';
-    default:           return 'unknown';
+    case 'valid':       return 'valid';
+    case 'invalid':     return 'invalid';
+    case 'catch-all':   return 'catch-all';
+    // ZeroBounce-specific categories that are definitively undeliverable:
+    // role-based addresses flagged as do-not-mail, known spam traps, abuse
+    // reporters, and "toxic" (disposable / complainer) addresses. Treat all
+    // as invalid so they get excluded from campaigns.
+    case 'do_not_mail':
+    case 'spamtrap':
+    case 'abuse':
+    case 'toxic':       return 'invalid';
+    default:            return 'unknown';
   }
 }
 
@@ -77,7 +85,7 @@ export async function verifyEmails(emails: string[]): Promise<Array<{ email: str
 
     console.log(`[ZeroBounce] Verifying batch ${Math.floor(i / BATCH_SIZE) + 1}: ${chunk.length} emails`);
 
-    const response = (await postJson('https://bulkapi.zerobounce.net/v2/validatebatch', {
+    const response = (await postJson('https://api.zerobounce.net/v2/validatebatch', {
       api_key: apiKey,
       email_batch: emailBatch,
     })) as ZBBatchResponse;

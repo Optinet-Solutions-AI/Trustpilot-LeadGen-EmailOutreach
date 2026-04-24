@@ -213,22 +213,40 @@ router.post('/', async (req: Request, res: Response) => {
 
         emit(jobId, 'verify_saving', String(allResults.length));
 
+        let updatedCount = 0;
+        let noteCount = 0;
+        let skippedCount = 0;
         for (const result of allResults) {
           const leadIdsForEmail = emailToLeadIds.get(result.email) || [];
+          if (leadIdsForEmail.length === 0) {
+            console.warn(`[verify] ${jobId} NO lead found for email=${JSON.stringify(result.email)} — map lookup miss`);
+            skippedCount++;
+            continue;
+          }
           const isVerified = result.status === 'valid';
           for (const leadId of leadIdsForEmail) {
-            await supabase.from('leads').update({
+            const { error: updErr } = await supabase.from('leads').update({
               email_verified: isVerified,
               verification_status: result.status,
             }).eq('id', leadId);
+            if (updErr) console.error(`[verify] ${jobId} leads UPDATE failed for ${leadId}: ${updErr.message}`);
+            else updatedCount++;
 
-            await createNote(leadId, {
-              type: 'verification',
-              content: `Email ${result.email} verified: ${result.status}`,
-              metadata: { email: result.email, status: result.status },
-            });
+            try {
+              await createNote(leadId, {
+                type: 'verification',
+                content: `Email ${result.email} verified: ${result.status}`,
+                metadata: { email: result.email, status: result.status },
+              });
+              noteCount++;
+            } catch (noteErr) {
+              const m = noteErr instanceof Error ? noteErr.message : String(noteErr);
+              console.error(`[verify] ${jobId} createNote failed for ${leadId}: ${m}`);
+            }
           }
         }
+
+        console.log(`[verify] ${jobId} done. updated=${updatedCount} notes=${noteCount} skipped=${skippedCount}`);
 
         job.status = 'completed';
         job.completedAt = new Date().toISOString();
