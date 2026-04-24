@@ -110,7 +110,7 @@ export default function Leads() {
     return localStorage.getItem('active_verify_job');
   });
   const [verifyStartedAt, setVerifyStartedAt] = useState<string | null>(null);
-  const [verifyResult, setVerifyResult] = useState<{ total: number; verified: number; invalid: number; catchAll: number } | null>(null);
+  const [verifyResult, setVerifyResult] = useState<{ total: number; verified: number; invalid: number; catchAll: number; unknown: number } | null>(null);
   const [verifyEmailField, setVerifyEmailField] = useState<'trustpilot' | 'website' | 'both'>('trustpilot');
   const [enrichJobId, setEnrichJobId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
@@ -179,6 +179,7 @@ export default function Leads() {
         verified: verifyJob.summary.verified,
         invalid: verifyJob.summary.invalid,
         catchAll: verifyJob.summary.catchAll,
+        unknown: verifyJob.summary.unknown,
       });
       setVerifyJobId(null);
       setVerifyStartedAt(null);
@@ -243,7 +244,7 @@ export default function Leads() {
           </span>
           <span className="font-semibold">Verification complete!</span>
           <span className="font-normal">
-            <strong>{verifyResult.verified}</strong> valid, <strong>{verifyResult.invalid}</strong> invalid, <strong>{verifyResult.catchAll}</strong> catch-all out of <strong>{verifyResult.total}</strong> address{verifyResult.total !== 1 ? 'es' : ''}.
+            <strong>{verifyResult.verified}</strong> valid, <strong>{verifyResult.invalid}</strong> invalid, <strong>{verifyResult.catchAll}</strong> catch-all, <strong>{verifyResult.unknown}</strong> unknown out of <strong>{verifyResult.total}</strong> address{verifyResult.total !== 1 ? 'es' : ''}.
           </span>
           <button
             onClick={() => setVerifyResult(null)}

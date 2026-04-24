@@ -258,6 +258,7 @@ export default function JobProgress({
             <Card label="Valid" value={summary.verifiesValid} accent="#006630" hint="deliverable addresses" />
             <Card label="Invalid" value={summary.verifiesInvalid} accent="#b0004a" hint="will bounce" />
             <Card label="Catch-all" value={summary.verifiedCatchAll} accent="#b35500" hint="domain accepts all mail" />
+            <Card label="Unknown" value={Math.max(summary.verifiesTotal - summary.verifiesValid - summary.verifiesInvalid - summary.verifiedCatchAll, 0)} accent="#64748b" hint="domain unreachable or greylisted" />
           </>
         ) : kind === 'scrape' ? (
           <>
