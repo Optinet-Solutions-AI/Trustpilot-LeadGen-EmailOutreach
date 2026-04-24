@@ -95,10 +95,30 @@ router.get('/:jobId/stream', (req: Request, res: Response) => {
   req.on('close', () => verifyEvents.off('progress', handler));
 });
 
+type EmailField = 'primary' | 'trustpilot' | 'both';
+
+function pickEmails(
+  lead: { id: string; primary_email: string | null; trustpilot_email: string | null; website_email: string | null },
+  field: EmailField,
+): string[] {
+  if (field === 'trustpilot') {
+    return lead.trustpilot_email ? [lead.trustpilot_email] : [];
+  }
+  if (field === 'both') {
+    const emails: string[] = [];
+    if (lead.trustpilot_email) emails.push(lead.trustpilot_email);
+    if (lead.website_email && lead.website_email !== lead.trustpilot_email) emails.push(lead.website_email);
+    return emails;
+  }
+  // primary (default): website > trustpilot fallback
+  const email = lead.primary_email || lead.website_email || lead.trustpilot_email;
+  return email ? [email] : [];
+}
+
 // ── POST /api/verify — start verification job ────────────────────────────────
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { leadIds } = req.body;
+    const { leadIds, emailField = 'primary' } = req.body as { leadIds?: string[]; emailField?: EmailField };
     const supabase = getSupabase();
 
     let query = supabase.from('leads').select('id, primary_email, trustpilot_email, website_email');
@@ -118,8 +138,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const emailToLeadIds = new Map<string, string[]>();
     for (const lead of leads) {
-      const email = lead.primary_email || lead.website_email || lead.trustpilot_email;
-      if (email) {
+      for (const email of pickEmails(lead, emailField)) {
         const existing = emailToLeadIds.get(email) || [];
         existing.push(lead.id);
         emailToLeadIds.set(email, existing);
