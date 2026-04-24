@@ -111,7 +111,7 @@ export default function Leads() {
   });
   const [verifyStartedAt, setVerifyStartedAt] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<{ total: number; verified: number; invalid: number; catchAll: number } | null>(null);
-  const [verifyEmailField, setVerifyEmailField] = useState<'primary' | 'trustpilot' | 'both'>('primary');
+  const [verifyEmailField, setVerifyEmailField] = useState<'trustpilot' | 'website' | 'both'>('trustpilot');
   const [enrichJobId, setEnrichJobId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('active_enrich_job');
@@ -337,20 +337,20 @@ export default function Leads() {
                 </button>
                 <select
                   value={verifyEmailField}
-                  onChange={(e) => setVerifyEmailField(e.target.value as 'primary' | 'trustpilot' | 'both')}
+                  onChange={(e) => setVerifyEmailField(e.target.value as 'trustpilot' | 'website' | 'both')}
                   disabled={verifying || enriching}
                   className="h-full px-2 py-2 rounded-r-lg border border-l-0 border-blue-300 text-blue-700 text-xs font-semibold bg-white hover:bg-blue-50 disabled:opacity-50 transition-colors cursor-pointer focus:outline-none"
                   title="Which email to verify"
                 >
-                  <option value="primary">Primary</option>
-                  <option value="trustpilot">Trustpilot only</option>
+                  <option value="trustpilot">Trustpilot email</option>
+                  <option value="website">Website email</option>
                   <option value="both">Both</option>
                 </select>
                 <div className="absolute bottom-full mb-2 left-0 w-72 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed">
                   Checks email deliverability via ZeroBounce.<br />
-                  <strong>Primary</strong> — verifies the best available email (website › Trustpilot).<br />
-                  <strong>Trustpilot only</strong> — skips website emails, saves credits.<br />
-                  <strong>Both</strong> — verifies each email separately (2× credits per lead).
+                  <strong>Trustpilot email</strong> — verifies only the address scraped from the Trustpilot profile.<br />
+                  <strong>Website email</strong> — verifies only the address found on the company website.<br />
+                  <strong>Both</strong> — verifies each separately (2× credits per lead).
                   <span className="absolute top-full left-4 border-4 border-transparent border-t-slate-800" />
                 </div>
               </div>

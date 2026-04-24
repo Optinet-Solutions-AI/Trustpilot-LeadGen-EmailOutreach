@@ -95,7 +95,7 @@ router.get('/:jobId/stream', (req: Request, res: Response) => {
   req.on('close', () => verifyEvents.off('progress', handler));
 });
 
-type EmailField = 'primary' | 'trustpilot' | 'both';
+type EmailField = 'trustpilot' | 'website' | 'both';
 
 function pickEmails(
   lead: { id: string; primary_email: string | null; trustpilot_email: string | null; website_email: string | null },
@@ -104,21 +104,20 @@ function pickEmails(
   if (field === 'trustpilot') {
     return lead.trustpilot_email ? [lead.trustpilot_email] : [];
   }
-  if (field === 'both') {
-    const emails: string[] = [];
-    if (lead.trustpilot_email) emails.push(lead.trustpilot_email);
-    if (lead.website_email && lead.website_email !== lead.trustpilot_email) emails.push(lead.website_email);
-    return emails;
+  if (field === 'website') {
+    return lead.website_email ? [lead.website_email] : [];
   }
-  // primary (default): website > trustpilot fallback
-  const email = lead.primary_email || lead.website_email || lead.trustpilot_email;
-  return email ? [email] : [];
+  // both — verify each distinct email separately
+  const emails: string[] = [];
+  if (lead.trustpilot_email) emails.push(lead.trustpilot_email);
+  if (lead.website_email && lead.website_email !== lead.trustpilot_email) emails.push(lead.website_email);
+  return emails;
 }
 
 // ── POST /api/verify — start verification job ────────────────────────────────
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { leadIds, emailField = 'primary' } = req.body as { leadIds?: string[]; emailField?: EmailField };
+    const { leadIds, emailField = 'trustpilot' } = req.body as { leadIds?: string[]; emailField?: EmailField };
     const supabase = getSupabase();
 
     let query = supabase.from('leads').select('id, primary_email, trustpilot_email, website_email');
@@ -155,9 +154,9 @@ router.post('/', async (req: Request, res: Response) => {
       }
       const fieldLabel = emailField === 'trustpilot'
         ? 'Trustpilot email'
-        : emailField === 'both'
-          ? 'Trustpilot or website email'
-          : 'primary email';
+        : emailField === 'website'
+          ? 'website email'
+          : 'Trustpilot or website email';
       res.json({
         success: true,
         data: {
