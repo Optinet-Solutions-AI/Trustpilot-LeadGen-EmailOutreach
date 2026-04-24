@@ -1,6 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
-import { verifyEmails } from '../services/email-verifier.mock.js';
+import { verifyEmails as verifyEmailsMock } from '../services/email-verifier.mock.js';
+import { verifyEmails as verifyEmailsZB } from '../services/email-verifier.zerobounce.js';
+
+const verifyEmails = process.env.ZEROBOUNCE_API_KEY
+  ? verifyEmailsZB
+  : verifyEmailsMock;
 import { createNote } from '../db/notes.js';
 
 const router = Router();
