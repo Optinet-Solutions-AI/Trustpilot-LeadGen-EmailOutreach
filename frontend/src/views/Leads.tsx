@@ -135,9 +135,9 @@ export default function Leads() {
     if (selectedIds.length === 0) return;
     try {
       const res = await api.post('/verify', { leadIds: selectedIds, emailField: verifyEmailField });
-      const { jobId, total } = res.data.data;
+      const { jobId, total, message } = res.data.data;
       if (!jobId) {
-        notify('success', 'No leads needed verification');
+        notify('success', message || 'No leads needed verification');
         return;
       }
       notify('success', `Verifying ${total} email address${total !== 1 ? 'es' : ''} — watch the live log below`);

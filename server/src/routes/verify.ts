@@ -146,6 +146,29 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     const emails = [...emailToLeadIds.keys()];
+
+    console.log(`[verify] emailField=${emailField} leadsFetched=${leads.length} emailsCollected=${emails.length}`);
+    if (emails.length === 0) {
+      console.log(`[verify] No emails found for field "${emailField}". Per-lead snapshot:`);
+      for (const l of leads.slice(0, 10)) {
+        console.log(`  lead=${l.id} tp=${JSON.stringify(l.trustpilot_email)} web=${JSON.stringify(l.website_email)} primary=${JSON.stringify(l.primary_email)}`);
+      }
+      const fieldLabel = emailField === 'trustpilot'
+        ? 'Trustpilot email'
+        : emailField === 'both'
+          ? 'Trustpilot or website email'
+          : 'primary email';
+      res.json({
+        success: true,
+        data: {
+          jobId: null,
+          total: 0,
+          message: `None of the ${leads.length} selected lead${leads.length === 1 ? '' : 's'} have a ${fieldLabel} to verify.`,
+        },
+      });
+      return;
+    }
+
     const jobId = randomUUID();
     const job: VerifyJob = {
       status: 'running',
