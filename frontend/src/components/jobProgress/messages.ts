@@ -175,11 +175,12 @@ export function translate(event: ScrapeProgress): FeedLine | null {
       };
     }
     case 'enrich_no_email': {
-      // detail = "{idx}|{total}|{domain}"
-      const [idx, total, domain] = splitPipes(detail);
+      // detail = "{idx}|{total}|{domain}|{reason?}"
+      const [idx, total, domain, reason] = splitPipes(detail);
+      const reasonSuffix = reason ? ` (${labelReason(reason)})` : '';
       return {
         kind: 'warn',
-        text: `(${idx}/${total}) ${domain} — no public contact email, moving on`,
+        text: `(${idx}/${total}) ${domain} — no public contact email found${reasonSuffix}`,
         timestamp,
       };
     }

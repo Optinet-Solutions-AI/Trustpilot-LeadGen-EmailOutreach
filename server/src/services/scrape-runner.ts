@@ -86,7 +86,11 @@ export function translateEnricherEvent(jobId: string, event: EnricherEvent): voi
       emitProgress(jobId, 'enrich_email', `${event.index}|${event.total}|${event.domain}|${event.email}|${event.tier}`);
       break;
     case 'enrich_no_email':
-      emitProgress(jobId, 'enrich_no_email', `${event.index}|${event.total}|${event.domain}`);
+      emitProgress(
+        jobId,
+        'enrich_no_email',
+        `${event.index}|${event.total}|${event.domain}|${event.reason ?? ''}`,
+      );
       break;
     case 'enrich_failed': {
       // Persist the failure so the Retry Failed button can revisit the URL later

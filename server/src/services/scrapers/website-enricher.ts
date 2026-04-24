@@ -21,6 +21,8 @@
 
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { Resolver } from 'node:dns/promises';
+import https from 'node:https';
+import http from 'node:http';
 import { launchBrowser, TIER_CONFIGS, humanDelay, type Tier } from './browser-launcher.js';
 import { dismissPopups, handleCloudflareChallenge, detectBlock } from './popup-handler.js';
 
@@ -223,6 +225,26 @@ function extractEmailsFromJsonLd(obj: unknown): string[] {
   return found;
 }
 
+/**
+ * Decode a Cloudflare-obfuscated email from a data-cfemail hex string.
+ * CF XOR encoding: byte[0] is the key; remaining bytes XOR against it.
+ * Returns null if malformed or the result contains no '@'.
+ */
+function decodeCfEmail(encodedHex: string): string | null {
+  try {
+    const hex = encodedHex.replace(/\s/g, '');
+    if (hex.length < 4 || hex.length % 2 !== 0) return null;
+    const key = parseInt(hex.slice(0, 2), 16);
+    let result = '';
+    for (let i = 2; i < hex.length; i += 2) {
+      result += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16) ^ key);
+    }
+    return result.includes('@') ? result.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function findEmailsOnPage(page: Page): Promise<string[]> {
   const collected = new Set<string>();
   try {
@@ -238,15 +260,25 @@ async function findEmailsOnPage(page: Page): Promise<string[]> {
         const v = el.getAttribute('data-email') || el.getAttribute('data-mail') || el.getAttribute('data-contact');
         if (v && v.includes('@')) dataAttrEmails.push(v.toLowerCase().trim());
       });
+      const cfRawEmails: string[] = [];
+      document.querySelectorAll('[data-cfemail]').forEach((el) => {
+        const encoded = el.getAttribute('data-cfemail');
+        if (encoded) cfRawEmails.push(encoded);
+      });
       return {
         mailtoEmails,
         dataAttrEmails,
+        cfRawEmails,
         bodyText: document.body ? document.body.innerText : '',
       };
     });
 
     pageData.mailtoEmails.forEach((e) => collected.add(e));
     pageData.dataAttrEmails.forEach((e) => collected.add(e));
+    for (const encoded of pageData.cfRawEmails) {
+      const decoded = decodeCfEmail(encoded);
+      if (decoded) collected.add(decoded);
+    }
     extractEmailsFromText(pageData.bodyText).forEach((e) => collected.add(e));
 
     // ── Strategy B: JSON-LD structured data ─────────────────────────────────
@@ -448,9 +480,39 @@ async function scrapeSite(
 
   const all = new Set<string>();
 
-  // 1. Homepage
-  const nav = await safeGoto(page, url, timeout);
-  if (!nav.ok) return { found: null, blockReason: (nav as { ok: false; reason: string }).reason };
+  // 1. Homepage — try URL variants before giving up on nav_error
+  //    Priority: original → swap protocol → add www. → swap+www.
+  function buildVariants(inputUrl: string): string[] {
+    const variants = [inputUrl];
+    try {
+      const parsed = new URL(inputUrl);
+      const altProto = parsed.protocol === 'https:'
+        ? inputUrl.replace(/^https:\/\//, 'http://')
+        : inputUrl.replace(/^http:\/\//, 'https://');
+      if (!variants.includes(altProto)) variants.push(altProto);
+      if (!parsed.hostname.startsWith('www.')) {
+        const withWww = inputUrl.replace(/^(https?:\/\/)/, '$1www.');
+        const altWithWww = altProto.replace(/^(https?:\/\/)/, '$1www.');
+        if (!variants.includes(withWww)) variants.push(withWww);
+        if (!variants.includes(altWithWww)) variants.push(altWithWww);
+      }
+    } catch { /* malformed URL — original only */ }
+    return variants;
+  }
+
+  const variants = buildVariants(url);
+  let lastReason: string | undefined;
+  let navOk = false;
+  for (const candidate of variants) {
+    if (outOfTime()) break;
+    const nav = await safeGoto(page, candidate, timeout);
+    if (nav.ok) { navOk = true; break; }
+    lastReason = (nav as { ok: false; reason: string }).reason;
+    // Only keep retrying on nav_error. If the site actively blocks us
+    // (cloudflare/bot/403), a different URL scheme won't help.
+    if (lastReason !== 'nav_error') break;
+  }
+  if (!navOk) return { found: null, blockReason: lastReason ?? 'nav_error' };
 
   const homepage = await findEmailsOnPage(page);
   homepage.forEach((e) => all.add(e));
@@ -511,6 +573,85 @@ const BLOCK_REASONS_THAT_ESCALATE = new Set([
 // larger batches.
 const PER_LEAD_BUDGET_MS = 60_000;
 
+/**
+ * Lightweight HTTP/HTTPS fast lane: attempts a raw GET of the homepage and
+ * /contact using node:https/node:http builtins — no browser, no stealth.
+ * Works for static HTML sites where the email is already in the source.
+ * Returns the best email found, or null.
+ */
+async function httpFastLane(websiteUrl: string): Promise<string | null> {
+  const url = normalizeUrl(websiteUrl);
+  if (!url) return null;
+
+  const FAST_LANE_TIMEOUT_MS = 5_000;
+  const FAST_LANE_MAX_BYTES = 500_000;
+
+  async function fetchRaw(targetUrl: string, redirectsLeft = 1): Promise<string | null> {
+    return new Promise((resolve) => {
+      const parsed = (() => { try { return new URL(targetUrl); } catch { return null; } })();
+      if (!parsed) return resolve(null);
+      const lib = parsed.protocol === 'https:' ? https : http;
+      let resolved = false;
+      const finish = (v: string | null) => { if (!resolved) { resolved = true; resolve(v); } };
+      const req = lib.get(
+        targetUrl,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+            'Accept': 'text/html,application/xhtml+xml',
+          },
+          timeout: FAST_LANE_TIMEOUT_MS,
+        },
+        (res) => {
+          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            if (redirectsLeft <= 0) return finish(null);
+            const next = new URL(res.headers.location, targetUrl).toString();
+            fetchRaw(next, redirectsLeft - 1).then(finish).catch(() => finish(null));
+            return;
+          }
+          if (!res.statusCode || res.statusCode >= 400) {
+            res.resume();
+            return finish(null);
+          }
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => {
+            body += chunk;
+            if (body.length > FAST_LANE_MAX_BYTES) req.destroy();
+          });
+          res.on('end', () => finish(body));
+          res.on('error', () => finish(null));
+        },
+      );
+      req.on('timeout', () => { req.destroy(); finish(null); });
+      req.on('error', () => finish(null));
+    });
+  }
+
+  const urlsToTry = [url, `${url.replace(/\/$/, '')}/contact`];
+  const all = new Set<string>();
+
+  for (const probe of urlsToTry) {
+    const body = await fetchRaw(probe);
+    if (!body) continue;
+    extractEmailsFromText(body).forEach((e) => all.add(e));
+    const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
+    for (const m of body.matchAll(cfPattern)) {
+      const decoded = decodeCfEmail(m[1]);
+      if (decoded) all.add(decoded);
+    }
+    if (all.size > 0) break;
+  }
+
+  const candidates = [...all].filter(
+    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+  );
+  if (candidates.length === 0) return null;
+  const verified = await filterByMx(candidates);
+  return pickBestEmail(verified);
+}
+
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
@@ -523,6 +664,17 @@ async function enrichSingleLeadWithTiers(
       if (t === 4 && !process.env.SCRAPER_RES_PROXY_URL) continue;
       availableTiers.push(t);
     }
+  }
+
+  // HTTP fast lane — try raw GET before paying browser-launch cost
+  if (Date.now() < deadline) {
+    try {
+      const fastEmail = await httpFastLane(websiteUrl);
+      if (fastEmail) {
+        console.log(`    [enricher] ✓ fast-lane hit: ${fastEmail}`);
+        return { email: fastEmail, tier: 2 };
+      }
+    } catch { /* best-effort — fall through to browser path */ }
   }
 
   let lastBlockReason: string | undefined;
