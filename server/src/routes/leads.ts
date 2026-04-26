@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead } from '../db/leads.js';
+import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 
@@ -77,6 +77,22 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
     const lead = await updateLead(param(req.params.id), req.body);
     res.json({ success: true, data: lead });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// DELETE /api/leads/bulk — bulk delete (must come before /:id)
+router.delete('/bulk', async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ success: false, error: 'ids (non-empty array) is required' });
+      return;
+    }
+    const deleted = await bulkDeleteLeads(ids);
+    res.json({ success: true, data: { deleted } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

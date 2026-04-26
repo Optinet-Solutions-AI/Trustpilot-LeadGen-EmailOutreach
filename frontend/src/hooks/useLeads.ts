@@ -58,10 +58,18 @@ export function useLeads() {
     setLeads((prev) => prev.filter((l) => l.id !== id));
   }, []);
 
+  const bulkDelete = useCallback(async (ids: string[]) => {
+    const res = await api.delete('/leads/bulk', { data: { ids } });
+    const idSet = new Set(ids);
+    setLeads((prev) => prev.filter((l) => !idSet.has(l.id)));
+    setTotal((prev) => Math.max(0, prev - (res.data?.data?.deleted ?? ids.length)));
+    return res.data?.data?.deleted ?? ids.length;
+  }, []);
+
   const bulkUpdate = useCallback(async (ids: string[], patch: Partial<Lead>) => {
     const res = await api.patch('/leads/bulk', { ids, patch });
     return res.data.data;
   }, []);
 
-  return { leads, total, totalPages, loading, error, fetchLeads, updateLead, deleteLead, bulkUpdate };
+  return { leads, total, totalPages, loading, error, fetchLeads, updateLead, deleteLead, bulkDelete, bulkUpdate };
 }

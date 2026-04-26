@@ -54,7 +54,7 @@ const CATEGORIES = [
 ];
 
 export default function Leads() {
-  const { leads, total, totalPages, loading, fetchLeads, updateLead, deleteLead } = useLeads();
+  const { leads, total, totalPages, loading, fetchLeads, updateLead, deleteLead, bulkDelete } = useLeads();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -119,6 +119,8 @@ export default function Leads() {
   const [enrichStartedAt, setEnrichStartedAt] = useState<string | null>(null);
   const [enrichResult, setEnrichResult] = useState<{ found: number; total: number; failed: number } | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const verifyJob = useVerifyJob(verifyJobId);
@@ -169,6 +171,22 @@ export default function Leads() {
 
   const handleBulkEnrich = () => startEnrich(selectedIds);
   const handleEnrichAll  = () => startEnrich();
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    setDeleting(true);
+    try {
+      const deleted = await bulkDelete(selectedIds);
+      notify('success', `Deleted ${deleted} lead${deleted !== 1 ? 's' : ''}`);
+      setSelectedIds([]);
+      setConfirmDeleteOpen(false);
+      loadLeads();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Failed to delete leads');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // React to verify job reaching a terminal state
   useEffect(() => {
@@ -371,6 +389,22 @@ export default function Leads() {
                   <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
                 </div>
               </div>
+
+              {/* Delete */}
+              <div className="relative group">
+                <button
+                  onClick={() => setConfirmDeleteOpen(true)}
+                  disabled={verifying || enriching || deleting}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#b0004a]/30 text-[#b0004a] text-sm font-bold hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">delete</span>
+                  {deleting ? 'Deleting...' : `Delete (${selectedIds.length})`}
+                </button>
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
+                  Permanently delete the selected leads from the database. This cannot be undone.
+                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                </div>
+              </div>
             </>
           )}
           {/* Enrich All — always visible, enriches every lead missing website_email */}
@@ -511,6 +545,45 @@ export default function Leads() {
           onClose={() => setQuickSendOpen(false)}
           onDone={() => { setQuickSendOpen(false); loadLeads(); }}
         />
+      )}
+
+      {confirmDeleteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="bg-white rounded-2xl ambient-shadow max-w-md w-full p-6">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="rounded-full bg-[#ffd9de] p-2">
+                <span className="material-symbols-outlined text-[#b0004a]">delete_forever</span>
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                  Delete {selectedIds.length} lead{selectedIds.length !== 1 ? 's' : ''}?
+                </h3>
+                <p className="text-sm text-secondary mt-1">
+                  This permanently removes the selected leads and their notes, follow-ups, and campaign history. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setConfirmDeleteOpen(false)}
+                disabled={deleting}
+                className="px-4 py-2 rounded-lg text-sm font-bold text-secondary hover:bg-surface-container transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={deleting}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#b0004a] text-white text-sm font-bold hover:bg-[#900040] transition-colors disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[16px]">
+                  {deleting ? 'progress_activity' : 'delete'}
+                </span>
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

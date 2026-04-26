@@ -89,6 +89,16 @@ export async function deleteLead(id: string) {
   if (error) throw new Error(error.message);
 }
 
+export async function bulkDeleteLeads(ids: string[]): Promise<number> {
+  const supabase = getSupabase();
+  const { error, count } = await supabase
+    .from('leads')
+    .delete({ count: 'exact' })
+    .in('id', ids);
+  if (error) throw new Error(error.message);
+  return count || 0;
+}
+
 // Upsert manually-entered email addresses as minimal lead records.
 // Uses trustpilot_url = 'manual:<email>' as the unique key to avoid conflicts.
 // Returns the IDs of all upserted leads.
