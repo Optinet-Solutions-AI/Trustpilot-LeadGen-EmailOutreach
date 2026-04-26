@@ -106,6 +106,12 @@ paths:
       responses:
         "200":
           description: OK
+    delete:
+      operationId: bulkDeleteLeads
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/leads/{id}:
     get:
       operationId: getLead
