@@ -327,103 +327,84 @@ export default function Leads() {
         </div>
         <div className="flex items-center gap-3">
           {selectedIds.length > 0 && (
-            <>
-              {/* Enrich */}
-              <div className="relative group">
-                <button
-                  onClick={handleBulkEnrich}
-                  disabled={enriching || verifying}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#006630]/30 text-[#006630] text-sm font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[16px]">language</span>
-                  {enriching ? 'Enriching...' : `Enrich (${selectedIds.length})`}
-                </button>
-                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
-                  Visits each company website and scrapes their contact email. Runs in background — results appear in 2–5 min.
-                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
-                </div>
-              </div>
+            <div className="flex items-center gap-0.5 bg-white rounded-full ambient-shadow border border-slate-100 pl-3 pr-1 py-1">
+              <span className="text-xs font-bold text-on-surface mr-1">
+                {selectedIds.length}<span className="text-secondary font-medium ml-1">selected</span>
+              </span>
+              <div className="w-px h-5 bg-slate-200 mx-1" />
 
-              {/* Verify */}
-              <div className="relative group flex items-center gap-0">
+              {/* Enrich */}
+              <button
+                onClick={handleBulkEnrich}
+                disabled={enriching || verifying}
+                title={enriching ? 'Enriching...' : `Enrich ${selectedIds.length} — visits each company website and scrapes their contact email`}
+                className="p-2 rounded-full text-[#006630] hover:bg-[#006630]/10 disabled:opacity-50 transition-colors"
+              >
+                <span className={`material-symbols-outlined text-[18px] ${enriching ? 'animate-spin' : ''}`}>
+                  {enriching ? 'progress_activity' : 'language'}
+                </span>
+              </button>
+
+              {/* Verify + email-field selector */}
+              <div className="flex items-center">
                 <button
                   onClick={handleBulkVerify}
                   disabled={verifying || enriching}
-                  className="flex items-center gap-2 px-4 py-2 rounded-l-lg border border-blue-300 text-blue-700 text-sm font-bold hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                  title={verifying ? 'Verifying...' : `Verify ${selectedIds.length} (${verifyEmailField}) — checks deliverability via ZeroBounce`}
+                  className="p-2 rounded-l-full text-blue-700 hover:bg-blue-50 disabled:opacity-50 transition-colors"
                 >
-                  <span className="material-symbols-outlined text-[16px]">verified_user</span>
-                  {verifying ? 'Verifying...' : `Verify (${selectedIds.length})`}
+                  <span className={`material-symbols-outlined text-[18px] ${verifying ? 'animate-spin' : ''}`}>
+                    {verifying ? 'progress_activity' : 'verified_user'}
+                  </span>
                 </button>
                 <select
                   value={verifyEmailField}
                   onChange={(e) => setVerifyEmailField(e.target.value as 'trustpilot' | 'website' | 'both')}
                   disabled={verifying || enriching}
-                  className="h-full px-2 py-2 rounded-r-lg border border-l-0 border-blue-300 text-blue-700 text-xs font-semibold bg-white hover:bg-blue-50 disabled:opacity-50 transition-colors cursor-pointer focus:outline-none"
                   title="Which email to verify"
+                  className="text-[10px] font-bold text-blue-700 bg-transparent border-0 pl-0.5 pr-1.5 py-1.5 cursor-pointer focus:outline-none rounded-r-full hover:bg-blue-50 disabled:opacity-50 uppercase tracking-wide"
                 >
-                  <option value="trustpilot">Trustpilot email</option>
-                  <option value="website">Website email</option>
+                  <option value="trustpilot">TP</option>
+                  <option value="website">Web</option>
                   <option value="both">Both</option>
                 </select>
-                <div className="absolute bottom-full mb-2 left-0 w-72 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed">
-                  Checks email deliverability via ZeroBounce.<br />
-                  <strong>Trustpilot email</strong> — verifies only the address scraped from the Trustpilot profile.<br />
-                  <strong>Website email</strong> — verifies only the address found on the company website.<br />
-                  <strong>Both</strong> — verifies each separately (2× credits per lead).
-                  <span className="absolute top-full left-4 border-4 border-transparent border-t-slate-800" />
-                </div>
               </div>
 
               {/* Send */}
-              <div className="relative group">
-                <button
-                  onClick={() => setQuickSendOpen(true)}
-                  disabled={verifying || enriching}
-                  className="flex items-center gap-2 px-4 py-2 primary-gradient text-on-primary rounded-lg text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform disabled:opacity-50"
-                >
-                  <span className="material-symbols-outlined text-[16px]">send</span>
-                  Send ({selectedIds.length})
-                </button>
-                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
-                  Send a quick one-off email to the selected leads without creating a full campaign.
-                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
-                </div>
-              </div>
+              <button
+                onClick={() => setQuickSendOpen(true)}
+                disabled={verifying || enriching}
+                title={`Send ${selectedIds.length} — quick one-off email without creating a full campaign`}
+                className="p-2 rounded-full text-[#b0004a] hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[18px]">send</span>
+              </button>
 
               {/* Delete */}
-              <div className="relative group">
-                <button
-                  onClick={() => setConfirmDeleteOpen(true)}
-                  disabled={verifying || enriching || deleting}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#b0004a]/30 text-[#b0004a] text-sm font-bold hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[16px]">delete</span>
-                  {deleting ? 'Deleting...' : `Delete (${selectedIds.length})`}
-                </button>
-                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
-                  Permanently delete the selected leads from the database. This cannot be undone.
-                  <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
-                </div>
-              </div>
-            </>
+              <button
+                onClick={() => setConfirmDeleteOpen(true)}
+                disabled={verifying || enriching || deleting}
+                title={deleting ? 'Deleting...' : `Delete ${selectedIds.length} — permanently removes the selected leads`}
+                className="p-2 rounded-full text-error hover:bg-red-50 disabled:opacity-50 transition-colors"
+              >
+                <span className={`material-symbols-outlined text-[18px] ${deleting ? 'animate-spin' : ''}`}>
+                  {deleting ? 'progress_activity' : 'delete'}
+                </span>
+              </button>
+            </div>
           )}
           {/* Enrich All — always visible, enriches every lead missing website_email */}
-          <div className="relative group">
-            <button
-              onClick={handleEnrichAll}
-              disabled={enriching}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#006630]/30 text-[#006630] text-sm font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
-            >
-              <span className={`material-symbols-outlined text-[16px] ${enriching ? 'animate-spin' : ''}`}>
-                {enriching ? 'progress_activity' : 'travel_explore'}
-              </span>
-              {enriching ? 'Enriching…' : 'Enrich All'}
-            </button>
-            <div className="absolute bottom-full mb-2 right-0 w-64 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed text-center">
-              Visits every company website and finds their contact email. Only runs on leads that don't have a website email yet. Runs in background.
-              <span className="absolute top-full right-4 border-4 border-transparent border-t-slate-800" />
-            </div>
-          </div>
+          <button
+            onClick={handleEnrichAll}
+            disabled={enriching}
+            title="Enrich All — visits every company website and finds their contact email. Only runs on leads that don't have a website email yet."
+            className="flex items-center gap-2 px-3.5 py-2 rounded-full border border-[#006630]/30 text-[#006630] text-xs font-bold hover:bg-[#006630]/5 disabled:opacity-50 transition-colors"
+          >
+            <span className={`material-symbols-outlined text-[16px] ${enriching ? 'animate-spin' : ''}`}>
+              {enriching ? 'progress_activity' : 'travel_explore'}
+            </span>
+            {enriching ? 'Enriching…' : 'Enrich All'}
+          </button>
 
           {/* View toggle */}
           <div className="flex bg-surface-container-high rounded-lg p-1 gap-1">
