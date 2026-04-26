@@ -218,6 +218,32 @@ paths:
       responses:
         "200":
           description: OK
+  /api/verify/status:
+    get:
+      operationId: verifyStatus
+      security: []
+      parameters:
+        - name: jobId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /api/verify/{jobId}/stream:
+    get:
+      operationId: verifyStream
+      security: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
   /api/enrich:
     post:
       operationId: enrichLeads
