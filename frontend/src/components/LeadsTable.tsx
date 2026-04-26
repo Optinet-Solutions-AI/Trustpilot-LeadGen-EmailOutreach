@@ -1,8 +1,27 @@
 import { useState, useRef } from 'react';
-import type { Lead, LeadStatus } from '../types/lead';
+import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
 
 function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
+}
+
+function VerifyBadge({ status }: { status: VerificationStatus | null | undefined }) {
+  if (!status) return null;
+  const styles: Record<VerificationStatus, { bg: string; fg: string; icon: string; label: string; title: string }> = {
+    'valid':     { bg: 'bg-green-50',  fg: 'text-green-700',  icon: 'verified',          label: 'valid',     title: 'Deliverable — safe to send' },
+    'invalid':   { bg: 'bg-red-50',    fg: 'text-red-700',    icon: 'cancel',            label: 'invalid',   title: 'Will bounce — exclude from campaigns' },
+    'catch-all': { bg: 'bg-amber-50',  fg: 'text-amber-700',  icon: 'help',              label: 'catch-all', title: 'Domain accepts all mail — risky' },
+    'unknown':   { bg: 'bg-slate-50',  fg: 'text-slate-500',  icon: 'help_outline',      label: 'unknown',   title: 'Domain unreachable or greylisted' },
+  };
+  const s = styles[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[9px] font-bold ${s.bg} ${s.fg} px-1.5 py-0.5 rounded-full w-fit`}
+      title={s.title}
+    >
+      <span className="material-symbols-outlined text-[9px]">{s.icon}</span>{s.label}
+    </span>
+  );
 }
 
 interface Props {
@@ -178,10 +197,13 @@ export default function LeadsTable({
         return (
           <td key={col} className="px-4 py-3 min-w-[170px] max-w-[200px]">
             {lead.trustpilot_email ? (
-              <span className="inline-flex items-center gap-1 text-xs text-on-surface">
-                <span className="material-symbols-outlined text-[12px] text-blue-400 shrink-0">alternate_email</span>
-                <span className="truncate">{lead.trustpilot_email}</span>
-              </span>
+              <div className="flex flex-col gap-1">
+                <span className={`inline-flex items-center gap-1 text-xs ${lead.trustpilot_email_status === 'invalid' ? 'text-slate-400 line-through' : 'text-on-surface'}`}>
+                  <span className="material-symbols-outlined text-[12px] text-blue-400 shrink-0">alternate_email</span>
+                  <span className="truncate">{lead.trustpilot_email}</span>
+                </span>
+                <VerifyBadge status={lead.trustpilot_email_status} />
+              </div>
             ) : (
               <span className="text-slate-300 text-xs">—</span>
             )}
@@ -194,14 +216,16 @@ export default function LeadsTable({
           <td key={col} className="px-4 py-3 min-w-[170px] max-w-[220px]">
             {hasWebsiteEmail ? (
               <div className="flex flex-col gap-1">
-                <span className="inline-flex items-center gap-1 text-xs text-on-surface">
+                <span className={`inline-flex items-center gap-1 text-xs ${lead.website_email_status === 'invalid' ? 'text-slate-400 line-through' : 'text-on-surface'}`}>
                   <span className="material-symbols-outlined text-[12px] text-green-600 shrink-0">language</span>
                   <span className="truncate font-medium">{lead.website_email}</span>
-                  {lead.email_verified && <span className="material-symbols-outlined text-[11px] text-[#006630] shrink-0">verified</span>}
                 </span>
-                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full w-fit">
-                  <span className="material-symbols-outlined text-[9px]">language</span>enriched
-                </span>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full w-fit">
+                    <span className="material-symbols-outlined text-[9px]">language</span>enriched
+                  </span>
+                  <VerifyBadge status={lead.website_email_status} />
+                </div>
               </div>
             ) : hasWebsiteUrl ? (
               <div className="flex flex-col gap-1">

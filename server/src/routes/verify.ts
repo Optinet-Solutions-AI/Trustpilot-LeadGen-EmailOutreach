@@ -135,16 +135,23 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
-    const emailToLeadIds = new Map<string, string[]>();
+    // Map each unique email -> the leads that own it, plus which source
+    // field on those leads (trustpilot vs website) matched. Carrying the
+    // source forward lets us update the per-source status column later.
+    type LeadTarget = { id: string; source: 'trustpilot' | 'website' };
+    const emailToTargets = new Map<string, LeadTarget[]>();
     for (const lead of leads) {
       for (const email of pickEmails(lead, emailField)) {
-        const existing = emailToLeadIds.get(email) || [];
-        existing.push(lead.id);
-        emailToLeadIds.set(email, existing);
+        const targets = emailToTargets.get(email) || [];
+        if (lead.trustpilot_email === email) targets.push({ id: lead.id, source: 'trustpilot' });
+        if (lead.website_email === email && lead.website_email !== lead.trustpilot_email) {
+          targets.push({ id: lead.id, source: 'website' });
+        }
+        emailToTargets.set(email, targets);
       }
     }
 
-    const emails = [...emailToLeadIds.keys()];
+    const emails = [...emailToTargets.keys()];
 
     console.log(`[verify] emailField=${emailField} leadsFetched=${leads.length} emailsCollected=${emails.length}`);
     if (emails.length === 0) {
@@ -217,31 +224,35 @@ router.post('/', async (req: Request, res: Response) => {
         let noteCount = 0;
         let skippedCount = 0;
         for (const result of allResults) {
-          const leadIdsForEmail = emailToLeadIds.get(result.email) || [];
-          if (leadIdsForEmail.length === 0) {
+          const targets = emailToTargets.get(result.email) || [];
+          if (targets.length === 0) {
             console.warn(`[verify] ${jobId} NO lead found for email=${JSON.stringify(result.email)} — map lookup miss`);
             skippedCount++;
             continue;
           }
           const isVerified = result.status === 'valid';
-          for (const leadId of leadIdsForEmail) {
-            const { error: updErr } = await supabase.from('leads').update({
+          for (const target of targets) {
+            const patch: Record<string, unknown> = {
               email_verified: isVerified,
               verification_status: result.status,
-            }).eq('id', leadId);
-            if (updErr) console.error(`[verify] ${jobId} leads UPDATE failed for ${leadId}: ${updErr.message}`);
+            };
+            if (target.source === 'trustpilot') patch.trustpilot_email_status = result.status;
+            if (target.source === 'website')    patch.website_email_status    = result.status;
+
+            const { error: updErr } = await supabase.from('leads').update(patch).eq('id', target.id);
+            if (updErr) console.error(`[verify] ${jobId} leads UPDATE failed for ${target.id}: ${updErr.message}`);
             else updatedCount++;
 
             try {
-              await createNote(leadId, {
+              await createNote(target.id, {
                 type: 'verification',
                 content: `Email ${result.email} verified: ${result.status}`,
-                metadata: { email: result.email, status: result.status },
+                metadata: { email: result.email, status: result.status, source: target.source },
               });
               noteCount++;
             } catch (noteErr) {
               const m = noteErr instanceof Error ? noteErr.message : String(noteErr);
-              console.error(`[verify] ${jobId} createNote failed for ${leadId}: ${m}`);
+              console.error(`[verify] ${jobId} createNote failed for ${target.id}: ${m}`);
             }
           }
         }

@@ -15,6 +15,8 @@ export interface Lead {
   star_rating: number | null;
   email_verified: boolean;
   verification_status: VerificationStatus;
+  trustpilot_email_status: VerificationStatus | null;
+  website_email_status: VerificationStatus | null;
   outreach_status: LeadStatus;
   screenshot_path: string | null;
   tags: string[];
