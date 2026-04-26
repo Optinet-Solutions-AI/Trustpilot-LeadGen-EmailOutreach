@@ -105,10 +105,6 @@ const SITEMAP_CONTACT_KEYWORDS = [
   'reach', 'touch', 'company', 'write', 'contatti', 'contato',
 ];
 
-// ─── MX fallback guesses (ordered — best cold-outreach address first) ───────
-
-const GUESS_PREFIXES = ['info', 'contact', 'hello', 'support', 'sales'];
-
 // ────────────────────────────────────────────────────────────────────────────
 
 function isUndeliverable(email: string): boolean {
@@ -441,24 +437,6 @@ async function fetchContactUrlsFromSitemap(
   return [];
 }
 
-// ─── MX fallback ────────────────────────────────────────────────────────────
-
-/**
- * Produce an `info@<domain>` guess unless DNS definitively says the domain
- * has no MX records. `'unknown'` (DNS timeout / refused) is NOT a definitive
- * answer — on Cloud Run outbound DNS to 8.8.8.8 is occasionally flaky, and
- * rejecting on that basis meant every enrichment returned zero emails on a
- * slow DNS day. A guess that ZeroBounce later flags as invalid is recoverable;
- * a silently-dropped guess is not.
- */
-async function mxValidatedGuess(websiteUrl: string): Promise<string | null> {
-  const domain = getDomain(websiteUrl);
-  if (!domain) return null;
-  const mx = await checkMx(domain);
-  if (mx === 'no_mx') return null;  // definitive — skip
-  return `${GUESS_PREFIXES[0]}@${domain}`;  // has_mx or unknown → guess
-}
-
 // ─── Per-lead enrichment ────────────────────────────────────────────────────
 
 interface ScrapeSiteResult {
@@ -655,7 +633,7 @@ async function httpFastLane(websiteUrl: string): Promise<string | null> {
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
-): Promise<{ email: string | null; tier: Tier | 'mx' | 'none'; blockReason?: string }> {
+): Promise<{ email: string | null; tier: Tier | 'none'; blockReason?: string }> {
   const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
@@ -702,10 +680,9 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
-  // Final fallback — MX-validated guess
-  const guess = await mxValidatedGuess(websiteUrl);
-  if (guess) return { email: guess, tier: 'mx', blockReason: lastBlockReason };
-
+  // No MX-guess fallback — if real scraping found nothing, return null.
+  // Guessed emails (info@<domain>) polluted the DB with addresses that look
+  // legitimate but were never actually verified to exist on the page.
   return { email: null, tier: 'none', blockReason: lastBlockReason };
 }
 
@@ -722,8 +699,8 @@ export interface EnrichableLead {
 export interface EnrichmentResult {
   lead: EnrichableLead;
   foundEmail: string | null;
-  source: 'scrape' | 'mx' | 'none';
-  tier: Tier | 'mx' | 'none';
+  source: 'scrape' | 'none';
+  tier: Tier | 'none';
   blockReason?: string;
 }
 
@@ -782,7 +759,7 @@ export async function enrichLeads(
         results[idx] = {
           lead,
           foundEmail: email,
-          source: tier === 'mx' ? 'mx' : tier === 'none' ? 'none' : 'scrape',
+          source: tier === 'none' ? 'none' : 'scrape',
           tier,
           blockReason,
         };
