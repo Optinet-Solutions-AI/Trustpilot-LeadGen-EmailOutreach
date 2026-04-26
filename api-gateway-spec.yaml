@@ -223,11 +223,10 @@ paths:
       operationId: verifyStatus
       security: []
       parameters:
-        - name: jobId
-          in: query
+        - in: query
+          name: jobId
           required: true
-          schema:
-            type: string
+          type: string
       responses:
         "200":
           description: OK
@@ -236,11 +235,10 @@ paths:
       operationId: verifyStream
       security: []
       parameters:
-        - name: jobId
-          in: path
+        - in: path
+          name: jobId
           required: true
-          schema:
-            type: string
+          type: string
       responses:
         "200":
           description: OK
