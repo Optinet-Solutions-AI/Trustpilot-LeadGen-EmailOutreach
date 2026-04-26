@@ -138,16 +138,23 @@ router.post('/', async (req: Request, res: Response) => {
     // Map each unique email -> the leads that own it, plus which source
     // field on those leads (trustpilot vs website) matched. Carrying the
     // source forward lets us update the per-source status column later.
+    // Keys are lower-cased because ZeroBounce normalizes case in its
+    // response, and case-sensitive lookups silently miss otherwise.
     type LeadTarget = { id: string; source: 'trustpilot' | 'website' };
     const emailToTargets = new Map<string, LeadTarget[]>();
+    const norm = (e: string) => e.toLowerCase().trim();
     for (const lead of leads) {
       for (const email of pickEmails(lead, emailField)) {
-        const targets = emailToTargets.get(email) || [];
-        if (lead.trustpilot_email === email) targets.push({ id: lead.id, source: 'trustpilot' });
-        if (lead.website_email === email && lead.website_email !== lead.trustpilot_email) {
+        const key = norm(email);
+        const targets = emailToTargets.get(key) || [];
+        if (lead.trustpilot_email && norm(lead.trustpilot_email) === key) {
+          targets.push({ id: lead.id, source: 'trustpilot' });
+        }
+        if (lead.website_email && norm(lead.website_email) === key
+            && norm(lead.website_email) !== norm(lead.trustpilot_email || '')) {
           targets.push({ id: lead.id, source: 'website' });
         }
-        emailToTargets.set(email, targets);
+        emailToTargets.set(key, targets);
       }
     }
 
@@ -224,7 +231,9 @@ router.post('/', async (req: Request, res: Response) => {
         let noteCount = 0;
         let skippedCount = 0;
         for (const result of allResults) {
-          const targets = emailToTargets.get(result.email) || [];
+          // ZeroBounce lowercases addresses in its response, so look up by the
+          // normalized form to match the keys we built earlier.
+          const targets = emailToTargets.get(norm(result.email)) || [];
           if (targets.length === 0) {
             console.warn(`[verify] ${jobId} NO lead found for email=${JSON.stringify(result.email)} — map lookup miss`);
             skippedCount++;
