@@ -640,23 +640,43 @@ async function httpFastLane(websiteUrl: string): Promise<string | null> {
  * extraction pipeline (regex + obfuscation + Cloudflare decode + MX filter)
  * we use on browser-rendered HTML.
  */
+// Pages to probe via ScrapingBee in priority order. Direct API smoke tests
+// confirmed ScrapingBee returns 200 + real HTML in 5–12s for Cloudflare-blocked
+// sites, so the cost of probing multiple paths is bounded and worth the lift.
+// Order matters — homepage first (cheapest signal), then dedicated contact
+// pages, then legal/regulatory pages where licensed operators are required to
+// publish operator contact info (the casino industry's only reliable source).
+const TIER5_PROBE_PATHS = [
+  '',                  // homepage
+  '/contact',          // EN — most common
+  '/kontakt',          // DA/DE/NO/SV — covers Nordic/German casino market
+  '/impressum',        // DE — legally mandated contact info
+  '/about',            // EN fallback
+];
+// Hard cap on Tier 5 calls per lead — each call is ~25 credits with
+// premium_proxy + render_js. 4 caps blocked-lead cost at ~100 credits.
+const TIER5_MAX_PROBES = 4;
+
 async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> {
   const url = normalizeUrl(websiteUrl);
   if (!url) return null;
 
-  // Single homepage fetch only. The previous /contact second pass cost an
-  // extra ~25 credits per blocked lead and almost never succeeded — sites
-  // that block the local browser typically also have /contact behind the
-  // same Cloudflare rule, and ScrapingBee is the expensive last resort.
-  // Better to spend the credit budget on more leads, fewer pages each.
+  const base = url.replace(/\/$/, '');
   const all = new Set<string>();
-  const html = await fetchViaScrapingbee(url, {
-    renderJs: true,
-    premiumProxy: true,
-    blockResources: true,
-  });
+  let probes = 0;
 
-  if (html) {
+  for (const subpath of TIER5_PROBE_PATHS) {
+    if (probes >= TIER5_MAX_PROBES) break;
+    const target = subpath ? `${base}${subpath}` : url;
+    probes++;
+
+    const html = await fetchViaScrapingbee(target, {
+      renderJs: true,
+      premiumProxy: true,
+      blockResources: true,
+    });
+    if (!html) continue;
+
     extractEmailsFromText(html).forEach((e) => all.add(e));
     // Decode Cloudflare-obfuscated emails embedded in data-cfemail attributes
     const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
@@ -664,14 +684,27 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
       const decoded = decodeCfEmail(m[1]);
       if (decoded) all.add(decoded);
     }
+
+    // Early exit on a top-priority email (contact/sales/hello). For acceptable
+    // prefixes (info/support) keep probing — legal/terms pages often expose
+    // better operator contact info than the homepage's generic info@.
+    const cleanNow = [...all].filter(
+      (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    );
+    if (cleanNow.some((e) => rankEmail(e) === 0)) break;
   }
 
   const candidates = [...all].filter(
     (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
   );
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    console.log(`    [tier5] no email after ${probes} probe(s)`);
+    return null;
+  }
   const verified = await filterByMx(candidates);
-  return pickBestEmail(verified);
+  const best = pickBestEmail(verified);
+  if (best) console.log(`    [tier5] hit after ${probes} probe(s): ${best}`);
+  return best;
 }
 
 async function enrichSingleLeadWithTiers(
