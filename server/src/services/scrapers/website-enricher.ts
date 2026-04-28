@@ -26,6 +26,7 @@ import http from 'node:http';
 import { launchBrowser, TIER_CONFIGS, humanDelay, type Tier } from './browser-launcher.js';
 import { dismissPopups, handleCloudflareChallenge, detectBlock } from './popup-handler.js';
 import { fetchViaScrapingbee, scrapingbeeEnabled } from './tier5-scrapingbee.js';
+import { tier6WhoisLookup } from './tier6-whois.js';
 
 // Use explicit DNS servers. System DNS on Cloud Run can be flaky and may refuse
 // MX queries when the instance is cold. Google + Cloudflare are always reachable.
@@ -710,7 +711,7 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
-): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'none'; blockReason?: string }> {
+): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'whois' | 'none'; blockReason?: string }> {
   const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
@@ -775,6 +776,21 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
+  // Tier 6 — WHOIS registrant lookup. Last-line fallback when every page-
+  // scraping tier failed. Most modern domains are GDPR-redacted so this
+  // rarely fires, but it's free, fast, and occasionally surfaces a real
+  // operator email on older domains or non-EU ccTLDs.
+  if (Date.now() < deadline) {
+    try {
+      const { email: whoisEmail } = await tier6WhoisLookup(websiteUrl);
+      if (whoisEmail) {
+        return { email: whoisEmail, tier: 'whois' };
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier6 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
   // No MX-guess fallback — if real scraping found nothing, return null.
   // Guessed emails (info@<domain>) polluted the DB with addresses that look
   // legitimate but were never actually verified to exist on the page.
@@ -795,7 +811,7 @@ export interface EnrichmentResult {
   lead: EnrichableLead;
   foundEmail: string | null;
   source: 'scrape' | 'none';
-  tier: Tier | 'scrapingbee' | 'none';
+  tier: Tier | 'scrapingbee' | 'whois' | 'none';
   blockReason?: string;
 }
 
