@@ -549,8 +549,11 @@ const BLOCK_REASONS_THAT_ESCALATE = new Set([
 // Hard per-lead time budget. Without this a single slow site (Cloudflare
 // challenge loops, 28 contact paths each timing out at 15s) could stall a
 // worker for >7 minutes, blowing the Cloud Run 60-min request limit on
-// larger batches.
-const PER_LEAD_BUDGET_MS = 60_000;
+// larger batches. Bumped from 60s → 150s after enabling Tier 5 ScrapingBee:
+// premium_proxy + render_js for Cloudflare-protected sites legitimately takes
+// 30–60s on their backend, and the previous 60s budget often expired before
+// Tier 5 could even start a request.
+const PER_LEAD_BUDGET_MS = 150_000;
 
 /**
  * Lightweight HTTP/HTTPS fast lane: attempts a raw GET of the homepage and
@@ -637,22 +640,23 @@ async function httpFastLane(websiteUrl: string): Promise<string | null> {
  * extraction pipeline (regex + obfuscation + Cloudflare decode + MX filter)
  * we use on browser-rendered HTML.
  */
-async function tier5ScrapingbeeScan(websiteUrl: string, deadline: number): Promise<string | null> {
+async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> {
   const url = normalizeUrl(websiteUrl);
   if (!url) return null;
 
-  const targets = [url, `${url.replace(/\/$/, '')}/contact`];
+  // Single homepage fetch only. The previous /contact second pass cost an
+  // extra ~25 credits per blocked lead and almost never succeeded — sites
+  // that block the local browser typically also have /contact behind the
+  // same Cloudflare rule, and ScrapingBee is the expensive last resort.
+  // Better to spend the credit budget on more leads, fewer pages each.
   const all = new Set<string>();
+  const html = await fetchViaScrapingbee(url, {
+    renderJs: true,
+    premiumProxy: true,
+    blockResources: true,
+  });
 
-  for (const target of targets) {
-    if (Date.now() > deadline) break;
-    const html = await fetchViaScrapingbee(target, {
-      renderJs: true,
-      premiumProxy: true,
-      blockResources: true,
-    });
-    if (!html) continue;
-
+  if (html) {
     extractEmailsFromText(html).forEach((e) => all.add(e));
     // Decode Cloudflare-obfuscated emails embedded in data-cfemail attributes
     const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
@@ -660,8 +664,6 @@ async function tier5ScrapingbeeScan(websiteUrl: string, deadline: number): Promi
       const decoded = decodeCfEmail(m[1]);
       if (decoded) all.add(decoded);
     }
-    // Stop early if homepage already produced a top-priority email
-    if ([...all].some((e) => rankEmail(e) === 0)) break;
   }
 
   const candidates = [...all].filter(
@@ -730,7 +732,7 @@ async function enrichSingleLeadWithTiers(
   if (scrapingbeeEnabled() && wasBlocked && Date.now() < deadline) {
     try {
       console.log(`    [enricher] tier5 (ScrapingBee) — escalating after ${lastBlockReason}`);
-      const sbEmail = await tier5ScrapingbeeScan(websiteUrl, deadline);
+      const sbEmail = await tier5ScrapingbeeScan(websiteUrl);
       if (sbEmail) {
         console.log(`    [enricher] ✓ tier5 hit: ${sbEmail}`);
         return { email: sbEmail, tier: 'scrapingbee' };

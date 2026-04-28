@@ -17,11 +17,16 @@ import https from 'node:https';
 
 const SCRAPINGBEE_BASE = 'https://app.scrapingbee.com/api/v1/';
 
-// ScrapingBee server-side timeout. Their max is 140s; 20s is plenty for
-// homepage + /contact and keeps our per-lead 60s budget intact.
-const SCRAPINGBEE_TIMEOUT_MS = 20_000;
+// ScrapingBee server-side timeout. Their range is 1000–140000ms.
+// Cloudflare-protected sites with premium_proxy + render_js routinely take
+// 30–60s on their backend. 20s caused mass "socket hang up" errors because
+// their edge proxy was killing slow renders mid-flight. 70s gives real
+// rendering room while staying well under their hard cap.
+const SCRAPINGBEE_TIMEOUT_MS = 70_000;
 // Local socket timeout — ScrapingBee timeout + buffer for network roundtrip.
-const SOCKET_TIMEOUT_MS = 30_000;
+// Must exceed SCRAPINGBEE_TIMEOUT_MS so their server-side error response
+// reaches us before we abort the connection ourselves.
+const SOCKET_TIMEOUT_MS = 90_000;
 // Cap response body to avoid pulling 10MB pages that won't help anyway.
 const MAX_BYTES = 2_000_000;
 
@@ -70,8 +75,20 @@ export async function fetchViaScrapingbee(
         console.warn(`[tier5] ScrapingBee returned 429 — credit pool depleted or rate limited`);
       }
       if (status < 200 || status >= 300) {
-        res.resume();
-        return finish(null);
+        // Drain body so we can log ScrapingBee's actual error message — they
+        // return useful diagnostics like "Cloudflare challenge unresolved" that
+        // we'd lose if we just discarded the response.
+        let errBody = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => { if (errBody.length < 500) errBody += chunk; });
+        res.on('end', () => {
+          if (status !== 401 && status !== 403 && status !== 429) {
+            console.warn(`[tier5] ScrapingBee returned ${status}: ${errBody.slice(0, 200)}`);
+          }
+          finish(null);
+        });
+        res.on('error', () => finish(null));
+        return;
       }
       let body = '';
       let bytes = 0;
