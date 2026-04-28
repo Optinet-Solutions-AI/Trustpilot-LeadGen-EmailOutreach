@@ -25,6 +25,7 @@ import https from 'node:https';
 import http from 'node:http';
 import { launchBrowser, TIER_CONFIGS, humanDelay, type Tier } from './browser-launcher.js';
 import { dismissPopups, handleCloudflareChallenge, detectBlock } from './popup-handler.js';
+import { fetchViaScrapingbee, scrapingbeeEnabled } from './tier5-scrapingbee.js';
 
 // Use explicit DNS servers. System DNS on Cloud Run can be flaky and may refuse
 // MX queries when the instance is cold. Google + Cloudflare are always reachable.
@@ -630,10 +631,51 @@ async function httpFastLane(websiteUrl: string): Promise<string | null> {
   return pickBestEmail(verified);
 }
 
+/**
+ * Run Tier 5 (ScrapingBee) against a URL and return the best email found, or null.
+ * Tries homepage and /contact via the managed proxy, then runs the same
+ * extraction pipeline (regex + obfuscation + Cloudflare decode + MX filter)
+ * we use on browser-rendered HTML.
+ */
+async function tier5ScrapingbeeScan(websiteUrl: string, deadline: number): Promise<string | null> {
+  const url = normalizeUrl(websiteUrl);
+  if (!url) return null;
+
+  const targets = [url, `${url.replace(/\/$/, '')}/contact`];
+  const all = new Set<string>();
+
+  for (const target of targets) {
+    if (Date.now() > deadline) break;
+    const html = await fetchViaScrapingbee(target, {
+      renderJs: true,
+      premiumProxy: true,
+      blockResources: true,
+    });
+    if (!html) continue;
+
+    extractEmailsFromText(html).forEach((e) => all.add(e));
+    // Decode Cloudflare-obfuscated emails embedded in data-cfemail attributes
+    const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
+    for (const m of html.matchAll(cfPattern)) {
+      const decoded = decodeCfEmail(m[1]);
+      if (decoded) all.add(decoded);
+    }
+    // Stop early if homepage already produced a top-priority email
+    if ([...all].some((e) => rankEmail(e) === 0)) break;
+  }
+
+  const candidates = [...all].filter(
+    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+  );
+  if (candidates.length === 0) return null;
+  const verified = await filterByMx(candidates);
+  return pickBestEmail(verified);
+}
+
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
-): Promise<{ email: string | null; tier: Tier | 'none'; blockReason?: string }> {
+): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'none'; blockReason?: string }> {
   const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
@@ -680,6 +722,24 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
+  // Tier 5 — ScrapingBee managed-proxy fallback. Only triggers if the API key
+  // is configured, the cheaper tiers were blocked (not just empty), and we
+  // still have time left in the per-lead budget.
+  const wasBlocked = lastBlockReason !== undefined
+    && (BLOCK_REASONS_THAT_ESCALATE.has(lastBlockReason) || lastBlockReason.startsWith('error:'));
+  if (scrapingbeeEnabled() && wasBlocked && Date.now() < deadline) {
+    try {
+      console.log(`    [enricher] tier5 (ScrapingBee) — escalating after ${lastBlockReason}`);
+      const sbEmail = await tier5ScrapingbeeScan(websiteUrl, deadline);
+      if (sbEmail) {
+        console.log(`    [enricher] ✓ tier5 hit: ${sbEmail}`);
+        return { email: sbEmail, tier: 'scrapingbee' };
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier5 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
   // No MX-guess fallback — if real scraping found nothing, return null.
   // Guessed emails (info@<domain>) polluted the DB with addresses that look
   // legitimate but were never actually verified to exist on the page.
@@ -700,7 +760,7 @@ export interface EnrichmentResult {
   lead: EnrichableLead;
   foundEmail: string | null;
   source: 'scrape' | 'none';
-  tier: Tier | 'none';
+  tier: Tier | 'scrapingbee' | 'none';
   blockReason?: string;
 }
 
