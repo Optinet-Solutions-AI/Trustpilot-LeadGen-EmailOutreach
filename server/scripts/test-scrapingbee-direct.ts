@@ -60,8 +60,8 @@ function fetchVia(targetUrl: string, opts: { renderJs: boolean; premiumProxy: bo
     url: targetUrl,
     render_js: String(opts.renderJs),
     premium_proxy: String(opts.premiumProxy),
-    block_resources: 'true',
-    timeout: '70000', // matches production
+    block_resources: 'false',  // matches production — true triggers 500 on some sites
+    timeout: '70000',          // matches production
   });
 
   const apiUrl = `https://app.scrapingbee.com/api/v1/?${params.toString()}`;

@@ -674,7 +674,7 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
     const html = await fetchViaScrapingbee(target, {
       renderJs: true,
       premiumProxy: true,
-      blockResources: true,
+      blockResources: false,
     });
     if (!html) continue;
 

@@ -35,7 +35,13 @@ export interface ScrapingbeeFetchOpts {
   renderJs?: boolean;
   /** Use premium residential proxies (10–25 credits). Required for Cloudflare. */
   premiumProxy?: boolean;
-  /** Block images/CSS/fonts to speed up render. */
+  /**
+   * Block images/CSS/fonts to speed up render. DEFAULT: false.
+   * ScrapingBee returns HTTP 500 on many SPA / casino sites when this is true
+   * (their backend's rendering pipeline can't handle resource blocking on
+   * sites that lazy-load content via CSS). Their own error message says
+   * "try with block_resources=False" so we respect it as the safer default.
+   */
   blockResources?: boolean;
 }
 
@@ -55,7 +61,7 @@ export async function fetchViaScrapingbee(
     url: targetUrl,
     render_js: String(opts.renderJs ?? true),
     premium_proxy: String(opts.premiumProxy ?? true),
-    block_resources: String(opts.blockResources ?? true),
+    block_resources: String(opts.blockResources ?? false),
     timeout: String(SCRAPINGBEE_TIMEOUT_MS),
   });
 
