@@ -11,6 +11,7 @@ import QuickSendModal from '../components/QuickSendModal';
 import JobProgress from '../components/JobProgress';
 import { useEnrichJob } from '../hooks/useEnrichJob';
 import { useVerifyJob } from '../hooks/useVerifyJob';
+import { useCheckLinksJob } from '../hooks/useCheckLinksJob';
 
 type View = 'table' | 'pipeline';
 
@@ -209,27 +210,56 @@ export default function Leads() {
     }
   };
 
-  const [checkingLinks, setCheckingLinks] = useState(false);
+  const [linkJobId, setLinkJobId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('active_link_check_job');
+  });
+  const [linkStartedAt, setLinkStartedAt] = useState<string | null>(null);
+  const [linkResult, setLinkResult] = useState<{ total: number; valid: number; dead: number; removed: number; unknown: number } | null>(null);
+  const linkJob = useCheckLinksJob(linkJobId, 'leads');
+  const checkingLinks = linkJob.status === 'running';
+
   const handleBulkCheckLinks = async () => {
     if (selectedIds.length === 0) return;
-    setCheckingLinks(true);
     try {
       const res = await api.post('/leads/check-links', { ids: selectedIds });
-      const { checked, valid, flagged_dead, flagged_removed, unknown } = res.data.data;
-      const flagged = flagged_dead + flagged_removed;
-      notify(
-        'success',
-        flagged > 0
-          ? `Checked ${checked} — ${flagged} flagged (${flagged_dead} dead, ${flagged_removed} removed), ${valid} valid, ${unknown} unknown`
-          : `Checked ${checked} — all valid`,
-      );
-      loadLeads();
+      const { jobId } = res.data.data;
+      if (!jobId) {
+        notify('error', 'Failed to start link validation');
+        return;
+      }
+      notify('success', `Validating ${selectedIds.length} URL${selectedIds.length === 1 ? '' : 's'} — watch the live log below`);
+      localStorage.setItem('active_link_check_job', jobId);
+      setLinkJobId(jobId);
+      setLinkStartedAt(new Date().toISOString());
     } catch (e) {
-      notify('error', e instanceof Error ? e.message : 'Failed to check links');
-    } finally {
-      setCheckingLinks(false);
+      notify('error', e instanceof Error ? e.message : 'Failed to start link validation');
     }
   };
+
+  // React to link-check job reaching a terminal state — same pattern the
+  // verify and enrich jobs use above.
+  useEffect(() => {
+    if (!linkJobId) return;
+    if (linkJob.status === 'completed') {
+      setLinkResult({
+        total: linkJob.summary.total,
+        valid: linkJob.summary.valid,
+        dead: linkJob.summary.flagged_dead,
+        removed: linkJob.summary.flagged_removed,
+        unknown: linkJob.summary.unknown,
+      });
+      setLinkJobId(null);
+      setLinkStartedAt(null);
+      localStorage.removeItem('active_link_check_job');
+      loadLeads();
+    } else if (linkJob.status === 'failed') {
+      notify('error', `Link validation failed: ${linkJob.error || 'unknown error'}`);
+      setLinkJobId(null);
+      setLinkStartedAt(null);
+      localStorage.removeItem('active_link_check_job');
+    }
+  }, [linkJob.status, linkJob.summary, linkJob.error, linkJobId, loadLeads]);
 
   // React to verify job reaching a terminal state
   useEffect(() => {
@@ -316,6 +346,42 @@ export default function Leads() {
         </div>
       )}
 
+      {/* Live link-check progress — inline log panel */}
+      {linkJobId && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <JobProgress
+            kind="check-links"
+            status={linkJob.status === 'idle' ? 'running' : linkJob.status}
+            progress={linkJob.progress}
+            error={linkJob.error}
+            startedAt={linkStartedAt}
+          />
+        </div>
+      )}
+
+      {/* Link-check result banner */}
+      {linkResult && (
+        <div className={`flex items-center gap-3 rounded-xl px-5 py-3 text-sm border ${
+          (linkResult.dead + linkResult.removed) > 0
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]'
+        }`}>
+          <span className={`material-symbols-outlined text-[18px] ${(linkResult.dead + linkResult.removed) > 0 ? 'text-amber-600' : 'text-[#006630]'}`}>
+            {(linkResult.dead + linkResult.removed) > 0 ? 'warning' : 'check_circle'}
+          </span>
+          <span className="font-semibold">Link validation complete!</span>
+          <span className="font-normal">
+            <strong>{linkResult.valid}</strong> valid, <strong>{linkResult.dead}</strong> dead, <strong>{linkResult.removed}</strong> removed, <strong>{linkResult.unknown}</strong> unknown out of <strong>{linkResult.total}</strong> URL{linkResult.total !== 1 ? 's' : ''}.
+          </span>
+          <button
+            onClick={() => setLinkResult(null)}
+            className={`ml-auto transition-colors ${(linkResult.dead + linkResult.removed) > 0 ? 'text-amber-600/60 hover:text-amber-800' : 'text-[#006630]/60 hover:text-[#006630]'}`}
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
       {/* Live enrichment progress — inline log panel */}
       {enrichJobId && (
         <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
@@ -379,7 +445,7 @@ export default function Leads() {
               {/* Enrich */}
               <button
                 onClick={handleBulkEnrich}
-                disabled={enriching || verifying}
+                disabled={enriching || verifying || checkingLinks}
                 title={enriching ? 'Enriching...' : `Enrich ${selectedIds.length} — visits each company website and scrapes their contact email`}
                 className="p-2 rounded-full text-[#006630] hover:bg-[#006630]/10 disabled:opacity-50 transition-colors"
               >
@@ -404,7 +470,7 @@ export default function Leads() {
               <div className="flex items-center">
                 <button
                   onClick={handleBulkVerify}
-                  disabled={verifying || enriching}
+                  disabled={verifying || enriching || checkingLinks}
                   title={verifying ? 'Verifying...' : `Verify ${selectedIds.length} (${verifyEmailField}) — checks deliverability via ZeroBounce`}
                   className="p-2 rounded-l-full text-blue-700 hover:bg-blue-50 disabled:opacity-50 transition-colors"
                 >
@@ -415,7 +481,7 @@ export default function Leads() {
                 <select
                   value={verifyEmailField}
                   onChange={(e) => setVerifyEmailField(e.target.value as 'trustpilot' | 'website' | 'both')}
-                  disabled={verifying || enriching}
+                  disabled={verifying || enriching || checkingLinks}
                   title="Which email to verify"
                   className="text-[10px] font-bold text-blue-700 bg-transparent border-0 pl-0.5 pr-1.5 py-1.5 cursor-pointer focus:outline-none rounded-r-full hover:bg-blue-50 disabled:opacity-50 uppercase tracking-wide"
                 >
@@ -428,7 +494,7 @@ export default function Leads() {
               {/* Send */}
               <button
                 onClick={() => setQuickSendOpen(true)}
-                disabled={verifying || enriching}
+                disabled={verifying || enriching || checkingLinks}
                 title={`Send ${selectedIds.length} — quick one-off email without creating a full campaign`}
                 className="p-2 rounded-full text-[#b0004a] hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
               >
@@ -438,7 +504,7 @@ export default function Leads() {
               {/* Delete */}
               <button
                 onClick={() => setConfirmDeleteOpen(true)}
-                disabled={verifying || enriching || deleting}
+                disabled={verifying || enriching || checkingLinks || deleting}
                 title={deleting ? 'Deleting...' : `Delete ${selectedIds.length} — permanently removes the selected leads`}
                 className="p-2 rounded-full text-error hover:bg-red-50 disabled:opacity-50 transition-colors"
               >

@@ -1,8 +1,14 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sanitizeTrustpilotUrl, validateTrustpilotUrl } from '../services/url-validator.js';
+import { createRegistry, newJob, runLinkCheckJob } from '../services/link-check-job.js';
+
+// Shared per-process registry — survives across requests so the SSE stream
+// can attach to a job that was kicked off by an earlier POST.
+const linkCheckRegistry = createRegistry();
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -140,10 +146,69 @@ router.patch('/:id/url', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/leads/check-links — bulk re-validate Trustpilot URLs for the
-// given lead IDs. Runs validateTrustpilotUrl with bounded concurrency so a
-// 200-lead batch doesn't blow past Cloud Run's 300s request timeout, then
-// writes link_status / last_validated_at / link_validation_error per row.
+// ── GET /api/leads/check-links/status?jobId=xxx — polling fallback ──────────
+router.get('/check-links/status', (req: Request, res: Response) => {
+  const { jobId } = req.query;
+  if (!jobId || typeof jobId !== 'string') {
+    res.status(400).json({ success: false, error: 'jobId required' });
+    return;
+  }
+  const job = linkCheckRegistry.jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ success: false, error: 'Job not found' });
+    return;
+  }
+  res.json({
+    success: true,
+    data: {
+      status: job.status === 'completed' ? 'done' : job.status,
+      total: job.total,
+      checked: job.checked,
+      valid: job.valid,
+      flagged_dead: job.flagged_dead,
+      flagged_removed: job.flagged_removed,
+      unknown: job.unknown,
+      ...(job.error ? { error: job.error } : {}),
+    },
+  });
+});
+
+// ── GET /api/leads/check-links/:jobId/stream — SSE progress ────────────────
+router.get('/check-links/:jobId/stream', (req: Request, res: Response) => {
+  const jobId = param(req.params.jobId);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const job = linkCheckRegistry.jobs.get(jobId);
+  if (!job) {
+    res.write(`data: ${JSON.stringify({ stage: 'error', detail: 'Job not found' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  res.write(`data: ${JSON.stringify({ stage: 'current', ...job })}\n\n`);
+  if (job.status === 'completed' || job.status === 'failed') {
+    res.end();
+    return;
+  }
+
+  const handler = (event: { jobId: string; stage: string; detail: string; timestamp?: string }) => {
+    if (event.jobId === jobId) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.stage === 'completed' || event.stage === 'failed') {
+        setTimeout(() => { try { res.end(); } catch { /* already closed */ } }, 1000);
+      }
+    }
+  };
+
+  linkCheckRegistry.events.on('progress', handler);
+  req.on('close', () => linkCheckRegistry.events.off('progress', handler));
+});
+
+// POST /api/leads/check-links — kick off a background link-validation job.
+// Returns the jobId immediately; progress streams over the SSE endpoint.
 router.post('/check-links', async (req: Request, res: Response) => {
   try {
     const { ids } = req.body || {};
@@ -152,51 +217,18 @@ router.post('/check-links', async (req: Request, res: Response) => {
       return;
     }
 
-    const supabase = getSupabase();
-    const { data: rows, error: fetchErr } = await supabase
-      .from('leads')
-      .select('id, trustpilot_url')
-      .in('id', ids);
-    if (fetchErr) throw new Error(fetchErr.message);
+    const jobId = randomUUID();
+    linkCheckRegistry.jobs.set(jobId, newJob());
 
-    const targets = (rows || []).filter((r): r is { id: string; trustpilot_url: string } =>
-      Boolean(r.trustpilot_url),
-    );
+    res.json({ success: true, data: { jobId, total: ids.length } });
 
-    // Concurrency cap — Trustpilot rate-limits aggressive crawlers and we
-    // don't want to burn the whole request budget on one batch.
-    const CONCURRENCY = 8;
-    const counts = { valid: 0, flagged_dead: 0, flagged_removed: 0, unknown: 0 };
-    const now = new Date().toISOString();
-
-    let cursor = 0;
-    const workers = Array.from({ length: Math.min(CONCURRENCY, targets.length) }, async () => {
-      while (cursor < targets.length) {
-        const i = cursor++;
-        const target = targets[i];
-        const { status, error } = await validateTrustpilotUrl(target.trustpilot_url);
-        if (status === 'VALID') counts.valid++;
-        else if (status === 'FLAGGED_DEAD') counts.flagged_dead++;
-        else if (status === 'FLAGGED_REMOVED') counts.flagged_removed++;
-        else counts.unknown++;
-
-        await supabase
-          .from('leads')
-          .update({
-            link_status: status,
-            last_validated_at: now,
-            link_validation_error: error,
-          })
-          .eq('id', target.id);
-      }
-    });
-    await Promise.all(workers);
-
-    res.json({
-      success: true,
-      data: { checked: targets.length, skipped: ids.length - targets.length, ...counts },
+    // Background — must not block the response. Errors are caught inside
+    // runLinkCheckJob and surfaced through the SSE 'failed' event.
+    runLinkCheckJob(jobId, 'leads', ids, linkCheckRegistry).catch((e) => {
+      console.error(`[leads/check-links] job ${jobId} crashed`, e);
     });
   } catch (err) {
+    if (res.headersSent) return;
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }

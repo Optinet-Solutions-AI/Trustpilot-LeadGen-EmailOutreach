@@ -5,7 +5,7 @@ import { CheckCircle2, Loader2, XCircle, AlertTriangle, RotateCcw, Square } from
 import type { ScrapeProgress as ScrapeProgressType } from '../types/scrape';
 import { translate, summarize, type FeedLine } from './jobProgress/messages';
 
-export type JobKind = 'scrape' | 'enrichment' | 'verify';
+export type JobKind = 'scrape' | 'enrichment' | 'verify' | 'check-links';
 
 interface Props {
   kind: JobKind;
@@ -42,6 +42,11 @@ const ENRICH_PHASES: PhaseDef[] = [
 
 const VERIFY_PHASES: PhaseDef[] = [
   { key: 'verify', label: 'Check emails' },
+  { key: 'final', label: 'Save results' },
+];
+
+const CHECK_LINKS_PHASES: PhaseDef[] = [
+  { key: 'check', label: 'Validate URLs' },
   { key: 'final', label: 'Save results' },
 ];
 
@@ -85,7 +90,11 @@ export default function JobProgress({
     feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [progress, autoScroll]);
 
-  const phases = kind === 'scrape' ? SCRAPE_PHASES : kind === 'verify' ? VERIFY_PHASES : ENRICH_PHASES;
+  const phases =
+    kind === 'scrape' ? SCRAPE_PHASES :
+    kind === 'verify' ? VERIFY_PHASES :
+    kind === 'check-links' ? CHECK_LINKS_PHASES :
+    ENRICH_PHASES;
   const summary = useMemo(() => summarize(progress), [progress]);
   const feed: FeedLine[] = useMemo(() => {
     const lines: FeedLine[] = [];
@@ -110,6 +119,10 @@ export default function JobProgress({
     } else if (kind === 'enrichment') {
       if (summary.sitesTotal > 0) {
         return { current: summary.sitesChecked, total: summary.sitesTotal, label: 'Websites checked' };
+      }
+    } else if (kind === 'check-links') {
+      if (summary.linksTotal > 0) {
+        return { current: summary.linksChecked, total: summary.linksTotal, label: 'Links validated' };
       }
     } else {
       if (summary.profilesTotal > 0) {
@@ -149,11 +162,13 @@ export default function JobProgress({
     if (status === 'running') {
       if (kind === 'enrichment') return 'Finding website emails…';
       if (kind === 'verify') return 'Verifying email addresses…';
+      if (kind === 'check-links') return 'Validating Trustpilot URLs…';
       return 'Scraping in progress…';
     }
     if (status === 'completed') {
       if (kind === 'enrichment') return 'Enrichment finished';
       if (kind === 'verify') return 'Verification finished';
+      if (kind === 'check-links') return 'Link validation finished';
       return 'Scrape finished';
     }
     if (status === 'failed') return 'Stopped';
@@ -247,8 +262,24 @@ export default function JobProgress({
       </div>
 
       {/* Summary cards */}
-      <div className={`grid gap-3 ${kind === 'scrape' ? 'grid-cols-2 md:grid-cols-4' : kind === 'verify' ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-3'}`}>
-        {kind === 'verify' ? (
+      <div className={`grid gap-3 ${
+        kind === 'scrape' ? 'grid-cols-2 md:grid-cols-4'
+        : kind === 'verify' ? 'grid-cols-2 md:grid-cols-4'
+        : kind === 'check-links' ? 'grid-cols-2 md:grid-cols-4'
+        : 'grid-cols-1 md:grid-cols-3'
+      }`}>
+        {kind === 'check-links' ? (
+          <>
+            <Card
+              label="Links checked"
+              value={summary.linksTotal > 0 ? `${summary.linksChecked} / ${summary.linksTotal}` : summary.linksChecked}
+              accent="#004b7f"
+            />
+            <Card label="Valid" value={summary.linksValid} accent="#006630" hint="page is live" />
+            <Card label="Dead" value={summary.linksDead} accent="#b0004a" hint="404 / 410" />
+            <Card label="Removed" value={summary.linksRemoved} accent="#b35500" hint="profile delisted" />
+          </>
+        ) : kind === 'verify' ? (
           <>
             <Card
               label="Emails checked"

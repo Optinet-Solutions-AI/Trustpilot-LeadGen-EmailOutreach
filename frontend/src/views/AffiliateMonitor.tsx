@@ -8,7 +8,10 @@ import DashboardToolbar from '../components/affiliate-monitor/DashboardToolbar';
 import CountryOverview from '../components/affiliate-monitor/CountryOverview';
 import AffiliateTable from '../components/affiliate-monitor/AffiliateTable';
 import PageChartTable from '../components/affiliate-monitor/PageChartTable';
+import JobProgress from '../components/JobProgress';
 import { useAffiliates } from '../hooks/useAffiliates';
+import { useCheckLinksJob } from '../hooks/useCheckLinksJob';
+import api from '../api/client';
 
 // ── Add Affiliate Modal ──────────────────────────────────────────────────────
 
@@ -298,6 +301,52 @@ export default function AffiliateMonitor() {
     }
   };
 
+  // ── Validate Links — same SSE-driven job pattern as the Lead Matrix ──────
+  const [linkJobId, setLinkJobId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('active_affiliate_link_job');
+  });
+  const [linkStartedAt, setLinkStartedAt] = useState<string | null>(null);
+  const [linkResult, setLinkResult] = useState<{ total: number; valid: number; dead: number; removed: number; unknown: number } | null>(null);
+  const linkJob = useCheckLinksJob(linkJobId, 'affiliates');
+  const checkingLinks = linkJob.status === 'running';
+
+  const handleBulkCheckLinks = async () => {
+    if (selectedIds.size === 0) return;
+    try {
+      const ids = [...selectedIds];
+      const res = await api.post('/affiliates/check-links', { ids });
+      const { jobId } = res.data.data;
+      if (!jobId) return;
+      localStorage.setItem('active_affiliate_link_job', jobId);
+      setLinkJobId(jobId);
+      setLinkStartedAt(new Date().toISOString());
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Failed to start link validation');
+    }
+  };
+
+  useEffect(() => {
+    if (!linkJobId) return;
+    if (linkJob.status === 'completed') {
+      setLinkResult({
+        total: linkJob.summary.total,
+        valid: linkJob.summary.valid,
+        dead: linkJob.summary.flagged_dead,
+        removed: linkJob.summary.flagged_removed,
+        unknown: linkJob.summary.unknown,
+      });
+      setLinkJobId(null);
+      setLinkStartedAt(null);
+      localStorage.removeItem('active_affiliate_link_job');
+      fetchAffiliates();
+    } else if (linkJob.status === 'failed') {
+      setLinkJobId(null);
+      setLinkStartedAt(null);
+      localStorage.removeItem('active_affiliate_link_job');
+    }
+  }, [linkJob.status, linkJob.summary, linkJobId, fetchAffiliates]);
+
   return (
     <div className="px-10 py-10 space-y-8">
       {/* Header */}
@@ -349,18 +398,69 @@ export default function AffiliateMonitor() {
           Page Chart
         </button>
 
+        {/* Validate Links — visible when items are checked */}
+        {selectedIds.size > 0 && (
+          <button
+            onClick={handleBulkCheckLinks}
+            disabled={checkingLinks || deleting}
+            className="ml-auto inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+            title="Re-checks each affiliate's Trustpilot URL for dead/removed pages"
+          >
+            <span className={`material-symbols-outlined text-[18px] ${checkingLinks ? 'animate-spin' : ''}`}>
+              {checkingLinks ? 'progress_activity' : 'link'}
+            </span>
+            {checkingLinks ? 'Validating…' : `Validate Links (${selectedIds.size})`}
+          </button>
+        )}
+
         {/* Delete Selected — visible when items are checked */}
         {selectedIds.size > 0 && (
           <button
             onClick={handleBulkDelete}
-            disabled={deleting}
-            className="ml-auto inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
+            disabled={deleting || checkingLinks}
+            className={`${selectedIds.size > 0 ? '' : 'ml-auto'} inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors`}
           >
             <span className="material-symbols-outlined text-[18px]">delete</span>
             {deleting ? 'Deleting…' : `Delete Selected (${selectedIds.size})`}
           </button>
         )}
       </div>
+
+      {/* Live link-check progress — inline log panel */}
+      {linkJobId && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <JobProgress
+            kind="check-links"
+            status={linkJob.status === 'idle' ? 'running' : linkJob.status}
+            progress={linkJob.progress}
+            error={linkJob.error}
+            startedAt={linkStartedAt}
+          />
+        </div>
+      )}
+
+      {/* Link-check result banner */}
+      {linkResult && (
+        <div className={`flex items-center gap-3 rounded-xl px-5 py-3 text-sm border ${
+          (linkResult.dead + linkResult.removed) > 0
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]'
+        }`}>
+          <span className={`material-symbols-outlined text-[18px] ${(linkResult.dead + linkResult.removed) > 0 ? 'text-amber-600' : 'text-[#006630]'}`}>
+            {(linkResult.dead + linkResult.removed) > 0 ? 'warning' : 'check_circle'}
+          </span>
+          <span className="font-semibold">Link validation complete!</span>
+          <span className="font-normal">
+            <strong>{linkResult.valid}</strong> valid, <strong>{linkResult.dead}</strong> dead, <strong>{linkResult.removed}</strong> removed, <strong>{linkResult.unknown}</strong> unknown out of <strong>{linkResult.total}</strong> URL{linkResult.total !== 1 ? 's' : ''}.
+          </span>
+          <button
+            onClick={() => setLinkResult(null)}
+            className={`ml-auto transition-colors ${(linkResult.dead + linkResult.removed) > 0 ? 'text-amber-600/60 hover:text-amber-800' : 'text-[#006630]/60 hover:text-[#006630]'}`}
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
 
       {/* Content */}
       {activeTab === 'chart' && (

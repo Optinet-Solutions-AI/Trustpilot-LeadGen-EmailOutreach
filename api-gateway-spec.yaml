@@ -112,6 +112,92 @@ paths:
       responses:
         "200":
           description: OK
+  /api/leads/check-links:
+    post:
+      operationId: leadsCheckLinks
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/leads/check-links/status:
+    get:
+      operationId: leadsCheckLinksStatus
+      security: []
+      parameters:
+        - in: query
+          name: jobId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/check-links/{jobId}/stream:
+    get:
+      operationId: leadsCheckLinksStream
+      security: []
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/{id}/dismiss-flag:
+    patch:
+      operationId: leadsDismissFlag
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/{id}/url:
+    patch:
+      operationId: leadsUpdateUrl
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/affiliates/check-links:
+    post:
+      operationId: affiliatesCheckLinks
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/affiliates/check-links/status:
+    get:
+      operationId: affiliatesCheckLinksStatus
+      security: []
+      parameters:
+        - in: query
+          name: jobId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/affiliates/check-links/{jobId}/stream:
+    get:
+      operationId: affiliatesCheckLinksStream
+      security: []
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/leads/{id}:
     get:
       operationId: getLead

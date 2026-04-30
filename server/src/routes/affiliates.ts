@@ -1,7 +1,13 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
+import { createRegistry, newJob, runLinkCheckJob } from '../services/link-check-job.js';
 
 const router = Router();
+const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
+
+// Per-process registry — separate from leads' so the same jobId can't collide.
+const linkCheckRegistry = createRegistry();
 
 // GET /api/affiliates — fetch all, ordered by created_at asc
 router.get('/', async (_req: Request, res: Response) => {
@@ -106,6 +112,91 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
     if (error) throw error;
     res.json({ success: true, data: { deleted: ids.length } });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── GET /api/affiliates/check-links/status?jobId=xxx — polling fallback ────
+router.get('/check-links/status', (req: Request, res: Response) => {
+  const { jobId } = req.query;
+  if (!jobId || typeof jobId !== 'string') {
+    res.status(400).json({ success: false, error: 'jobId required' });
+    return;
+  }
+  const job = linkCheckRegistry.jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ success: false, error: 'Job not found' });
+    return;
+  }
+  res.json({
+    success: true,
+    data: {
+      status: job.status === 'completed' ? 'done' : job.status,
+      total: job.total,
+      checked: job.checked,
+      valid: job.valid,
+      flagged_dead: job.flagged_dead,
+      flagged_removed: job.flagged_removed,
+      unknown: job.unknown,
+      ...(job.error ? { error: job.error } : {}),
+    },
+  });
+});
+
+// ── GET /api/affiliates/check-links/:jobId/stream — SSE progress ──────────
+router.get('/check-links/:jobId/stream', (req: Request, res: Response) => {
+  const jobId = param(req.params.jobId);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const job = linkCheckRegistry.jobs.get(jobId);
+  if (!job) {
+    res.write(`data: ${JSON.stringify({ stage: 'error', detail: 'Job not found' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  res.write(`data: ${JSON.stringify({ stage: 'current', ...job })}\n\n`);
+  if (job.status === 'completed' || job.status === 'failed') {
+    res.end();
+    return;
+  }
+
+  const handler = (event: { jobId: string; stage: string; detail: string; timestamp?: string }) => {
+    if (event.jobId === jobId) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.stage === 'completed' || event.stage === 'failed') {
+        setTimeout(() => { try { res.end(); } catch { /* already closed */ } }, 1000);
+      }
+    }
+  };
+
+  linkCheckRegistry.events.on('progress', handler);
+  req.on('close', () => linkCheckRegistry.events.off('progress', handler));
+});
+
+// POST /api/affiliates/check-links — kick off background validation job.
+router.post('/check-links', async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ success: false, error: 'ids (non-empty array) is required' });
+      return;
+    }
+
+    const jobId = randomUUID();
+    linkCheckRegistry.jobs.set(jobId, newJob());
+
+    res.json({ success: true, data: { jobId, total: ids.length } });
+
+    runLinkCheckJob(jobId, 'affiliates', ids, linkCheckRegistry).catch((e) => {
+      console.error(`[affiliates/check-links] job ${jobId} crashed`, e);
+    });
+  } catch (err) {
+    if (res.headersSent) return;
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }

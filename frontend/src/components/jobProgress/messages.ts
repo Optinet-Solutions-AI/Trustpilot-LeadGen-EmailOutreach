@@ -25,6 +25,7 @@ const SILENT_STAGES = new Set([
   'upsert_progress',
   'verify_batch_start',
   'current',
+  'check_progress',
 ]);
 
 // Human-readable labels for known blockReasons / reason codes. Keeps the
@@ -252,6 +253,19 @@ export function translate(event: ScrapeProgress): FeedLine | null {
     case 'verify_saving':
       return { kind: 'phase', text: `Saving verification results to your database…`, timestamp };
 
+    // ── Check-links stages ────────────────────────────────────────────────
+    case 'check_start':
+      return {
+        kind: 'phase',
+        text: `Validating ${detail} Trustpilot URL${parseInt(detail) === 1 ? '' : 's'}…`,
+        timestamp,
+      };
+    case 'check_item': {
+      // detail = "{idx}|{total}|{url}"
+      const [idx, total, url] = splitPipes(detail);
+      return { kind: 'info', text: `(${idx}/${total}) Checking ${url}…`, timestamp };
+    }
+
     case 'failed':
       return { kind: 'error', text: `Stopped — ${detail || 'something went wrong'}`, timestamp };
     case 'error':
@@ -281,7 +295,13 @@ export interface JobSummary {
   verifiesValid: number;
   verifiesInvalid: number;
   verifiedCatchAll: number;
-  currentPhase: 'idle' | 'category' | 'dedup' | 'profile' | 'checkpoint' | 'enrich' | 'verify' | 'final' | 'done' | 'failed';
+  // check-links specific
+  linksChecked: number;
+  linksTotal: number;
+  linksValid: number;
+  linksDead: number;
+  linksRemoved: number;
+  currentPhase: 'idle' | 'category' | 'dedup' | 'profile' | 'checkpoint' | 'enrich' | 'verify' | 'check' | 'final' | 'done' | 'failed';
 }
 
 const EMPTY_SUMMARY: JobSummary = {
@@ -298,6 +318,11 @@ const EMPTY_SUMMARY: JobSummary = {
   verifiesValid: 0,
   verifiesInvalid: 0,
   verifiedCatchAll: 0,
+  linksChecked: 0,
+  linksTotal: 0,
+  linksValid: 0,
+  linksDead: 0,
+  linksRemoved: 0,
   currentPhase: 'idle',
 };
 
@@ -399,6 +424,28 @@ export function summarize(events: ScrapeProgress[]): JobSummary {
       case 'verify_saving':
         s.currentPhase = 'final';
         break;
+
+      case 'check_start': {
+        s.currentPhase = 'check';
+        const n = parseInt(e.detail, 10);
+        if (Number.isFinite(n)) s.linksTotal = n;
+        break;
+      }
+      case 'check_progress': {
+        // detail = "{checked}/{total}|{url}|{status}"
+        const head = e.detail.split('|')[0] || '';
+        const frac = splitFraction(head);
+        if (frac) {
+          s.linksChecked = frac.current;
+          s.linksTotal = frac.total;
+        }
+        const verdict = e.detail.split('|')[2];
+        if (verdict === 'VALID') s.linksValid++;
+        else if (verdict === 'FLAGGED_DEAD') s.linksDead++;
+        else if (verdict === 'FLAGGED_REMOVED') s.linksRemoved++;
+        s.currentPhase = 'check';
+        break;
+      }
       case 'completed': {
         // Handle verify-specific completed payload
         try {
@@ -414,6 +461,22 @@ export function summarize(events: ScrapeProgress[]): JobSummary {
           if (typeof m.catchAll === 'number') s.verifiedCatchAll = m.catchAll;
           if (typeof m.total === 'number') s.verifiesTotal = m.total;
         } catch { /* non-JSON completed detail is fine */ }
+        // Check-links completion payload — separate JSON parse so a single
+        // shape match does double duty for both job kinds.
+        try {
+          const m = JSON.parse(e.detail || '{}') as {
+            total?: number;
+            checked?: number;
+            valid?: number;
+            flagged_dead?: number;
+            flagged_removed?: number;
+          };
+          if (typeof m.total === 'number') s.linksTotal = m.total;
+          if (typeof m.checked === 'number') s.linksChecked = m.checked;
+          if (typeof m.valid === 'number') s.linksValid = m.valid;
+          if (typeof m.flagged_dead === 'number') s.linksDead = m.flagged_dead;
+          if (typeof m.flagged_removed === 'number') s.linksRemoved = m.flagged_removed;
+        } catch { /* fine */ }
         s.currentPhase = 'done';
         break;
       }
