@@ -8,7 +8,14 @@ import { fetchStatusViaScrapingbee, scrapingbeeEnabled } from './scrapers/tier5-
 export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
 
 const SOFT_404_MARKERS = [
+  // Trustpilot's exact "removed profile" page copy. The page is JS-rendered
+  // so the validator must use ScrapingBee with render_js=true to actually
+  // see these strings.
   'this profile has been removed',
+  'no longer visible on trustpilot',
+  'goes against our guidelines',
+  'why trustpilot removes profiles',
+  // Generic "page gone" markers other parts of Trustpilot use.
   'this page does not exist',
   'page not found',
   'we could not find',
@@ -77,12 +84,19 @@ export async function validateTrustpilotUrl(
   if (!url) return { status: 'UNKNOWN', error: 'empty_url' };
 
   // ── ScrapingBee path ──
-  // Premium-proxy fetch via ScrapingBee — the same Cloudflare bypass the
-  // tier-5 scraper uses. ~10 credits per call (no JS render, premium proxy).
-  // Trustpilot's "profile not found" page is server-side rendered, so we
-  // skip render_js to save credits.
+  // Premium-proxy + JS-render fetch via ScrapingBee. Trustpilot's profile
+  // pages — including the "This profile has been removed" interstitial — are
+  // SPA-rendered: HTTP 200 returns a near-empty shell and JS injects the real
+  // copy. Without render_js we'd get the shell and miss every soft-404
+  // (verdict drops to UNKNOWN even on genuinely-removed profiles).
+  //
+  // Cost: ~25 credits per call (premium_proxy + render_js). The trade-off is
+  // accuracy — the previous render_js=false setting cost ~10 credits but
+  // returned UNKNOWN for nearly everything. The ~10-credit cheap variant is
+  // available behind VALIDATOR_CHEAP_RENDER=true for cost-sensitive batches.
   if (shouldUseScrapingbee()) {
-    const sb = await fetchStatusViaScrapingbee(url, { renderJs: false, premiumProxy: true });
+    const renderJs = process.env.VALIDATOR_CHEAP_RENDER !== 'true';
+    const sb = await fetchStatusViaScrapingbee(url, { renderJs, premiumProxy: true });
     if (sb && sb.transportError === null && sb.apiStatus >= 200 && sb.apiStatus < 600) {
       return classifyResponse(sb.upstreamStatus ?? sb.apiStatus, sb.body);
     }
@@ -137,17 +151,20 @@ function classifyResponse(status: number, body: string | null): { status: LinkSt
 
   const lower = (body ?? '').toLowerCase();
 
-  // Even with 200 OK, Cloudflare sometimes serves a challenge interstitial.
-  // Detect that and bail out — same logic as the 403 branch above.
+  // Soft-404 markers first — Trustpilot's "profile has been removed" wording
+  // is authoritative, and on rare pages the body can contain BOTH a removal
+  // notice and Cloudflare-ish footer text. The removal signal wins.
+  for (const marker of SOFT_404_MARKERS) {
+    if (lower.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
+  }
+
+  // Cloudflare interstitial check — only reached when no removal marker hit.
+  // 200 OK + challenge body still means we couldn't see the real page.
   for (const marker of CLOUDFLARE_CHALLENGE_MARKERS) {
     if (lower.includes(marker)) {
       return { status: 'UNKNOWN', error: `cloudflare_challenge: ${marker}` };
     }
   }
 
-  // Real soft-404 markers — Trustpilot's "this profile has been removed" page.
-  for (const marker of SOFT_404_MARKERS) {
-    if (lower.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
-  }
   return { status: 'VALID', error: null };
 }

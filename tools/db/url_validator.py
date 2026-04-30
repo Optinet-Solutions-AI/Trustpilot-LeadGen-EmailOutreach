@@ -25,7 +25,14 @@ import requests
 # profile has been delisted, the slug never existed, or the company was
 # removed. Lower-cased for case-insensitive matching.
 SOFT_404_MARKERS: tuple[str, ...] = (
+    # Trustpilot's exact "removed profile" page copy. Their page is JS-rendered,
+    # so unless we proxy through ScrapingBee with render_js the body the
+    # validator sees is the empty SPA shell and these never match.
     "this profile has been removed",
+    "no longer visible on trustpilot",
+    "goes against our guidelines",
+    "why trustpilot removes profiles",
+    # Generic "page gone" markers.
     "this page does not exist",
     "page not found",
     "we could not find",
@@ -152,12 +159,16 @@ def validate_trustpilot_url(
 
     body = (resp.text or "").lower()
 
-    # 200 OK but Cloudflare interstitial — same as a 403 from our perspective.
+    # Soft-404 markers FIRST — a confirmed "this profile has been removed"
+    # signal is authoritative; we don't want a stray Cloudflare-ish footer
+    # string to override it.
+    for marker in SOFT_404_MARKERS:
+        if marker in body:
+            return "FLAGGED_REMOVED", f"soft_404: {marker}"
+
+    # Cloudflare interstitial check — only reached when no removal marker hit.
     for marker in CLOUDFLARE_CHALLENGE_MARKERS:
         if marker in body:
             return "UNKNOWN", f"cloudflare_challenge: {marker}"
 
-    for marker in SOFT_404_MARKERS:
-        if marker in body:
-            return "FLAGGED_REMOVED", f"soft_404: {marker}"
     return "VALID", None
