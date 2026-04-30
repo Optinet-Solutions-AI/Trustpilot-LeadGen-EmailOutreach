@@ -302,12 +302,25 @@ export async function validateTrustpilotUrl(
 
 // Same verdict ladder applied to whichever fetch path produced the response.
 // Kept here so the ScrapingBee, Playwright, and plain-fetch paths never drift.
+// Trustpilot's Next.js SPA serializes the entire i18n string table —
+// including the literal "this profile has been removed" copy — into a
+// <script id="__NEXT_DATA__"> blob on EVERY page. Searching the raw HTML
+// matched those bundled strings on live pages too, producing false
+// FLAGGED_REMOVED verdicts. Stripping <script> and <style> content
+// before searching restricts the match to actually-rendered DOM text.
+function stripNonContent(body: string): string {
+  return body
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+}
+
 function classifyResponse(
   status: number,
   body: string | null,
   hints: { blockedHttp?: boolean } = {},
 ): { status: LinkStatus; error: string | null } {
-  const lower = (body ?? '').toLowerCase();
+  const lower = stripNonContent(body ?? '').toLowerCase();
 
   // 1. Soft-404 markers — authoritative regardless of status. Trustpilot's
   //    "this profile has been removed" wording wins over everything because
