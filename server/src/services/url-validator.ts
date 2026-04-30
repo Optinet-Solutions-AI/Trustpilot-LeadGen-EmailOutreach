@@ -3,7 +3,9 @@
 // produce the same canonical URL + link_status that the Python ingestion
 // pipeline would.
 
+import type { BrowserContext } from 'playwright';
 import { fetchStatusViaScrapingbee, scrapingbeeEnabled } from './scrapers/tier5-scrapingbee.js';
+import { handleCloudflareChallenge } from './scrapers/popup-handler.js';
 
 export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
 
@@ -77,6 +79,67 @@ function shouldUseScrapingbee(): boolean {
   return scrapingbeeEnabled();
 }
 
+// ── Playwright-based validation ────────────────────────────────────────────
+//
+// Uses the existing stealth Chromium pool (same one website-enricher uses).
+// Free per-URL — pays the price in ~3-5s page-load instead of ~25 SB credits.
+// The caller is expected to launch a browser at job start, pass the
+// BrowserContext here, and close it at job end. Sharing one context across
+// every URL in a batch keeps the per-URL cost down.
+//
+// On Trustpilot: stealth-Chromium handles Cloudflare challenges automatically;
+// the explicit handleCloudflareChallenge call below is belt-and-braces for
+// the rare case where the Cloudflare interstitial is JS-served and the
+// browser needs an extra few seconds to solve it.
+
+const PLAYWRIGHT_NAV_TIMEOUT_MS = 25_000;
+
+export async function validateTrustpilotUrlViaPlaywright(
+  context: BrowserContext,
+  url: string,
+): Promise<{ status: LinkStatus; error: string | null }> {
+  const cleaned = sanitizeTrustpilotUrl(url);
+  if (!cleaned) return { status: 'UNKNOWN', error: 'unsalvageable_url' };
+
+  const page = await context.newPage();
+  try {
+    let httpStatus = 0;
+    try {
+      const response = await page.goto(cleaned, {
+        waitUntil: 'domcontentloaded',
+        timeout: PLAYWRIGHT_NAV_TIMEOUT_MS,
+      });
+      httpStatus = response?.status() ?? 0;
+    } catch (err) {
+      const name = err instanceof Error ? err.name : 'Error';
+      return { status: 'UNKNOWN', error: `playwright_nav_failed: ${name}` };
+    }
+
+    // 404/410 from Playwright is authoritative — Trustpilot really is gone.
+    if (httpStatus === 404 || httpStatus === 410) {
+      return { status: 'FLAGGED_DEAD', error: `http_${httpStatus}` };
+    }
+    // Anti-bot HTTP statuses (403/429/451) — let stealth try to recover.
+    // If the navigation succeeded with one of these, the body might still
+    // be the soft-404 page; still worth checking content below.
+    const blockedHttp = httpStatus === 401 || httpStatus === 403 || httpStatus === 429 || httpStatus === 451;
+
+    // If we landed on a Cloudflare interstitial, give stealth a chance to
+    // clear it. Returns true once the real page renders.
+    await handleCloudflareChallenge(page).catch(() => false);
+
+    // Wait for the SPA to hydrate so soft-404 markers are in the DOM.
+    // The "this profile has been removed" page renders quickly — 1.5s is
+    // plenty without dragging the per-URL cost up.
+    await page.waitForTimeout(1500);
+
+    const body = (await page.content()).toLowerCase();
+    return classifyResponse(httpStatus || 200, body, { blockedHttp });
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
 export async function validateTrustpilotUrl(
   url: string,
   timeoutMs = 10_000,
@@ -136,8 +199,12 @@ export async function validateTrustpilotUrl(
 }
 
 // Same verdict ladder applied to whichever fetch path produced the response.
-// Kept here so the ScrapingBee path and the plain-fetch path can never drift.
-function classifyResponse(status: number, body: string | null): { status: LinkStatus; error: string | null } {
+// Kept here so the ScrapingBee, Playwright, and plain-fetch paths never drift.
+function classifyResponse(
+  status: number,
+  body: string | null,
+  hints: { blockedHttp?: boolean } = {},
+): { status: LinkStatus; error: string | null } {
 
   // The only HTTP statuses that *prove* a profile is gone. 410 = explicitly
   // gone, 404 = not found. Anything else can be a transient block.
@@ -172,6 +239,12 @@ function classifyResponse(status: number, body: string | null): { status: LinkSt
     if (lower.includes(marker)) {
       return { status: 'UNKNOWN', error: `cloudflare_challenge: ${marker}` };
     }
+  }
+
+  // Playwright told us the navigation got an anti-bot status code (403/429/etc)
+  // and we couldn't extract a soft-404 marker — that's an UNKNOWN, not a VALID.
+  if (hints.blockedHttp) {
+    return { status: 'UNKNOWN', error: `http_${status}_likely_bot_block` };
   }
 
   return { status: 'VALID', error: null };

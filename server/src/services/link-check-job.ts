@@ -5,8 +5,10 @@
 // + last_validated_at when each row finishes. The two only differ by which
 // table they update (`leads` vs `affiliates`) and which column holds the URL.
 import { EventEmitter } from 'events';
-import { validateTrustpilotUrl } from './url-validator.js';
+import { validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from './url-validator.js';
+import { launchBrowser, TIER_CONFIGS } from './scrapers/browser-launcher.js';
 import { getSupabase } from '../lib/supabase.js';
+import type { Browser, BrowserContext } from 'playwright';
 
 export interface LinkCheckJob {
   status: 'running' | 'completed' | 'failed';
@@ -39,9 +41,19 @@ const URL_COLUMN: Record<LinkCheckSource, string> = {
   affiliates: 'tp_url',
 };
 
-// 8-way concurrency keeps Trustpilot happy while finishing a 200-row batch
-// well inside the SSE keepalive window.
-const CONCURRENCY = 8;
+// Playwright pages share a single browser context — opening more than ~5 in
+// parallel slows the whole batch down because Chromium contention overwhelms
+// the cost of the page itself. Plain-fetch / ScrapingBee paths can run wider.
+const PLAYWRIGHT_CONCURRENCY = 5;
+const FALLBACK_CONCURRENCY = 8;
+
+// VALIDATOR_USE_PLAYWRIGHT=false force-disables the browser path (e.g. local
+// debugging or environments without Chromium installed). Defaults on — same
+// stealth stack the lead scraper uses, so deliverability of the validator
+// matches the scraper that originally captured the lead.
+function shouldUsePlaywright(): boolean {
+  return process.env.VALIDATOR_USE_PLAYWRIGHT !== 'false';
+}
 
 export async function runLinkCheckJob(
   jobId: string,
@@ -76,19 +88,41 @@ export async function runLinkCheckJob(
     emit('check_start', String(targets.length));
 
     const now = new Date().toISOString();
-    let cursor = 0;
 
-    const workers = Array.from({ length: Math.min(CONCURRENCY, targets.length) }, async () => {
+    // Launch ONE stealth Chromium for the whole job — same Tier 2 config the
+    // website-enricher uses. Boot cost (~2s) amortizes across every URL in
+    // the batch; per-URL marginal cost is just a page navigation.
+    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
+    if (shouldUsePlaywright()) {
+      try {
+        const bundle = await launchBrowser(TIER_CONFIGS[2]);
+        browser = bundle.browser;
+        context = bundle.context;
+      } catch (e) {
+        // Fall back to ScrapingBee/HTTP path if Chromium can't launch.
+        console.error('[link-check-job] Playwright launch failed, falling back', e);
+      }
+    }
+    const usingPlaywright = !!context;
+    const concurrency = Math.min(
+      usingPlaywright ? PLAYWRIGHT_CONCURRENCY : FALLBACK_CONCURRENCY,
+      targets.length,
+    );
+
+    let cursor = 0;
+    const workers = Array.from({ length: concurrency }, async () => {
       while (cursor < targets.length) {
         const i = cursor++;
         const target = targets[i];
         emit('check_item', `${i + 1}|${targets.length}|${target.url}`);
 
-        // validateTrustpilotUrl sanitizes internally, so scheme-less affiliate
-        // URLs ("au.trustpilot.com/review/foo") work without us having to
-        // rewrite them in the DB. Persisting the cleaned form would break
-        // the AffiliateTable renderer that does `https://${entry.tp_url}`.
-        const { status, error } = await validateTrustpilotUrl(target.url);
+        // Playwright path mirrors the lead-scraper exactly (same stealth +
+        // popup-handler + UA rotation). ScrapingBee/plain-fetch is the
+        // fallback — used when Chromium can't boot or VALIDATOR_USE_PLAYWRIGHT=false.
+        const { status, error } = context
+          ? await validateTrustpilotUrlViaPlaywright(context, target.url)
+          : await validateTrustpilotUrl(target.url);
 
         if (status === 'VALID') job.valid++;
         else if (status === 'FLAGGED_DEAD') job.flagged_dead++;
@@ -108,7 +142,15 @@ export async function runLinkCheckJob(
         emit('check_progress', `${job.checked}/${targets.length}|${target.url}|${status}`);
       }
     });
-    await Promise.all(workers);
+
+    try {
+      await Promise.all(workers);
+    } finally {
+      // Always tear down — leaking a Chromium across job boundaries chews
+      // memory until Cloud Run kills the instance.
+      if (context) await context.close().catch(() => undefined);
+      if (browser) await browser.close().catch(() => undefined);
+    }
 
     job.status = 'completed';
     job.completedAt = new Date().toISOString();
