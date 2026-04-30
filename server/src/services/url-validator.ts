@@ -258,11 +258,13 @@ export async function validateTrustpilotUrl(
   if (shouldUseScrapingbee()) {
     const renderJs = process.env.VALIDATOR_CHEAP_RENDER !== 'true';
     const sb = await fetchStatusViaScrapingbee(url, { renderJs, premiumProxy: true });
-    if (sb && sb.transportError === null && sb.apiStatus >= 200 && sb.apiStatus < 600) {
+    // Only short-circuit on 2xx/3xx/4xx — a definitive answer from SB. SB
+    // returns 5xx when it couldn't reach the upstream at all (DNS, connection
+    // refused), so fall through to plain fetch where Node's undici cause
+    // chain lets us distinguish ENOTFOUND vs ECONNREFUSED for a precise verdict.
+    if (sb && sb.transportError === null && sb.apiStatus >= 200 && sb.apiStatus < 500) {
       return classifyResponse(sb.upstreamStatus ?? sb.apiStatus, sb.body);
     }
-    // ScrapingBee itself failed (timeout, key issue, network) — fall through
-    // to plain fetch so we still produce a verdict instead of UNKNOWN-by-default.
   }
 
   // ── Fallback: plain HTTPS ──
