@@ -146,6 +146,26 @@ router.patch('/:id/url', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/leads/reset-link-flags — admin escape hatch to wipe stale
+// link_status verdicts. Useful after a validator policy change (e.g. when
+// previous false positives need to be re-checked instead of dismissed
+// one-by-one). Resets all flagged leads to VALID; the next Validate Links
+// run overwrites with the new validator's verdict.
+router.post('/reset-link-flags', async (_req: Request, res: Response) => {
+  try {
+    const supabase = getSupabase();
+    const { error, count } = await supabase
+      .from('leads')
+      .update({ link_status: 'VALID', last_validated_at: null, link_validation_error: null }, { count: 'exact' })
+      .neq('link_status', 'VALID');
+    if (error) throw new Error(error.message);
+    res.json({ success: true, data: { reset: count ?? 0 } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // ── GET /api/leads/check-links/status?jobId=xxx — polling fallback ──────────
 router.get('/check-links/status', (req: Request, res: Response) => {
   const { jobId } = req.query;

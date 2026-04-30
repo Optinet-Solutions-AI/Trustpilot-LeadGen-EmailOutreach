@@ -119,6 +119,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/leads/reset-link-flags:
+    post:
+      operationId: leadsResetLinkFlags
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/leads/check-links/status:
     get:
       operationId: leadsCheckLinksStatus

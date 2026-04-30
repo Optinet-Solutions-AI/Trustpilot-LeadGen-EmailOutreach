@@ -3,6 +3,8 @@
 // produce the same canonical URL + link_status that the Python ingestion
 // pipeline would.
 
+import { fetchStatusViaScrapingbee, scrapingbeeEnabled } from './scrapers/tier5-scrapingbee.js';
+
 export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
 
 const SOFT_404_MARKERS = [
@@ -60,12 +62,35 @@ const CLOUDFLARE_CHALLENGE_MARKERS = [
   'enable javascript and cookies to continue',
 ];
 
+// Set VALIDATOR_USE_SCRAPINGBEE=false to force the cheap plain-HTTP path even
+// when SCRAPINGBEE_API_KEY is set — useful for local debugging and to cap
+// credit burn during smoke tests. Defaults to ScrapingBee when the key exists.
+function shouldUseScrapingbee(): boolean {
+  if (process.env.VALIDATOR_USE_SCRAPINGBEE === 'false') return false;
+  return scrapingbeeEnabled();
+}
+
 export async function validateTrustpilotUrl(
   url: string,
   timeoutMs = 10_000,
 ): Promise<{ status: LinkStatus; error: string | null }> {
   if (!url) return { status: 'UNKNOWN', error: 'empty_url' };
 
+  // ── ScrapingBee path ──
+  // Premium-proxy fetch via ScrapingBee — the same Cloudflare bypass the
+  // tier-5 scraper uses. ~10 credits per call (no JS render, premium proxy).
+  // Trustpilot's "profile not found" page is server-side rendered, so we
+  // skip render_js to save credits.
+  if (shouldUseScrapingbee()) {
+    const sb = await fetchStatusViaScrapingbee(url, { renderJs: false, premiumProxy: true });
+    if (sb && sb.transportError === null && sb.apiStatus >= 200 && sb.apiStatus < 600) {
+      return classifyResponse(sb.upstreamStatus ?? sb.apiStatus, sb.body);
+    }
+    // ScrapingBee itself failed (timeout, key issue, network) — fall through
+    // to plain fetch so we still produce a verdict instead of UNKNOWN-by-default.
+  }
+
+  // ── Fallback: plain HTTPS ──
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -84,7 +109,13 @@ export async function validateTrustpilotUrl(
     clearTimeout(timer);
   }
 
-  const status = resp.status;
+  const body = await resp.text();
+  return classifyResponse(resp.status, body);
+}
+
+// Same verdict ladder applied to whichever fetch path produced the response.
+// Kept here so the ScrapingBee path and the plain-fetch path can never drift.
+function classifyResponse(status: number, body: string | null): { status: LinkStatus; error: string | null } {
 
   // The only HTTP statuses that *prove* a profile is gone. 410 = explicitly
   // gone, 404 = not found. Anything else can be a transient block.
@@ -104,19 +135,19 @@ export async function validateTrustpilotUrl(
     return { status: 'UNKNOWN', error: `http_${status}` };
   }
 
-  const body = (await resp.text()).toLowerCase();
+  const lower = (body ?? '').toLowerCase();
 
   // Even with 200 OK, Cloudflare sometimes serves a challenge interstitial.
   // Detect that and bail out — same logic as the 403 branch above.
   for (const marker of CLOUDFLARE_CHALLENGE_MARKERS) {
-    if (body.includes(marker)) {
+    if (lower.includes(marker)) {
       return { status: 'UNKNOWN', error: `cloudflare_challenge: ${marker}` };
     }
   }
 
   // Real soft-404 markers — Trustpilot's "this profile has been removed" page.
   for (const marker of SOFT_404_MARKERS) {
-    if (body.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
+    if (lower.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
   }
   return { status: 'VALID', error: null };
 }

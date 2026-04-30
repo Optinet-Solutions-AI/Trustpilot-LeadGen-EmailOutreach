@@ -122,3 +122,77 @@ export async function fetchViaScrapingbee(
 export function scrapingbeeEnabled(): boolean {
   return !!process.env.SCRAPINGBEE_API_KEY;
 }
+
+// ── Validation-specific fetch ──────────────────────────────────────────────
+//
+// The link validator needs the *upstream* HTTP status code (Trustpilot's
+// 404/410 vs ScrapingBee's own 4xx) so it can distinguish "page is gone" from
+// "we got rate-limited." ScrapingBee surfaces upstream status in the
+// `Spb-Original-Status-Code` header.
+//
+// Render JS is OFF by default — Trustpilot's "profile not found" page is
+// server-side rendered, so we save credits (~10/call instead of ~25). Premium
+// proxy stays on; without it Cloudflare blocks ScrapingBee's data-center IPs.
+
+export interface ScrapingbeeStatusResult {
+  /** Upstream (Trustpilot) HTTP status, or null if ScrapingBee itself errored. */
+  upstreamStatus: number | null;
+  /** ScrapingBee's own HTTP status. 200 = success, 4xx/5xx = SB error. */
+  apiStatus: number;
+  body: string | null;
+  /** Set when we couldn't reach ScrapingBee at all (network error, timeout). */
+  transportError: string | null;
+}
+
+export async function fetchStatusViaScrapingbee(
+  targetUrl: string,
+  opts: ScrapingbeeFetchOpts = {},
+): Promise<ScrapingbeeStatusResult | null> {
+  const apiKey = process.env.SCRAPINGBEE_API_KEY;
+  if (!apiKey) return null;
+
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    url: targetUrl,
+    render_js: String(opts.renderJs ?? false),
+    premium_proxy: String(opts.premiumProxy ?? true),
+    block_resources: String(opts.blockResources ?? false),
+    timeout: String(SCRAPINGBEE_TIMEOUT_MS),
+    // Without this flag SB rewrites 4xx upstream responses into a generic
+    // ScrapingBee error and we lose the 404 signal we need.
+    transparent_status_code: 'true',
+  });
+
+  const apiUrl = `${SCRAPINGBEE_BASE}?${params.toString()}`;
+
+  return new Promise<ScrapingbeeStatusResult>((resolve) => {
+    let resolved = false;
+    const finish = (v: ScrapingbeeStatusResult) => { if (!resolved) { resolved = true; resolve(v); } };
+
+    const req = https.get(apiUrl, { timeout: SOCKET_TIMEOUT_MS }, (res) => {
+      const apiStatus = res.statusCode ?? 0;
+      const upstreamHeader =
+        (res.headers['spb-original-status-code'] as string | undefined) ??
+        (res.headers['Spb-Original-Status-Code'] as string | undefined);
+      const upstreamStatus = upstreamHeader ? parseInt(upstreamHeader, 10) : apiStatus;
+
+      let body = '';
+      let bytes = 0;
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        bytes += Buffer.byteLength(chunk, 'utf8');
+        if (bytes > MAX_BYTES) { req.destroy(); return; }
+        body += chunk;
+      });
+      res.on('end', () => finish({ apiStatus, upstreamStatus, body: body || null, transportError: null }));
+      res.on('error', (err) => finish({ apiStatus, upstreamStatus, body: null, transportError: err.message }));
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      finish({ apiStatus: 0, upstreamStatus: null, body: null, transportError: 'socket_timeout' });
+    });
+    req.on('error', (err) => {
+      finish({ apiStatus: 0, upstreamStatus: null, body: null, transportError: err.message });
+    });
+  });
+}
