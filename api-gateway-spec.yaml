@@ -242,6 +242,18 @@ paths:
       responses:
         "200":
           description: OK
+  /api/verify/domain-intel:
+    get:
+      operationId: verifyDomainIntel
+      security: []
+      parameters:
+        - in: query
+          name: domain
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/enrich:
     post:
       operationId: enrichLeads

@@ -522,6 +522,25 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       return;
     }
 
+    // ─── Send-gating: refuse to dispatch to addresses proven invalid ─────
+    // Mirrors the verifier's verdict ladder. Catch-all and unknown leads
+    // pass (UI shows a warning chip); only `invalid` is hard-blocked.
+    const invalidLeads = pendingLeads.filter((cl: { leads?: { verification_status?: string | null } }) =>
+      cl.leads?.verification_status === 'invalid'
+    );
+    if (invalidLeads.length > 0) {
+      const sample = invalidLeads
+        .slice(0, 3)
+        .map((cl: { email_used: string | null }) => cl.email_used)
+        .filter(Boolean)
+        .join(', ');
+      res.status(400).json({
+        success: false,
+        error: `Send blocked: ${invalidLeads.length} lead${invalidLeads.length === 1 ? ' has' : 's have'} verification_status='invalid' (proven undeliverable). Examples: ${sample}. Remove these from the campaign or re-verify before sending.`,
+      });
+      return;
+    }
+
     // ─── Platform mode: push to Instantly/Smartlead ───────────────
     if (isPlatformEnabled()) {
       const leadsToSend = limit && Number(limit) > 0 ? pendingLeads.slice(0, Number(limit)) : pendingLeads;

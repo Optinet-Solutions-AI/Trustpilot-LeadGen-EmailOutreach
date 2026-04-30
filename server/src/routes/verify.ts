@@ -2,11 +2,9 @@ import { Router, Request, Response } from 'express';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
-import { verifyEmails as verifyEmailsMock } from '../services/email-verifier.mock.js';
-import { verifyEmails as verifyEmailsZB } from '../services/email-verifier.zerobounce.js';
 import { createNote } from '../db/notes.js';
-
-const verifyEmails = process.env.ZEROBOUNCE_API_KEY ? verifyEmailsZB : verifyEmailsMock;
+import { validateEmail, type ValidationResult, type FinalStatus } from '../services/email-validator/index.js';
+import { getCachedDomainIntel } from '../services/email-validator/domain-intel.js';
 
 export const verifyEvents = new EventEmitter();
 verifyEvents.setMaxListeners(50);
@@ -95,6 +93,22 @@ router.get('/:jobId/stream', (req: Request, res: Response) => {
   req.on('close', () => verifyEvents.off('progress', handler));
 });
 
+// ── GET /api/verify/domain-intel?domain=xxx — read cached domain intel ──────
+router.get('/domain-intel', async (req: Request, res: Response) => {
+  const domain = typeof req.query.domain === 'string' ? req.query.domain.toLowerCase() : '';
+  if (!domain) {
+    res.status(400).json({ success: false, error: 'domain query param required' });
+    return;
+  }
+  try {
+    const intel = await getCachedDomainIntel(domain);
+    res.json({ success: true, data: intel });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 type EmailField = 'trustpilot' | 'website' | 'both';
 
 function pickEmails(
@@ -112,6 +126,22 @@ function pickEmails(
   if (lead.trustpilot_email) emails.push(lead.trustpilot_email);
   if (lead.website_email && lead.website_email !== lead.trustpilot_email) emails.push(lead.website_email);
   return emails;
+}
+
+// Map orchestrator's per-stage breakdown into the columns the UI tooltip reads.
+function patchFromResult(r: ValidationResult, source: 'trustpilot' | 'website') {
+  const patch: Record<string, unknown> = {
+    email_verified: r.status === 'valid',
+    verification_status: r.status,
+    verify_syntax_ok: r.syntax_ok,
+    verify_mx_ok: r.mx_ok,
+    verify_smtp_result: r.smtp_result,
+    verify_zerobounce_result: r.zerobounce_result,
+    verified_at: new Date().toISOString(),
+  };
+  if (source === 'trustpilot') patch.trustpilot_email_status = r.status;
+  if (source === 'website')    patch.website_email_status = r.status;
+  return patch;
 }
 
 // ── POST /api/verify — start verification job ────────────────────────────────
@@ -138,8 +168,6 @@ router.post('/', async (req: Request, res: Response) => {
     // Map each unique email -> the leads that own it, plus which source
     // field on those leads (trustpilot vs website) matched. Carrying the
     // source forward lets us update the per-source status column later.
-    // Keys are lower-cased because ZeroBounce normalizes case in its
-    // response, and case-sensitive lookups silently miss otherwise.
     type LeadTarget = { id: string; source: 'trustpilot' | 'website' };
     const emailToTargets = new Map<string, LeadTarget[]>();
     const norm = (e: string) => e.toLowerCase().trim();
@@ -162,10 +190,6 @@ router.post('/', async (req: Request, res: Response) => {
 
     console.log(`[verify] emailField=${emailField} leadsFetched=${leads.length} emailsCollected=${emails.length}`);
     if (emails.length === 0) {
-      console.log(`[verify] No emails found for field "${emailField}". Per-lead snapshot:`);
-      for (const l of leads.slice(0, 10)) {
-        console.log(`  lead=${l.id} tp=${JSON.stringify(l.trustpilot_email)} web=${JSON.stringify(l.website_email)} primary=${JSON.stringify(l.primary_email)}`);
-      }
       const fieldLabel = emailField === 'trustpilot'
         ? 'Trustpilot email'
         : emailField === 'website'
@@ -199,31 +223,41 @@ router.post('/', async (req: Request, res: Response) => {
 
     (async () => {
       try {
-        const BATCH_SIZE = 100;
-        const totalBatches = Math.ceil(emails.length / BATCH_SIZE);
-        const allResults: Array<{ email: string; status: 'valid' | 'invalid' | 'catch-all' | 'unknown' }> = [];
-
         emit(jobId, 'verify_start', String(emails.length));
 
-        for (let i = 0; i < emails.length; i += BATCH_SIZE) {
-          const chunk = emails.slice(i, i + BATCH_SIZE);
-          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-
-          emit(jobId, 'verify_batch_start', `${batchNum}|${totalBatches}|${i}|${emails.length}`);
-
-          const batchResults = await verifyEmails(chunk);
-          allResults.push(...batchResults);
-
-          for (const r of batchResults) {
-            if (r.status === 'valid') job.verified++;
-            else if (r.status === 'invalid') job.invalid++;
-            else if (r.status === 'catch-all') job.catchAll++;
-            else job.unknown++;
-          }
-
-          const done = Math.min(i + chunk.length, emails.length);
-          emit(jobId, 'verify_batch_done', `${batchNum}|${totalBatches}|${done}|${emails.length}`);
+        // Group by domain so we run domain-level intel (DNS, catch-all) once
+        // and keep per-MX SMTP probes serialized.
+        const byDomain = new Map<string, string[]>();
+        for (const e of emails) {
+          const d = (e.split('@')[1] || '').toLowerCase();
+          const list = byDomain.get(d) || [];
+          list.push(e);
+          byDomain.set(d, list);
         }
+
+        const allResults: ValidationResult[] = [];
+        let processed = 0;
+        const total = emails.length;
+
+        // Run distinct domains in parallel; addresses within a domain serial.
+        await Promise.all([...byDomain.entries()].map(async ([domain, group]) => {
+          emit(jobId, 'mx_check', domain);
+          for (const email of group) {
+            emit(jobId, 'verify_address', email);
+            const result = await validateEmail(email, {
+              onStage: (stage, detail) => emit(jobId, stage, detail),
+            });
+            allResults.push(result);
+
+            if (result.status === 'valid')         job.verified++;
+            else if (result.status === 'invalid')  job.invalid++;
+            else if (result.status === 'catch-all') job.catchAll++;
+            else                                   job.unknown++;
+
+            processed++;
+            emit(jobId, 'verify_address_done', `${processed}|${total}|${email}|${result.status}`);
+          }
+        }));
 
         emit(jobId, 'verify_saving', String(allResults.length));
 
@@ -231,23 +265,14 @@ router.post('/', async (req: Request, res: Response) => {
         let noteCount = 0;
         let skippedCount = 0;
         for (const result of allResults) {
-          // ZeroBounce lowercases addresses in its response, so look up by the
-          // normalized form to match the keys we built earlier.
-          const targets = emailToTargets.get(norm(result.email)) || [];
+          const targets = emailToTargets.get(result.email) || [];
           if (targets.length === 0) {
             console.warn(`[verify] ${jobId} NO lead found for email=${JSON.stringify(result.email)} — map lookup miss`);
             skippedCount++;
             continue;
           }
-          const isVerified = result.status === 'valid';
           for (const target of targets) {
-            const patch: Record<string, unknown> = {
-              email_verified: isVerified,
-              verification_status: result.status,
-            };
-            if (target.source === 'trustpilot') patch.trustpilot_email_status = result.status;
-            if (target.source === 'website')    patch.website_email_status    = result.status;
-
+            const patch = patchFromResult(result, target.source);
             const { error: updErr } = await supabase.from('leads').update(patch).eq('id', target.id);
             if (updErr) console.error(`[verify] ${jobId} leads UPDATE failed for ${target.id}: ${updErr.message}`);
             else updatedCount++;
@@ -255,8 +280,19 @@ router.post('/', async (req: Request, res: Response) => {
             try {
               await createNote(target.id, {
                 type: 'verification',
-                content: `Email ${result.email} verified: ${result.status}`,
-                metadata: { email: result.email, status: result.status, source: target.source },
+                content: `${result.email} → ${result.status} (via ${result.sourceStage}): ${result.reason}`,
+                metadata: {
+                  email: result.email,
+                  status: result.status,
+                  source: target.source,
+                  source_stage: result.sourceStage,
+                  smtp_result: result.smtp_result,
+                  zerobounce_result: result.zerobounce_result,
+                  mx_top: result.mx_top,
+                  provider_type: result.provider_type,
+                  is_catch_all_domain: result.is_catch_all_domain,
+                  raw_smtp_response: result.raw_smtp_response,
+                },
               });
               noteCount++;
             } catch (noteErr) {
@@ -290,5 +326,8 @@ router.post('/', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: message });
   }
 });
+
+// Re-export for any external consumers; not used by the app itself.
+export type { FinalStatus };
 
 export default router;

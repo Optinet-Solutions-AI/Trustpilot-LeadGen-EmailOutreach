@@ -8,6 +8,7 @@ interface PickerLead {
   primary_email: string | null;
   star_rating: number | null;
   outreach_status: string;
+  verification_status: 'valid' | 'invalid' | 'catch-all' | 'unknown' | null;
 }
 
 interface Props {
@@ -66,12 +67,19 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
+  // Block invalid leads from selection — mirrors the backend send-gate so
+  // users can't queue up a campaign that the API will then refuse.
+  const isInvalid = (l: PickerLead) => l.verification_status === 'invalid';
+  const selectableLeads = leads.filter((l) => !isInvalid(l));
+
   const toggleLead = (id: string) => {
+    const lead = leads.find((l) => l.id === id);
+    if (lead && isInvalid(lead)) return;
     if (selectedLeadIds.includes(id)) onSelectionChange(selectedLeadIds.filter((x) => x !== id));
     else onSelectionChange([...selectedLeadIds, id]);
   };
 
-  const pageIds = leads.map((l) => l.id);
+  const pageIds = selectableLeads.map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
 
   const togglePage = () => {
@@ -183,22 +191,54 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
             <tbody className="divide-y divide-slate-50">
               {leads.map((lead) => {
                 const isSelected = selectedLeadIds.includes(lead.id);
+                const blocked = isInvalid(lead);
+                const isCatchAll = lead.verification_status === 'catch-all';
+                const isUnknown = lead.verification_status === 'unknown';
                 return (
                   <tr
                     key={lead.id}
-                    className={`cursor-pointer transition-colors ${isSelected ? 'bg-[#ffd9de]/30 hover:bg-[#ffd9de]/50' : 'hover:bg-surface-container-low'}`}
-                    onClick={() => toggleLead(lead.id)}
+                    className={`transition-colors ${
+                      blocked
+                        ? 'opacity-50 cursor-not-allowed bg-red-50/30'
+                        : isSelected
+                          ? 'bg-[#ffd9de]/30 hover:bg-[#ffd9de]/50 cursor-pointer'
+                          : 'hover:bg-surface-container-low cursor-pointer'
+                    }`}
+                    onClick={() => !blocked && toggleLead(lead.id)}
+                    title={blocked ? 'Blocked: verification_status=invalid (proven undeliverable). Re-verify or remove.' : undefined}
                   >
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={isSelected}
+                        disabled={blocked}
                         onChange={() => toggleLead(lead.id)}
-                        className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                        className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a] disabled:cursor-not-allowed"
                       />
                     </td>
                     <td className="px-4 py-3 font-bold text-on-surface">{lead.company_name}</td>
-                    <td className="px-4 py-3 text-secondary text-xs">{lead.primary_email || <span className="text-slate-300">—</span>}</td>
+                    <td className="px-4 py-3 text-xs">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`text-secondary ${blocked ? 'line-through text-slate-400' : ''}`}>
+                          {lead.primary_email || <span className="text-slate-300">—</span>}
+                        </span>
+                        {blocked && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-red-50 text-red-700 px-1.5 py-0.5 rounded-full" title="Will bounce — excluded from sends">
+                            <span className="material-symbols-outlined text-[9px]">cancel</span>invalid
+                          </span>
+                        )}
+                        {isCatchAll && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Domain accepts all mail — individual mailbox can't be proven. Allowed but risky.">
+                            <span className="material-symbols-outlined text-[9px]">help</span>catch-all
+                          </span>
+                        )}
+                        {isUnknown && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-slate-50 text-slate-500 px-1.5 py-0.5 rounded-full" title="Not yet proven deliverable. Allowed but consider re-verifying.">
+                            <span className="material-symbols-outlined text-[9px]">help_outline</span>unknown
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-right font-bold text-[#b0004a] text-xs">
                       {lead.star_rating != null ? `${lead.star_rating} ★` : '—'}
                     </td>
