@@ -188,8 +188,7 @@ export default function Leads() {
     }
   };
 
-  // Self-healing URL pipeline handlers — wired into LeadsTable so the
-  // warning badge and bulk-flagged-delete bar are actually interactive.
+  // Self-healing URL pipeline handlers.
   const handleDismissLinkFlag = async (id: string) => {
     try {
       await api.patch(`/leads/${id}/dismiss-flag`);
@@ -210,14 +209,25 @@ export default function Leads() {
     }
   };
 
-  const handleBulkDeleteFromTable = async (ids: string[]) => {
+  const [checkingLinks, setCheckingLinks] = useState(false);
+  const handleBulkCheckLinks = async () => {
+    if (selectedIds.length === 0) return;
+    setCheckingLinks(true);
     try {
-      const deleted = await bulkDelete(ids);
-      notify('success', `Deleted ${deleted} lead${deleted !== 1 ? 's' : ''}`);
-      setSelectedIds([]);
+      const res = await api.post('/leads/check-links', { ids: selectedIds });
+      const { checked, valid, flagged_dead, flagged_removed, unknown } = res.data.data;
+      const flagged = flagged_dead + flagged_removed;
+      notify(
+        'success',
+        flagged > 0
+          ? `Checked ${checked} — ${flagged} flagged (${flagged_dead} dead, ${flagged_removed} removed), ${valid} valid, ${unknown} unknown`
+          : `Checked ${checked} — all valid`,
+      );
       loadLeads();
     } catch (e) {
-      notify('error', e instanceof Error ? e.message : 'Failed to delete leads');
+      notify('error', e instanceof Error ? e.message : 'Failed to check links');
+    } finally {
+      setCheckingLinks(false);
     }
   };
 
@@ -375,6 +385,18 @@ export default function Leads() {
               >
                 <span className={`material-symbols-outlined text-[18px] ${enriching ? 'animate-spin' : ''}`}>
                   {enriching ? 'progress_activity' : 'language'}
+                </span>
+              </button>
+
+              {/* Validate Links — re-checks Trustpilot URLs for dead/removed pages */}
+              <button
+                onClick={handleBulkCheckLinks}
+                disabled={checkingLinks || enriching || verifying}
+                title={checkingLinks ? 'Checking links...' : `Validate Links — re-checks each Trustpilot URL for dead/removed pages and flags broken ones`}
+                className="p-2 rounded-full text-amber-700 hover:bg-amber-50 disabled:opacity-50 transition-colors"
+              >
+                <span className={`material-symbols-outlined text-[18px] ${checkingLinks ? 'animate-spin' : ''}`}>
+                  {checkingLinks ? 'progress_activity' : 'link'}
                 </span>
               </button>
 
@@ -544,7 +566,6 @@ export default function Leads() {
             onSortChange={toggleSort}
             onDismissLinkFlag={handleDismissLinkFlag}
             onEditLinkUrl={handleEditLinkUrl}
-            onBulkDelete={handleBulkDeleteFromTable}
           />
         ) : (
           <LeadPipeline

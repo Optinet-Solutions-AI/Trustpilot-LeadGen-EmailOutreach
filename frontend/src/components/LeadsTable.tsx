@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef } from 'react';
 import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
 import LeadLinkWarning from './LeadLinkWarning';
 
@@ -83,11 +83,11 @@ interface Props {
   sortDir: 'asc' | 'desc';
   onSortChange: (col: string) => void;
   // Self-healing URL pipeline hooks. Optional so existing callers keep working;
-  // when provided, the warning badge renders inline next to the company name
-  // and the bulk-delete bar appears once any rows are selected.
+  // when provided, the LeadLinkWarning badge renders inline under the company
+  // name with dismiss / edit-url actions. Bulk operations (validate + delete)
+  // live in the parent's existing top-right chip group, not here.
   onDismissLinkFlag?: (id: string) => Promise<void> | void;
   onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
-  onBulkDelete?: (ids: string[]) => Promise<void> | void;
 }
 
 type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'scraped' | 'status';
@@ -130,41 +130,12 @@ export default function LeadsTable({
   leads, total, page, totalPages,
   onPageChange, onStatusChange, onDelete, onSelect, onLeadClick,
   sortBy, sortDir, onSortChange,
-  onDismissLinkFlag, onEditLinkUrl, onBulkDelete,
+  onDismissLinkFlag, onEditLinkUrl,
 }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [columns, setColumns] = useState<ColKey[]>(loadColOrder);
   const [dragOver, setDragOver] = useState<ColKey | null>(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
   const dragCol = useRef<ColKey | null>(null);
-
-  // Count flagged rows in the current selection so we can show the user
-  // exactly what they're about to delete ("Delete 7 flagged of 12 selected").
-  const selectedFlaggedCount = useMemo(() => {
-    if (selected.size === 0) return 0;
-    return leads.reduce(
-      (n, l) => (selected.has(l.id) && l.link_status !== 'VALID' ? n + 1 : n),
-      0,
-    );
-  }, [leads, selected]);
-
-  const handleBulkDelete = async (flaggedOnly: boolean) => {
-    if (!onBulkDelete) return;
-    const ids = flaggedOnly
-      ? leads.filter((l) => selected.has(l.id) && l.link_status !== 'VALID').map((l) => l.id)
-      : [...selected];
-    if (ids.length === 0) return;
-    const verb = flaggedOnly ? 'flagged ' : '';
-    if (!window.confirm(`Delete ${ids.length} ${verb}lead(s)? This cannot be undone.`)) return;
-    setBulkBusy(true);
-    try {
-      await onBulkDelete(ids);
-      setSelected(new Set());
-      onSelect([]);
-    } finally {
-      setBulkBusy(false);
-    }
-  };
 
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
@@ -377,40 +348,6 @@ export default function LeadsTable({
 
   return (
     <div className="overflow-hidden">
-      {onBulkDelete && selected.size > 0 && (
-        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-[#fff5f7] border-b border-[#ffd9de]">
-          <span className="text-xs font-semibold text-[#b0004a]">
-            {selected.size} selected
-            {selectedFlaggedCount > 0 && ` · ${selectedFlaggedCount} flagged`}
-          </span>
-          <div className="flex items-center gap-2">
-            {selectedFlaggedCount > 0 && (
-              <button
-                onClick={() => handleBulkDelete(true)}
-                disabled={bulkBusy}
-                className="text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
-              >
-                <span className="material-symbols-outlined text-[14px]">warning</span>
-                Delete {selectedFlaggedCount} flagged
-              </button>
-            )}
-            <button
-              onClick={() => handleBulkDelete(false)}
-              disabled={bulkBusy}
-              className="text-xs font-bold text-error border border-red-200 hover:bg-red-50 px-3 py-1.5 rounded-lg disabled:opacity-50"
-            >
-              Delete all selected
-            </button>
-            <button
-              onClick={() => { setSelected(new Set()); onSelect([]); }}
-              disabled={bulkBusy}
-              className="text-xs font-semibold text-secondary hover:text-on-surface px-2 py-1.5"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-container border-b border-slate-100">

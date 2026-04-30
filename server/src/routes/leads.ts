@@ -140,6 +140,68 @@ router.patch('/:id/url', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/leads/check-links — bulk re-validate Trustpilot URLs for the
+// given lead IDs. Runs validateTrustpilotUrl with bounded concurrency so a
+// 200-lead batch doesn't blow past Cloud Run's 300s request timeout, then
+// writes link_status / last_validated_at / link_validation_error per row.
+router.post('/check-links', async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ success: false, error: 'ids (non-empty array) is required' });
+      return;
+    }
+
+    const supabase = getSupabase();
+    const { data: rows, error: fetchErr } = await supabase
+      .from('leads')
+      .select('id, trustpilot_url')
+      .in('id', ids);
+    if (fetchErr) throw new Error(fetchErr.message);
+
+    const targets = (rows || []).filter((r): r is { id: string; trustpilot_url: string } =>
+      Boolean(r.trustpilot_url),
+    );
+
+    // Concurrency cap — Trustpilot rate-limits aggressive crawlers and we
+    // don't want to burn the whole request budget on one batch.
+    const CONCURRENCY = 8;
+    const counts = { valid: 0, flagged_dead: 0, flagged_removed: 0, unknown: 0 };
+    const now = new Date().toISOString();
+
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, targets.length) }, async () => {
+      while (cursor < targets.length) {
+        const i = cursor++;
+        const target = targets[i];
+        const { status, error } = await validateTrustpilotUrl(target.trustpilot_url);
+        if (status === 'VALID') counts.valid++;
+        else if (status === 'FLAGGED_DEAD') counts.flagged_dead++;
+        else if (status === 'FLAGGED_REMOVED') counts.flagged_removed++;
+        else counts.unknown++;
+
+        await supabase
+          .from('leads')
+          .update({
+            link_status: status,
+            last_validated_at: now,
+            link_validation_error: error,
+          })
+          .eq('id', target.id);
+      }
+    });
+    await Promise.all(workers);
+
+    res.json({
+      success: true,
+      data: { checked: targets.length, skipped: ids.length - targets.length, ...counts },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // DELETE /api/leads/bulk — bulk delete (must come before /:id).
 // Used by the "Delete Selected Flagged Leads" UI; deletion is ALWAYS user-
 // triggered, never automatic, even for FLAGGED_DEAD / FLAGGED_REMOVED rows.
