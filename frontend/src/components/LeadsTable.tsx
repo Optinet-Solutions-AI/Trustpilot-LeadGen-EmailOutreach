@@ -1,23 +1,68 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
+import LeadLinkWarning from './LeadLinkWarning';
 
 function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
 }
 
-function VerifyBadge({ status }: { status: VerificationStatus | null | undefined }) {
+// Build a multi-line tooltip showing the stage-by-stage breakdown the
+// validator wrote. Lets the user see exactly *which* stage produced the
+// verdict ("SMTP RCPT-TO 250 from mail.bluehost.com" vs "ZeroBounce: catch-all").
+function buildStageTooltip(status: VerificationStatus, lead?: Lead): string {
+  const headlines: Record<VerificationStatus, string> = {
+    'valid':     'Deliverable — safe to send',
+    'invalid':   'Will bounce — excluded from campaigns',
+    'catch-all': 'Domain accepts all mail — individual mailbox can\'t be proven',
+    'unknown':   'Inconclusive — couldn\'t prove either way',
+  };
+  if (!lead) return headlines[status];
+
+  const lines: string[] = [headlines[status]];
+  const breakdown: string[] = [];
+  if (lead.verify_syntax_ok === false) breakdown.push('Syntax: failed');
+  else if (lead.verify_syntax_ok === true) breakdown.push('Syntax: ok');
+
+  if (lead.verify_mx_ok === false) breakdown.push('MX: not found');
+  else if (lead.verify_mx_ok === true) breakdown.push('MX: ok');
+
+  if (lead.verify_smtp_result) {
+    const labels: Record<string, string> = {
+      '250': 'SMTP probe: 250 (mailbox accepted)',
+      '550': 'SMTP probe: 550 (mailbox rejected)',
+      'unknown': 'SMTP probe: ambiguous',
+      'skipped_catchall': 'SMTP probe: skipped (catch-all domain)',
+      'skipped_giant': 'SMTP probe: skipped (Gmail/Outlook365 always 250)',
+      'skipped_no_mx': 'SMTP probe: skipped (no MX)',
+      'error': 'SMTP probe: connect error',
+    };
+    breakdown.push(labels[lead.verify_smtp_result] || `SMTP probe: ${lead.verify_smtp_result}`);
+  }
+  if (lead.verify_zerobounce_result) breakdown.push(`ZeroBounce: ${lead.verify_zerobounce_result}`);
+
+  if (breakdown.length) {
+    lines.push('—');
+    lines.push(...breakdown);
+  }
+  if (lead.verified_at) {
+    lines.push(`Verified ${new Date(lead.verified_at).toLocaleDateString()}`);
+  }
+  return lines.join('\n');
+}
+
+function VerifyBadge({ status, lead }: { status: VerificationStatus | null | undefined; lead?: Lead }) {
   if (!status) return null;
-  const styles: Record<VerificationStatus, { bg: string; fg: string; icon: string; label: string; title: string }> = {
-    'valid':     { bg: 'bg-green-50',  fg: 'text-green-700',  icon: 'verified',          label: 'valid',     title: 'Deliverable — safe to send' },
-    'invalid':   { bg: 'bg-red-50',    fg: 'text-red-700',    icon: 'cancel',            label: 'invalid',   title: 'Will bounce — exclude from campaigns' },
-    'catch-all': { bg: 'bg-amber-50',  fg: 'text-amber-700',  icon: 'help',              label: 'catch-all', title: 'Domain accepts all mail — risky' },
-    'unknown':   { bg: 'bg-slate-50',  fg: 'text-slate-500',  icon: 'help_outline',      label: 'unknown',   title: 'Domain unreachable or greylisted' },
+  const styles: Record<VerificationStatus, { bg: string; fg: string; icon: string; label: string }> = {
+    'valid':     { bg: 'bg-green-50',  fg: 'text-green-700',  icon: 'verified',          label: 'valid' },
+    'invalid':   { bg: 'bg-red-50',    fg: 'text-red-700',    icon: 'cancel',            label: 'invalid' },
+    'catch-all': { bg: 'bg-amber-50',  fg: 'text-amber-700',  icon: 'help',              label: 'catch-all' },
+    'unknown':   { bg: 'bg-slate-50',  fg: 'text-slate-500',  icon: 'help_outline',      label: 'unknown' },
   };
   const s = styles[status];
   return (
     <span
       className={`inline-flex items-center gap-0.5 text-[9px] font-bold ${s.bg} ${s.fg} px-1.5 py-0.5 rounded-full w-fit`}
-      title={s.title}
+      title={buildStageTooltip(status, lead)}
     >
       <span className="material-symbols-outlined text-[9px]">{s.icon}</span>{s.label}
     </span>
@@ -37,6 +82,12 @@ interface Props {
   sortBy: string;
   sortDir: 'asc' | 'desc';
   onSortChange: (col: string) => void;
+  // Self-healing URL pipeline hooks. Optional so existing callers keep working;
+  // when provided, the warning badge renders inline next to the company name
+  // and the bulk-delete bar appears once any rows are selected.
+  onDismissLinkFlag?: (id: string) => Promise<void> | void;
+  onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
+  onBulkDelete?: (ids: string[]) => Promise<void> | void;
 }
 
 type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'scraped' | 'status';
@@ -79,11 +130,41 @@ export default function LeadsTable({
   leads, total, page, totalPages,
   onPageChange, onStatusChange, onDelete, onSelect, onLeadClick,
   sortBy, sortDir, onSortChange,
+  onDismissLinkFlag, onEditLinkUrl, onBulkDelete,
 }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [columns, setColumns] = useState<ColKey[]>(loadColOrder);
   const [dragOver, setDragOver] = useState<ColKey | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const dragCol = useRef<ColKey | null>(null);
+
+  // Count flagged rows in the current selection so we can show the user
+  // exactly what they're about to delete ("Delete 7 flagged of 12 selected").
+  const selectedFlaggedCount = useMemo(() => {
+    if (selected.size === 0) return 0;
+    return leads.reduce(
+      (n, l) => (selected.has(l.id) && l.link_status !== 'VALID' ? n + 1 : n),
+      0,
+    );
+  }, [leads, selected]);
+
+  const handleBulkDelete = async (flaggedOnly: boolean) => {
+    if (!onBulkDelete) return;
+    const ids = flaggedOnly
+      ? leads.filter((l) => selected.has(l.id) && l.link_status !== 'VALID').map((l) => l.id)
+      : [...selected];
+    if (ids.length === 0) return;
+    const verb = flaggedOnly ? 'flagged ' : '';
+    if (!window.confirm(`Delete ${ids.length} ${verb}lead(s)? This cannot be undone.`)) return;
+    setBulkBusy(true);
+    try {
+      await onBulkDelete(ids);
+      setSelected(new Set());
+      onSelect([]);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
@@ -181,6 +262,13 @@ export default function LeadsTable({
                 {lead.website_url.replace(/^https?:\/\//, '').slice(0, 30)}
               </a>
             )}
+            {onDismissLinkFlag && onEditLinkUrl && lead.link_status && lead.link_status !== 'VALID' && (
+              <LeadLinkWarning
+                lead={lead}
+                onDismiss={onDismissLinkFlag}
+                onEditUrl={onEditLinkUrl}
+              />
+            )}
           </td>
         );
       case 'country':
@@ -202,7 +290,7 @@ export default function LeadsTable({
                   <span className="material-symbols-outlined text-[12px] text-blue-400 shrink-0">alternate_email</span>
                   <span className="truncate">{lead.trustpilot_email}</span>
                 </span>
-                <VerifyBadge status={lead.trustpilot_email_status} />
+                <VerifyBadge status={lead.trustpilot_email_status} lead={lead} />
               </div>
             ) : (
               <span className="text-slate-300 text-xs">—</span>
@@ -224,7 +312,7 @@ export default function LeadsTable({
                   <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full w-fit">
                     <span className="material-symbols-outlined text-[9px]">language</span>enriched
                   </span>
-                  <VerifyBadge status={lead.website_email_status} />
+                  <VerifyBadge status={lead.website_email_status} lead={lead} />
                 </div>
               </div>
             ) : hasWebsiteUrl ? (
@@ -289,6 +377,40 @@ export default function LeadsTable({
 
   return (
     <div className="overflow-hidden">
+      {onBulkDelete && selected.size > 0 && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-[#fff5f7] border-b border-[#ffd9de]">
+          <span className="text-xs font-semibold text-[#b0004a]">
+            {selected.size} selected
+            {selectedFlaggedCount > 0 && ` · ${selectedFlaggedCount} flagged`}
+          </span>
+          <div className="flex items-center gap-2">
+            {selectedFlaggedCount > 0 && (
+              <button
+                onClick={() => handleBulkDelete(true)}
+                disabled={bulkBusy}
+                className="text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[14px]">warning</span>
+                Delete {selectedFlaggedCount} flagged
+              </button>
+            )}
+            <button
+              onClick={() => handleBulkDelete(false)}
+              disabled={bulkBusy}
+              className="text-xs font-bold text-error border border-red-200 hover:bg-red-50 px-3 py-1.5 rounded-lg disabled:opacity-50"
+            >
+              Delete all selected
+            </button>
+            <button
+              onClick={() => { setSelected(new Set()); onSelect([]); }}
+              disabled={bulkBusy}
+              className="text-xs font-semibold text-secondary hover:text-on-surface px-2 py-1.5"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-container border-b border-slate-100">

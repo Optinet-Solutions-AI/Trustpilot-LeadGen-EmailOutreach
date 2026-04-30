@@ -1,5 +1,14 @@
 export type LeadStatus = 'new' | 'contacted' | 'replied' | 'converted' | 'lost';
 export type VerificationStatus = 'valid' | 'invalid' | 'catch-all' | 'unknown';
+export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
+export type SmtpProbeResult =
+  | '250'
+  | '550'
+  | 'unknown'
+  | 'skipped_catchall'
+  | 'skipped_giant'
+  | 'skipped_no_mx'
+  | 'error';
 
 export interface Lead {
   id: string;
@@ -17,7 +26,17 @@ export interface Lead {
   verification_status: VerificationStatus;
   trustpilot_email_status: VerificationStatus | null;
   website_email_status: VerificationStatus | null;
+  // Per-stage breakdown — populated by the layered validator (Stage 1–5).
+  // Surfaced in the UI tooltip so the user can see *why* a verdict landed.
+  verify_syntax_ok: boolean | null;
+  verify_mx_ok: boolean | null;
+  verify_smtp_result: SmtpProbeResult | null;
+  verify_zerobounce_result: VerificationStatus | null;
+  verified_at: string | null;
   outreach_status: LeadStatus;
+  link_status: LinkStatus;
+  last_validated_at: string | null;
+  link_validation_error: string | null;
   screenshot_path: string | null;
   tags: string[];
   lead_source: string;

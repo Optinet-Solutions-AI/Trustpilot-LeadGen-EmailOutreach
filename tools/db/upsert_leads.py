@@ -13,6 +13,13 @@ from datetime import datetime, timezone
 # Allow running from project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from tools.db.supabase_client import table
+from tools.db.url_validator import sanitize_trustpilot_url, validate_trustpilot_url
+
+import requests
+
+# Skip the network round-trip during unit tests / dev imports. Set
+# UPSERT_VALIDATE_LINKS=0 to write rows with link_status='UNKNOWN' instead.
+_VALIDATE_LINKS = os.getenv('UPSERT_VALIDATE_LINKS', '1') != '0'
 
 
 def resolve_primary_email(lead: dict) -> str | None:
@@ -36,10 +43,32 @@ def upsert_leads(leads: list[dict]) -> int:
     rows = []
     now = datetime.now(timezone.utc).isoformat()
 
+    # One pooled session for all validation HTTP calls — connection reuse
+    # cuts per-URL latency dramatically on a 100-lead batch.
+    http = requests.Session() if _VALIDATE_LINKS else None
+
     for lead in leads:
+        # 1. Auto-correct the URL FIRST, before anything else touches it.
+        raw_url = lead.get('trustpilot_url')
+        cleaned_url = sanitize_trustpilot_url(raw_url)
+        if not cleaned_url:
+            # Nothing salvageable — skip this row entirely. Without a URL we
+            # have no dedup key and no way to revisit the lead later.
+            print(f"SKIP:invalid_url:{(raw_url or '')[:80]}")
+            continue
+
+        # 2. Validate the cleaned URL against Trustpilot. Failures don't
+        #    block the upsert — they just decide the link_status the row
+        #    is written with so the UI can flag it.
+        if _VALIDATE_LINKS:
+            link_status, link_error = validate_trustpilot_url(cleaned_url, session=http)
+            validated_at = now
+        else:
+            link_status, link_error, validated_at = 'UNKNOWN', None, None
+
         rows.append({
             'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
-            'trustpilot_url': lead['trustpilot_url'],
+            'trustpilot_url': cleaned_url,
             'website_url': lead.get('website_url'),
             'trustpilot_email': lead.get('trustpilot_email'),
             'website_email': lead.get('website_email'),
@@ -50,6 +79,9 @@ def upsert_leads(leads: list[dict]) -> int:
             'star_rating': lead.get('star_rating') or lead.get('rating'),
             'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
             'scraped_at': now,
+            'link_status': link_status,
+            'last_validated_at': validated_at,
+            'link_validation_error': link_error,
         })
     if not rows:
         print("No leads to upsert.")

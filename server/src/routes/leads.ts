@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
+import { sanitizeTrustpilotUrl, validateTrustpilotUrl } from '../services/url-validator.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -83,7 +84,65 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/leads/bulk — bulk delete (must come before /:id)
+// PATCH /api/leads/:id/dismiss-flag — user reviewed a flagged URL and confirmed
+// it's actually fine. Resets link_status to VALID and stamps last_validated_at.
+router.patch('/:id/dismiss-flag', async (req: Request, res: Response) => {
+  try {
+    const lead = await updateLead(param(req.params.id), {
+      link_status: 'VALID',
+      last_validated_at: new Date().toISOString(),
+      link_validation_error: null,
+    });
+    res.json({ success: true, data: lead });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// PATCH /api/leads/:id/url — manual URL correction. Sanitizes the input,
+// triggers an immediate background re-validation, and writes the resulting
+// link_status atomically with the URL change.
+router.patch('/:id/url', async (req: Request, res: Response) => {
+  try {
+    const raw = typeof req.body?.trustpilot_url === 'string' ? req.body.trustpilot_url : '';
+    const cleaned = sanitizeTrustpilotUrl(raw);
+    if (!cleaned) {
+      res.status(400).json({ success: false, error: 'trustpilot_url is missing or unsalvageable' });
+      return;
+    }
+
+    // Optimistically write the cleaned URL with status=UNKNOWN so the UI
+    // unblocks immediately, then revalidate without blocking the response.
+    const optimistic = await updateLead(param(req.params.id), {
+      trustpilot_url: cleaned,
+      link_status: 'UNKNOWN',
+      last_validated_at: null,
+      link_validation_error: null,
+    });
+    res.json({ success: true, data: optimistic });
+
+    // Fire-and-forget revalidation. Errors here are non-fatal — the row
+    // will simply stay UNKNOWN until the next ingestion pass.
+    validateTrustpilotUrl(cleaned)
+      .then(({ status, error }) =>
+        updateLead(param(req.params.id), {
+          link_status: status,
+          last_validated_at: new Date().toISOString(),
+          link_validation_error: error,
+        }),
+      )
+      .catch((e) => console.error('[leads] background revalidate failed', e));
+  } catch (err) {
+    if (res.headersSent) return;
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// DELETE /api/leads/bulk — bulk delete (must come before /:id).
+// Used by the "Delete Selected Flagged Leads" UI; deletion is ALWAYS user-
+// triggered, never automatic, even for FLAGGED_DEAD / FLAGGED_REMOVED rows.
 router.delete('/bulk', async (req: Request, res: Response) => {
   try {
     const { ids } = req.body || {};
