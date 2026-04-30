@@ -117,6 +117,29 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/affiliates/reset-link-flags — admin escape hatch to wipe stale
+// link_status verdicts. Mirrors the leads route. Useful after a validator
+// policy change (the previous strict policy mass-flagged Cloudflare-blocked
+// pages as DEAD); resetting to VALID lets the next Validate Links run
+// repopulate from the corrected verdict ladder.
+router.post('/reset-link-flags', async (_req: Request, res: Response) => {
+  try {
+    const supabase = getSupabase();
+    const { error, count } = await supabase
+      .from('affiliates')
+      .update(
+        { link_status: 'VALID', last_validated_at: null, link_validation_error: null },
+        { count: 'exact' },
+      )
+      .neq('link_status', 'VALID');
+    if (error) throw new Error(error.message);
+    res.json({ success: true, data: { reset: count ?? 0 } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // ── GET /api/affiliates/check-links/status?jobId=xxx — polling fallback ────
 router.get('/check-links/status', (req: Request, res: Response) => {
   const { jobId } = req.query;

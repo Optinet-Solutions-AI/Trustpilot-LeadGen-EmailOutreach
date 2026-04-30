@@ -181,6 +181,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/affiliates/reset-link-flags:
+    post:
+      operationId: affiliatesResetLinkFlags
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/affiliates/check-links/status:
     get:
       operationId: affiliatesCheckLinksStatus
