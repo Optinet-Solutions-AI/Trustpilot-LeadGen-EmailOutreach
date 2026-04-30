@@ -81,6 +81,14 @@ export async function validateTrustpilotUrl(
   url: string,
   timeoutMs = 10_000,
 ): Promise<{ status: LinkStatus; error: string | null }> {
+  // Sanitize at the entry point. Affiliate rows store tp_url without a
+  // scheme ("au.trustpilot.com/review/foo") which both ScrapingBee and the
+  // built-in fetch reject. Leads come in pre-sanitized but running it again
+  // is cheap and idempotent — and keeps validateTrustpilotUrl safe to call
+  // from any context (cron jobs, manual edits, ad-hoc scripts).
+  const cleaned = sanitizeTrustpilotUrl(url);
+  if (!cleaned) return { status: 'UNKNOWN', error: 'unsalvageable_url' };
+  url = cleaned;
   if (!url) return { status: 'UNKNOWN', error: 'empty_url' };
 
   // ── ScrapingBee path ──

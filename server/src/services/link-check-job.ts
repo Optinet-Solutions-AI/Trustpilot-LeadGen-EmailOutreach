@@ -84,6 +84,10 @@ export async function runLinkCheckJob(
         const target = targets[i];
         emit('check_item', `${i + 1}|${targets.length}|${target.url}`);
 
+        // validateTrustpilotUrl sanitizes internally, so scheme-less affiliate
+        // URLs ("au.trustpilot.com/review/foo") work without us having to
+        // rewrite them in the DB. Persisting the cleaned form would break
+        // the AffiliateTable renderer that does `https://${entry.tp_url}`.
         const { status, error } = await validateTrustpilotUrl(target.url);
 
         if (status === 'VALID') job.valid++;
