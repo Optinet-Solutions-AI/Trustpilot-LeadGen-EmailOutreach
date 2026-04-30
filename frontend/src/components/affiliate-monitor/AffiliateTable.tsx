@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Affiliate, COUNTRY_META, type LinkStatus } from './AffiliateData';
+import { Affiliate, COUNTRY_META, affiliateHref, type LinkStatus } from './AffiliateData';
 
 // Small inline badge that mirrors LeadLinkWarning. Read-only — to clear a
 // flag the user re-runs Validate Links and the bulk runner overwrites it.
@@ -175,8 +175,8 @@ function ExpandPanel({ entry }: { entry: Affiliate }) {
           </h4>
           <div className="space-y-0">
             {[
-              { key: 'Trustpilot URL', val: entry.tp_url, link: entry.tp_url ? `https://${entry.tp_url}` : null },
-              { key: 'Website', val: entry.website, link: entry.website ? `https://${entry.website}` : null },
+              { key: 'Trustpilot URL', val: entry.tp_url, link: entry.tp_url ? affiliateHref(entry.tp_url) : null },
+              { key: 'Website', val: entry.website, link: entry.website ? affiliateHref(entry.website) : null },
               { key: 'Total Reviews', val: entry.reviews != null ? String(entry.reviews) : 'N/A', link: null },
               { key: 'Rating', val: entry.rating != null ? `${entry.rating} / 5` : 'N/A', link: null },
               { key: 'Geo Markets', val: entry.geo.join(', ') || '—', link: null },
@@ -209,7 +209,7 @@ function ExpandPanel({ entry }: { entry: Affiliate }) {
           )}
           {entry.tp_url && (
             <a
-              href={`https://${entry.tp_url}`}
+              href={affiliateHref(entry.tp_url)}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-[#b0004a] text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity"
@@ -315,7 +315,7 @@ export default function AffiliateTable({
                     </div>
                     {entry.tp_url && (
                       <a
-                        href={`https://${entry.tp_url}`}
+                        href={affiliateHref(entry.tp_url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-[11px] text-[#b0004a] font-mono hover:underline mt-0.5 block"
@@ -334,7 +334,7 @@ export default function AffiliateTable({
                   <td className="px-5 py-3.5 hidden md:table-cell">
                     {entry.website ? (
                       <a
-                        href={`https://${entry.website}`}
+                        href={affiliateHref(entry.website)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 text-[#b0004a] text-xs font-mono hover:underline"

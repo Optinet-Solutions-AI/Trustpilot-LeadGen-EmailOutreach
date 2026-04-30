@@ -1,5 +1,16 @@
 export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
 
+// Safe href builder for affiliate URLs.
+// Affiliate rows store tp_url and website inconsistently — some include
+// "https://", some don't. Plain `https://${entry.tp_url}` produces broken
+// "https://https://..." links that Chrome interprets as DNS for host "https".
+export function affiliateHref(raw: string | null | undefined): string {
+  if (!raw) return '#';
+  const trimmed = raw.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed.replace(/^\/+/, '')}`;
+}
+
 // DB-backed type (matches affiliates table)
 export interface Affiliate {
   id: string;

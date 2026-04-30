@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Affiliate } from './AffiliateData';
+import { Affiliate, affiliateHref } from './AffiliateData';
 
 interface PageChartTableProps {
   data: Affiliate[];
@@ -174,7 +174,7 @@ export default function PageChartTable({ data, selectedIds, onToggleSelect, onTo
                 <td className="px-5 py-3.5">
                   {entry.tp_url ? (
                     <a
-                      href={`https://${entry.tp_url}`}
+                      href={affiliateHref(entry.tp_url)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 text-[#b0004a] text-xs font-medium hover:underline"
@@ -189,7 +189,7 @@ export default function PageChartTable({ data, selectedIds, onToggleSelect, onTo
                 <td className="px-5 py-3.5">
                   {entry.website ? (
                     <a
-                      href={`https://${entry.website}`}
+                      href={affiliateHref(entry.website)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 text-[#b0004a] text-xs font-medium hover:underline font-mono"

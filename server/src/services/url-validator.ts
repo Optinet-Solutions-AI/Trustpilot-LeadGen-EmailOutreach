@@ -183,7 +183,29 @@ async function runPlaywrightCheck(
       });
       httpStatus = response?.status() ?? 0;
     } catch (err) {
+      // Distinguish DNS / unreachable from generic nav failures. DNS NXDOMAIN
+      // means the URL is genuinely dead — different reason than "Trustpilot
+      // showed a removed-profile page" — so flag it as DEAD with a specific
+      // error so the badge tooltip can say "site can't be reached".
       const name = err instanceof Error ? err.name : 'Error';
+      const msg = err instanceof Error ? err.message : String(err);
+      const lowMsg = msg.toLowerCase();
+      if (
+        lowMsg.includes('err_name_not_resolved') ||
+        lowMsg.includes('err_name_resolution_failed') ||
+        lowMsg.includes('err_dns')
+      ) {
+        return { status: 'FLAGGED_DEAD', error: 'dns_nxdomain: site cant be reached' };
+      }
+      if (
+        lowMsg.includes('err_connection_refused') ||
+        lowMsg.includes('err_connection_reset') ||
+        lowMsg.includes('err_connection_closed') ||
+        lowMsg.includes('err_address_unreachable') ||
+        lowMsg.includes('err_socket_not_connected')
+      ) {
+        return { status: 'FLAGGED_DEAD', error: 'connection_refused: site cant be reached' };
+      }
       return { status: 'UNKNOWN', error: `playwright_nav_failed: ${name}` };
     }
 
@@ -257,6 +279,16 @@ export async function validateTrustpilotUrl(
     });
   } catch (err) {
     const name = err instanceof Error ? err.name : 'Error';
+    // Node's undici fetch raises TypeError("fetch failed") with a `cause`
+    // that contains the system error code (ENOTFOUND for DNS, ECONNREFUSED, etc.)
+    const cause = (err as { cause?: { code?: string; errno?: number } })?.cause;
+    const code = cause?.code || '';
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+      return { status: 'FLAGGED_DEAD', error: 'dns_nxdomain: site cant be reached' };
+    }
+    if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH') {
+      return { status: 'FLAGGED_DEAD', error: `connection_refused: ${code}` };
+    }
     return { status: 'UNKNOWN', error: `request_failed: ${name}` };
   } finally {
     clearTimeout(timer);
