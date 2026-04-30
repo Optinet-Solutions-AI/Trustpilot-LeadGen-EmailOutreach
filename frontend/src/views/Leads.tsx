@@ -188,6 +188,39 @@ export default function Leads() {
     }
   };
 
+  // Self-healing URL pipeline handlers — wired into LeadsTable so the
+  // warning badge and bulk-flagged-delete bar are actually interactive.
+  const handleDismissLinkFlag = async (id: string) => {
+    try {
+      await api.patch(`/leads/${id}/dismiss-flag`);
+      notify('success', 'Link flag dismissed');
+      loadLeads();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Failed to dismiss flag');
+    }
+  };
+
+  const handleEditLinkUrl = async (id: string, url: string) => {
+    try {
+      await api.patch(`/leads/${id}/url`, { trustpilot_url: url });
+      notify('success', 'URL updated — re-validating in background');
+      loadLeads();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Failed to update URL');
+    }
+  };
+
+  const handleBulkDeleteFromTable = async (ids: string[]) => {
+    try {
+      const deleted = await bulkDelete(ids);
+      notify('success', `Deleted ${deleted} lead${deleted !== 1 ? 's' : ''}`);
+      setSelectedIds([]);
+      loadLeads();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Failed to delete leads');
+    }
+  };
+
   // React to verify job reaching a terminal state
   useEffect(() => {
     if (!verifyJobId) return;
@@ -509,6 +542,9 @@ export default function Leads() {
             sortBy={sortBy}
             sortDir={sortDir}
             onSortChange={toggleSort}
+            onDismissLinkFlag={handleDismissLinkFlag}
+            onEditLinkUrl={handleEditLinkUrl}
+            onBulkDelete={handleBulkDeleteFromTable}
           />
         ) : (
           <LeadPipeline
