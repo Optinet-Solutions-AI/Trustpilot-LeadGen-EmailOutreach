@@ -221,6 +221,12 @@ export default function Leads() {
 
   const handleBulkCheckLinks = async () => {
     if (selectedIds.length === 0) return;
+    // Block re-entry — double-click would launch a parallel browser/pool
+    // and the two jobs would compete for the same memory budget.
+    if (checkingLinks || linkJobId) {
+      notify('error', 'A link-validation job is already running');
+      return;
+    }
     try {
       const res = await api.post('/leads/check-links', { ids: selectedIds });
       const { jobId } = res.data.data;

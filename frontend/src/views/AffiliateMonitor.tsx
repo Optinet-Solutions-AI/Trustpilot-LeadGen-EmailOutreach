@@ -313,6 +313,12 @@ export default function AffiliateMonitor() {
 
   const handleBulkCheckLinks = async () => {
     if (selectedIds.size === 0) return;
+    // Guard against double-click — a second job would launch a second
+    // Chromium browser and starve the first one of memory.
+    if (checkingLinks || linkJobId) {
+      window.alert('A link-validation job is already running. Wait for it to finish.');
+      return;
+    }
     try {
       const ids = [...selectedIds];
       const res = await api.post('/affiliates/check-links', { ids });

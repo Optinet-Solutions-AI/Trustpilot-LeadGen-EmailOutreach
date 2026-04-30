@@ -111,18 +111,32 @@ export async function runLinkCheckJob(
     );
 
     let cursor = 0;
-    const workers = Array.from({ length: concurrency }, async () => {
+    const workers = Array.from({ length: concurrency }, async (_, workerIdx) => {
       while (cursor < targets.length) {
         const i = cursor++;
         const target = targets[i];
         emit('check_item', `${i + 1}|${targets.length}|${target.url}`);
 
-        // Playwright path mirrors the lead-scraper exactly (same stealth +
-        // popup-handler + UA rotation). ScrapingBee/plain-fetch is the
-        // fallback — used when Chromium can't boot or VALIDATOR_USE_PLAYWRIGHT=false.
-        const { status, error } = context
-          ? await validateTrustpilotUrlViaPlaywright(context, target.url)
-          : await validateTrustpilotUrl(target.url);
+        // Wrap each iteration in try/catch — if one URL throws (Playwright
+        // crash, network failure, Supabase glitch), the worker keeps going
+        // on the next URL instead of dying and leaving the job hung.
+        let status: 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN' = 'UNKNOWN';
+        let error: string | null = null;
+        try {
+          // Playwright path mirrors the lead-scraper exactly (same stealth +
+          // popup-handler + UA rotation). ScrapingBee/plain-fetch is the
+          // fallback when Chromium can't boot or VALIDATOR_USE_PLAYWRIGHT=false.
+          const result = context
+            ? await validateTrustpilotUrlViaPlaywright(context, target.url)
+            : await validateTrustpilotUrl(target.url);
+          status = result.status;
+          error = result.error;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[link-check-job] worker ${workerIdx} threw on ${target.url}:`, msg);
+          status = 'UNKNOWN';
+          error = `worker_exception: ${msg.slice(0, 200)}`;
+        }
 
         if (status === 'VALID') job.valid++;
         else if (status === 'FLAGGED_DEAD') job.flagged_dead++;
@@ -130,14 +144,19 @@ export async function runLinkCheckJob(
         else job.unknown++;
         job.checked++;
 
-        await supabase
-          .from(source)
-          .update({
-            link_status: status,
-            last_validated_at: now,
-            link_validation_error: error,
-          })
-          .eq('id', target.id);
+        try {
+          await supabase
+            .from(source)
+            .update({
+              link_status: status,
+              last_validated_at: now,
+              link_validation_error: error,
+            })
+            .eq('id', target.id);
+        } catch (e) {
+          // DB write failure shouldn't kill the worker either.
+          console.error(`[link-check-job] DB update failed for ${target.id}:`, e);
+        }
 
         emit('check_progress', `${job.checked}/${targets.length}|${target.url}|${status}`);
       }

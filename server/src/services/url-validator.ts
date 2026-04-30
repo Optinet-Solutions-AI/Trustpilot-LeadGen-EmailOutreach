@@ -71,6 +71,19 @@ const CLOUDFLARE_CHALLENGE_MARKERS = [
   'enable javascript and cookies to continue',
 ];
 
+// Markers that prove the body IS a real Trustpilot profile page. Even when
+// the upstream HTTP status is misleading (Cloudflare sometimes returns 403
+// with the real page body intact for stealth-proxy traffic), spotting >=2
+// of these in the DOM means the URL resolved to a live profile.
+const LIVE_PROFILE_MARKERS = [
+  'trustscore',
+  'reviews are sorted',
+  'sort by',
+  'star rating',
+  'verification badge',
+  'companywebsite',
+];
+
 // Set VALIDATOR_USE_SCRAPINGBEE=false to force the cheap plain-HTTP path even
 // when SCRAPINGBEE_API_KEY is set — useful for local debugging and to cap
 // credit burn during smoke tests. Defaults to ScrapingBee when the key exists.
@@ -260,44 +273,57 @@ function classifyResponse(
   body: string | null,
   hints: { blockedHttp?: boolean } = {},
 ): { status: LinkStatus; error: string | null } {
-
-  // The only HTTP statuses that *prove* a profile is gone. 410 = explicitly
-  // gone, 404 = not found. Anything else can be a transient block.
-  if (status === 404 || status === 410) {
-    return { status: 'FLAGGED_DEAD', error: `http_${status}` };
-  }
-
-  // Anti-bot / rate-limit responses. The page may very well be live — we
-  // just couldn't see it from the server.
-  if (status === 401 || status === 403 || status === 429 || status === 451) {
-    return { status: 'UNKNOWN', error: `http_${status}_likely_bot_block` };
-  }
-
-  // 5xx and other 4xx — treat as inconclusive. Better to say "unknown" than
-  // to falsely flag a working profile as dead.
-  if (status >= 400) {
-    return { status: 'UNKNOWN', error: `http_${status}` };
-  }
-
   const lower = (body ?? '').toLowerCase();
 
-  // Soft-404 markers first — Trustpilot's "profile has been removed" wording
-  // is authoritative, and on rare pages the body can contain BOTH a removal
-  // notice and Cloudflare-ish footer text. The removal signal wins.
+  // 1. Soft-404 markers — authoritative regardless of status. Trustpilot's
+  //    "this profile has been removed" wording wins over everything because
+  //    it directly answers the question we're trying to answer.
   for (const marker of SOFT_404_MARKERS) {
     if (lower.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
   }
 
-  // Cloudflare interstitial check — only reached when no removal marker hit.
-  // 200 OK + challenge body still means we couldn't see the real page.
+  // 2. Hard-dead status codes — only reached when no removal marker matched.
+  if (status === 404 || status === 410) {
+    return { status: 'FLAGGED_DEAD', error: `http_${status}` };
+  }
+
+  // 3. Live-profile markers in a substantial body — page resolved. Cloudflare
+  //    sometimes returns 403 status with the real 1.7MB page body intact
+  //    when stealth-proxy IPs are flagged-but-not-rejected; trusting body
+  //    content over status reverses that false-UNKNOWN. >30KB filters out
+  //    error pages that just happen to mention "trustpilot" in a footer.
+  if (lower.length > 30_000) {
+    let hits = 0;
+    for (const marker of LIVE_PROFILE_MARKERS) {
+      if (lower.includes(marker)) hits++;
+      if (hits >= 2) break;
+    }
+    if (hits >= 2) {
+      return {
+        status: 'VALID',
+        error: status >= 400 ? `valid_body_despite_http_${status}` : null,
+      };
+    }
+  }
+
+  // 4. Cloudflare interstitial — body looks like the challenge page itself.
   for (const marker of CLOUDFLARE_CHALLENGE_MARKERS) {
     if (lower.includes(marker)) {
       return { status: 'UNKNOWN', error: `cloudflare_challenge: ${marker}` };
     }
   }
 
-  // Playwright told us the navigation got an anti-bot status code (403/429/etc)
-  // and we couldn't extract a soft-404 marker — that's an UNKNOWN, not a VALID.
+  // 5. Anti-bot status codes with no useful body content.
+  if (status === 401 || status === 403 || status === 429 || status === 451) {
+    return { status: 'UNKNOWN', error: `http_${status}_likely_bot_block` };
+  }
+
+  // 6. Other 4xx / 5xx — inconclusive.
+  if (status >= 400) {
+    return { status: 'UNKNOWN', error: `http_${status}` };
+  }
+
+  // 7. Playwright-side block hint when we couldn't tell from body or status.
   if (hints.blockedHttp) {
     return { status: 'UNKNOWN', error: `http_${status}_likely_bot_block` };
   }
