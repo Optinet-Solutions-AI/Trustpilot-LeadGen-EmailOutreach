@@ -116,18 +116,25 @@ export async function validateTrustpilotUrlViaPlaywright(
      playwrightResult.error.startsWith('playwright_nav_failed'));
 
   if (isBotBlock && scrapingbeeEnabled() && process.env.VALIDATOR_USE_SCRAPINGBEE !== 'false') {
-    const sb = await fetchStatusViaScrapingbee(cleaned, { renderJs: true, premiumProxy: true });
+    // stealth_proxy is the ONLY path that reliably bypasses Trustpilot's
+    // current Cloudflare config — premium_proxy is on their blocklist.
+    // ~75 credits/call but only triggered when Playwright failed, so the
+    // average cost per URL stays low (most don't reach this branch).
+    const countryCode = inferCountryCode(cleaned);
+    const sb = await fetchStatusViaScrapingbee(cleaned, {
+      renderJs: true,
+      stealthProxy: true,
+      ...(countryCode ? { countryCode } : {}),
+    });
     if (sb && sb.transportError === null && sb.apiStatus >= 200 && sb.apiStatus < 600) {
       const sbResult = classifyResponse(sb.upstreamStatus ?? sb.apiStatus, sb.body);
-      // Annotate so the badge tooltip shows the path the verdict came from.
       return {
         status: sbResult.status,
         error: sbResult.error
-          ? `${sbResult.error} (via scrapingbee fallback after playwright ${playwrightResult.error ?? 'unknown'})`
+          ? `${sbResult.error} (via scrapingbee_stealth after playwright ${playwrightResult.error ?? 'unknown'})`
           : null,
       };
     }
-    // Both paths failed — keep the Playwright error but tag it.
     return {
       status: 'UNKNOWN',
       error: `${playwrightResult.error ?? 'playwright_failed'} + scrapingbee_failed`,
@@ -135,6 +142,18 @@ export async function validateTrustpilotUrlViaPlaywright(
   }
 
   return playwrightResult;
+}
+
+// au.trustpilot.com → "au", de.trustpilot.com → "de", etc.
+// Returns null for www. (no regional preference) or unparseable URLs.
+function inferCountryCode(url: string): string | null {
+  try {
+    const host = new URL(url).host.toLowerCase();
+    const m = host.match(/^([a-z]{2})\.trustpilot\.com$/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 async function runPlaywrightCheck(

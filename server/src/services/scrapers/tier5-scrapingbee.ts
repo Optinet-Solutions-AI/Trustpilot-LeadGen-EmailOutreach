@@ -36,6 +36,14 @@ export interface ScrapingbeeFetchOpts {
   /** Use premium residential proxies (10–25 credits). Required for Cloudflare. */
   premiumProxy?: boolean;
   /**
+   * Use ScrapingBee's stealth_proxy tier (~75 credits). Their highest-tier
+   * proxy with browser-fingerprint stealth and a much larger residential IP
+   * pool. Use as a last resort when premium_proxy gets 403'd — Trustpilot
+   * has actively blocked ScrapingBee's premium_proxy ranges, so the only
+   * way through is stealth_proxy.
+   */
+  stealthProxy?: boolean;
+  /**
    * Block images/CSS/fonts to speed up render. DEFAULT: false.
    * ScrapingBee returns HTTP 500 on many SPA / casino sites when this is true
    * (their backend's rendering pipeline can't handle resource blocking on
@@ -43,6 +51,12 @@ export interface ScrapingbeeFetchOpts {
    * "try with block_resources=False" so we respect it as the safer default.
    */
   blockResources?: boolean;
+  /**
+   * 2-letter country code (e.g. "au", "de") forces ScrapingBee to use a proxy
+   * IP from that country. Helps with regional Trustpilot subdomains where
+   * country-specific IPs are less aggressively blocked.
+   */
+  countryCode?: string;
 }
 
 /**
@@ -155,13 +169,17 @@ export async function fetchStatusViaScrapingbee(
     api_key: apiKey,
     url: targetUrl,
     render_js: String(opts.renderJs ?? false),
-    premium_proxy: String(opts.premiumProxy ?? true),
     block_resources: String(opts.blockResources ?? false),
     timeout: String(SCRAPINGBEE_TIMEOUT_MS),
     // Without this flag SB rewrites 4xx upstream responses into a generic
     // ScrapingBee error and we lose the 404 signal we need.
     transparent_status_code: 'true',
   });
+  // stealth_proxy and premium_proxy are mutually exclusive — stealth wins
+  // when both are set. Stealth implies premium-tier traffic + extra fingerprint.
+  if (opts.stealthProxy) params.set('stealth_proxy', 'true');
+  else params.set('premium_proxy', String(opts.premiumProxy ?? true));
+  if (opts.countryCode) params.set('country_code', opts.countryCode);
 
   const apiUrl = `${SCRAPINGBEE_BASE}?${params.toString()}`;
 
