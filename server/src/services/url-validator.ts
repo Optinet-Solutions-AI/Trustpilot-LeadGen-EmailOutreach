@@ -9,21 +9,59 @@ import { handleCloudflareChallenge } from './scrapers/popup-handler.js';
 
 export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
 
+// Trustpilot's "removed profile" copy localized per regional subdomain.
+// The page is JS-rendered so the validator must use Playwright OR
+// ScrapingBee with render_js=true to actually see these strings.
+//
+// IMPORTANT: every match must be checked against the *script-stripped* body —
+// Trustpilot's Next.js bundle inlines the entire i18n string table into a
+// <script id="__NEXT_DATA__"> blob on every page (live or removed), so
+// matching against raw HTML produces false positives on live pages.
 const SOFT_404_MARKERS = [
-  // Trustpilot's exact "removed profile" page copy. The page is JS-rendered
-  // so the validator must use ScrapingBee with render_js=true to actually
-  // see these strings.
+  // English (au./ca./www./.co.uk/etc.)
   'this profile has been removed',
   'no longer visible on trustpilot',
-  'goes against our guidelines',
-  'why trustpilot removes profiles',
+  // German (de.)
+  'dieses profil wurde entfernt',
+  'verstößt gegen unsere richtlinien',
+  'unternehmen, das sie suchen',
+  // Italian (it.)
+  'questo profilo è stato rimosso',
+  'questo profilo e stato rimosso',
+  // French (fr.)
+  'ce profil a été supprimé',
+  'ce profil a ete supprime',
+  // Spanish (es.)
+  'este perfil ha sido eliminado',
+  // Dutch (nl.)
+  'dit profiel is verwijderd',
+  // Danish (dk.)
+  'denne profil er blevet fjernet',
+  // Swedish (se.)
+  'den här profilen har tagits bort',
+  // Norwegian (no.)
+  'denne profilen er fjernet',
+  // Finnish (fi.)
+  'tämä profiili on poistettu',
+  // Polish (pl.)
+  'ten profil został usunięty',
   // Generic "page gone" markers other parts of Trustpilot use.
   'this page does not exist',
   'page not found',
   'we could not find',
   "we couldn't find",
-  "sorry, we couldn",
-  "couldn't find the page",
+];
+
+// Structural markers that prove the body IS a live Trustpilot profile page.
+// These are React data attributes / CSS class names — language-agnostic and
+// harder to false-positive than localized text strings. Presence of any one
+// of these in the script-stripped body means the profile rendered.
+const LIVE_STRUCTURAL_MARKERS = [
+  'data-business-unit',
+  'data-service-review-',
+  'styles_reviewlist',
+  'reviewslist',
+  'business-unit-id',
 ];
 
 const DEFAULT_HEADERS: Record<string, string> = {
@@ -126,7 +164,9 @@ export async function validateTrustpilotUrlViaPlaywright(
     typeof playwrightResult.error === 'string' &&
     (playwrightResult.error.includes('bot_block') ||
      playwrightResult.error.includes('cloudflare_challenge') ||
-     playwrightResult.error.startsWith('playwright_nav_failed'));
+     playwrightResult.error.includes('no_recognizable_signals') ||
+     playwrightResult.error.startsWith('playwright_nav_failed') ||
+     playwrightResult.error.startsWith('playwright_content_failed'));
 
   if (isBotBlock && scrapingbeeEnabled() && process.env.VALIDATOR_USE_SCRAPINGBEE !== 'false') {
     // stealth_proxy is the ONLY path that reliably bypasses Trustpilot's
@@ -223,7 +263,19 @@ async function runPlaywrightCheck(
     // Wait for the SPA to hydrate so soft-404 markers are in the DOM.
     await page.waitForTimeout(1500);
 
-    const body = (await page.content()).toLowerCase();
+    // page.content() throws "Unable to retrieve content" when the page is in
+    // a transitional state (about to navigate, mid-network-error). Treat that
+    // as a Playwright failure so the SB fallback in the calling function
+    // gets to retry — without this wrap, the worker_exception bubbled up to
+    // the job runner and the URL was stuck on UNKNOWN.
+    let body: string;
+    try {
+      body = (await page.content()).toLowerCase();
+    } catch (err) {
+      const name = err instanceof Error ? err.name : 'Error';
+      const msg = err instanceof Error ? err.message : String(err);
+      return { status: 'UNKNOWN', error: `playwright_content_failed: ${name} ${msg.slice(0, 80)}` };
+    }
     return classifyResponse(httpStatus || 200, body, { blockedHttp });
   } finally {
     await page.close().catch(() => undefined);
@@ -322,38 +374,44 @@ function classifyResponse(
 ): { status: LinkStatus; error: string | null } {
   const lower = stripNonContent(body ?? '').toLowerCase();
 
-  // 1. Soft-404 markers — authoritative regardless of status. Trustpilot's
-  //    "this profile has been removed" wording wins over everything because
-  //    it directly answers the question we're trying to answer.
-  for (const marker of SOFT_404_MARKERS) {
-    if (lower.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
+  // Detect structural live-profile markers (React data attributes / CSS
+  // class names). These are language-agnostic — present on every live
+  // profile page regardless of locale, absent on removed pages.
+  let liveStructural: string | null = null;
+  for (const marker of LIVE_STRUCTURAL_MARKERS) {
+    if (lower.includes(marker)) { liveStructural = marker; break; }
   }
 
-  // 2. Hard-dead status codes — only reached when no removal marker matched.
+  // Detect any localized soft-404 marker.
+  let soft404: string | null = null;
+  for (const marker of SOFT_404_MARKERS) {
+    if (lower.includes(marker)) { soft404 = marker; break; }
+  }
+
+  // 1. Hard-dead status codes — Trustpilot is gone, no body needed.
   if (status === 404 || status === 410) {
     return { status: 'FLAGGED_DEAD', error: `http_${status}` };
   }
 
-  // 3. Live-profile markers in a substantial body — page resolved. Cloudflare
-  //    sometimes returns 403 status with the real 1.7MB page body intact
-  //    when stealth-proxy IPs are flagged-but-not-rejected; trusting body
-  //    content over status reverses that false-UNKNOWN. >30KB filters out
-  //    error pages that just happen to mention "trustpilot" in a footer.
-  if (lower.length > 30_000) {
-    let hits = 0;
-    for (const marker of LIVE_PROFILE_MARKERS) {
-      if (lower.includes(marker)) hits++;
-      if (hits >= 2) break;
-    }
-    if (hits >= 2) {
-      return {
-        status: 'VALID',
-        error: status >= 400 ? `valid_body_despite_http_${status}` : null,
-      };
-    }
+  // 2. Confirmed REMOVED: localized removal text in body AND no live structure.
+  //    Both conditions matter — some live pages embed the German/English
+  //    removal copy in scripts, but stripNonContent already filtered those.
+  //    The structural-absence check is the safety net.
+  if (soft404 && !liveStructural) {
+    return { status: 'FLAGGED_REMOVED', error: `soft_404: ${soft404}` };
   }
 
-  // 4. Cloudflare interstitial — body looks like the challenge page itself.
+  // 3. Confirmed LIVE: structural marker present. Wins over a 4xx status,
+  //    because Cloudflare sometimes returns 403 with the real page body
+  //    intact for stealth-proxied requests (verified manually).
+  if (liveStructural) {
+    return {
+      status: 'VALID',
+      error: status >= 400 ? `valid_body_despite_http_${status}` : null,
+    };
+  }
+
+  // 4. Cloudflare interstitial in the body — we couldn't see the real page.
   for (const marker of CLOUDFLARE_CHALLENGE_MARKERS) {
     if (lower.includes(marker)) {
       return { status: 'UNKNOWN', error: `cloudflare_challenge: ${marker}` };
@@ -375,5 +433,12 @@ function classifyResponse(
     return { status: 'UNKNOWN', error: `http_${status}_likely_bot_block` };
   }
 
-  return { status: 'VALID', error: null };
+  // 8. 2xx with no structural marker AND no removal marker — the response
+  //    looks superficially fine but has neither a live profile nor a known
+  //    removal page. Could be a removed page in an unsupported language,
+  //    or a ScrapingBee error page. Be conservative: UNKNOWN, not VALID.
+  return {
+    status: 'UNKNOWN',
+    error: 'no_recognizable_signals_in_body',
+  };
 }
