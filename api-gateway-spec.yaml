@@ -126,6 +126,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/leads/test-validate:
+    post:
+      operationId: leadsTestValidate
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/leads/check-links/status:
     get:
       operationId: leadsCheckLinksStatus

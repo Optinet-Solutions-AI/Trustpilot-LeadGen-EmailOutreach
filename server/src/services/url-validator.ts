@@ -101,11 +101,51 @@ export async function validateTrustpilotUrlViaPlaywright(
   const cleaned = sanitizeTrustpilotUrl(url);
   if (!cleaned) return { status: 'UNKNOWN', error: 'unsalvageable_url' };
 
+  const playwrightResult = await runPlaywrightCheck(context, cleaned);
+
+  // If Playwright got bot-blocked (403/429 from Cloudflare on specific
+  // Trustpilot subdomains — au./ca./it./etc.), retry via ScrapingBee. SB's
+  // residential proxies have a fresh IP per request so they're not on
+  // Trustpilot's rate-limit list. Costs ~25 credits per fallback, NOT
+  // per URL — only the small subset that Playwright couldn't see.
+  const isBotBlock =
+    playwrightResult.status === 'UNKNOWN' &&
+    typeof playwrightResult.error === 'string' &&
+    (playwrightResult.error.includes('bot_block') ||
+     playwrightResult.error.includes('cloudflare_challenge') ||
+     playwrightResult.error.startsWith('playwright_nav_failed'));
+
+  if (isBotBlock && scrapingbeeEnabled() && process.env.VALIDATOR_USE_SCRAPINGBEE !== 'false') {
+    const sb = await fetchStatusViaScrapingbee(cleaned, { renderJs: true, premiumProxy: true });
+    if (sb && sb.transportError === null && sb.apiStatus >= 200 && sb.apiStatus < 600) {
+      const sbResult = classifyResponse(sb.upstreamStatus ?? sb.apiStatus, sb.body);
+      // Annotate so the badge tooltip shows the path the verdict came from.
+      return {
+        status: sbResult.status,
+        error: sbResult.error
+          ? `${sbResult.error} (via scrapingbee fallback after playwright ${playwrightResult.error ?? 'unknown'})`
+          : null,
+      };
+    }
+    // Both paths failed — keep the Playwright error but tag it.
+    return {
+      status: 'UNKNOWN',
+      error: `${playwrightResult.error ?? 'playwright_failed'} + scrapingbee_failed`,
+    };
+  }
+
+  return playwrightResult;
+}
+
+async function runPlaywrightCheck(
+  context: BrowserContext,
+  url: string,
+): Promise<{ status: LinkStatus; error: string | null }> {
   const page = await context.newPage();
   try {
     let httpStatus = 0;
     try {
-      const response = await page.goto(cleaned, {
+      const response = await page.goto(url, {
         waitUntil: 'domcontentloaded',
         timeout: PLAYWRIGHT_NAV_TIMEOUT_MS,
       });
@@ -119,9 +159,7 @@ export async function validateTrustpilotUrlViaPlaywright(
     if (httpStatus === 404 || httpStatus === 410) {
       return { status: 'FLAGGED_DEAD', error: `http_${httpStatus}` };
     }
-    // Anti-bot HTTP statuses (403/429/451) — let stealth try to recover.
-    // If the navigation succeeded with one of these, the body might still
-    // be the soft-404 page; still worth checking content below.
+
     const blockedHttp = httpStatus === 401 || httpStatus === 403 || httpStatus === 429 || httpStatus === 451;
 
     // If we landed on a Cloudflare interstitial, give stealth a chance to
@@ -129,8 +167,6 @@ export async function validateTrustpilotUrlViaPlaywright(
     await handleCloudflareChallenge(page).catch(() => false);
 
     // Wait for the SPA to hydrate so soft-404 markers are in the DOM.
-    // The "this profile has been removed" page renders quickly — 1.5s is
-    // plenty without dragging the per-URL cost up.
     await page.waitForTimeout(1500);
 
     const body = (await page.content()).toLowerCase();

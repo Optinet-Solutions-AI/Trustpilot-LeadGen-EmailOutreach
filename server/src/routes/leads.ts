@@ -3,8 +3,9 @@ import { randomUUID } from 'crypto';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
-import { sanitizeTrustpilotUrl, validateTrustpilotUrl } from '../services/url-validator.js';
+import { sanitizeTrustpilotUrl, validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from '../services/url-validator.js';
 import { createRegistry, newJob, runLinkCheckJob } from '../services/link-check-job.js';
+import { launchBrowser, TIER_CONFIGS } from '../services/scrapers/browser-launcher.js';
 
 // Shared per-process registry — survives across requests so the SSE stream
 // can attach to a job that was kicked off by an earlier POST.
@@ -141,6 +142,42 @@ router.patch('/:id/url', async (req: Request, res: Response) => {
       .catch((e) => console.error('[leads] background revalidate failed', e));
   } catch (err) {
     if (res.headersSent) return;
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/leads/test-validate — debug helper. Runs the full validator
+// pipeline (Playwright → ScrapingBee fallback → plain HTTPS) on a single URL
+// and returns the verdict + which path produced it. No DB writes. Used to
+// iterate on validator logic without burning a full check-links job.
+router.post('/test-validate', async (req: Request, res: Response) => {
+  try {
+    const { url, mode } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      res.status(400).json({ success: false, error: 'url (string) is required' });
+      return;
+    }
+    const t0 = Date.now();
+
+    if (mode === 'plain') {
+      // Force plain-fetch / ScrapingBee path, skip Playwright.
+      const result = await validateTrustpilotUrl(url);
+      res.json({ success: true, data: { ...result, ms: Date.now() - t0, path: 'no_playwright' } });
+      return;
+    }
+
+    // Default: Playwright path with internal SB fallback. Spin up a single-use
+    // browser since this endpoint doesn't have access to the link-check-job pool.
+    const bundle = await launchBrowser(TIER_CONFIGS[2]);
+    try {
+      const result = await validateTrustpilotUrlViaPlaywright(bundle.context, url);
+      res.json({ success: true, data: { ...result, ms: Date.now() - t0, path: 'playwright' } });
+    } finally {
+      await bundle.context.close().catch(() => undefined);
+      await bundle.browser.close().catch(() => undefined);
+    }
+  } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
