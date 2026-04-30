@@ -10,17 +10,22 @@ interface Props {
 const COPY: Record<Exclude<LinkStatus, 'VALID'>, { label: string; tooltip: string; tone: string }> = {
   FLAGGED_DEAD: {
     label: 'dead link',
-    tooltip: 'Trustpilot returned a 404/410 — the profile no longer exists.',
+    tooltip:
+      'Trustpilot returned a 404 or 410 for this URL — the profile no longer exists.\n\n' +
+      'If the link still works in your browser, that means our request got through but yours got bot-blocked the other way. Re-run Validate Links to confirm.',
     tone: 'bg-red-50 text-red-700 ring-1 ring-red-200',
   },
   FLAGGED_REMOVED: {
     label: 'profile removed',
-    tooltip: 'Trustpilot returned 200 OK but the page says the profile has been removed.',
+    tooltip:
+      'Trustpilot returned 200 OK but the page contains "this profile has been removed" or similar copy. Usually means the company asked Trustpilot to delist it.',
     tone: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
   },
   UNKNOWN: {
-    label: 'unverified',
-    tooltip: 'Could not reach Trustpilot to validate the URL — will retry on next ingestion.',
+    label: 'couldn\'t verify',
+    tooltip:
+      "We couldn't tell whether this URL is alive or dead. Most common cause: Trustpilot's Cloudflare bot-protection blocked our check (403/429), or the request timed out.\n\n" +
+      'The profile is probably fine — re-run Validate Links later to retry. UNKNOWN is never the same as DEAD.',
     tone: 'bg-slate-50 text-slate-600 ring-1 ring-slate-200',
   },
 };

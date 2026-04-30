@@ -47,6 +47,19 @@ export function sanitizeTrustpilotUrl(input: string | null | undefined): string 
   return cleaned.replace(/\/+$/, '') || null;
 }
 
+// Trustpilot sits behind Cloudflare's bot-management. Server-to-server fetches
+// from Cloud Run regularly hit a challenge page (200 OK body that says "Just a
+// moment…") OR get a 403/429/503 instead of the real profile. None of those
+// mean the profile is dead — they mean we got blocked.
+const CLOUDFLARE_CHALLENGE_MARKERS = [
+  'just a moment',
+  'checking your browser',
+  'cf-browser-verification',
+  'cf-challenge',
+  'attention required! | cloudflare',
+  'enable javascript and cookies to continue',
+];
+
 export async function validateTrustpilotUrl(
   url: string,
   timeoutMs = 10_000,
@@ -72,11 +85,36 @@ export async function validateTrustpilotUrl(
   }
 
   const status = resp.status;
-  if (status === 404 || status === 410) return { status: 'FLAGGED_DEAD', error: `http_${status}` };
-  if (status >= 500) return { status: 'UNKNOWN', error: `http_${status}` };
-  if (status >= 400) return { status: 'FLAGGED_DEAD', error: `http_${status}` };
+
+  // The only HTTP statuses that *prove* a profile is gone. 410 = explicitly
+  // gone, 404 = not found. Anything else can be a transient block.
+  if (status === 404 || status === 410) {
+    return { status: 'FLAGGED_DEAD', error: `http_${status}` };
+  }
+
+  // Anti-bot / rate-limit responses. The page may very well be live — we
+  // just couldn't see it from the server.
+  if (status === 401 || status === 403 || status === 429 || status === 451) {
+    return { status: 'UNKNOWN', error: `http_${status}_likely_bot_block` };
+  }
+
+  // 5xx and other 4xx — treat as inconclusive. Better to say "unknown" than
+  // to falsely flag a working profile as dead.
+  if (status >= 400) {
+    return { status: 'UNKNOWN', error: `http_${status}` };
+  }
 
   const body = (await resp.text()).toLowerCase();
+
+  // Even with 200 OK, Cloudflare sometimes serves a challenge interstitial.
+  // Detect that and bail out — same logic as the 403 branch above.
+  for (const marker of CLOUDFLARE_CHALLENGE_MARKERS) {
+    if (body.includes(marker)) {
+      return { status: 'UNKNOWN', error: `cloudflare_challenge: ${marker}` };
+    }
+  }
+
+  // Real soft-404 markers — Trustpilot's "this profile has been removed" page.
   for (const marker of SOFT_404_MARKERS) {
     if (body.includes(marker)) return { status: 'FLAGGED_REMOVED', error: `soft_404: ${marker}` };
   }

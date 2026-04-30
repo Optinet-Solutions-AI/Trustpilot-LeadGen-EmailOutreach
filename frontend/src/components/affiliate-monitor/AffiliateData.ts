@@ -1,3 +1,5 @@
+export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
+
 // DB-backed type (matches affiliates table)
 export interface Affiliate {
   id: string;
@@ -9,6 +11,11 @@ export interface Affiliate {
   reviews: number | null;
   rating: number | null;
   geo: string[];
+  // From migration 021_affiliates_link_status.sql. Defaults to 'VALID' for
+  // older rows that haven't been validated yet.
+  link_status?: LinkStatus;
+  last_validated_at?: string | null;
+  link_validation_error?: string | null;
   created_at?: string;
 }
 

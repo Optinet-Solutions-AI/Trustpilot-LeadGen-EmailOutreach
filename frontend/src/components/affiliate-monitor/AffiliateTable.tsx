@@ -1,7 +1,42 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Affiliate, COUNTRY_META } from './AffiliateData';
+import { Affiliate, COUNTRY_META, type LinkStatus } from './AffiliateData';
+
+// Small inline badge that mirrors LeadLinkWarning. Read-only — to clear a
+// flag the user re-runs Validate Links and the bulk runner overwrites it.
+function AffiliateLinkBadge({ status, error }: { status: Exclude<LinkStatus, 'VALID'>; error: string | null }) {
+  const COPY: Record<Exclude<LinkStatus, 'VALID'>, { label: string; tone: string; tooltip: string }> = {
+    FLAGGED_DEAD: {
+      label: 'dead link',
+      tone: 'bg-red-50 text-red-700 ring-1 ring-red-200',
+      tooltip:
+        'Trustpilot returned 404/410 — profile no longer exists. Re-run Validate Links to confirm; if it still flags, the page is genuinely gone.',
+    },
+    FLAGGED_REMOVED: {
+      label: 'profile removed',
+      tone: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+      tooltip: 'Trustpilot served the "this profile has been removed" page.',
+    },
+    UNKNOWN: {
+      label: "couldn't verify",
+      tone: 'bg-slate-50 text-slate-600 ring-1 ring-slate-200',
+      tooltip:
+        "We couldn't tell whether this URL is alive or dead. Most common cause: Cloudflare bot-protection blocked our check (403/429). The profile is probably fine — re-run later.",
+    },
+  };
+  const copy = COPY[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${copy.tone}`}
+      title={error ? `${copy.tooltip}\n\nError: ${error}` : copy.tooltip}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="material-symbols-outlined text-[10px]">warning</span>
+      {copy.label}
+    </span>
+  );
+}
 
 interface AffiliateTableProps {
   data: Affiliate[];
@@ -288,6 +323,12 @@ export default function AffiliateTable({
                       >
                         {entry.tp_url}
                       </a>
+                    )}
+                    {entry.link_status && entry.link_status !== 'VALID' && (
+                      <AffiliateLinkBadge
+                        status={entry.link_status}
+                        error={entry.link_validation_error ?? null}
+                      />
                     )}
                   </td>
                   <td className="px-5 py-3.5 hidden md:table-cell">

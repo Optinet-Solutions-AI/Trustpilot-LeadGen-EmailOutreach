@@ -90,6 +90,18 @@ def sanitize_trustpilot_url(url: str | None) -> str | None:
     return cleaned.rstrip("/") or None
 
 
+# Cloudflare interstitials show up as 200 OK with these phrases in the body.
+# Trustpilot occasionally serves them when bot-management decides we look fishy.
+CLOUDFLARE_CHALLENGE_MARKERS: tuple[str, ...] = (
+    "just a moment",
+    "checking your browser",
+    "cf-browser-verification",
+    "cf-challenge",
+    "attention required! | cloudflare",
+    "enable javascript and cookies to continue",
+)
+
+
 def validate_trustpilot_url(
     url: str,
     timeout: float = 10.0,
@@ -98,12 +110,17 @@ def validate_trustpilot_url(
     """Fetch ``url`` and classify its current state.
 
     Returns ``(link_status, error_message)``:
-      - ``("VALID", None)``                   — 2xx/3xx and no soft-404 marker
-      - ``("FLAGGED_DEAD", "http_404")``      — hard 4xx
-      - ``("FLAGGED_REMOVED", "soft_404...")``— 200 OK but DOM says "removed"
-      - ``("UNKNOWN", "request_failed: ...")``— network error or 5xx
+      - ``("VALID", None)``                            — 2xx/3xx, no challenge, no soft-404
+      - ``("FLAGGED_DEAD", "http_404")``               — 404/410 (proven gone)
+      - ``("FLAGGED_REMOVED", "soft_404: ...")``       — 200 OK with "profile removed" copy
+      - ``("UNKNOWN", "http_403_likely_bot_block")``   — Cloudflare/anti-bot
+      - ``("UNKNOWN", "request_failed: ...")``         — network error/timeout
+      - ``("UNKNOWN", "cloudflare_challenge: ...")``   — 200 OK but we got the challenge page
 
-    The caller is responsible for throttling — this function does no sleeping.
+    Trustpilot is Cloudflare-protected; from a Cloud Run egress IP we'll hit
+    bot-management often. Mapping every 4xx to FLAGGED_DEAD produced false
+    positives, so the new policy is: only 404/410 mean dead, the rest are
+    inconclusive.
     """
     if not url:
         return "UNKNOWN", "empty_url"
@@ -120,14 +137,26 @@ def validate_trustpilot_url(
         return "UNKNOWN", f"request_failed: {type(e).__name__}"
 
     status = resp.status_code
-    if status == 404 or status == 410:
-        return "FLAGGED_DEAD", f"http_{status}"
-    if status >= 500:
-        return "UNKNOWN", f"http_{status}"
-    if status >= 400:
+
+    # Proven-dead signals.
+    if status in (404, 410):
         return "FLAGGED_DEAD", f"http_{status}"
 
+    # Anti-bot / rate-limit. Page may be live, we just couldn't see it.
+    if status in (401, 403, 429, 451):
+        return "UNKNOWN", f"http_{status}_likely_bot_block"
+
+    # All other 4xx and 5xx — inconclusive.
+    if status >= 400:
+        return "UNKNOWN", f"http_{status}"
+
     body = (resp.text or "").lower()
+
+    # 200 OK but Cloudflare interstitial — same as a 403 from our perspective.
+    for marker in CLOUDFLARE_CHALLENGE_MARKERS:
+        if marker in body:
+            return "UNKNOWN", f"cloudflare_challenge: {marker}"
+
     for marker in SOFT_404_MARKERS:
         if marker in body:
             return "FLAGGED_REMOVED", f"soft_404: {marker}"
