@@ -24,6 +24,7 @@ CONTACT_EXTRACT_JS = r'''() => {
         website_url: null,
         trustpilot_email: null,
         phone: null,
+        profile_claimed: null,
     };
 
     // Company name from h1. Trustpilot's h1 layout embeds a review-count
@@ -130,6 +131,39 @@ CONTACT_EXTRACT_JS = r'''() => {
         const match = bodyText.match(emailPattern);
         if (match) result.trustpilot_email = match[0];
     }
+
+    // ── Step 5: Profile claimed/unclaimed detection ──
+    // Tri-state: true = claimed, false = unclaimed, null = couldn't determine.
+    // null is preserved so the upsert path doesn't clobber a previously-known
+    // value when a re-scrape happens to fail this detection.
+    let claimed = null;
+
+    // Priority 1: stable data attributes / test ids (survive class-name churn)
+    const dataAttr = document.querySelector(
+        '[data-business-unit-claimed], [data-testid*="claimed" i], [data-claimed]'
+    );
+    if (dataAttr) {
+        const v = dataAttr.getAttribute('data-business-unit-claimed') ||
+                  dataAttr.getAttribute('data-claimed');
+        claimed = v ? v.toLowerCase() !== 'false' : true;
+    }
+
+    // Priority 2: localized "Profile claimed" badge near the company header
+    if (claimed === null) {
+        const h1 = document.querySelector('h1');
+        const header = h1 ? h1.closest('header, section, div') : null;
+        const scopeText = (header || document.body).innerText || '';
+        const CLAIMED_RX = /\b(profile claimed|profil beansprucht|geclaimd profiel|profil revendiqué|perfil reclamado|profilo verificato)\b/i;
+        if (CLAIMED_RX.test(scopeText)) claimed = true;
+    }
+
+    // Priority 3: explicit "Claim this profile" CTA implies the profile is unclaimed
+    if (claimed === null) {
+        const ctaRx = /\b(claim (your|this) profile|reclamar perfil|profil beanspruchen|claim profiel|revendiquer ce profil)\b/i;
+        if (ctaRx.test(document.body.innerText || '')) claimed = false;
+    }
+
+    result.profile_claimed = claimed;
 
     return result;
 }'''
@@ -241,6 +275,9 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
                     for key in ('company_name', 'website_url', 'trustpilot_email', 'phone', 'screenshot_path'):
                         if contact.get(key):
                             enriched[key] = contact[key]
+                    # profile_claimed is tri-state — False is a real value, only skip when None
+                    if contact.get('profile_claimed') is not None:
+                        enriched['profile_claimed'] = contact['profile_claimed']
                     results_dict[idx] = enriched
                     # Rich per-item done event: carries email source + screenshot flag + website presence for the UI
                     email_src = 'trustpilot' if contact.get('trustpilot_email') else 'none'

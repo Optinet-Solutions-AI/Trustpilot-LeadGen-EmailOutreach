@@ -38,6 +38,7 @@ export interface Lead {
   last_validated_at: string | null;
   link_validation_error: string | null;
   screenshot_path: string | null;
+  profile_claimed: boolean | null;
   tags: string[];
   lead_source: string;
   scraped_at: string | null;

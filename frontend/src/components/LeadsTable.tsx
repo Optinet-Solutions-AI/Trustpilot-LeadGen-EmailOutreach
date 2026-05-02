@@ -90,15 +90,15 @@ interface Props {
   onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
 }
 
-type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'scraped' | 'status';
+type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'status';
 
-const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'rating', 'tags', 'scraped', 'status'];
-const COL_STORAGE_KEY = 'leads_col_order_v4';
+const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'rating', 'tags', 'claimed', 'scraped', 'status'];
+const COL_STORAGE_KEY = 'leads_col_order_v5';
 
 const COL_LABELS: Record<ColKey, string> = {
   company: 'Company', country: 'Country', category: 'Category',
   trustpilot_email: 'TP Email', website_email: 'Website Email',
-  rating: 'Rating', tags: 'Tags', scraped: 'Scraped', status: 'Status',
+  rating: 'Rating', tags: 'Tags', claimed: 'Claimed', scraped: 'Scraped', status: 'Status',
 };
 
 const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
@@ -315,6 +315,28 @@ export default function LeadsTable({
                 <span key={tag} className="text-xs bg-[#ffd9de] text-[#b0004a] px-2 py-0.5 rounded-full font-semibold">{tag}</span>
               ))}
             </div>
+          </td>
+        );
+      case 'claimed':
+        return (
+          <td key={col} className="px-4 py-3">
+            {lead.profile_claimed === true ? (
+              <span
+                className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full w-fit"
+                title="Business has claimed and verified this Trustpilot profile"
+              >
+                <span className="material-symbols-outlined text-[9px]">verified</span>claimed
+              </span>
+            ) : lead.profile_claimed === false ? (
+              <span
+                className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-full w-fit"
+                title="No business owner has claimed this Trustpilot profile"
+              >
+                <span className="material-symbols-outlined text-[9px]">person_off</span>unclaimed
+              </span>
+            ) : (
+              <span className="text-slate-300 text-xs">—</span>
+            )}
           </td>
         );
       case 'scraped': {
