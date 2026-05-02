@@ -53,7 +53,7 @@ export default function LeadDetail() {
   }, [id, fetchNotes, fetchFollowUps]);
 
   if (loadError) return (
-    <div className="px-10 py-10 space-y-6">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-6">
       <button
         onClick={() => router.push('/leads')}
         className="flex items-center gap-2 text-sm font-semibold text-secondary hover:text-on-surface transition-colors"
@@ -83,7 +83,7 @@ export default function LeadDetail() {
   };
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
 
       {/* Back button */}
       <button

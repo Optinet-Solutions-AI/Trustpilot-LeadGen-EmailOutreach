@@ -32,7 +32,7 @@ export default function Scrape() {
   const handleSubmit = (params: ScrapeParams) => startScrape(params);
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
       {/* Header */}
       <div className="flex justify-between items-end">
         <div>
@@ -52,9 +52,9 @@ export default function Scrape() {
       </div>
 
       {/* Main Grid */}
-      <div className="grid grid-cols-12 gap-6">
+      <div className="grid grid-cols-12 gap-5 xl:gap-6">
         {/* Scrape Config */}
-        <div className="col-span-8 bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+        <div className="col-span-12 xl:col-span-8 bg-surface-container-lowest rounded-xl ambient-shadow p-6 xl:p-8">
           <div className="flex items-center justify-between mb-8">
             <h3
               className="text-xl font-extrabold text-on-surface"
@@ -79,7 +79,7 @@ export default function Scrape() {
         </div>
 
         {/* Stats Panel */}
-        <div className="col-span-4 space-y-4">
+        <div className="col-span-12 xl:col-span-4 space-y-4">
           {/* Total scraped */}
           <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
             <div className="flex items-center justify-between mb-4">

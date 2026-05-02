@@ -198,10 +198,10 @@ export default function Campaigns() {
   }
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
 
       {/* Header */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-wrap justify-between items-end gap-4">
         <div>
           <h2
             className="text-4xl font-extrabold tracking-tight text-on-surface"

@@ -69,7 +69,7 @@ export default function Analytics() {
   ];
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>

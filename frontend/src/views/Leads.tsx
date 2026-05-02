@@ -314,7 +314,7 @@ export default function Leads() {
   }, [enrichJob.status, enrichJob.summary, enrichJob.error, enrichJobId, loadLeads]);
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
 
       {/* Live verification progress — inline log panel */}
       {verifyJobId && (
@@ -428,7 +428,7 @@ export default function Leads() {
       )}
 
       {/* Header */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-wrap justify-between items-end gap-4">
         <div>
           <h2
             className="text-4xl font-extrabold tracking-tight text-on-surface"
@@ -442,7 +442,7 @@ export default function Leads() {
         </div>
         <div className="flex items-center gap-3">
           {selectedIds.length > 0 && (
-            <div className="flex items-center gap-0.5 bg-white rounded-full ambient-shadow border border-slate-100 pl-3 pr-1 py-1">
+            <div className="flex flex-wrap items-center gap-0.5 bg-white rounded-full ambient-shadow border border-slate-100 pl-3 pr-1 py-1">
               <span className="text-xs font-bold text-on-surface mr-1">
                 {selectedIds.length}<span className="text-secondary font-medium ml-1">selected</span>
               </span>

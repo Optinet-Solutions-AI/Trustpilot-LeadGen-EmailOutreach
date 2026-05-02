@@ -63,9 +63,9 @@ export default function TopBar() {
   };
 
   return (
-    <header className="fixed top-0 right-0 left-64 h-16 glass-panel border-b border-slate-100 z-40 flex justify-between items-center px-8">
+    <header className="fixed top-0 right-0 left-64 h-16 glass-panel border-b border-slate-100 z-40 flex justify-between items-center px-4 xl:px-8">
       {/* Search */}
-      <div className="relative w-80">
+      <div className="relative w-56 xl:w-80">
         <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
           search
         </span>

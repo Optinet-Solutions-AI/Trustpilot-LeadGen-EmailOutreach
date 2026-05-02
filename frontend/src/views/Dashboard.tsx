@@ -59,7 +59,7 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
       {/* Header */}
       <div className="flex justify-between items-end">
         <div>
@@ -82,7 +82,7 @@ export default function Dashboard() {
       </div>
 
       {/* Stats Bento */}
-      <div className="grid grid-cols-3 gap-5">
+      <div className="grid grid-cols-2 xl:grid-cols-3 gap-4 xl:gap-5">
         {statCards.map(({ label, value, icon }) => (
           <div key={label} className="bg-surface-container-lowest p-6 rounded-xl ambient-shadow">
             <div className="flex items-center justify-between mb-4">

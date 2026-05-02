@@ -435,7 +435,7 @@ export default function EmailAccounts() {
   const authInfo = AUTH_TYPES.find((a) => a.type === form.authType)!;
 
   return (
-    <div className="px-10 py-10 space-y-8">
+    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
       {/* Header */}
       <div className="flex justify-between items-end">
         <div>
@@ -470,7 +470,7 @@ export default function EmailAccounts() {
       </div>
 
       {/* Global Health Metrics */}
-      <div className="grid grid-cols-4 gap-5">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 xl:gap-5">
         {globalStats.map(({ label, value, icon, border }) => (
           <div key={label} className={`bg-surface-container-lowest p-6 rounded-xl ambient-shadow border-l-4 ${border}`}>
             <div className="flex justify-between items-start mb-4">
@@ -521,9 +521,9 @@ export default function EmailAccounts() {
       )}
 
       {/* Account Cards */}
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5 xl:gap-6">
         {loading ? (
-          <div className="col-span-3 flex items-center justify-center py-16 text-secondary text-sm">
+          <div className="col-span-1 lg:col-span-2 xl:col-span-3 flex items-center justify-center py-16 text-secondary text-sm">
             Loading account info…
           </div>
         ) : accounts.map((account, i) => (
