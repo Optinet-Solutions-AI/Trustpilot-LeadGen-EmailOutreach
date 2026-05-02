@@ -5,11 +5,17 @@ import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sanitizeTrustpilotUrl, validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from '../services/url-validator.js';
 import { createRegistry, newJob, runLinkCheckJob } from '../services/link-check-job.js';
+import {
+  createRegistry as createClaimedRegistry,
+  newJob as newClaimedJob,
+  runClaimedCheckJob,
+} from '../services/claimed-check-job.js';
 import { launchBrowser, TIER_CONFIGS } from '../services/scrapers/browser-launcher.js';
 
 // Shared per-process registry — survives across requests so the SSE stream
 // can attach to a job that was kicked off by an earlier POST.
 const linkCheckRegistry = createRegistry();
+const claimedCheckRegistry = createClaimedRegistry();
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -283,6 +289,94 @@ router.post('/check-links', async (req: Request, res: Response) => {
     // runLinkCheckJob and surfaced through the SSE 'failed' event.
     runLinkCheckJob(jobId, 'leads', ids, linkCheckRegistry).catch((e) => {
       console.error(`[leads/check-links] job ${jobId} crashed`, e);
+    });
+  } catch (err) {
+    if (res.headersSent) return;
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── /api/leads/check-claimed — same shape as /check-links, but the job ─────
+// rechecks the Trustpilot "Profile claimed" badge and writes profile_claimed.
+// Accepts ids of any length, so per-lead and bulk surfaces share the route.
+
+// GET /api/leads/check-claimed/status?jobId=xxx — polling fallback
+router.get('/check-claimed/status', (req: Request, res: Response) => {
+  const { jobId } = req.query;
+  if (!jobId || typeof jobId !== 'string') {
+    res.status(400).json({ success: false, error: 'jobId required' });
+    return;
+  }
+  const job = claimedCheckRegistry.jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ success: false, error: 'Job not found' });
+    return;
+  }
+  res.json({
+    success: true,
+    data: {
+      status: job.status === 'completed' ? 'done' : job.status,
+      total: job.total,
+      checked: job.checked,
+      claimed: job.claimed,
+      unclaimed: job.unclaimed,
+      unknown: job.unknown,
+      ...(job.error ? { error: job.error } : {}),
+    },
+  });
+});
+
+// GET /api/leads/check-claimed/:jobId/stream — SSE progress
+router.get('/check-claimed/:jobId/stream', (req: Request, res: Response) => {
+  const jobId = param(req.params.jobId);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const job = claimedCheckRegistry.jobs.get(jobId);
+  if (!job) {
+    res.write(`data: ${JSON.stringify({ stage: 'error', detail: 'Job not found' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  res.write(`data: ${JSON.stringify({ stage: 'current', ...job })}\n\n`);
+  if (job.status === 'completed' || job.status === 'failed') {
+    res.end();
+    return;
+  }
+
+  const handler = (event: { jobId: string; stage: string; detail: string; timestamp?: string }) => {
+    if (event.jobId === jobId) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.stage === 'completed' || event.stage === 'failed') {
+        setTimeout(() => { try { res.end(); } catch { /* already closed */ } }, 1000);
+      }
+    }
+  };
+
+  claimedCheckRegistry.events.on('progress', handler);
+  req.on('close', () => claimedCheckRegistry.events.off('progress', handler));
+});
+
+// POST /api/leads/check-claimed — kick off a background claimed-check job.
+router.post('/check-claimed', async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ success: false, error: 'ids (non-empty array) is required' });
+      return;
+    }
+
+    const jobId = randomUUID();
+    claimedCheckRegistry.jobs.set(jobId, newClaimedJob());
+
+    res.json({ success: true, data: { jobId, total: ids.length } });
+
+    runClaimedCheckJob(jobId, ids, claimedCheckRegistry).catch((e) => {
+      console.error(`[leads/check-claimed] job ${jobId} crashed`, e);
     });
   } catch (err) {
     if (res.headersSent) return;

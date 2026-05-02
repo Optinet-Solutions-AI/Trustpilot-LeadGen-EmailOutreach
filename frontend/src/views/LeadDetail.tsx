@@ -5,12 +5,19 @@ import { useParams, useRouter } from 'next/navigation';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
+import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
 import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
 import FollowUpScheduler from '../components/FollowUpScheduler';
 import QuickSendModal from '../components/QuickSendModal';
+import JobProgress from '../components/JobProgress';
 import type { Lead, LeadStatus } from '../types/lead';
+
+// Per-lead jobId persistence: each lead's active job is stored under its
+// own localStorage key so multiple lead detail tabs can run jobs in parallel
+// and each tab resumes the right one on refresh.
+const claimedJobKey = (leadId: string) => `active_claimed_check_job_${leadId}`;
 
 const STATUSES: LeadStatus[] = ['new', 'contacted', 'replied', 'converted', 'lost'];
 
@@ -22,6 +29,14 @@ export default function LeadDetail() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState('');
   const [quickSendOpen, setQuickSendOpen] = useState(false);
+  const [claimedJobId, setClaimedJobId] = useState<string | null>(() => {
+    if (typeof window === 'undefined' || !id) return null;
+    return localStorage.getItem(claimedJobKey(id));
+  });
+  const [claimedStartedAt, setClaimedStartedAt] = useState<string | null>(null);
+  const [claimedNotice, setClaimedNotice] = useState<string | null>(null);
+  const claimedJob = useCheckClaimedJob(claimedJobId);
+  const checkingClaimed = claimedJob.status === 'running';
 
   const handleAddTag = async () => {
     const tag = tagInput.trim().toLowerCase().replace(/\s+/g, '-');
@@ -51,6 +66,26 @@ export default function LeadDetail() {
     fetchNotes();
     fetchFollowUps();
   }, [id, fetchNotes, fetchFollowUps]);
+
+  // React to claimed-check job reaching a terminal state — refresh the lead
+  // so the Profile Claimed tile picks up the new value.
+  useEffect(() => {
+    if (!claimedJobId || !id) return;
+    if (claimedJob.status === 'completed') {
+      const verdict = claimedJob.summary.claimed > 0 ? 'claimed'
+        : claimedJob.summary.unclaimed > 0 ? 'unclaimed' : 'unknown';
+      setClaimedNotice(`Claimed check complete — result: ${verdict}`);
+      setClaimedJobId(null);
+      setClaimedStartedAt(null);
+      localStorage.removeItem(claimedJobKey(id));
+      api.get(`/leads/${id}`).then((res) => setLead(res.data.data)).catch(() => {});
+    } else if (claimedJob.status === 'failed') {
+      setClaimedNotice(`Claimed check failed: ${claimedJob.error || 'unknown error'}`);
+      setClaimedJobId(null);
+      setClaimedStartedAt(null);
+      localStorage.removeItem(claimedJobKey(id));
+    }
+  }, [claimedJob.status, claimedJob.summary, claimedJob.error, claimedJobId, id]);
 
   if (loadError) return (
     <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-6">
@@ -82,6 +117,23 @@ export default function LeadDetail() {
     fetchNotes();
   };
 
+  const handleRecheckClaimed = async () => {
+    if (!id || checkingClaimed || claimedJobId) return;
+    try {
+      const res = await api.post('/leads/check-claimed', { ids: [id] });
+      const { jobId } = res.data.data;
+      if (!jobId) {
+        setClaimedNotice('Failed to start claimed check');
+        return;
+      }
+      localStorage.setItem(claimedJobKey(id), jobId);
+      setClaimedJobId(jobId);
+      setClaimedStartedAt(new Date().toISOString());
+    } catch (e) {
+      setClaimedNotice(e instanceof Error ? e.message : 'Failed to start claimed check');
+    }
+  };
+
   return (
     <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
 
@@ -93,6 +145,33 @@ export default function LeadDetail() {
         <span className="material-symbols-outlined text-[18px]">arrow_back</span>
         Back to Lead Matrix
       </button>
+
+      {/* Live claimed-check progress — inline log panel (resumes on refresh) */}
+      {claimedJobId && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <JobProgress
+            kind="check-claimed"
+            status={claimedJob.status === 'idle' ? 'running' : claimedJob.status}
+            progress={claimedJob.progress}
+            error={claimedJob.error}
+            startedAt={claimedStartedAt}
+          />
+        </div>
+      )}
+
+      {/* Claimed-check completion notice */}
+      {claimedNotice && !claimedJobId && (
+        <div className="flex items-center gap-3 rounded-xl px-5 py-3 text-sm border bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]">
+          <span className="material-symbols-outlined text-[18px] text-[#006630]">check_circle</span>
+          <span className="font-semibold">{claimedNotice}</span>
+          <button
+            onClick={() => setClaimedNotice(null)}
+            className="ml-auto text-[#006630]/60 hover:text-[#006630] transition-colors"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
 
       {/* Lead Info Card */}
       <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
@@ -121,7 +200,18 @@ export default function LeadDetail() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleRecheckClaimed}
+              disabled={checkingClaimed || !!claimedJobId}
+              title={checkingClaimed ? 'Checking…' : 'Visit this Trustpilot profile and update the claimed status'}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-emerald-200 text-emerald-700 text-xs font-bold hover:bg-emerald-50 disabled:opacity-50 transition-colors"
+            >
+              <span className={`material-symbols-outlined text-[16px] ${checkingClaimed ? 'animate-spin' : ''}`}>
+                {checkingClaimed ? 'progress_activity' : 'shield_person'}
+              </span>
+              {checkingClaimed ? 'Checking…' : 'Recheck Claimed'}
+            </button>
             {lead.primary_email && (
               <button
                 onClick={() => setQuickSendOpen(true)}
@@ -152,6 +242,10 @@ export default function LeadDetail() {
             { label: 'Country', value: lead.country || '—', icon: 'location_on' },
             { label: 'Category', value: lead.category || '—', icon: 'category' },
             { label: 'Verified', value: `${lead.email_verified ? 'Yes' : 'No'} (${lead.verification_status || 'unknown'})`, icon: 'verified' },
+            { label: 'Profile Claimed',
+              value: lead.profile_claimed === true ? 'Claimed'
+                   : lead.profile_claimed === false ? 'Unclaimed' : '—',
+              icon: 'shield_person' },
             { label: 'Scraped', value: lead.scraped_at ? new Date(lead.scraped_at).toLocaleDateString() : '—', icon: 'calendar_today' },
           ].map(({ label, value, icon, badge }) => (
             <div key={label} className="bg-surface-container rounded-xl p-4">

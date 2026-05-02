@@ -301,6 +301,12 @@ export interface JobSummary {
   linksValid: number;
   linksDead: number;
   linksRemoved: number;
+  // check-claimed specific
+  claimedChecked: number;
+  claimedTotal: number;
+  claimedYes: number;
+  claimedNo: number;
+  claimedUnknown: number;
   currentPhase: 'idle' | 'category' | 'dedup' | 'profile' | 'checkpoint' | 'enrich' | 'verify' | 'check' | 'final' | 'done' | 'failed';
 }
 
@@ -323,6 +329,11 @@ const EMPTY_SUMMARY: JobSummary = {
   linksValid: 0,
   linksDead: 0,
   linksRemoved: 0,
+  claimedChecked: 0,
+  claimedTotal: 0,
+  claimedYes: 0,
+  claimedNo: 0,
+  claimedUnknown: 0,
   currentPhase: 'idle',
 };
 
@@ -433,16 +444,22 @@ export function summarize(events: ScrapeProgress[]): JobSummary {
       }
       case 'check_progress': {
         // detail = "{checked}/{total}|{url}|{status}"
+        // Backend emits VALID/FLAGGED_DEAD/FLAGGED_REMOVED for link-check jobs
+        // and lowercase claimed/unclaimed/unknown for claimed-check jobs.
         const head = e.detail.split('|')[0] || '';
         const frac = splitFraction(head);
-        if (frac) {
-          s.linksChecked = frac.current;
-          s.linksTotal = frac.total;
-        }
         const verdict = e.detail.split('|')[2];
-        if (verdict === 'VALID') s.linksValid++;
-        else if (verdict === 'FLAGGED_DEAD') s.linksDead++;
-        else if (verdict === 'FLAGGED_REMOVED') s.linksRemoved++;
+        if (verdict === 'VALID' || verdict === 'FLAGGED_DEAD' || verdict === 'FLAGGED_REMOVED') {
+          if (frac) { s.linksChecked = frac.current; s.linksTotal = frac.total; }
+          if (verdict === 'VALID') s.linksValid++;
+          else if (verdict === 'FLAGGED_DEAD') s.linksDead++;
+          else if (verdict === 'FLAGGED_REMOVED') s.linksRemoved++;
+        } else {
+          if (frac) { s.claimedChecked = frac.current; s.claimedTotal = frac.total; }
+          if (verdict === 'claimed') s.claimedYes++;
+          else if (verdict === 'unclaimed') s.claimedNo++;
+          else s.claimedUnknown++;
+        }
         s.currentPhase = 'check';
         break;
       }
@@ -476,6 +493,24 @@ export function summarize(events: ScrapeProgress[]): JobSummary {
           if (typeof m.valid === 'number') s.linksValid = m.valid;
           if (typeof m.flagged_dead === 'number') s.linksDead = m.flagged_dead;
           if (typeof m.flagged_removed === 'number') s.linksRemoved = m.flagged_removed;
+        } catch { /* fine */ }
+        // Check-claimed completion payload
+        try {
+          const m = JSON.parse(e.detail || '{}') as {
+            total?: number;
+            checked?: number;
+            claimed?: number;
+            unclaimed?: number;
+            unknown?: number;
+          };
+          if (typeof m.total === 'number' && typeof m.claimed === 'number') {
+            // Only treat as claimed payload when the claimed field is present
+            s.claimedTotal = m.total;
+            s.claimedChecked = m.checked ?? s.claimedChecked;
+            s.claimedYes = m.claimed;
+            s.claimedNo = m.unclaimed ?? s.claimedNo;
+            s.claimedUnknown = m.unknown ?? s.claimedUnknown;
+          }
         } catch { /* fine */ }
         s.currentPhase = 'done';
         break;

@@ -5,7 +5,7 @@ import { CheckCircle2, Loader2, XCircle, AlertTriangle, RotateCcw, Square } from
 import type { ScrapeProgress as ScrapeProgressType } from '../types/scrape';
 import { translate, summarize, type FeedLine } from './jobProgress/messages';
 
-export type JobKind = 'scrape' | 'enrichment' | 'verify' | 'check-links';
+export type JobKind = 'scrape' | 'enrichment' | 'verify' | 'check-links' | 'check-claimed';
 
 interface Props {
   kind: JobKind;
@@ -47,6 +47,11 @@ const VERIFY_PHASES: PhaseDef[] = [
 
 const CHECK_LINKS_PHASES: PhaseDef[] = [
   { key: 'check', label: 'Validate URLs' },
+  { key: 'final', label: 'Save results' },
+];
+
+const CHECK_CLAIMED_PHASES: PhaseDef[] = [
+  { key: 'check', label: 'Check profile pages' },
   { key: 'final', label: 'Save results' },
 ];
 
@@ -94,6 +99,7 @@ export default function JobProgress({
     kind === 'scrape' ? SCRAPE_PHASES :
     kind === 'verify' ? VERIFY_PHASES :
     kind === 'check-links' ? CHECK_LINKS_PHASES :
+    kind === 'check-claimed' ? CHECK_CLAIMED_PHASES :
     ENRICH_PHASES;
   const summary = useMemo(() => summarize(progress), [progress]);
   const feed: FeedLine[] = useMemo(() => {
@@ -123,6 +129,10 @@ export default function JobProgress({
     } else if (kind === 'check-links') {
       if (summary.linksTotal > 0) {
         return { current: summary.linksChecked, total: summary.linksTotal, label: 'Links validated' };
+      }
+    } else if (kind === 'check-claimed') {
+      if (summary.claimedTotal > 0) {
+        return { current: summary.claimedChecked, total: summary.claimedTotal, label: 'Profiles checked' };
       }
     } else {
       if (summary.profilesTotal > 0) {
@@ -266,9 +276,21 @@ export default function JobProgress({
         kind === 'scrape' ? 'grid-cols-2 md:grid-cols-4'
         : kind === 'verify' ? 'grid-cols-2 md:grid-cols-4'
         : kind === 'check-links' ? 'grid-cols-2 md:grid-cols-4'
+        : kind === 'check-claimed' ? 'grid-cols-2 md:grid-cols-4'
         : 'grid-cols-1 md:grid-cols-3'
       }`}>
-        {kind === 'check-links' ? (
+        {kind === 'check-claimed' ? (
+          <>
+            <Card
+              label="Profiles checked"
+              value={summary.claimedTotal > 0 ? `${summary.claimedChecked} / ${summary.claimedTotal}` : summary.claimedChecked}
+              accent="#004b7f"
+            />
+            <Card label="Claimed" value={summary.claimedYes} accent="#006630" hint="business owner present" />
+            <Card label="Unclaimed" value={summary.claimedNo} accent="#b35500" hint="open opportunity" />
+            <Card label="Unknown" value={summary.claimedUnknown} accent="#64748b" hint="couldn't determine" />
+          </>
+        ) : kind === 'check-links' ? (
           <>
             <Card
               label="Links checked"

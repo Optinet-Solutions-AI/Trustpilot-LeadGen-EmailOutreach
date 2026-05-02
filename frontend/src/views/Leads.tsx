@@ -12,6 +12,7 @@ import JobProgress from '../components/JobProgress';
 import { useEnrichJob } from '../hooks/useEnrichJob';
 import { useVerifyJob } from '../hooks/useVerifyJob';
 import { useCheckLinksJob } from '../hooks/useCheckLinksJob';
+import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
 
 type View = 'table' | 'pipeline';
 
@@ -219,6 +220,15 @@ export default function Leads() {
   const linkJob = useCheckLinksJob(linkJobId, 'leads');
   const checkingLinks = linkJob.status === 'running';
 
+  const [claimedJobId, setClaimedJobId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('active_claimed_check_job');
+  });
+  const [claimedStartedAt, setClaimedStartedAt] = useState<string | null>(null);
+  const [claimedResult, setClaimedResult] = useState<{ total: number; claimed: number; unclaimed: number; unknown: number } | null>(null);
+  const claimedJob = useCheckClaimedJob(claimedJobId);
+  const checkingClaimed = claimedJob.status === 'running';
+
   const handleBulkCheckLinks = async () => {
     if (selectedIds.length === 0) return;
     // Block re-entry — double-click would launch a parallel browser/pool
@@ -240,6 +250,28 @@ export default function Leads() {
       setLinkStartedAt(new Date().toISOString());
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Failed to start link validation');
+    }
+  };
+
+  const handleBulkCheckClaimed = async () => {
+    if (selectedIds.length === 0) return;
+    if (checkingClaimed || claimedJobId) {
+      notify('error', 'A claimed-check job is already running');
+      return;
+    }
+    try {
+      const res = await api.post('/leads/check-claimed', { ids: selectedIds });
+      const { jobId } = res.data.data;
+      if (!jobId) {
+        notify('error', 'Failed to start claimed check');
+        return;
+      }
+      notify('success', `Checking ${selectedIds.length} profile${selectedIds.length === 1 ? '' : 's'} — watch the live log below`);
+      localStorage.setItem('active_claimed_check_job', jobId);
+      setClaimedJobId(jobId);
+      setClaimedStartedAt(new Date().toISOString());
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Failed to start claimed check');
     }
   };
 
@@ -266,6 +298,28 @@ export default function Leads() {
       localStorage.removeItem('active_link_check_job');
     }
   }, [linkJob.status, linkJob.summary, linkJob.error, linkJobId, loadLeads]);
+
+  // React to claimed-check job reaching a terminal state.
+  useEffect(() => {
+    if (!claimedJobId) return;
+    if (claimedJob.status === 'completed') {
+      setClaimedResult({
+        total: claimedJob.summary.total,
+        claimed: claimedJob.summary.claimed,
+        unclaimed: claimedJob.summary.unclaimed,
+        unknown: claimedJob.summary.unknown,
+      });
+      setClaimedJobId(null);
+      setClaimedStartedAt(null);
+      localStorage.removeItem('active_claimed_check_job');
+      loadLeads();
+    } else if (claimedJob.status === 'failed') {
+      notify('error', `Claimed check failed: ${claimedJob.error || 'unknown error'}`);
+      setClaimedJobId(null);
+      setClaimedStartedAt(null);
+      localStorage.removeItem('active_claimed_check_job');
+    }
+  }, [claimedJob.status, claimedJob.summary, claimedJob.error, claimedJobId, loadLeads]);
 
   // React to verify job reaching a terminal state
   useEffect(() => {
@@ -388,6 +442,36 @@ export default function Leads() {
         </div>
       )}
 
+      {/* Live claimed-check progress — inline log panel */}
+      {claimedJobId && (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+          <JobProgress
+            kind="check-claimed"
+            status={claimedJob.status === 'idle' ? 'running' : claimedJob.status}
+            progress={claimedJob.progress}
+            error={claimedJob.error}
+            startedAt={claimedStartedAt}
+          />
+        </div>
+      )}
+
+      {/* Claimed-check result banner */}
+      {claimedResult && (
+        <div className="flex items-center gap-3 rounded-xl px-5 py-3 text-sm border bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]">
+          <span className="material-symbols-outlined text-[18px] text-[#006630]">check_circle</span>
+          <span className="font-semibold">Profile claimed check complete!</span>
+          <span className="font-normal">
+            <strong>{claimedResult.claimed}</strong> claimed, <strong>{claimedResult.unclaimed}</strong> unclaimed, <strong>{claimedResult.unknown}</strong> unknown out of <strong>{claimedResult.total}</strong> profile{claimedResult.total !== 1 ? 's' : ''}.
+          </span>
+          <button
+            onClick={() => setClaimedResult(null)}
+            className="ml-auto transition-colors text-[#006630]/60 hover:text-[#006630]"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
       {/* Live enrichment progress — inline log panel */}
       {enrichJobId && (
         <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
@@ -451,7 +535,7 @@ export default function Leads() {
               {/* Enrich */}
               <button
                 onClick={handleBulkEnrich}
-                disabled={enriching || verifying || checkingLinks}
+                disabled={enriching || verifying || checkingLinks || checkingClaimed}
                 title={enriching ? 'Enriching...' : `Enrich ${selectedIds.length} — visits each company website and scrapes their contact email`}
                 className="p-2 rounded-full text-[#006630] hover:bg-[#006630]/10 disabled:opacity-50 transition-colors"
               >
@@ -463,7 +547,7 @@ export default function Leads() {
               {/* Validate Links — re-checks Trustpilot URLs for dead/removed pages */}
               <button
                 onClick={handleBulkCheckLinks}
-                disabled={checkingLinks || enriching || verifying}
+                disabled={checkingLinks || enriching || verifying || checkingClaimed}
                 title={checkingLinks ? 'Checking links...' : `Validate Links — re-checks each Trustpilot URL for dead/removed pages and flags broken ones`}
                 className="p-2 rounded-full text-amber-700 hover:bg-amber-50 disabled:opacity-50 transition-colors"
               >
@@ -472,11 +556,23 @@ export default function Leads() {
                 </span>
               </button>
 
+              {/* Check Claimed — re-detects Trustpilot "Profile claimed" badge */}
+              <button
+                onClick={handleBulkCheckClaimed}
+                disabled={checkingClaimed || checkingLinks || enriching || verifying}
+                title={checkingClaimed ? 'Checking claimed...' : `Check Claimed — visits each Trustpilot profile and updates whether the business has claimed it`}
+                className="p-2 rounded-full text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 transition-colors"
+              >
+                <span className={`material-symbols-outlined text-[18px] ${checkingClaimed ? 'animate-spin' : ''}`}>
+                  {checkingClaimed ? 'progress_activity' : 'shield_person'}
+                </span>
+              </button>
+
               {/* Verify + email-field selector */}
               <div className="flex items-center">
                 <button
                   onClick={handleBulkVerify}
-                  disabled={verifying || enriching || checkingLinks}
+                  disabled={verifying || enriching || checkingLinks || checkingClaimed}
                   title={verifying ? 'Verifying...' : `Verify ${selectedIds.length} (${verifyEmailField}) — checks deliverability via ZeroBounce`}
                   className="p-2 rounded-l-full text-blue-700 hover:bg-blue-50 disabled:opacity-50 transition-colors"
                 >
@@ -487,7 +583,7 @@ export default function Leads() {
                 <select
                   value={verifyEmailField}
                   onChange={(e) => setVerifyEmailField(e.target.value as 'trustpilot' | 'website' | 'both')}
-                  disabled={verifying || enriching || checkingLinks}
+                  disabled={verifying || enriching || checkingLinks || checkingClaimed}
                   title="Which email to verify"
                   className="text-[10px] font-bold text-blue-700 bg-transparent border-0 pl-0.5 pr-1.5 py-1.5 cursor-pointer focus:outline-none rounded-r-full hover:bg-blue-50 disabled:opacity-50 uppercase tracking-wide"
                 >
@@ -500,7 +596,7 @@ export default function Leads() {
               {/* Send */}
               <button
                 onClick={() => setQuickSendOpen(true)}
-                disabled={verifying || enriching || checkingLinks}
+                disabled={verifying || enriching || checkingLinks || checkingClaimed}
                 title={`Send ${selectedIds.length} — quick one-off email without creating a full campaign`}
                 className="p-2 rounded-full text-[#b0004a] hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
               >
@@ -510,7 +606,7 @@ export default function Leads() {
               {/* Delete */}
               <button
                 onClick={() => setConfirmDeleteOpen(true)}
-                disabled={verifying || enriching || checkingLinks || deleting}
+                disabled={verifying || enriching || checkingLinks || checkingClaimed || deleting}
                 title={deleting ? 'Deleting...' : `Delete ${selectedIds.length} — permanently removes the selected leads`}
                 className="p-2 rounded-full text-error hover:bg-red-50 disabled:opacity-50 transition-colors"
               >
