@@ -228,9 +228,18 @@ export default function LeadsTable({
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="block text-xs text-secondary hover:text-[#b0004a] truncate max-w-[200px] mt-0.5"
+                title={lead.website_url}
+                className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-[#b0004a] hover:underline mt-0.5 max-w-[200px]"
               >
-                {lead.website_url.replace(/^https?:\/\//, '').slice(0, 30)}
+                <span className="material-symbols-outlined text-[12px] shrink-0">link</span>
+                <span className="truncate">
+                  {lead.website_url
+                    .replace(/^https?:\/\//, '')
+                    .replace(/^www\./, '')
+                    .split('?')[0]
+                    .replace(/\/$/, '')
+                    .slice(0, 30)}
+                </span>
               </a>
             )}
             {onDismissLinkFlag && onEditLinkUrl && lead.link_status && lead.link_status !== 'VALID' && (
