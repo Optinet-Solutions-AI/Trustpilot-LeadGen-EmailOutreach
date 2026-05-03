@@ -50,6 +50,22 @@ router.get('/status', async (_req: Request, res: Response) => {
 
     const poolSize = result.filter(a => a.inPool).length;
 
+    // ── Pipeline snapshot: count warmup_emails by stage in the last 24h ──
+    // Lets the UI show where each batch is in the send → open → reply → read cycle
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: pipelineRows } = await supabase
+      .from('warmup_emails')
+      .select('stage, sent_at')
+      .gte('sent_at', since24h);
+
+    const pipeline = { pending_open: 0, pending_reply: 0, pending_read: 0, complete: 0, failed: 0 };
+    let lastActivityAt: string | null = null;
+    for (const row of (pipelineRows ?? []) as Array<{ stage: string; sent_at: string }>) {
+      if (row.stage in pipeline) (pipeline as Record<string, number>)[row.stage] += 1;
+      if (!lastActivityAt || row.sent_at > lastActivityAt) lastActivityAt = row.sent_at;
+    }
+    const totalLast24h = Object.values(pipeline).reduce((a, b) => a + b, 0);
+
     res.json({
       success: true,
       data: {
@@ -59,6 +75,11 @@ router.get('/status', async (_req: Request, res: Response) => {
         warning: poolSize < 2
           ? `Need at least 2 accounts in the warmup pool (currently ${poolSize}). Add more sending accounts or warmup peers.`
           : null,
+        pipeline: {
+          ...pipeline,
+          totalLast24h,
+          lastActivityAt,
+        },
       },
     });
   } catch (err) {

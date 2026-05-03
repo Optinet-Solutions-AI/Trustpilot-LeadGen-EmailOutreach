@@ -32,6 +32,15 @@ interface WarmupStatus {
   poolSize: number;
   healthy: boolean;
   warning: string | null;
+  pipeline?: {
+    pending_open: number;
+    pending_reply: number;
+    pending_read: number;
+    complete: number;
+    failed: number;
+    totalLast24h: number;
+    lastActivityAt: string | null;
+  };
 }
 
 interface PeerForm {
@@ -150,6 +159,50 @@ export default function WarmupPeers() {
               {status.warning ?? `Warmup runs every 10 minutes. Each pair: A sends → B opens → B replies → A reads. Reputation builds over 2–3 weeks.`}
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Pipeline snapshot — last 24h */}
+      {status?.pipeline && (
+        <div className="bg-surface-container-lowest rounded-xl p-5 ambient-shadow border border-slate-50">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="font-bold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+                Pipeline (last 24h)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {status.pipeline.totalLast24h} warmup email{status.pipeline.totalLast24h !== 1 ? 's' : ''} · last activity {status.pipeline.lastActivityAt ? new Date(status.pipeline.lastActivityAt).toLocaleTimeString() : '—'}
+              </p>
+            </div>
+            <button
+              onClick={load}
+              className="text-xs font-bold text-slate-400 hover:text-[#b0004a] transition-colors flex items-center gap-1"
+            >
+              <span className="material-symbols-outlined text-[14px]">refresh</span>
+              Refresh
+            </button>
+          </div>
+          <div className="grid grid-cols-5 gap-2">
+            {[
+              { key: 'pending_open',  label: 'Sent → opening', icon: 'mark_email_unread', color: 'bg-blue-50 text-blue-700' },
+              { key: 'pending_reply', label: 'Opened → replying', icon: 'drafts',          color: 'bg-indigo-50 text-indigo-700' },
+              { key: 'pending_read',  label: 'Replied → reading', icon: 'reply',           color: 'bg-violet-50 text-violet-700' },
+              { key: 'complete',      label: 'Complete cycles', icon: 'task_alt',          color: 'bg-green-50 text-green-700' },
+              { key: 'failed',        label: 'Failed',          icon: 'error',             color: 'bg-red-50 text-red-700' },
+            ].map(({ key, label, icon, color }) => {
+              const count = (status.pipeline as unknown as Record<string, number>)[key] ?? 0;
+              return (
+                <div key={key} className={`rounded-lg p-3 ${color}`}>
+                  <span className="material-symbols-outlined text-[18px]">{icon}</span>
+                  <p className="text-2xl font-black mt-1">{count}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider mt-0.5 leading-tight">{label}</p>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-slate-400 mt-3 leading-relaxed">
+            <strong>Reading this:</strong> emails move left-to-right. Healthy pool = numbers in &quot;sent→opening&quot; and &quot;complete cycles&quot; growing roughly equally over time. Mostly stuck in one column = something between stages is broken (usually IMAP auth on a peer).
+          </p>
         </div>
       )}
 
