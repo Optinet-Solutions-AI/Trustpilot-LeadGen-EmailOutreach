@@ -229,7 +229,7 @@ export default function LeadsTable({
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
                 title={lead.website_url}
-                className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-[#b0004a] hover:underline mt-0.5 max-w-[200px]"
+                className="inline-flex items-center gap-1 text-xs text-[#b0004a] underline underline-offset-2 hover:text-[#900040] mt-0.5 max-w-[200px]"
               >
                 <span className="material-symbols-outlined text-[12px] shrink-0">link</span>
                 <span className="truncate">
