@@ -229,17 +229,14 @@ export default function LeadsTable({
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
                 title={lead.website_url}
-                className="inline-flex items-center gap-1 text-xs text-[#b0004a] underline underline-offset-2 hover:text-[#900040] mt-0.5 max-w-[200px]"
+                className="block text-xs text-[#b0004a] underline underline-offset-2 hover:text-[#900040] truncate mt-0.5 max-w-[200px]"
               >
-                <span className="material-symbols-outlined text-[12px] shrink-0">link</span>
-                <span className="truncate">
-                  {lead.website_url
-                    .replace(/^https?:\/\//, '')
-                    .replace(/^www\./, '')
-                    .split('?')[0]
-                    .replace(/\/$/, '')
-                    .slice(0, 30)}
-                </span>
+                {lead.website_url
+                  .replace(/^https?:\/\//, '')
+                  .replace(/^www\./, '')
+                  .split('?')[0]
+                  .replace(/\/$/, '')
+                  .slice(0, 30)}
               </a>
             )}
             {onDismissLinkFlag && onEditLinkUrl && lead.link_status && lead.link_status !== 'VALID' && (
