@@ -620,6 +620,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/email-accounts/peer:
+    post:
+      operationId: connectWarmupPeer
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/email-accounts/{id}:
     patch:
       operationId: updateEmailAccount
@@ -788,6 +795,56 @@ paths:
     get:
       operationId: checkDomainDNS
       security: []
+      responses:
+        "200":
+          description: OK
+  /api/warmup/status:
+    get:
+      operationId: getWarmupStatus
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/warmup/tick:
+    post:
+      operationId: runWarmupTick
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/warmup/{email}/toggle:
+    post:
+      operationId: toggleWarmup
+      security: []
+      parameters:
+        - in: path
+          name: email
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/warmup/{email}/target:
+    post:
+      operationId: setWarmupTarget
+      security: []
+      parameters:
+        - in: path
+          name: email
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/warmup/{email}/restart-ramp:
+    post:
+      operationId: restartWarmupRamp
+      security: []
+      parameters:
+        - in: path
+          name: email
+          required: true
+          type: string
       responses:
         "200":
           description: OK
