@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
-import { rateLimiter } from '../services/rate-limiter.js';
+import { rateLimiter, getRampedDailyCap } from '../services/rate-limiter.js';
 import { verifyDomainDNS } from '../services/dns-checker.js';
 
 const router = Router();
@@ -9,16 +9,36 @@ const router = Router();
 const DNS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const domainOf = (email: string) => email.split('@')[1]?.toLowerCase() ?? '';
 
+// Free-provider IMAP/SMTP host lookup for warmup-peer onboarding.
+// Matches domain → { provider label, imap host/port, smtp host/port }.
+const FREE_PROVIDER_HOSTS: Record<string, { label: string; imapHost: string; imapPort: number; smtpHost: string; smtpPort: number }> = {
+  'gmail.com':       { label: 'Gmail',   imapHost: 'imap.gmail.com',     imapPort: 993, smtpHost: 'smtp.gmail.com',     smtpPort: 465 },
+  'googlemail.com':  { label: 'Gmail',   imapHost: 'imap.gmail.com',     imapPort: 993, smtpHost: 'smtp.gmail.com',     smtpPort: 465 },
+  'yahoo.com':       { label: 'Yahoo',   imapHost: 'imap.mail.yahoo.com', imapPort: 993, smtpHost: 'smtp.mail.yahoo.com', smtpPort: 465 },
+  'ymail.com':       { label: 'Yahoo',   imapHost: 'imap.mail.yahoo.com', imapPort: 993, smtpHost: 'smtp.mail.yahoo.com', smtpPort: 465 },
+  'aol.com':         { label: 'AOL',     imapHost: 'imap.aol.com',       imapPort: 993, smtpHost: 'smtp.aol.com',       smtpPort: 465 },
+  'outlook.com':     { label: 'Outlook', imapHost: 'outlook.office365.com', imapPort: 993, smtpHost: 'smtp.office365.com', smtpPort: 587 },
+  'hotmail.com':     { label: 'Outlook', imapHost: 'outlook.office365.com', imapPort: 993, smtpHost: 'smtp.office365.com', smtpPort: 587 },
+  'live.com':        { label: 'Outlook', imapHost: 'outlook.office365.com', imapPort: 993, smtpHost: 'smtp.office365.com', smtpPort: 587 },
+  'icloud.com':      { label: 'iCloud',  imapHost: 'imap.mail.me.com',   imapPort: 993, smtpHost: 'smtp.mail.me.com',   smtpPort: 587 },
+  'me.com':          { label: 'iCloud',  imapHost: 'imap.mail.me.com',   imapPort: 993, smtpHost: 'smtp.mail.me.com',   smtpPort: 587 },
+};
+
 // GET /api/email-accounts — list all configured accounts with real per-account stats
-router.get('/', async (_req: Request, res: Response) => {
+// Query param: ?role=sender|peer  (default: both)
+router.get('/', async (req: Request, res: Response) => {
   try {
+    const role = String(req.query.role ?? '').toLowerCase();
     const supabase = getSupabase();
-    // Pull all columns — some may not exist if migration 016 hasn't been applied yet.
-    // We select('*') so missing columns just return undefined instead of failing the query.
-    const { data: dbAccounts, error } = await supabase
+    // Pull all columns — some may not exist if a migration hasn't been applied yet.
+    let query = supabase
       .from('email_accounts')
       .select('*')
       .order('created_at', { ascending: true });
+    if (role === 'sender') query = query.eq('is_cold_sender', true);
+    if (role === 'peer')   query = query.eq('is_cold_sender', false);
+
+    const { data: dbAccounts, error } = await query;
 
     if (error) throw new Error(error.message);
 
@@ -105,10 +125,30 @@ router.get('/', async (_req: Request, res: Response) => {
 
     const formattedDb = (dbAccounts ?? []).map((a: Record<string, unknown>) => {
       const emailKey = String(a.email).toLowerCase();
-      const rawDailyCap  = a.daily_cap  as number | null | undefined;
       const rawHourlyCap = a.hourly_cap as number | null | undefined;
-      const dailyCap  = rawDailyCap  != null ? rawDailyCap  : config.rateLimits.dailyCap;
       const hourlyCap = rawHourlyCap != null ? rawHourlyCap : config.rateLimits.hourlyCap;
+
+      // Per-account ramp: dailyCap is computed from warmup_started_at + target + ramp_days.
+      // Falls back to the static daily_cap (or env default) when warmup_started_at is null.
+      const warmupStartedAt = (a.warmup_started_at as string | null | undefined) ?? null;
+      const warmupTargetCap = (a.warmup_target_cap as number | null | undefined) ?? 50;
+      const warmupRampDays  = (a.warmup_ramp_days  as number | null | undefined) ?? 21;
+      const dailyCap = getRampedDailyCap({
+        warmup_started_at: warmupStartedAt,
+        warmup_target_cap: warmupTargetCap,
+        warmup_ramp_days:  warmupRampDays,
+        daily_cap:         (a.daily_cap as number | null | undefined) ?? null,
+      });
+
+      const warmupDay = warmupStartedAt
+        ? Math.max(1, Math.floor((Date.now() - new Date(warmupStartedAt).getTime()) / 86_400_000) + 1)
+        : 0;
+      const warmupStatus = !warmupStartedAt
+        ? 'Warmup not started'
+        : warmupDay >= warmupRampDays
+          ? 'Fully warmed up'
+          : `Day ${warmupDay} of ${warmupRampDays} · ramping to ${warmupTargetCap}`;
+
       const counts = sentCounts[emailKey] ?? { daily: 0, hourly: 0 };
 
       const hasDnsFields = a.dns_checked_at != null;
@@ -120,22 +160,27 @@ router.get('/', async (_req: Request, res: Response) => {
       } : null;
 
       return {
-        id:          a.id,
-        email:       a.email,
-        from_name:   a.from_name,
-        provider:    a.provider,
-        auth_type:   a.auth_type,
-        status:      a.status,
-        smtp_host:   a.smtp_host,
-        smtp_port:   a.smtp_port,
-        smtp_secure: a.smtp_secure,
-        notes:       a.notes,
-        dailySent:   counts.daily,
-        hourlySent:  counts.hourly,
+        id:               a.id,
+        email:            a.email,
+        from_name:        a.from_name,
+        provider:         a.provider,
+        auth_type:        a.auth_type,
+        status:           a.status,
+        smtp_host:        a.smtp_host,
+        smtp_port:        a.smtp_port,
+        smtp_secure:      a.smtp_secure,
+        notes:            a.notes,
+        dailySent:        counts.daily,
+        hourlySent:       counts.hourly,
         dailyCap,
         hourlyCap,
-        warmupDay:    1,
-        warmupStatus: 'Active sender',
+        warmupDay,
+        warmupStatus,
+        warmupStartedAt,
+        warmupTargetCap,
+        warmupRampDays,
+        warmupEnabled:    !!a.warmup_enabled,
+        isColdSender:     a.is_cold_sender == null ? true : !!a.is_cold_sender,
         dns,
         source: 'db',
       };
@@ -306,6 +351,11 @@ router.post('/', async (req: Request, res: Response) => {
         hourly_cap: hourlyCap != null ? Number(hourlyCap) : null,
         notes: notes || null,
         status: 'active',
+        is_cold_sender:    true,
+        warmup_enabled:    true,
+        warmup_started_at: new Date().toISOString(),
+        warmup_target_cap: 50,
+        warmup_ramp_days:  21,
       })
       .select()
       .single();
@@ -397,6 +447,11 @@ router.post('/dreamhost', async (req: Request, res: Response) => {
         imap_user: email,
         imap_pass: password,
         status: 'active',
+        is_cold_sender:    true,
+        warmup_enabled:    true,
+        warmup_started_at: new Date().toISOString(),
+        warmup_target_cap: 50,
+        warmup_ramp_days:  21,
       })
       .select()
       .single();
@@ -496,6 +551,11 @@ router.post('/bluehost', async (req: Request, res: Response) => {
         imap_user: email,
         imap_pass: password,
         status: 'active',
+        is_cold_sender:    true,
+        warmup_enabled:    true,
+        warmup_started_at: new Date().toISOString(),
+        warmup_target_cap: 50,
+        warmup_ramp_days:  21,
       })
       .select()
       .single();
@@ -516,7 +576,7 @@ router.post('/bluehost', async (req: Request, res: Response) => {
   }
 });
 
-// PATCH /api/email-accounts/:id — update editable fields (caps, from_name, status)
+// PATCH /api/email-accounts/:id — update editable fields
 router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -524,14 +584,18 @@ router.patch('/:id', async (req: Request, res: Response) => {
       res.status(400).json({ success: false, error: 'The env-configured account is read-only' });
       return;
     }
-    const { dailyCap, hourlyCap, fromName, status, notes } = req.body;
+    const { dailyCap, hourlyCap, fromName, status, notes,
+            isColdSender, warmupTargetCap, warmupRampDays } = req.body;
 
     const patch: Record<string, unknown> = {};
-    if (dailyCap  !== undefined) patch.daily_cap  = dailyCap  === null || dailyCap  === '' ? null : Number(dailyCap);
-    if (hourlyCap !== undefined) patch.hourly_cap = hourlyCap === null || hourlyCap === '' ? null : Number(hourlyCap);
-    if (fromName  !== undefined) patch.from_name  = fromName;
-    if (status    !== undefined) patch.status     = status;
-    if (notes     !== undefined) patch.notes      = notes;
+    if (dailyCap        !== undefined) patch.daily_cap         = dailyCap  === null || dailyCap  === '' ? null : Number(dailyCap);
+    if (hourlyCap       !== undefined) patch.hourly_cap        = hourlyCap === null || hourlyCap === '' ? null : Number(hourlyCap);
+    if (fromName        !== undefined) patch.from_name         = fromName;
+    if (status          !== undefined) patch.status            = status;
+    if (notes           !== undefined) patch.notes             = notes;
+    if (isColdSender    !== undefined) patch.is_cold_sender    = !!isColdSender;
+    if (warmupTargetCap !== undefined) patch.warmup_target_cap = Number(warmupTargetCap);
+    if (warmupRampDays  !== undefined) patch.warmup_ramp_days  = Number(warmupRampDays);
 
     if (Object.keys(patch).length === 0) {
       res.status(400).json({ success: false, error: 'No updatable fields provided' });
@@ -612,6 +676,119 @@ router.delete('/:id', async (req: Request, res: Response) => {
     const { error } = await supabase.from('email_accounts').delete().eq('id', id);
     if (error) throw new Error(error.message);
     res.json({ success: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+/**
+ * POST /api/email-accounts/peer — streamlined warmup-peer onboarding.
+ *
+ * Body: { email, appPassword, fromName? }
+ *
+ * Auto-detects the provider from the email domain (Gmail / Yahoo / Outlook /
+ * iCloud / AOL), uses the provider's IMAP+SMTP hosts, tests both connections,
+ * and inserts the account with is_cold_sender=false. The peer joins the warmup
+ * pool immediately but is never selected for cold-outreach campaigns.
+ *
+ * Free Gmail requires an App Password (Settings → Security → App Passwords).
+ * Yahoo/Outlook require their own app-password equivalents.
+ */
+router.post('/peer', async (req: Request, res: Response) => {
+  try {
+    const { email, appPassword, fromName } = req.body as { email?: string; appPassword?: string; fromName?: string };
+
+    if (!email || !appPassword) {
+      res.status(400).json({ success: false, error: 'email and appPassword are required' });
+      return;
+    }
+
+    const domain = domainOf(email);
+    const provider = FREE_PROVIDER_HOSTS[domain];
+    if (!provider) {
+      res.status(400).json({
+        success: false,
+        error: `Domain ${domain || '(missing)'} is not a recognized free provider. Use the standard SMTP form for custom domains.`,
+      });
+      return;
+    }
+
+    const cleanPassword = String(appPassword).replace(/\s/g, '');
+
+    // Test SMTP
+    try {
+      const nodemailer = await import('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: provider.smtpHost,
+        port: provider.smtpPort,
+        secure: provider.smtpPort === 465,
+        auth: { user: email, pass: cleanPassword },
+      });
+      await transporter.verify();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      res.status(400).json({ success: false, error: `SMTP login failed: ${msg}. Make sure you used an App Password, not your regular password.` });
+      return;
+    }
+
+    // Test IMAP — required for warmup peers since they need to mark messages read + reply
+    try {
+      const { ImapFlow } = await import('imapflow');
+      const client = new ImapFlow({
+        host: provider.imapHost,
+        port: provider.imapPort,
+        secure: true,
+        auth: { user: email, pass: cleanPassword },
+        logger: false,
+        connectionTimeout: 10000,
+      });
+      await Promise.race([
+        client.connect().then(() => client.logout()),
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('IMAP connection timed out after 10s')), 10000)),
+      ]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      res.status(400).json({ success: false, error: `IMAP login failed: ${msg}. Warmup peers need IMAP access to read and reply.` });
+      return;
+    }
+
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('email_accounts')
+      .insert({
+        email,
+        from_name: fromName || email.split('@')[0],
+        provider: `${provider.label} (warmup peer)`,
+        auth_type: 'smtp',
+        email_provider: 'smtp',
+        smtp_host: provider.smtpHost,
+        smtp_port: provider.smtpPort,
+        smtp_user: email,
+        smtp_password: cleanPassword,
+        smtp_secure: provider.smtpPort === 465 ? 'ssl' : 'tls',
+        imap_host: provider.imapHost,
+        imap_port: provider.imapPort,
+        imap_user: email,
+        imap_pass: cleanPassword,
+        status: 'active',
+        is_cold_sender:    false,
+        warmup_enabled:    true,
+        warmup_daily_target: 5,
+        warmup_started_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        res.status(409).json({ success: false, error: 'An account with this email already exists' });
+        return;
+      }
+      throw new Error(error.message);
+    }
+
+    res.json({ success: true, data });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

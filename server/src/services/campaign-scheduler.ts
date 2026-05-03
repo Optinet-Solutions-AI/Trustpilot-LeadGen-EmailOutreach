@@ -17,7 +17,7 @@ import { config } from '../config.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type SenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
-import { rateLimiter } from './rate-limiter.js';
+import { rateLimiter, getRampedDailyCap } from './rate-limiter.js';
 import { renderAndSpin } from './template-engine.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { updateLead } from '../db/leads.js';
@@ -163,8 +163,9 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
   try {
     let query = getSupabase()
       .from('email_accounts')
-      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, daily_cap, hourly_cap')
+      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, daily_cap, hourly_cap, is_cold_sender, warmup_started_at, warmup_target_cap, warmup_ramp_days')
       .eq('status', 'active')
+      .eq('is_cold_sender', true)
       .in('auth_type', ['gmail_oauth', 'smtp', 'app_password']);
 
     // Filter to specific IDs when the user pinned accounts; otherwise load all active
@@ -175,7 +176,12 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
     const { data: dbAccounts } = await query;
     const accounts: AccountWithCaps<SenderAccount>[] = [];
     for (const a of (dbAccounts ?? []) as Array<Record<string, unknown>>) {
-      const dailyCap  = (a.daily_cap  as number | null | undefined) ?? config.rateLimits.dailyCap;
+      const dailyCap = getRampedDailyCap({
+        warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
+        warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
+        warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
+        daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
+      });
       const hourlyCap = (a.hourly_cap as number | null | undefined) ?? config.rateLimits.hourlyCap;
       if (a.auth_type === 'smtp' && a.smtp_host && a.smtp_user && a.smtp_password) {
         accounts.push({

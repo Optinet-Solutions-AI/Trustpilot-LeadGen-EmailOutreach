@@ -198,3 +198,35 @@ class EmailRateLimiter {
 }
 
 export const rateLimiter = new EmailRateLimiter();
+
+/**
+ * Per-account ramped daily cap.
+ *
+ * Ramps linearly from a Day-1 floor of 10 up to `warmup_target_cap` over
+ * `warmup_ramp_days` days, starting from `warmup_started_at`. If the account
+ * has no warmup_started_at, the static `daily_cap` (or env default) is used.
+ *
+ * Used by campaign-scheduler.buildSenderPool() to enforce per-account ramps
+ * independent of the global env-keyed warmup state.
+ */
+export function getRampedDailyCap(account: {
+  warmup_started_at: string | null;
+  warmup_target_cap: number;
+  warmup_ramp_days: number;
+  daily_cap: number | null;
+}): number {
+  if (!account.warmup_started_at) {
+    return account.daily_cap ?? config.rateLimits.dailyCap;
+  }
+
+  const startMs = new Date(account.warmup_started_at).getTime();
+  const dayN = Math.max(1, Math.floor((Date.now() - startMs) / 86_400_000) + 1);
+  const target = account.warmup_target_cap;
+  const ramp = Math.max(2, account.warmup_ramp_days); // avoid div-by-zero on N=1
+
+  if (dayN >= ramp) return target;
+
+  const floor = 10;
+  const cap = Math.round(floor + (target - floor) * (dayN - 1) / (ramp - 1));
+  return Math.max(floor, cap);
+}

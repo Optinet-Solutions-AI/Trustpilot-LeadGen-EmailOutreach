@@ -23,6 +23,11 @@ interface EmailAccount {
   hourlyCap: number;
   warmupDay: number | null;
   warmupStatus: string;
+  warmupStartedAt?: string | null;
+  warmupTargetCap?: number;
+  warmupRampDays?: number;
+  warmupEnabled?: boolean;
+  isColdSender?: boolean;
   source?: 'env' | 'db';
   smtp_host?: string;
   smtp_port?: number;
@@ -125,14 +130,12 @@ export default function EmailAccounts() {
     }[];
     poolSize: number; healthy: boolean; warning: string | null;
   } | null>(null);
-  const [warmupTogglingEmail, setWarmupTogglingEmail] = useState<string | null>(null);
   const popupRef = useRef<Window | null>(null);
 
   const load = () => {
     setLoading(true);
-    // Per-account DNS status is computed server-side and returned inline on each account.
-    // Stale rows (>6h) are refreshed in the background by the GET endpoint.
-    api.get('/email-accounts')
+    // Cold senders only on this page. Warmup peers live on /warmup-peers.
+    api.get('/email-accounts?role=sender')
       .then((res) => setData(res.data.data as AccountsData))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
@@ -179,19 +182,6 @@ export default function EmailAccounts() {
   };
 
   useEffect(() => { load(); }, []);
-
-  const handleWarmupToggle = async (email: string, enabled: boolean) => {
-    setWarmupTogglingEmail(email);
-    try {
-      await api.post(`/warmup/${encodeURIComponent(email)}/toggle`, { enabled });
-      setWarmupData(prev => prev ? {
-        ...prev,
-        accounts: prev.accounts.map(a => a.email === email ? { ...a, warmupEnabled: enabled, inPool: enabled && a.email !== '' } : a),
-      } : prev);
-    } catch { /* ignore */ } finally {
-      setWarmupTogglingEmail(null);
-    }
-  };
 
   const openModal = () => {
     setShowModal(true);
@@ -503,20 +493,26 @@ export default function EmailAccounts() {
         </div>
       )}
 
-      {/* Warmup pool health banner */}
-      {warmupData && warmupData.accounts.some(a => a.warmupEnabled) && (
+      {/* Warmup pool health banner — links to dedicated peers page */}
+      {warmupData && (
         <div className={`rounded-xl p-5 flex items-start gap-4 ${warmupData.healthy ? 'bg-green-50 border border-green-200' : 'bg-amber-50 border border-amber-200'}`}>
           <span className={`material-symbols-outlined text-2xl flex-shrink-0 ${warmupData.healthy ? 'text-green-600' : 'text-amber-600'}`}>
             {warmupData.healthy ? 'check_circle' : 'warning'}
           </span>
-          <div>
+          <div className="flex-1">
             <h3 className={`font-bold mb-0.5 ${warmupData.healthy ? 'text-green-800' : 'text-amber-800'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>
               Warmup Pool — {warmupData.poolSize} account{warmupData.poolSize !== 1 ? 's' : ''} active
             </h3>
             <p className={`text-sm ${warmupData.healthy ? 'text-green-700' : 'text-amber-700'}`}>
-              {warmupData.warning ?? `Warmup emails are being exchanged every 10 minutes. Full send/open/reply cycles build sender reputation automatically.`}
+              {warmupData.warning ?? `Senders and peers exchange warmup emails every 10 minutes — send, open, reply, mark important — so each ISP sees a real conversation history.`}
             </p>
           </div>
+          <a
+            href="/warmup-peers"
+            className={`flex-shrink-0 px-3 py-1.5 text-xs font-bold rounded-lg transition-colors ${warmupData.healthy ? 'bg-green-100 hover:bg-green-200 text-green-800' : 'bg-amber-100 hover:bg-amber-200 text-amber-800'}`}
+          >
+            Manage Peers →
+          </a>
         </div>
       )}
 
@@ -671,60 +667,56 @@ export default function EmailAccounts() {
                 </div>
               )}
 
-              {/* Warmup row — only for Gmail OAuth2 accounts */}
-              {account.auth_type === 'gmail_oauth' && (() => {
-                const ws = warmupData?.accounts.find(a => a.email === account.email);
-                const enabled = ws?.warmupEnabled ?? false;
-                const toggling = warmupTogglingEmail === account.email;
+              {/* Sender ramp — applies to every cold sender regardless of auth_type */}
+              {account.source === 'db' && (() => {
+                const enabled    = account.warmupEnabled ?? false;
+                const startedAt  = account.warmupStartedAt;
+                const day        = account.warmupDay ?? 0;
+                const rampDays   = account.warmupRampDays ?? 21;
+                const targetCap  = account.warmupTargetCap ?? 50;
+                const progress   = Math.min(100, Math.round((day / Math.max(rampDays, 1)) * 100));
+                const fullyWarm  = startedAt && day >= rampDays;
                 return (
                   <div className="border-t border-slate-50 pt-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="material-symbols-outlined text-[14px] text-slate-400">bolt</span>
-                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">Warmup</span>
+                        <span className="material-symbols-outlined text-[14px] text-slate-400">trending_up</span>
+                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">Sender Ramp</span>
                       </div>
-                      <button
-                        onClick={() => handleWarmupToggle(account.email, !enabled)}
-                        disabled={toggling}
-                        className={`relative w-10 h-5 rounded-full transition-colors ${enabled ? 'bg-[#b0004a]' : 'bg-slate-200'} ${toggling ? 'opacity-50' : ''}`}
-                        title={enabled ? 'Disable warmup' : 'Enable warmup'}
-                      >
-                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                      </button>
+                      {!enabled ? (
+                        <span className="text-[10px] font-bold text-slate-400">Disabled</span>
+                      ) : fullyWarm ? (
+                        <span className="text-[10px] font-bold text-[#006630] bg-[#8ff9a8]/30 px-1.5 py-0.5 rounded">Fully warmed</span>
+                      ) : (
+                        <span className="text-[10px] font-bold text-[#b0004a]">Day {day} of {rampDays}</span>
+                      )}
                     </div>
-                    {enabled && ws && (
-                      <div className="grid grid-cols-3 gap-1 text-center">
-                        <div className="bg-slate-50 rounded px-1 py-1.5">
-                          <p className="text-[10px] text-slate-400 font-medium">Today</p>
-                          <p className="text-xs font-black text-on-surface">{ws.sentToday}<span className="text-slate-400">/{ws.warmupDailyTarget}</span></p>
+                    {enabled && startedAt && !fullyWarm && (
+                      <>
+                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-[#b0004a] transition-all"
+                            style={{ width: `${progress}%` }}
+                          />
                         </div>
-                        <div className="bg-slate-50 rounded px-1 py-1.5">
-                          <p className="text-[10px] text-slate-400 font-medium">Total</p>
-                          <p className="text-xs font-black text-on-surface">{ws.totalSent}</p>
-                        </div>
-                        <div className="bg-slate-50 rounded px-1 py-1.5">
-                          <p className="text-[10px] text-slate-400 font-medium">Cycles</p>
-                          <p className="text-xs font-black text-[#006630]">{ws.totalCompleted}</p>
-                        </div>
-                      </div>
+                        <p className="text-[10px] text-slate-400">
+                          Ramping to {targetCap}/day. Today&apos;s cap: <span className="font-bold text-on-surface">{account.dailyCap}</span>.
+                        </p>
+                      </>
+                    )}
+                    {enabled && !startedAt && (
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Warmup is enabled but the ramp clock hasn&apos;t started — first send will stamp the start date.
+                      </p>
                     )}
                     {!enabled && (
                       <p className="text-[10px] text-slate-400 leading-relaxed">
-                        Toggle on to join the warmup pool. Needs ≥2 accounts.
+                        Auto-ramp is off. Enable in /warmup-peers to start ramping this sender.
                       </p>
                     )}
                   </div>
                 );
               })()}
-              {account.auth_type !== 'gmail_oauth' && (
-                <div className="flex items-center justify-between py-3 border-t border-slate-50">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[14px] text-slate-400">bolt</span>
-                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-tight">Warmup</span>
-                  </div>
-                  <span className="text-xs text-slate-400">OAuth2 only</span>
-                </div>
-              )}
 
               {account.smtp_host && (
                 <div className="flex items-center gap-2 py-1">
@@ -745,9 +737,9 @@ export default function EmailAccounts() {
           <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center mb-4 ambient-shadow group-hover:scale-110 transition-transform">
             <span className="material-symbols-outlined text-[#b0004a]">add</span>
           </div>
-          <h3 className="font-bold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>Connect New Account</h3>
+          <h3 className="font-bold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>Connect Cold Sender</h3>
           <p className="text-xs text-slate-400 mt-2 max-w-[180px] leading-relaxed">
-            Add Gmail OAuth2, App Password, or custom SMTP account for outreach rotation.
+            Add a custom-domain Gmail OAuth2, App Password, or SMTP account for outreach. Auto-ramps from 10/day → 50/day over 21 days.
           </p>
         </button>
       </div>
