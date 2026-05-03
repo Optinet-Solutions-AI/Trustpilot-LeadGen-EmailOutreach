@@ -104,8 +104,11 @@ async function processDueSends(): Promise<void> {
   const senderPool = await buildSenderPool(pinnedIds);
   const sentCounts = await loadSentCounts();
 
-  // Include env account in rotation if the user selected it (or selected nothing = all)
-  const includeEnv = pinnedIds.length === 0 || pinnedIds.includes('__env__');
+  // Include env account ONLY when explicitly pinned. Previous default of
+  // "include when nothing pinned" was risky — env-configured Gmails may now
+  // be warmup peers and must never send cold mail. DB accounts declare
+  // is_cold_sender themselves and are filtered server-side.
+  const includeEnv = pinnedIds.includes('__env__');
 
   let sentThisTick = 0;
   for (let i = 0; i < actionable.length; i++) {

@@ -189,7 +189,12 @@ router.get('/', async (req: Request, res: Response) => {
     res.json({
       success: true,
       data: {
-        accounts: [...(envAccount ? [envAccount] : []), ...formattedDb],
+        // Env-configured account is included only on the unfiltered list. When
+        // a role is specified (sender|peer) we omit it: the env account has
+        // no is_cold_sender flag, so we can't classify it reliably — and
+        // including it on /role=sender risks the user accidentally treating a
+        // shared inbox or a Gmail-OAuth peer as a cold sender.
+        accounts: [...((envAccount && !role) ? [envAccount] : []), ...formattedDb],
         platform: config.emailPlatform,
         testMode: config.testMode.enabled,
         manualLeadsOnly: config.manualLeadsOnly,
