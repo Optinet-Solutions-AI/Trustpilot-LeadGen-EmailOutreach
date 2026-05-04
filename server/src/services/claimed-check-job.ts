@@ -107,6 +107,7 @@ export async function runClaimedCheckJob(
         let pageTitle = '';
         let pageBodyLen = 0;
         let challengeCleared: boolean | null = null;
+        let nextDataState = '?';
 
         const page = await context!.newPage();
         try {
@@ -128,12 +129,35 @@ export async function runClaimedCheckJob(
               // h1 may not be present on every layout; proceed anyway
             }
             try {
-              const snap = await page.evaluate(() => ({
-                t: document.title,
-                l: (document.body?.innerText || '').length,
-              }));
+              const snap = await page.evaluate(() => {
+                const out: { t: string; l: number; nd: string } = {
+                  t: document.title,
+                  l: (document.body?.innerText || '').length,
+                  nd: 'missing',
+                };
+                const el = document.getElementById('__NEXT_DATA__');
+                if (!el || !el.textContent) {
+                  out.nd = 'missing';
+                  return out;
+                }
+                try {
+                  const data = JSON.parse(el.textContent);
+                  const bu = data?.props?.pageProps?.businessUnit;
+                  if (!bu) {
+                    out.nd = 'no-bu';
+                  } else if (typeof bu.isClaimed !== 'boolean') {
+                    out.nd = `bu-no-isClaimed(keys=${Object.keys(bu).slice(0, 4).join(',')})`;
+                  } else {
+                    out.nd = `isClaimed=${bu.isClaimed}`;
+                  }
+                } catch (e) {
+                  out.nd = `parse-err(${(e as Error).message.slice(0, 30)})`;
+                }
+                return out;
+              });
               pageTitle = snap.t;
               pageBodyLen = snap.l;
+              nextDataState = snap.nd;
             } catch { /* page closed */ }
             result = await detectProfileClaimed(page);
           }
@@ -167,7 +191,7 @@ export async function runClaimedCheckJob(
         // saw on Cloud Run datacenter IPs vs local residential probes.
         console.log(
           `[claimed-check-job] ${verdict.padEnd(9)} status=${httpStatus} ` +
-          `bodyLen=${pageBodyLen} cf=${challengeCleared} ` +
+          `bodyLen=${pageBodyLen} cf=${challengeCleared} nd=${nextDataState} ` +
           `title="${(pageTitle || '').slice(0, 60)}" url=${target.url}` +
           (workerError ? ` err=${workerError.split('\n')[0].slice(0, 120)}` : ''),
         );
