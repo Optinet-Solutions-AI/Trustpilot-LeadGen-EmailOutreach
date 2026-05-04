@@ -2,7 +2,7 @@ swagger: "2.0"
 info:
   title: trustpilot-api
   description: Trustpilot LeadGen API Gateway proxy to Cloud Run
-  version: "1.8.0"
+  version: "1.9.0"
 schemes:
   - https
 produces:
@@ -148,6 +148,37 @@ paths:
   /api/leads/check-links/{jobId}/stream:
     get:
       operationId: leadsCheckLinksStream
+      security: []
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/check-claimed:
+    post:
+      operationId: leadsCheckClaimed
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/leads/check-claimed/status:
+    get:
+      operationId: leadsCheckClaimedStatus
+      security: []
+      parameters:
+        - in: query
+          name: jobId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/check-claimed/{jobId}/stream:
+    get:
+      operationId: leadsCheckClaimedStream
       security: []
       parameters:
         - in: path
