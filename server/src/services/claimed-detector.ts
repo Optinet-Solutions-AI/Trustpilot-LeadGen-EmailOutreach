@@ -67,7 +67,10 @@ const CLAIMED_DETECT_JS = `() => {
 
 export async function detectProfileClaimed(page: Page): Promise<boolean | null> {
   try {
-    const result = await page.evaluate(CLAIMED_DETECT_JS);
+    // Node Playwright evaluates the string as an expression; passing a bare
+    // arrow-function literal yields a function *reference*, not its return
+    // value. Wrap in IIFE so we get the actual boolean back.
+    const result = await page.evaluate(`(${CLAIMED_DETECT_JS})()`);
     if (result === true || result === false) return result;
     return null;
   } catch {
