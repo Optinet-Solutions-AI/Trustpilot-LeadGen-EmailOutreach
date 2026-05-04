@@ -39,6 +39,12 @@ export function useCheckLinksJob(jobId: string | null, source: 'leads' | 'affili
   const statusRef = useRef<CheckLinksJobStatus>(state.status);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cloud Run runs the API on multiple instances and the job registry is
+  // in-memory per instance — polling can hit a different instance than the
+  // POST and get 404. Don't treat that as completion until we've seen several
+  // 404s in a row, so a transient instance-routing flap can self-heal.
+  const missCountRef = useRef(0);
+  const MAX_404_RETRIES = 4;
 
   useEffect(() => { statusRef.current = state.status; }, [state.status]);
 
@@ -130,6 +136,7 @@ export function useCheckLinksJob(jobId: string | null, source: 'leads' | 'affili
       if (statusRef.current !== 'running') return;
       try {
         const res = await api.get(`/${source}/check-links/status?jobId=${jobId}`);
+        missCountRef.current = 0;
         const d = res.data.data as {
           status: 'running' | 'done' | 'failed';
           total: number;
@@ -155,7 +162,12 @@ export function useCheckLinksJob(jobId: string | null, source: 'leads' | 'affili
         else if (d.status === 'failed') markDone('failed', d.error || 'Link check failed');
       } catch (err: unknown) {
         const httpStatus = (err as { response?: { status?: number } })?.response?.status;
-        if (httpStatus === 404) markDone('completed');
+        if (httpStatus === 404) {
+          missCountRef.current += 1;
+          if (missCountRef.current >= MAX_404_RETRIES) {
+            markDone('failed', 'Job not found — try again');
+          }
+        }
       }
     };
     poll();

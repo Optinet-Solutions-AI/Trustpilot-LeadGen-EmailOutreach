@@ -39,6 +39,12 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
   const statusRef = useRef<EnrichJobStatus>(state.status);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cloud Run runs the API on multiple instances and the job registry is
+  // in-memory per instance — polling can hit a different instance than the
+  // POST and get 404. Don't treat that as completion until we've seen several
+  // 404s in a row, so a transient instance-routing flap can self-heal.
+  const missCountRef = useRef(0);
+  const MAX_404_RETRIES = 4;
 
   useEffect(() => {
     statusRef.current = state.status;
@@ -148,6 +154,7 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
       if (statusRef.current !== 'running') return;
       try {
         const res = await api.get(`/enrich/status?jobId=${jobId}`);
+        missCountRef.current = 0;
         const d = res.data.data as {
           status: 'running' | 'done' | 'failed';
           total: number;
@@ -164,8 +171,10 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
       } catch (err: unknown) {
         const httpStatus = (err as { response?: { status?: number } })?.response?.status;
         if (httpStatus === 404) {
-          // Stale id — job was cleaned up. Treat as completed to dismiss the panel.
-          markDone('completed');
+          missCountRef.current += 1;
+          if (missCountRef.current >= MAX_404_RETRIES) {
+            markDone('failed', 'Job not found — try again');
+          }
         }
       }
     };
