@@ -226,6 +226,7 @@ export default function Leads() {
   });
   const [claimedStartedAt, setClaimedStartedAt] = useState<string | null>(null);
   const [claimedResult, setClaimedResult] = useState<{ total: number; claimed: number; unclaimed: number; unknown: number } | null>(null);
+  const [claimedFailure, setClaimedFailure] = useState<string | null>(null);
   const claimedJob = useCheckClaimedJob(claimedJobId);
   const checkingClaimed = claimedJob.status === 'running';
 
@@ -314,7 +315,9 @@ export default function Leads() {
       localStorage.removeItem('active_claimed_check_job');
       loadLeads();
     } else if (claimedJob.status === 'failed') {
-      notify('error', `Claimed check failed: ${claimedJob.error || 'unknown error'}`);
+      const msg = claimedJob.error || 'unknown error';
+      notify('error', `Claimed check failed: ${msg}`);
+      setClaimedFailure(msg);
       setClaimedJobId(null);
       setClaimedStartedAt(null);
       localStorage.removeItem('active_claimed_check_job');
@@ -466,6 +469,22 @@ export default function Leads() {
           <button
             onClick={() => setClaimedResult(null)}
             className="ml-auto transition-colors text-[#006630]/60 hover:text-[#006630]"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
+      {/* Claimed-check failure banner — persistent, since the underlying cause
+          (instance recycle mid-job) leaves no completion event for the UI. */}
+      {claimedFailure && (
+        <div className="flex items-center gap-3 rounded-xl px-5 py-3 text-sm border bg-rose-100 border-rose-300 text-rose-800">
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span className="font-semibold">Claimed check did not complete:</span>
+          <span className="font-normal">{claimedFailure}. Re-running usually fixes it.</span>
+          <button
+            onClick={() => setClaimedFailure(null)}
+            className="ml-auto transition-colors text-rose-800/60 hover:text-rose-800"
           >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>

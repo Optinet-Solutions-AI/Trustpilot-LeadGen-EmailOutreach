@@ -138,27 +138,41 @@ CONTACT_EXTRACT_JS = r'''() => {
     // value when a re-scrape happens to fail this detection.
     let claimed = null;
 
-    // Priority 1: stable data attributes / test ids (survive class-name churn)
-    const dataAttr = document.querySelector(
-        '[data-business-unit-claimed], [data-testid*="claimed" i], [data-claimed]'
-    );
-    if (dataAttr) {
-        const v = dataAttr.getAttribute('data-business-unit-claimed') ||
-                  dataAttr.getAttribute('data-claimed');
-        claimed = v ? v.toLowerCase() !== 'false' : true;
+    // Priority 1: __NEXT_DATA__ — Trustpilot ships the canonical
+    // businessUnit.isClaimed boolean in the page's Next.js data blob.
+    try {
+        const el = document.getElementById('__NEXT_DATA__');
+        if (el && el.textContent) {
+            const data = JSON.parse(el.textContent);
+            const bu = data && data.props && data.props.pageProps && data.props.pageProps.businessUnit;
+            if (bu && typeof bu.isClaimed === 'boolean') {
+                claimed = bu.isClaimed;
+            }
+        }
+    } catch (_e) { /* fall through to text-based fallbacks */ }
+
+    // Priority 2: stable data attributes (legacy fallback — currently absent)
+    if (claimed === null) {
+        const dataAttr = document.querySelector(
+            '[data-business-unit-claimed], [data-testid*="claimed" i], [data-claimed]'
+        );
+        if (dataAttr) {
+            const v = dataAttr.getAttribute('data-business-unit-claimed') ||
+                      dataAttr.getAttribute('data-claimed');
+            claimed = v ? v.toLowerCase() !== 'false' : true;
+        }
     }
 
-    // Priority 2: localized "Profile claimed" badge near the company header
+    // Priority 3: localized "Claimed profile" / "Profile claimed" badge
     if (claimed === null) {
         const h1 = document.querySelector('h1');
         const header = h1 ? h1.closest('header, section, div') : null;
         const scopeText = (header || document.body).innerText || '';
-        const CLAIMED_RX = /\b(profile claimed|profil beansprucht|geclaimd profiel|profil revendiqué|perfil reclamado|profilo verificato)\b/i;
+        const CLAIMED_RX = /\b(claimed profile|profile claimed|profil beansprucht|beansprucht profil|geclaimd profiel|profil revendiqué|perfil reclamado|profilo verificato)\b/i;
         if (CLAIMED_RX.test(scopeText)) claimed = true;
     }
 
-    // Priority 3: "Claim this profile" CTA OR "Unclaimed profile" status label
-    // Defunct profiles drop the CTA but still display the localized status label.
+    // Priority 4: "Claim this profile" CTA OR "Unclaimed profile" status label
     if (claimed === null) {
         const ctaRx = /\b(claim (your|this) profile|reclamar perfil|profil beanspruchen|claim profiel|revendiquer ce profil|unclaimed profile|profil non revendiqué|perfil no reclamado|profilo non rivendicato|niet-geclaimd profiel|nicht beanspruchtes profil)\b/i;
         if (ctaRx.test(document.body.innerText || '')) claimed = false;
