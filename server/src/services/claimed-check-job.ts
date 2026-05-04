@@ -103,25 +103,38 @@ export async function runClaimedCheckJob(
 
         let result: boolean | null = null;
         let workerError: string | null = null;
+        let httpStatus: number | null = null;
+        let pageTitle = '';
+        let pageBodyLen = 0;
+        let challengeCleared: boolean | null = null;
 
         const page = await context!.newPage();
         try {
           try {
-            await page.goto(target.url, {
+            const resp = await page.goto(target.url, {
               waitUntil: 'domcontentloaded',
               timeout: NAV_TIMEOUT_MS,
             });
+            httpStatus = resp ? resp.status() : null;
           } catch (e) {
             workerError = e instanceof Error ? e.message : String(e);
           }
 
           if (!workerError) {
-            await handleCloudflareChallenge(page).catch(() => false);
+            challengeCleared = await handleCloudflareChallenge(page).catch(() => false);
             try {
               await page.waitForSelector('h1', { timeout: 5_000 });
             } catch {
               // h1 may not be present on every layout; proceed anyway
             }
+            try {
+              const snap = await page.evaluate(() => ({
+                t: document.title,
+                l: (document.body?.innerText || '').length,
+              }));
+              pageTitle = snap.t;
+              pageBodyLen = snap.l;
+            } catch { /* page closed */ }
             result = await detectProfileClaimed(page);
           }
         } catch (e) {
@@ -150,6 +163,14 @@ export async function runClaimedCheckJob(
         }
 
         const verdict = result === true ? 'claimed' : result === false ? 'unclaimed' : 'unknown';
+        // Per-lead diagnostic — lets us see what the headless browser actually
+        // saw on Cloud Run datacenter IPs vs local residential probes.
+        console.log(
+          `[claimed-check-job] ${verdict.padEnd(9)} status=${httpStatus} ` +
+          `bodyLen=${pageBodyLen} cf=${challengeCleared} ` +
+          `title="${(pageTitle || '').slice(0, 60)}" url=${target.url}` +
+          (workerError ? ` err=${workerError.split('\n')[0].slice(0, 120)}` : ''),
+        );
         emit('check_progress', `${job.checked}/${targets.length}|${target.url}|${verdict}`);
       }
     });
