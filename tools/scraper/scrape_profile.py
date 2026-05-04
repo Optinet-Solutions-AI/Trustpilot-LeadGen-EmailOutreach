@@ -157,9 +157,10 @@ CONTACT_EXTRACT_JS = r'''() => {
         if (CLAIMED_RX.test(scopeText)) claimed = true;
     }
 
-    // Priority 3: explicit "Claim this profile" CTA implies the profile is unclaimed
+    // Priority 3: "Claim this profile" CTA OR "Unclaimed profile" status label
+    // Defunct profiles drop the CTA but still display the localized status label.
     if (claimed === null) {
-        const ctaRx = /\b(claim (your|this) profile|reclamar perfil|profil beanspruchen|claim profiel|revendiquer ce profil)\b/i;
+        const ctaRx = /\b(claim (your|this) profile|reclamar perfil|profil beanspruchen|claim profiel|revendiquer ce profil|unclaimed profile|profil non revendiqué|perfil no reclamado|profilo non rivendicato|niet-geclaimd profiel|nicht beanspruchtes profil)\b/i;
         if (ctaRx.test(document.body.innerText || '')) claimed = false;
     }
 

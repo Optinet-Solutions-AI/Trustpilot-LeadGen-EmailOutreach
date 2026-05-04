@@ -31,9 +31,11 @@ const CLAIMED_DETECT_JS = `() => {
     if (RX.test(scopeText)) claimed = true;
   }
 
-  // Priority 3: explicit "Claim this profile" CTA implies unclaimed
+  // Priority 3: "Claim this profile" CTA OR "Unclaimed profile" status label.
+  // Defunct profiles (where the company's site has closed) drop the CTA but
+  // still display the localized status label, so we match both forms.
   if (claimed === null) {
-    const ctaRx = /\\b(claim (your|this) profile|reclamar perfil|profil beanspruchen|claim profiel|revendiquer ce profil)\\b/i;
+    const ctaRx = /\\b(claim (your|this) profile|reclamar perfil|profil beanspruchen|claim profiel|revendiquer ce profil|unclaimed profile|profil non revendiqué|perfil no reclamado|profilo non rivendicato|niet-geclaimd profiel|nicht beanspruchtes profil)\\b/i;
     if (ctaRx.test(document.body.innerText || '')) claimed = false;
   }
 

@@ -177,41 +177,45 @@ export async function dismissPopups(page: Page): Promise<void> {
 }
 
 /**
- * Detect a Cloudflare interstitial and wait for Turnstile to auto-solve.
- * On residential IPs the challenge usually self-resolves in 10–18 seconds.
+ * Detect an anti-bot interstitial (Cloudflare Turnstile or AWS-WAF/similar
+ * "Verifying Connection") and wait for it to auto-resolve. Trustpilot in
+ * particular fronts profile pages with a WAF that returns 403 + a short
+ * "Verifying your connection..." page; from a residential IP it clears in
+ * 0–5s. Cloudflare Turnstile usually clears in 10–18s.
  * Returns true if the page is now past the challenge, false if still blocked.
  */
+const CHALLENGE_TITLE_RX = /\b(just a moment|attention required|verifying connection)\b/i;
+const CHALLENGE_BODY_RX = /(checking your browser|cf-browser-verification|enable javascript and cookies|verifying your (connection|browser)|please wait while we verify)/i;
+
 export async function handleCloudflareChallenge(page: Page, maxWaitMs = 20_000): Promise<boolean> {
-  const isChallenge = await page.evaluate(() => {
-    const body = (document.body?.innerText || '').toLowerCase();
-    const title = (document.title || '').toLowerCase();
+  const isChallenge = await page.evaluate(({ titleSrc, bodySrc }) => {
+    const titleRx = new RegExp(titleSrc, 'i');
+    const bodyRx = new RegExp(bodySrc, 'i');
+    const body = document.body?.innerText || '';
+    const title = document.title || '';
     const hasChallengeEl = !!document.querySelector('#challenge-running, #cf-spinner, .cf-browser-verification');
-    return (
-      body.includes('checking your browser') ||
-      body.includes('cf-browser-verification') ||
-      body.includes('enable javascript and cookies') ||
-      title.includes('just a moment') ||
-      title.includes('attention required') ||
-      hasChallengeEl
-    );
-  }).catch(() => false);
+    return titleRx.test(title) || bodyRx.test(body) || hasChallengeEl;
+  }, { titleSrc: CHALLENGE_TITLE_RX.source, bodySrc: CHALLENGE_BODY_RX.source }).catch(() => false);
 
   if (!isChallenge) return true;
 
-  console.log('  [cf] Cloudflare challenge detected — waiting for auto-resolve…');
+  console.log('  [challenge] anti-bot interstitial detected — waiting for auto-resolve…');
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    await page.waitForTimeout(2000);
-    const stillChallenged = await page.evaluate(() => {
-      const title = (document.title || '').toLowerCase();
-      return title.includes('just a moment') || title.includes('attention required');
-    }).catch(() => false);
+    await page.waitForTimeout(1500);
+    const stillChallenged = await page.evaluate(({ titleSrc, bodySrc }) => {
+      const titleRx = new RegExp(titleSrc, 'i');
+      const bodyRx = new RegExp(bodySrc, 'i');
+      const body = document.body?.innerText || '';
+      const title = document.title || '';
+      return titleRx.test(title) || bodyRx.test(body);
+    }, { titleSrc: CHALLENGE_TITLE_RX.source, bodySrc: CHALLENGE_BODY_RX.source }).catch(() => false);
     if (!stillChallenged) {
-      console.log('  [cf] Challenge resolved');
+      console.log('  [challenge] resolved');
       return true;
     }
   }
-  console.log('  [cf] Challenge still active after wait — will escalate tier');
+  console.log('  [challenge] still active after wait — will escalate tier');
   return false;
 }
 
@@ -235,8 +239,12 @@ export async function detectBlock(page: Page): Promise<
   if (
     info.title.includes('just a moment') ||
     info.title.includes('attention required') ||
+    info.title.includes('verifying connection') ||
     info.body.includes('checking your browser') ||
-    info.body.includes('cf-browser-verification')
+    info.body.includes('cf-browser-verification') ||
+    info.body.includes('verifying your connection') ||
+    info.body.includes('verifying your browser') ||
+    info.body.includes('please wait while we verify')
   ) return 'cloudflare_challenge';
 
   if (
