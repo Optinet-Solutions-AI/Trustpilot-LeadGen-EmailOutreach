@@ -45,14 +45,30 @@ export default function RedirectedLeads() {
     setSelectedIds((prev) => prev.length === leads.length ? [] : leads.map((l) => l.id));
   };
 
-  const handleClearRedirect = async (leadId: string) => {
-    // Clearing redirects_to brings the lead back into the main pipeline. Use
-    // when the user has confirmed the redirect target IS the same operator
-    // (rebrand) and wants to reach them under the new domain.
-    if (!confirm('Move this lead back to the main pipeline? The redirect tag will be cleared.')) return;
+  const handleClearRedirect = async (lead: { id: string; redirects_to?: string | null; website_url?: string | null }) => {
+    // Clearing redirects_to alone caused an infinite loop: the lead came back
+    // to the main pipeline still pointing at the original Trustpilot-listed
+    // domain, the next enrich hit the same redirect, and re-flagged it. Now
+    // we also rewrite website_url to the redirect target so the next enrich
+    // visits the new domain directly — no redirect, full tier ladder runs
+    // (homepage → sitemap → contact → ScrapingBee → WHOIS → Wayback → crt.sh
+    // → lateral prospecting). The user has effectively endorsed the redirect
+    // target as canonical for this lead.
+    const target = lead.redirects_to;
+    if (!target) return;
+    const newWebsiteUrl = /^https?:\/\//i.test(target) ? target : `https://${target}`;
+    if (!confirm(
+      `Treat ${target} as this lead's canonical website?\n\n` +
+      `• website_url will be replaced with ${newWebsiteUrl}\n` +
+      `• Redirect flag will be cleared\n` +
+      `• Next "Enrich All" will run the full email-discovery ladder against the new domain`
+    )) return;
     setBusy(true);
     try {
-      await api.patch(`/leads/${leadId}`, { redirects_to: null });
+      await api.patch(`/leads/${lead.id}`, {
+        redirects_to: null,
+        website_url: newWebsiteUrl,
+      });
       loadLeads();
     } finally {
       setBusy(false);
@@ -170,10 +186,10 @@ export default function RedirectedLeads() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
-                        onClick={() => handleClearRedirect(lead.id)}
+                        onClick={() => handleClearRedirect(lead)}
                         disabled={busy}
                         className="text-xs text-slate-500 hover:text-slate-900"
-                        title="Same operator behind both domains? Clear the redirect tag and bring this lead back to the main pipeline."
+                        title="Same operator behind both domains? Replace the website with the redirect target and bring this lead back to the main pipeline. Next enrich will run the full email ladder on the new domain."
                       >
                         clear flag
                       </button>
