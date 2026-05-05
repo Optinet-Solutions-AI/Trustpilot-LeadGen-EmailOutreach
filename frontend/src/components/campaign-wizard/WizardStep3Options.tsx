@@ -24,7 +24,7 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
   const [loadingAccounts, setLoadingAccounts] = useState(true);
 
   useEffect(() => {
-    api.get('/email-accounts')
+    api.get('/email-accounts?role=sender')
       .then((res) => {
         if (res.data.success) {
           const active = (res.data.data.accounts as EmailAccount[]).filter((a) => a.status === 'active');

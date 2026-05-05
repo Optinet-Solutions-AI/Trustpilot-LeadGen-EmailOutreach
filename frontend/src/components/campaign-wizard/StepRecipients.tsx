@@ -67,19 +67,46 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
-  // Block invalid leads from selection — mirrors the backend send-gate so
-  // users can't queue up a campaign that the API will then refuse.
+  // Track per-row re-verify-in-flight state. Clicking an `invalid` lead now
+  // triggers ZeroBounce on both source emails and replaces the row with the
+  // freshened verdict. The send-gate at /api/campaigns/:id/send still blocks
+  // anything that comes back invalid after the refresh.
+  const [reverifying, setReverifying] = useState<Set<string>>(new Set());
   const isInvalid = (l: PickerLead) => l.verification_status === 'invalid';
-  const selectableLeads = leads.filter((l) => !isInvalid(l));
+
+  const reverifyLead = async (id: string) => {
+    setReverifying((prev) => { const n = new Set(prev); n.add(id); return n; });
+    try {
+      const res = await api.post('/verify/sync', { leadIds: [id] });
+      const updated = res.data?.data?.[0];
+      if (updated) {
+        setLeads((prev) => prev.map((l) => l.id === id ? { ...l, ...updated } : l));
+        if (updated.verification_status !== 'invalid' && !selectedLeadIds.includes(id)) {
+          onSelectionChange([...selectedLeadIds, id]);
+        }
+      }
+    } catch {
+      // Swallow — row stays as-is and user can retry.
+    } finally {
+      setReverifying((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    }
+  };
 
   const toggleLead = (id: string) => {
     const lead = leads.find((l) => l.id === id);
-    if (lead && isInvalid(lead)) return;
+    if (!lead) return;
+    if (isInvalid(lead)) {
+      if (reverifying.has(id)) return;
+      void reverifyLead(id);
+      return;
+    }
     if (selectedLeadIds.includes(id)) onSelectionChange(selectedLeadIds.filter((x) => x !== id));
     else onSelectionChange([...selectedLeadIds, id]);
   };
 
-  const pageIds = selectableLeads.map((l) => l.id);
+  // "Select page" still skips invalid leads — bulk-reverifying a whole page is
+  // too credit-hungry. Users can click rows individually to refresh + select.
+  const pageIds = leads.filter((l) => !isInvalid(l)).map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
 
   const togglePage = () => {
@@ -192,6 +219,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
               {leads.map((lead) => {
                 const isSelected = selectedLeadIds.includes(lead.id);
                 const blocked = isInvalid(lead);
+                const isReverifying = reverifying.has(lead.id);
                 const isCatchAll = lead.verification_status === 'catch-all';
                 const isUnknown = lead.verification_status === 'unknown';
                 return (
@@ -199,22 +227,25 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                     key={lead.id}
                     className={`transition-colors ${
                       blocked
-                        ? 'opacity-50 cursor-not-allowed bg-red-50/30'
+                        ? `bg-red-50/30 ${isReverifying ? 'cursor-wait' : 'cursor-pointer hover:bg-red-50/50'}`
                         : isSelected
                           ? 'bg-[#ffd9de]/30 hover:bg-[#ffd9de]/50 cursor-pointer'
                           : 'hover:bg-surface-container-low cursor-pointer'
                     }`}
-                    onClick={() => !blocked && toggleLead(lead.id)}
-                    title={blocked ? 'Blocked: verification_status=invalid (proven undeliverable). Re-verify or remove.' : undefined}
+                    onClick={() => toggleLead(lead.id)}
+                    title={blocked ? 'Click to re-verify with ZeroBounce. If both addresses still fail, the row stays blocked.' : undefined}
                   >
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        disabled={blocked}
-                        onChange={() => toggleLead(lead.id)}
-                        className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a] disabled:cursor-not-allowed"
-                      />
+                      {isReverifying ? (
+                        <Loader2 size={14} className="animate-spin text-[#b0004a]" />
+                      ) : (
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleLead(lead.id)}
+                          className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                        />
+                      )}
                     </td>
                     <td className="px-4 py-3 font-bold text-on-surface">{lead.company_name}</td>
                     <td className="px-4 py-3 text-xs">
@@ -222,9 +253,14 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                         <span className={`text-secondary ${blocked ? 'line-through text-slate-400' : ''}`}>
                           {lead.primary_email || <span className="text-slate-300">—</span>}
                         </span>
-                        {blocked && (
-                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-red-50 text-red-700 px-1.5 py-0.5 rounded-full" title="Will bounce — excluded from sends">
+                        {blocked && !isReverifying && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-red-50 text-red-700 px-1.5 py-0.5 rounded-full" title="Will bounce — click row to re-verify">
                             <span className="material-symbols-outlined text-[9px]">cancel</span>invalid
+                          </span>
+                        )}
+                        {isReverifying && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-full">
+                            <Loader2 size={9} className="animate-spin" />re-verifying
                           </span>
                         )}
                         {isCatchAll && (

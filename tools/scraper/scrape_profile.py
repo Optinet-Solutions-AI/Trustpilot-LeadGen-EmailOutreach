@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from tools.scraper.browser_utils import launch_browser, human_delay, safe_goto
+from tools.scraper.browser_utils import launch_browser, human_delay, safe_goto, dismiss_popups
 
 
 CONTACT_EXTRACT_JS = r'''() => {
@@ -203,6 +203,30 @@ async def scrape_single_profile(page, slug: str, screenshots_dir: str = '') -> d
     # Take a cropped screenshot of just the profile header
     screenshot_path = ''
     if screenshots_dir:
+        # Trustpilot lazy-loads country/locale and consumer-vs-business modals
+        # AFTER first paint, so re-dismiss right before the screenshot. The JS
+        # overlay-hide is a safety net in case dismissal misses one.
+        try:
+            await dismiss_popups(page)
+            await asyncio.sleep(0.4)
+            await page.evaluate("""() => {
+                const sels = [
+                    '[role="dialog"]',
+                    '[data-region="modal"]',
+                    '.cookies-banner',
+                    '#onetrust-banner-sdk',
+                    '#onetrust-consent-sdk',
+                    '[data-testid*="locale"]',
+                    '[data-testid*="modal"]'
+                ];
+                sels.forEach(s => document.querySelectorAll(s).forEach(el => {
+                    el.style.display = 'none';
+                    el.style.visibility = 'hidden';
+                }));
+            }""")
+        except Exception:
+            pass
+
         try:
             safe_slug = slug.replace('/', '_').replace('\\', '_')
             screenshot_path = os.path.join(screenshots_dir, f"{safe_slug}.png")

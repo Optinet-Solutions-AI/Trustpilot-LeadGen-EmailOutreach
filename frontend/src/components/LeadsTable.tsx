@@ -90,19 +90,24 @@ interface Props {
   onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
 }
 
-type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'status';
+type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'screenshot' | 'status';
 
-const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'affiliate_email', 'rating', 'tags', 'claimed', 'scraped', 'status'];
-// Bumped to v6 when affiliate_email column was introduced — old keys missing
-// the column would still merge cleanly via loadColOrder, but a clean reset
-// guarantees first-load ordering matches DEFAULT_COLS for everyone.
-const COL_STORAGE_KEY = 'leads_col_order_v6';
+const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'affiliate_email', 'rating', 'tags', 'claimed', 'scraped', 'screenshot', 'status'];
+// Bump on every new column so loadColOrder injects it for existing users.
+const COL_STORAGE_KEY = 'leads_col_order_v7';
 
 const COL_LABELS: Record<ColKey, string> = {
   company: 'Company', country: 'Country', category: 'Category',
   trustpilot_email: 'TP Email', website_email: 'Site Email', affiliate_email: 'Affiliate Email',
-  rating: 'Rating', tags: 'Tags', claimed: 'Claimed', scraped: 'Scraped', status: 'Status',
+  rating: 'Rating', tags: 'Tags', claimed: 'Claimed', scraped: 'Scraped',
+  screenshot: 'Shot', status: 'Status',
 };
+
+function buildScreenshotSrc(path: string): string {
+  if (path.startsWith('http')) return path;
+  const filename = path.split(/[/\\]/).pop() || '';
+  return `/api/screenshots/${filename}`;
+}
 
 const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
   company: 'company_name',
@@ -139,6 +144,8 @@ export default function LeadsTable({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [columns, setColumns] = useState<ColKey[]>(loadColOrder);
   const [dragOver, setDragOver] = useState<ColKey | null>(null);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState<string>('');
   const dragCol = useRef<ColKey | null>(null);
 
   const toggleSelect = (id: string) => {
@@ -384,6 +391,30 @@ export default function LeadsTable({
           </td>
         );
       }
+      case 'screenshot': {
+        const hasShot = !!lead.screenshot_path;
+        return (
+          <td key={col} className="px-4 py-3 w-12" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              disabled={!hasShot}
+              onClick={() => {
+                if (!hasShot) return;
+                setPreviewSrc(buildScreenshotSrc(lead.screenshot_path as string));
+                setPreviewName(lead.company_name);
+              }}
+              title={hasShot ? 'View Trustpilot screenshot' : 'No screenshot captured'}
+              className={`p-1 rounded-lg transition-colors ${
+                hasShot
+                  ? 'text-[#b0004a] hover:bg-[#ffd9de]'
+                  : 'text-slate-200 cursor-not-allowed'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">image</span>
+            </button>
+          </td>
+        );
+      }
       case 'status':
         return (
           <td key={col} className="px-4 py-3 w-32" onClick={(e) => e.stopPropagation()}>
@@ -456,6 +487,39 @@ export default function LeadsTable({
           </tbody>
         </table>
       </div>
+
+      {previewSrc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPreviewSrc(null)}
+        >
+          <div
+            className="bg-white rounded-2xl ambient-shadow max-w-4xl w-full max-h-[90vh] overflow-hidden border border-slate-100 flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-surface-container">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="material-symbols-outlined text-[18px] text-[#b0004a] shrink-0">screenshot</span>
+                <span className="text-sm font-bold text-on-surface truncate">{previewName}</span>
+              </div>
+              <button
+                onClick={() => setPreviewSrc(null)}
+                className="text-slate-400 hover:text-on-surface p-1 rounded-lg hover:bg-surface-container-high transition-colors"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <div className="overflow-auto bg-surface-container flex items-center justify-center p-4">
+              <img
+                src={previewSrc}
+                alt={`Trustpilot profile of ${previewName}`}
+                className="max-w-full max-h-[75vh] object-contain rounded-lg"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-surface-container">

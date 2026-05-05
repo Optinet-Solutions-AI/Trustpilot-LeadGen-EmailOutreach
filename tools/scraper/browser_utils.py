@@ -36,6 +36,13 @@ MODAL_CLOSE_SELECTORS = [
     '[class*="popup"] button[class*="close"]',
     '.modal-close', '.popup-close',
     'button[data-dismiss="modal"]',
+    # Trustpilot-specific overlays seen in production
+    '[data-locale-modal-close]',
+    'button[name="close-modal"]',
+    'button[aria-label="Close locale picker"]',
+    'button[data-test-locator*="close"]',
+    'button[data-testid*="close"]',
+    'button[data-testid*="dismiss"]',
 ]
 
 

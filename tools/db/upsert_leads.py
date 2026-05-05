@@ -23,16 +23,17 @@ _VALIDATE_LINKS = os.getenv('UPSERT_VALIDATE_LINKS', '1') != '0'
 
 
 def resolve_primary_email(lead: dict) -> str | None:
-    """Resolution order: website_email > affiliate_email > trustpilot_email.
-    website_email comes from the main domain and is the most authoritative.
-    affiliate_email comes from a lateral-prospecting hit on an affiliate page
-    (e.g. roosterpartners.com for a casino) — still strong, but one hop away.
-    trustpilot_email is the listing-page address Trustpilot itself surfaces.
+    """Resolution order: trustpilot_email > website_email > affiliate_email.
+    trustpilot_email is review-focused and aligns with the OptiRate
+    reputation-management pitch, so it leads. website_email is the main-domain
+    contact (good fallback). affiliate_email comes from a lateral-prospecting
+    hit (e.g. roosterpartners.com for a casino) — last-resort hop.
+    Per-source invalidation is enforced in the TS resolvePrimaryEmail helper.
     """
     return (
-        lead.get('website_email')
+        lead.get('trustpilot_email')
+        or lead.get('website_email')
         or lead.get('affiliate_email')
-        or lead.get('trustpilot_email')
         or None
     )
 

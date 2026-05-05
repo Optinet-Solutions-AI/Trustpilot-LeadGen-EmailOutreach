@@ -5,6 +5,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { createNote } from '../db/notes.js';
 import { validateEmail, type ValidationResult, type FinalStatus } from '../services/email-validator/index.js';
 import { getCachedDomainIntel } from '../services/email-validator/domain-intel.js';
+import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
 
 export const verifyEvents = new EventEmitter();
 verifyEvents.setMaxListeners(50);
@@ -143,6 +144,128 @@ function patchFromResult(r: ValidationResult, source: 'trustpilot' | 'website') 
   if (source === 'website')    patch.website_email_status = r.status;
   return patch;
 }
+
+// ── POST /api/verify/sync — inline re-verify for the wizard ─────────────────
+// Used by StepRecipients when the user clicks an `invalid` lead. Re-runs
+// validation on BOTH email sources (TP + website), updates per-source statuses
+// + verification_status (worst of the two), recomputes primary_email under the
+// "TP first, fall back to website" policy, and returns the freshened rows.
+// Capped to 5 leads per call to keep response fast and ZeroBounce credits sane.
+router.post('/sync', async (req: Request, res: Response) => {
+  try {
+    const { leadIds } = req.body as { leadIds?: string[] };
+    if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+      res.status(400).json({ success: false, error: 'leadIds (non-empty array) is required' });
+      return;
+    }
+    if (leadIds.length > 5) {
+      res.status(400).json({ success: false, error: 'sync re-verify is capped at 5 leads per call' });
+      return;
+    }
+
+    const supabase = getSupabase();
+    const { data: leads, error } = await supabase
+      .from('leads')
+      .select('id, trustpilot_email, website_email, trustpilot_email_status, website_email_status')
+      .in('id', leadIds);
+    if (error) throw new Error(error.message);
+    if (!leads || leads.length === 0) {
+      res.json({ success: true, data: [] });
+      return;
+    }
+
+    // Worst-of ladder: invalid > catch-all > unknown > valid. The lead-level
+    // verification_status is the weakest verdict across the lead's emails so
+    // the send-gate stays conservative.
+    const rank: Record<string, number> = { invalid: 4, 'catch-all': 3, unknown: 2, valid: 1 };
+    const worstOf = (statuses: (string | null | undefined)[]): FinalStatus => {
+      const valid = statuses.filter(Boolean) as string[];
+      if (valid.length === 0) return 'unknown';
+      let worst = valid[0];
+      for (const s of valid) if ((rank[s] ?? 0) > (rank[worst] ?? 0)) worst = s;
+      return worst as FinalStatus;
+    };
+
+    const updated: Array<Record<string, unknown>> = [];
+    for (const lead of leads) {
+      const sources: Array<{ source: 'trustpilot' | 'website'; email: string }> = [];
+      if (lead.trustpilot_email) sources.push({ source: 'trustpilot', email: lead.trustpilot_email });
+      if (lead.website_email && lead.website_email !== lead.trustpilot_email) {
+        sources.push({ source: 'website', email: lead.website_email });
+      }
+
+      if (sources.length === 0) {
+        updated.push({ id: lead.id, message: 'no emails to verify' });
+        continue;
+      }
+
+      const results = await Promise.all(
+        sources.map(async (s) => ({ ...s, result: await validateEmail(s.email) }))
+      );
+
+      const patch: Record<string, unknown> = {
+        verified_at: new Date().toISOString(),
+      };
+      const perSource: Record<string, string | null> = {
+        trustpilot_email_status: lead.trustpilot_email_status ?? null,
+        website_email_status: lead.website_email_status ?? null,
+      };
+
+      // Apply per-source verdicts and capture the latest stage diagnostics
+      // from whichever source we verified last (UI tooltips read these).
+      for (const { source, result } of results) {
+        Object.assign(patch, patchFromResult(result, source));
+        perSource[`${source}_email_status`] = result.status;
+      }
+
+      const newPrimary = resolvePrimaryEmail({
+        trustpilot_email: lead.trustpilot_email,
+        website_email: lead.website_email,
+        trustpilot_email_status: perSource.trustpilot_email_status,
+        website_email_status: perSource.website_email_status,
+      });
+      patch.primary_email = newPrimary;
+
+      // Lead-level status: worst of the two source verdicts. Drives the
+      // send-gate and the StepRecipients UI badge.
+      const finalStatus = worstOf([perSource.trustpilot_email_status, perSource.website_email_status]);
+      patch.verification_status = finalStatus;
+      patch.email_verified = finalStatus === 'valid';
+
+      const { error: updErr } = await supabase.from('leads').update(patch).eq('id', lead.id);
+      if (updErr) {
+        console.error(`[verify/sync] update failed for ${lead.id}: ${updErr.message}`);
+        continue;
+      }
+
+      updated.push({
+        id: lead.id,
+        primary_email: newPrimary,
+        verification_status: finalStatus,
+        trustpilot_email_status: perSource.trustpilot_email_status,
+        website_email_status: perSource.website_email_status,
+      });
+
+      // Best-effort note per lead summarising the freshened verdicts.
+      try {
+        const summary = results.map((r) => `${r.source}=${r.result.status}`).join(', ');
+        await createNote(lead.id, {
+          type: 'verification',
+          content: `Re-verified from wizard: ${summary} (final: ${finalStatus})`,
+          metadata: { source: 'wizard-sync', final_status: finalStatus, per_source: perSource },
+        });
+      } catch (noteErr) {
+        const m = noteErr instanceof Error ? noteErr.message : String(noteErr);
+        console.error(`[verify/sync] createNote failed for ${lead.id}: ${m}`);
+      }
+    }
+
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
 
 // ── POST /api/verify — start verification job ────────────────────────────────
 router.post('/', async (req: Request, res: Response) => {

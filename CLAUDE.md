@@ -211,7 +211,7 @@ trustpilot-leadgen/
 | `website_url` | text | |
 | `trustpilot_email` | text | |
 | `website_email` | text | |
-| `primary_email` | text | Resolved: website > trustpilot |
+| `primary_email` | text | Resolved: trustpilot > website (skip a source whose `*_email_status` is `invalid`) |
 | `phone` | text | |
 | `country` | text | |
 | `category` | text | |

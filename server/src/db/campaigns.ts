@@ -1,4 +1,5 @@
 import { getSupabase } from '../lib/supabase.js';
+import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
 
 export async function getCampaigns() {
   const supabase = getSupabase();
@@ -97,17 +98,20 @@ export async function getSentEmails(): Promise<Set<string>> {
 
 export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) {
   const supabase = getSupabase();
-  // First get the emails for each lead
+  // Pull both source emails + per-source statuses so resolvePrimaryEmail can
+  // skip an "invalid" preferred source. Falls back to the lead's stored
+  // primary_email when resolution returns null (defensive — shouldn't happen
+  // if upsert_leads.py ran).
   const { data: leads, error: leadsError } = await supabase
     .from('leads')
-    .select('id, primary_email')
+    .select('id, primary_email, trustpilot_email, website_email, affiliate_email, trustpilot_email_status, website_email_status, affiliate_email_status')
     .in('id', leadIds);
   if (leadsError) throw new Error(leadsError.message);
 
   const rows = (leads || []).map((lead) => ({
     campaign_id: campaignId,
     lead_id: lead.id,
-    email_used: lead.primary_email,
+    email_used: resolvePrimaryEmail(lead) ?? lead.primary_email,
     status: 'pending',
   }));
 
@@ -133,7 +137,7 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
 
   let query = supabase
     .from('leads')
-    .select('id, primary_email')
+    .select('id, primary_email, trustpilot_email, website_email, affiliate_email, trustpilot_email_status, website_email_status, affiliate_email_status')
     .not('primary_email', 'is', null);
 
   if (filters.country) query = query.eq('country', filters.country);
@@ -146,7 +150,7 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
   const rows = leads.map((lead) => ({
     campaign_id: campaignId,
     lead_id: lead.id,
-    email_used: lead.primary_email,
+    email_used: resolvePrimaryEmail(lead) ?? lead.primary_email,
     status: 'pending',
   }));
 
