@@ -122,7 +122,13 @@ export default function Leads() {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('active_enrich_job');
   });
-  const [enrichStartedAt, setEnrichStartedAt] = useState<string | null>(null);
+  // Persisted alongside the jobId so a page refresh doesn't lose the elapsed
+  // timer in the live progress widget. Cleared together with the jobId on
+  // completion / failure / manual clear.
+  const [enrichStartedAt, setEnrichStartedAt] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('active_enrich_started_at');
+  });
   const [enrichResult, setEnrichResult] = useState<{ found: number; total: number; failed: number } | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -167,9 +173,11 @@ export default function Leads() {
         return;
       }
       notify('success', `Scanning websites for ${t} lead${t !== 1 ? 's' : ''} — watch the live log below`);
+      const startedAt = new Date().toISOString();
       localStorage.setItem('active_enrich_job', jobId);
+      localStorage.setItem('active_enrich_started_at', startedAt);
       setEnrichJobId(jobId);
-      setEnrichStartedAt(new Date().toISOString());
+      setEnrichStartedAt(startedAt);
     } catch (e) {
       notify('error', e instanceof Error ? e.message : 'Enrichment failed');
     }
@@ -364,12 +372,14 @@ export default function Leads() {
       setEnrichJobId(null);
       setEnrichStartedAt(null);
       localStorage.removeItem('active_enrich_job');
+      localStorage.removeItem('active_enrich_started_at');
       loadLeads();
     } else if (enrichJob.status === 'failed') {
       notify('error', `Enrichment failed: ${enrichJob.error || 'unknown error'}`);
       setEnrichJobId(null);
       setEnrichStartedAt(null);
       localStorage.removeItem('active_enrich_job');
+      localStorage.removeItem('active_enrich_started_at');
       loadLeads();
     }
   }, [enrichJob.status, enrichJob.summary, enrichJob.error, enrichJobId, loadLeads]);
@@ -513,6 +523,7 @@ export default function Leads() {
                   setEnrichJobId(null);
                   setEnrichStartedAt(null);
                   localStorage.removeItem('active_enrich_job');
+                  localStorage.removeItem('active_enrich_started_at');
                   notify('success', 'Enrichment job cleared. You can run it again.');
                 }}
                 className="ml-2 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors shrink-0"
@@ -527,6 +538,11 @@ export default function Leads() {
             progress={enrichJob.progress}
             error={enrichJob.error}
             startedAt={enrichStartedAt}
+            liveEnrich={{
+              total: enrichJob.summary.total,
+              found: enrichJob.summary.found,
+              failed: enrichJob.summary.failed,
+            }}
           />
         </div>
       )}

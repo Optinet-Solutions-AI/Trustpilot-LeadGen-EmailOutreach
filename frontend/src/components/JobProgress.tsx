@@ -14,6 +14,10 @@ interface Props {
   error?: string | null;
   /** Fallback counters from the DB (jobs poll). Used when SSE doesn't fire. */
   liveJob?: { total_found: number; total_scraped: number } | null;
+  /** Enrichment-specific DB-polled counters used after a refresh wipes the
+   *  in-memory progress array. Without this, the cards drop to 0/0/0 and
+   *  the user sees "Enriching..." with no numbers behind it. */
+  liveEnrich?: { total: number; found: number; failed: number } | null;
   failedCount?: number;
   startedAt?: string | null;
   completedAt?: string | null;
@@ -72,6 +76,7 @@ export default function JobProgress({
   progress,
   error,
   liveJob,
+  liveEnrich,
   failedCount = 0,
   startedAt,
   completedAt,
@@ -349,12 +354,22 @@ export default function JobProgress({
               value={
                 summary.sitesTotal > 0
                   ? `${summary.sitesChecked} / ${summary.sitesTotal}`
-                  : summary.sitesChecked
+                  : liveEnrich && liveEnrich.total > 0
+                    ? `${liveEnrich.found + liveEnrich.failed} / ${liveEnrich.total}`
+                    : summary.sitesChecked
               }
               accent="#004b7f"
             />
-            <Card label="Emails found" value={summary.emailsFound} accent="#006630" />
-            <Card label="Blocked or skipped" value={summary.failures} accent="#b35500" />
+            <Card
+              label="Emails found"
+              value={summary.emailsFound || (liveEnrich?.found ?? 0)}
+              accent="#006630"
+            />
+            <Card
+              label="Blocked or skipped"
+              value={summary.failures || (liveEnrich?.failed ?? 0)}
+              accent="#b35500"
+            />
           </>
         )}
       </div>
