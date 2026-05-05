@@ -38,23 +38,39 @@ UPDATE leads SET primary_email = CASE
 END;
 
 -- Step 2 — verification_status: mirror the per-source status of whichever
--- email primary_email now points to, so the lead-level badge in the wizard
--- and the send-gate at /api/campaigns/:id/send agree with the *displayed*
--- email instead of the old worst-of-all-sources policy.
+-- SOURCE the resolver picked. We walk the same three-pass priority instead
+-- of matching primary_email by string equality — TP and website emails are
+-- often identical addresses (e.g. support@example.com on both), and string
+-- equality would always pick TP's status even when the resolver actually
+-- fell through to website (because TP was excluded for being invalid).
 UPDATE leads SET
   verification_status = CASE
-    WHEN primary_email IS NULL THEN NULL
-    WHEN primary_email = trustpilot_email THEN trustpilot_email_status
-    WHEN primary_email = website_email    THEN website_email_status
-    WHEN primary_email = affiliate_email  THEN affiliate_email_status
+    -- Pass 1 mirror: a source explicitly verified=valid wins, brand order
+    WHEN trustpilot_email IS NOT NULL AND trustpilot_email_status = 'valid'
+      THEN trustpilot_email_status
+    WHEN website_email IS NOT NULL AND website_email_status = 'valid'
+      THEN website_email_status
+    WHEN affiliate_email IS NOT NULL AND affiliate_email_status = 'valid'
+      THEN affiliate_email_status
+
+    -- Pass 2 mirror: non-invalid fallback in brand order. Returns whatever
+    -- the source's status is (could be null, unknown, catch-all).
+    WHEN trustpilot_email IS NOT NULL
+         AND COALESCE(trustpilot_email_status, '') <> 'invalid'
+      THEN trustpilot_email_status
+    WHEN website_email IS NOT NULL
+         AND COALESCE(website_email_status, '') <> 'invalid'
+      THEN website_email_status
+    WHEN affiliate_email IS NOT NULL
+         AND COALESCE(affiliate_email_status, '') <> 'invalid'
+      THEN affiliate_email_status
+
+    -- Pass 3 mirror: every source is invalid, return the highest-priority's.
+    WHEN trustpilot_email IS NOT NULL THEN trustpilot_email_status
+    WHEN website_email IS NOT NULL THEN website_email_status
+    WHEN affiliate_email IS NOT NULL THEN affiliate_email_status
+
     ELSE NULL
-  END,
-  email_verified = (
-    CASE
-      WHEN primary_email IS NULL THEN NULL
-      WHEN primary_email = trustpilot_email THEN trustpilot_email_status
-      WHEN primary_email = website_email    THEN website_email_status
-      WHEN primary_email = affiliate_email  THEN affiliate_email_status
-      ELSE NULL
-    END
-  ) = 'valid';
+  END;
+
+UPDATE leads SET email_verified = (verification_status = 'valid');

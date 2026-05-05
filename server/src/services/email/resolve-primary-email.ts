@@ -21,40 +21,54 @@ export type LeadEmailFields = {
   affiliate_email_status?: string | null;
 };
 
-/** Per-source verification status that corresponds to whichever address
- *  resolvePrimaryEmail picked. Used to drive the lead-level
- *  verification_status field so the wizard / send-gate / lead matrix all
- *  reflect the *displayed* email's status, not the worst-of all sources. */
+export type EmailSource = 'trustpilot' | 'website' | 'affiliate';
+
+/** Resolves the primary email AND records which source the decision came from.
+ *  Use this when the caller needs both — string-equality between email values
+ *  isn't reliable because trustpilot_email and website_email are often the
+ *  same address (e.g. support@example.com on both sources). Without source
+ *  tracking, statusForPrimaryEmail would always return the higher-priority
+ *  source's status even when the resolver actually fell through to a lower
+ *  one. */
+export function resolvePrimaryEmailWithSource(
+  lead: LeadEmailFields,
+): { email: string | null; source: EmailSource | null } {
+  // Pass 1: verified-first.
+  if (lead.trustpilot_email && lead.trustpilot_email_status === 'valid')
+    return { email: lead.trustpilot_email, source: 'trustpilot' };
+  if (lead.website_email && lead.website_email_status === 'valid')
+    return { email: lead.website_email, source: 'website' };
+  if (lead.affiliate_email && lead.affiliate_email_status === 'valid')
+    return { email: lead.affiliate_email, source: 'affiliate' };
+
+  // Pass 2: non-invalid by brand priority.
+  if (lead.trustpilot_email && lead.trustpilot_email_status !== 'invalid')
+    return { email: lead.trustpilot_email, source: 'trustpilot' };
+  if (lead.website_email && lead.website_email_status !== 'invalid')
+    return { email: lead.website_email, source: 'website' };
+  if (lead.affiliate_email && lead.affiliate_email_status !== 'invalid')
+    return { email: lead.affiliate_email, source: 'affiliate' };
+
+  // Pass 3: any non-null source so we don't blank the row.
+  if (lead.trustpilot_email) return { email: lead.trustpilot_email, source: 'trustpilot' };
+  if (lead.website_email) return { email: lead.website_email, source: 'website' };
+  if (lead.affiliate_email) return { email: lead.affiliate_email, source: 'affiliate' };
+
+  return { email: null, source: null };
+}
+
+/** Per-source verification status that corresponds to whichever source the
+ *  resolver chose. Drives the lead-level verification_status field so the
+ *  wizard / send-gate / lead matrix all reflect the *displayed* email's
+ *  status, not the worst-of all sources. */
 export function statusForPrimaryEmail(lead: LeadEmailFields): string | null {
-  const primary = resolvePrimaryEmail(lead);
-  if (!primary) return null;
-  if (primary === lead.trustpilot_email) return lead.trustpilot_email_status ?? null;
-  if (primary === lead.website_email) return lead.website_email_status ?? null;
-  if (primary === lead.affiliate_email) return lead.affiliate_email_status ?? null;
-  return null;
+  const { source } = resolvePrimaryEmailWithSource(lead);
+  if (!source) return null;
+  if (source === 'trustpilot') return lead.trustpilot_email_status ?? null;
+  if (source === 'website') return lead.website_email_status ?? null;
+  return lead.affiliate_email_status ?? null;
 }
 
 export function resolvePrimaryEmail(lead: LeadEmailFields): string | null {
-  const tpValid = lead.trustpilot_email_status === 'valid';
-  const webValid = lead.website_email_status === 'valid';
-  const affValid = lead.affiliate_email_status === 'valid';
-  const tpInvalid = lead.trustpilot_email_status === 'invalid';
-  const webInvalid = lead.website_email_status === 'invalid';
-  const affInvalid = lead.affiliate_email_status === 'invalid';
-
-  // Pass 1: a verified address always beats an unverified one, even from a
-  // higher-priority source. So website=valid wins over trustpilot=unknown.
-  if (lead.trustpilot_email && tpValid) return lead.trustpilot_email;
-  if (lead.website_email && webValid) return lead.website_email;
-  if (lead.affiliate_email && affValid) return lead.affiliate_email;
-
-  // Pass 2: no source is strictly verified — fall back to any non-invalid
-  // source by brand priority. Covers the common pre-verification state.
-  if (lead.trustpilot_email && !tpInvalid) return lead.trustpilot_email;
-  if (lead.website_email && !webInvalid) return lead.website_email;
-  if (lead.affiliate_email && !affInvalid) return lead.affiliate_email;
-
-  // Pass 3: every non-null source is invalid — return whatever exists so the
-  // lead row doesn't lose its display email entirely.
-  return lead.trustpilot_email || lead.website_email || lead.affiliate_email || null;
+  return resolvePrimaryEmailWithSource(lead).email;
 }
