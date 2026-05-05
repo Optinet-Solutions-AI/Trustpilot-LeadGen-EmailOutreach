@@ -193,6 +193,15 @@ export function translate(event: ScrapeProgress): FeedLine | null {
         timestamp,
       };
     }
+    case 'enrich_redirected': {
+      // detail = "{idx}|{total}|{domain}|{redirectsTo}"
+      const [idx, total, domain, redirectsTo] = splitPipes(detail);
+      return {
+        kind: 'warn',
+        text: `(${idx}/${total}) ${domain} → redirects to ${redirectsTo} — flagged for the Redirected Leads page`,
+        timestamp,
+      };
+    }
     case 'enrich_timeout':
       return { kind: 'warn', text: `Enrichment ran out of time — ${detail}`, timestamp };
     case 'enrich_done': {

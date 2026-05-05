@@ -92,6 +92,13 @@ export function translateEnricherEvent(jobId: string, event: EnricherEvent): voi
         `${event.index}|${event.total}|${event.domain}|${event.reason ?? ''}`,
       );
       break;
+    case 'enrich_redirected':
+      emitProgress(
+        jobId,
+        'enrich_redirected',
+        `${event.index}|${event.total}|${event.domain}|${event.redirectsTo}`,
+      );
+      break;
     case 'enrich_failed': {
       // Persist the failure so the Retry Failed button can revisit the URL later
       insertFailure({

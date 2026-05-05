@@ -8,6 +8,7 @@ import { useNotifications } from '../context/NotificationsContext';
 const NAV_ITEMS = [
   { href: '/scrape',          icon: 'search_check',     label: 'Lead Scraping' },
   { href: '/leads',           icon: 'grid_view',        label: 'Lead Matrix' },
+  { href: '/redirected-leads', icon: 'compare_arrows',  label: 'Redirected Leads' },
   { href: '/inbox',           icon: 'inbox',            label: 'Inbox' },
   { href: '/analytics',       icon: 'bar_chart',        label: 'Analytics' },
   { href: '/campaigns',       icon: 'magic_button',     label: 'Campaign Wizard' },

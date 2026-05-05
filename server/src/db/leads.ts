@@ -8,6 +8,10 @@ export interface LeadFilters {
   minRating?: number;
   maxRating?: number;
   hasEmail?: boolean;
+  // Redirect filtering: 'only' returns leads where redirects_to IS NOT NULL
+  // (the dedicated Redirected Leads page); 'exclude' filters them out so
+  // standard outreach views never include them. 'all' (default) ignores it.
+  redirected?: 'only' | 'exclude' | 'all';
   page?: number;
   limit?: number;
   sortBy?: string;
@@ -34,6 +38,11 @@ export async function getLeads(filters: LeadFilters = {}) {
   }
   if (filters.hasEmail) {
     query = query.not('primary_email', 'is', null);
+  }
+  if (filters.redirected === 'only') {
+    query = query.not('redirects_to', 'is', null);
+  } else if (filters.redirected === 'exclude') {
+    query = query.is('redirects_to', null);
   }
 
   const EMAIL_SORT_COLUMNS = new Set(['primary_email', 'trustpilot_email', 'website_email']);

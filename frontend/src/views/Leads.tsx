@@ -93,6 +93,10 @@ export default function Leads() {
     if (search) filters.search = search;
     filters.sortBy = sortBy;
     filters.sortDir = sortDir;
+    // Hide leads whose websites redirect off-domain — those have their own
+    // dedicated page (/redirected-leads) so the regular outreach pipeline
+    // never accidentally pulls in misattributed leads.
+    (filters as any).redirected = 'exclude';
     fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
   }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, view, sortBy, sortDir, fetchLeads]);
 

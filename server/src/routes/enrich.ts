@@ -178,7 +178,7 @@ router.post('/', async (req: Request, res: Response) => {
             translateEnricherEvent(jobId, event);
             let dirty = false;
             if (event.type === 'enrich_email') { liveEnriched++; dirty = true; }
-            else if (event.type === 'enrich_no_email' || event.type === 'enrich_failed') { liveFailed++; dirty = true; }
+            else if (event.type === 'enrich_no_email' || event.type === 'enrich_failed' || event.type === 'enrich_redirected') { liveFailed++; dirty = true; }
             if (dirty) {
               // Awaited so the latest write reflects the latest counter and
               // we don't get out-of-order overwrites under concurrency.
@@ -193,7 +193,8 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Filter to only leads that got a new email
         const enriched = results.filter((r) => r.foundEmail !== null);
-        console.log(`[enrich] Job ${jobId} — enrichment complete, ${enriched.length}/${leads.length} emails found`);
+        const redirected = results.filter((r) => r.redirectsTo);
+        console.log(`[enrich] Job ${jobId} — enrichment complete, ${enriched.length}/${leads.length} emails found, ${redirected.length} redirected`);
 
         // Strict per-lead DB update with error tracking
         let successful = 0;
@@ -227,6 +228,18 @@ router.post('/', async (req: Request, res: Response) => {
             console.error(`[enrich] Job ${jobId} — DB UPDATE THREW for ${leadId}:`, (err as Error).message);
             dbFailed++;
           }
+        }
+
+        // Persist redirect targets so the Redirected Leads page can surface
+        // them. Best-effort — failures here don't tank the whole job.
+        for (const r of redirected) {
+          const leadId = (r.lead as { id?: string }).id;
+          if (!leadId || !r.redirectsTo) continue;
+          const { error: redirErr } = await supabase
+            .from('leads')
+            .update({ redirects_to: r.redirectsTo })
+            .eq('id', leadId);
+          if (redirErr) console.warn(`[enrich] Job ${jobId} — redirects_to write failed for ${leadId}: ${redirErr.message}`);
         }
 
         const { error: jobUpdateErr } = await supabase.from('scrape_jobs').update({

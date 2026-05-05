@@ -447,6 +447,35 @@ interface ScrapeSiteResult {
   found: string | null;
   candidates?: string[];
   blockReason?: string;
+  // Set when the live site redirected to a different registrable domain. The
+  // orchestrator treats this as a hard stop — no further tiers fire and no
+  // email is saved, because we can't trust an address scraped off the wrong
+  // operator's site.
+  redirectsTo?: string;
+}
+
+// Registrable-domain extraction. Multi-level TLDs like .co.uk and .com.au
+// need 3 labels; everything else uses the last 2.
+function registrableDomain(hostname: string): string {
+  const h = hostname.replace(/^www\./, '').toLowerCase();
+  const parts = h.split('.');
+  if (parts.length <= 2) return h;
+  const secondLast = parts[parts.length - 2];
+  if (secondLast.length <= 3 && parts.length >= 3) {
+    return parts.slice(-3).join('.');
+  }
+  return parts.slice(-2).join('.');
+}
+
+function detectCrossDomainRedirect(sourceUrl: string, finalUrl: string): string | null {
+  try {
+    const src = registrableDomain(new URL(sourceUrl).hostname);
+    const dst = registrableDomain(new URL(finalUrl).hostname);
+    if (!src || !dst) return null;
+    return src === dst ? null : dst;
+  } catch {
+    return null;
+  }
 }
 
 async function scrapeSite(
@@ -495,6 +524,17 @@ async function scrapeSite(
     if (lastReason !== 'nav_error') break;
   }
   if (!navOk) return { found: null, blockReason: lastReason ?? 'nav_error' };
+
+  // Detect cross-domain redirects BEFORE extracting any emails. If the source
+  // URL silently 30x'd to a different operator's site, we don't want to
+  // attribute their info@ address to the original lead. Surface the redirect
+  // target so the user can review on the dedicated Redirected Leads page.
+  const finalUrl = page.url();
+  const redirectTarget = detectCrossDomainRedirect(url, finalUrl);
+  if (redirectTarget) {
+    console.log(`    [enricher] ⤳ ${url} redirected to ${finalUrl} (${redirectTarget})`);
+    return { found: null, blockReason: 'redirected_off_domain', redirectsTo: redirectTarget };
+  }
 
   const homepage = await findEmailsOnPage(page);
   homepage.forEach((e) => all.add(e));
@@ -713,7 +753,7 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
-): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'none'; blockReason?: string }> {
+): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none'; blockReason?: string; redirectsTo?: string }> {
   const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
@@ -747,6 +787,12 @@ async function enrichSingleLeadWithTiers(
       const page = await context.newPage();
       const result = await scrapeSite(page, websiteUrl, TIER_CONFIGS[tier].timeout, deadline);
       if (result.found) return { email: result.found, tier };
+      // Cross-domain redirect: hard stop. Don't escalate to ScrapingBee, WHOIS,
+      // Wayback, or crt.sh — the lead's outreach value is now in question and
+      // any email we surface would be misattributed.
+      if (result.redirectsTo) {
+        return { email: null, tier: 'redirected', redirectsTo: result.redirectsTo, blockReason: 'redirected_off_domain' };
+      }
       const reason = result.blockReason ?? undefined;
       lastBlockReason = reason || lastBlockReason;
       if (!reason || !BLOCK_REASONS_THAT_ESCALATE.has(reason)) {
@@ -838,8 +884,9 @@ export interface EnrichmentResult {
   lead: EnrichableLead;
   foundEmail: string | null;
   source: 'scrape' | 'none';
-  tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'none';
+  tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none';
   blockReason?: string;
+  redirectsTo?: string;
 }
 
 /**
@@ -850,6 +897,7 @@ export type EnricherEvent =
   | { type: 'enrich_start'; index: number; total: number; domain: string }
   | { type: 'enrich_email'; index: number; total: number; domain: string; email: string; tier: string }
   | { type: 'enrich_no_email'; index: number; total: number; domain: string; reason?: string }
+  | { type: 'enrich_redirected'; index: number; total: number; domain: string; redirectsTo: string }
   | { type: 'enrich_failed'; index: number; total: number; domain: string; reasonCode: string; message: string };
 
 function domainOf(url: string): string {
@@ -893,17 +941,21 @@ export async function enrichLeads(
       console.log(`  [enricher] [${done + 1}/${queue.length}] ${websiteUrl}`);
       opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain });
       try {
-        const { email, tier, blockReason } = await enrichSingleLeadWithTiers(websiteUrl);
+        const { email, tier, blockReason, redirectsTo } = await enrichSingleLeadWithTiers(websiteUrl);
         results[idx] = {
           lead,
           foundEmail: email,
           source: tier === 'none' ? 'none' : 'scrape',
           tier,
           blockReason,
+          redirectsTo,
         };
         if (email) {
           console.log(`    [enricher] ✓ ${email} (tier=${tier})`);
           opts.onEvent?.({ type: 'enrich_email', index: itemIndex, total: queue.length, domain, email, tier: String(tier) });
+        } else if (redirectsTo) {
+          console.log(`    [enricher] ⤳ redirected to ${redirectsTo}`);
+          opts.onEvent?.({ type: 'enrich_redirected', index: itemIndex, total: queue.length, domain, redirectsTo });
         } else if (blockReason && BLOCK_REASONS_THAT_ESCALATE.has(blockReason.replace(/^error:.*$/, 'bot_detected'))) {
           // A real scanner block — surface as a failed item with a reason code
           console.log(`    [enricher] ✗ blocked (${blockReason})`);

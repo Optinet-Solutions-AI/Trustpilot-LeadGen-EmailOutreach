@@ -52,6 +52,7 @@ router.get('/', async (req: Request, res: Response) => {
       sortBy: req.query.sortBy as string | undefined,
       sortDir: req.query.sortDir === 'asc' ? 'asc' : 'desc',
       hasEmail: req.query.hasEmail === 'true',
+      redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
     });
     res.json({ success: true, ...result });
   } catch (err) {

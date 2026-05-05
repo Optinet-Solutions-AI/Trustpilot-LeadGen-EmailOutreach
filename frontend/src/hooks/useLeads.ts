@@ -12,6 +12,7 @@ interface LeadFilters {
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   hasEmail?: string;
+  redirected?: 'only' | 'exclude' | 'all';
 }
 
 export function useLeads() {
@@ -35,6 +36,7 @@ export function useLeads() {
       if (filters.sortBy) params.set('sortBy', filters.sortBy);
       if (filters.sortDir) params.set('sortDir', filters.sortDir);
       if (filters.hasEmail) params.set('hasEmail', filters.hasEmail);
+      if (filters.redirected && filters.redirected !== 'all') params.set('redirected', filters.redirected);
 
       const res = await api.get(`/leads?${params}`);
       setLeads(res.data.data);

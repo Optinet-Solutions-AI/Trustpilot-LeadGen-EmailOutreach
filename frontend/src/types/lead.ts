@@ -39,6 +39,11 @@ export interface Lead {
   link_validation_error: string | null;
   screenshot_path: string | null;
   profile_claimed: boolean | null;
+  // Set when the live website redirects to a different registrable domain.
+  // Leads with this populated are surfaced on the dedicated Redirected Leads
+  // page so users can decide whether to send a different cold-outreach
+  // template (or skip them entirely) — the regular Lead Matrix excludes them.
+  redirects_to: string | null;
   tags: string[];
   lead_source: string;
   scraped_at: string | null;
