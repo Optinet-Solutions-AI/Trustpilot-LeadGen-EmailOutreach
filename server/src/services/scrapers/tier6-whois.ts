@@ -36,6 +36,8 @@ const REJECT_EMAIL_DOMAINS = new Set([
   'privacyprotect.org', 'privatewhois.com', 'whoisprivacy.org',
   'data-protected.net', 'privacy-link.com', 'redacted.email',
   'idp.email', 'protecteddomainservices.com',
+  'domains-anonymizer.com', 'anonymize.com', 'whoisproxy.com',
+  'privacy-protect.cn', 'gdprmasked.com', 'privacy-mail.org',
   // Known registrars — emailing these triggers abuse complaints
   'markmonitor.com', 'gname.com', 'registrar.eu', 'enom.com',
   'godaddy.com', 'namecheap.com', 'gandi.net', 'name.com',
