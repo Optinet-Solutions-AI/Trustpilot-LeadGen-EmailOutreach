@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { useCampaigns } from '../hooks/useCampaigns';
 import { useCampaignProgress } from '../hooks/useCampaignProgress';
 import CampaignCard from '../components/CampaignCard';
@@ -19,8 +20,22 @@ export default function Campaigns() {
   } = useCampaigns();
   const { status: sendStatus, sent, failed, total, subscribe, reset } = useCampaignProgress();
 
+  // Hand-off from the Redirected Leads page lands here as
+  //   /campaigns?wizard=1&redirectMode=1&leadIds=<csv>
+  // so the wizard opens with redirect-aware mode pre-selected and the
+  // chosen redirected leads pre-selected in the recipient picker.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const wizardFromUrl = searchParams?.get('wizard') === '1';
+  const redirectModeFromUrl = searchParams?.get('redirectMode') === '1';
+  const initialLeadIdsFromUrl = useMemo(() => {
+    const raw = searchParams?.get('leadIds');
+    if (!raw) return [] as string[];
+    return raw.split(',').filter(Boolean);
+  }, [searchParams]);
+
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
-  const [showWizard, setShowWizard] = useState(false);
+  const [showWizard, setShowWizard] = useState(wizardFromUrl);
   const [detailCampaign, setDetailCampaign] = useState<Campaign | null>(null);
 
   const [testFlightCampaignId, setTestFlightCampaignId] = useState<string | null>(null);
@@ -174,8 +189,15 @@ export default function Campaigns() {
     return (
       <div className="flex flex-col" style={{ height: 'calc(100vh - 4rem)' }}>
         <CampaignWizard
-          onClose={() => setShowWizard(false)}
+          onClose={() => {
+            setShowWizard(false);
+            // Strip the wizard hand-off params so refresh / back doesn't
+            // re-open the wizard with stale selections.
+            if (wizardFromUrl) router.replace('/campaigns');
+          }}
           onCreate={handleCreate}
+          redirectMode={redirectModeFromUrl}
+          initialLeadIds={initialLeadIdsFromUrl}
         />
       </div>
     );

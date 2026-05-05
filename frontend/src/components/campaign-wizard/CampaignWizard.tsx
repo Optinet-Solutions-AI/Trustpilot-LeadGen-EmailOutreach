@@ -31,16 +31,24 @@ interface Props {
     followUpSteps?: FollowUpStepInput[];
     sendingSchedule?: SendingSchedule;
   }) => Promise<void>;
+  /** Launched from the Redirected Leads page. Filters the lead picker to
+   *  leads whose Trustpilot listing redirects to a different brand and
+   *  switches the AI prompt to redirect-aware copy. */
+  redirectMode?: boolean;
+  /** Pre-select these leads when the wizard mounts. Used by the
+   *  Redirected Leads page to hand off a chosen set straight into the
+   *  recipient picker. */
+  initialLeadIds?: string[];
 }
 
-export default function CampaignWizard({ onClose, onCreate }: Props) {
+export default function CampaignWizard({ onClose, onCreate, redirectMode, initialLeadIds }: Props) {
   const [step, setStep]             = useState(0);
   const [saving, setSaving]         = useState(false);
 
   // Step 1 — Leads
   const [filterCountry, setFilterCountry]     = useState('');
   const [filterCategory, setFilterCategory]   = useState('');
-  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>(initialLeadIds ?? []);
   const [manualEmails, setManualEmails]       = useState<string[]>([]);
   const [maxLeads, setMaxLeads]               = useState(500);
 
@@ -167,6 +175,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             selectedLeadIds={selectedLeadIds}
             manualEmails={manualEmails}
             maxLeads={maxLeads}
+            redirectMode={redirectMode}
             onFilterCountryChange={setFilterCountry}
             onFilterCategoryChange={setFilterCategory}
             onSelectionChange={setSelectedLeadIds}
@@ -183,6 +192,7 @@ export default function CampaignWizard({ onClose, onCreate }: Props) {
             filterCategory={filterCategory}
             manualEmails={manualEmails}
             followUpSteps={followUpSteps}
+            redirectMode={redirectMode}
             onSubjectChange={setSubject}
             onBodyChange={setBody}
             onIncludeScreenshotChange={setIncludeScreenshot}

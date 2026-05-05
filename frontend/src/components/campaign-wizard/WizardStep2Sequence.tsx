@@ -12,6 +12,9 @@ interface Props {
   filterCategory: string;
   manualEmails?: string[];
   followUpSteps: FollowUpStepInput[];
+  /** Wizard launched from the Redirected Leads page — switches the AI prompt
+   *  to "I noticed your Trustpilot redirects to a different brand…" framing. */
+  redirectMode?: boolean;
   onSubjectChange: (v: string) => void;
   onBodyChange: (v: string) => void;
   onIncludeScreenshotChange: (v: boolean) => void;
@@ -32,6 +35,7 @@ const SPINTAX_EXAMPLES = [
 
 export default function WizardStep2Sequence({
   subject, body, includeScreenshot, filterCountry, filterCategory, manualEmails, followUpSteps,
+  redirectMode,
   onSubjectChange, onBodyChange, onIncludeScreenshotChange, onFollowUpStepsChange,
 }: Props) {
   const [activeStep, setActiveStep] = useState<'intro' | number>('intro');
@@ -52,6 +56,7 @@ export default function WizardStep2Sequence({
         category: filterCategory || undefined,
         emailDomain: firstEmailDomain,
         manualMode: !!(manualEmails && manualEmails.length > 0),
+        redirectMode: !!redirectMode,
       });
       onSubjectChange(result.subject);
       onBodyChange(result.body);

@@ -28,6 +28,11 @@ interface Props {
   selectedLeadIds: string[];
   manualEmails: string[];
   maxLeads: number;
+  /** When true, the picker only shows leads where redirects_to IS NOT NULL.
+   *  When false (default), redirected leads are excluded from the picker so
+   *  users can't accidentally mix them with the standard cold-outreach pool —
+   *  they need different messaging and a different AI prompt. */
+  redirectMode?: boolean;
   onFilterCountryChange: (v: string) => void;
   onFilterCategoryChange: (v: string) => void;
   onSelectionChange: (ids: string[]) => void;
@@ -41,6 +46,7 @@ type SourceMode = 'matrix' | 'manual';
 
 export default function WizardStep1Leads({
   filterCountry, filterCategory, selectedLeadIds, manualEmails, maxLeads,
+  redirectMode,
   onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
 }: Props) {
   const [appMode, setAppMode] = useState<AppMode | null>(null);
@@ -90,6 +96,9 @@ export default function WizardStep1Leads({
       p.set('limit', String(LIMIT));
       p.set('sortBy', sortBy);
       p.set('sortDir', sortDir);
+      // Standard wizard hides redirected leads (different messaging needed);
+      // redirect-aware wizard shows ONLY redirected leads.
+      p.set('redirected', redirectMode ? 'only' : 'exclude');
       const res = await api.get(`/leads?${p}`);
       setLeads(res.data.data);
       setTotal(res.data.total);
@@ -99,7 +108,7 @@ export default function WizardStep1Leads({
     } finally {
       setLoading(false);
     }
-  }, [filterCountry, filterCategory, debSearch, page, sortBy, sortDir]);
+  }, [filterCountry, filterCategory, debSearch, page, sortBy, sortDir, redirectMode]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
@@ -159,6 +168,16 @@ export default function WizardStep1Leads({
           <span className="material-symbols-outlined text-amber-600 text-[20px] shrink-0 mt-0.5">science</span>
           <p className="text-sm text-amber-700">
             <span className="font-bold">Testing mode active</span> — only manually entered email addresses can be used as recipients. Scraped leads are locked until testing is complete.
+          </p>
+        </div>
+      )}
+
+      {/* Redirect-aware campaign banner */}
+      {redirectMode && (
+        <div className="flex items-start gap-3 bg-rose-50 border border-rose-200 rounded-xl px-5 py-4 mb-6">
+          <span className="material-symbols-outlined text-rose-600 text-[20px] shrink-0 mt-0.5">alt_route</span>
+          <p className="text-sm text-rose-800">
+            <span className="font-bold">Redirect-aware campaign</span> — picker is filtered to leads whose Trustpilot listing redirects to a different brand. The AI generator will write copy that asks whether they're the same operator (rebrand) or new owners. Don't use the standard cold-outreach template here.
           </p>
         </div>
       )}
