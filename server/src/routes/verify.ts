@@ -188,19 +188,32 @@ router.post('/sync', async (req: Request, res: Response) => {
 
     const updated: Array<Record<string, unknown>> = [];
     for (const lead of leads) {
-      const sources: Array<{ source: 'trustpilot' | 'website'; email: string }> = [];
-      if (lead.trustpilot_email) sources.push({ source: 'trustpilot', email: lead.trustpilot_email });
-      if (lead.website_email && lead.website_email !== lead.trustpilot_email) {
-        sources.push({ source: 'website', email: lead.website_email });
+      // Build a per-address verification job (dedup the network call) but
+      // also remember which sources point at each address so the same
+      // verdict gets broadcast to every source that holds that email.
+      // Without this, lead.trustpilot_email='x' / lead.website_email='x'
+      // would only update trustpilot_email_status — website_email_status
+      // would keep whatever it had before, and the lead matrix would show
+      // one source as invalid while the other stayed null/clean.
+      const addrToSources = new Map<string, Array<'trustpilot' | 'website'>>();
+      if (lead.trustpilot_email) {
+        addrToSources.set(lead.trustpilot_email, ['trustpilot']);
+      }
+      if (lead.website_email) {
+        const list = addrToSources.get(lead.website_email) ?? [];
+        list.push('website');
+        addrToSources.set(lead.website_email, list);
       }
 
-      if (sources.length === 0) {
+      if (addrToSources.size === 0) {
         updated.push({ id: lead.id, message: 'no emails to verify' });
         continue;
       }
 
-      const results = await Promise.all(
-        sources.map(async (s) => ({ ...s, result: await validateEmail(s.email) }))
+      const verdicts = await Promise.all(
+        Array.from(addrToSources.entries()).map(
+          async ([email, sourcesForEmail]) => ({ email, sourcesForEmail, result: await validateEmail(email) }),
+        ),
       );
 
       const patch: Record<string, unknown> = {
@@ -211,11 +224,15 @@ router.post('/sync', async (req: Request, res: Response) => {
         website_email_status: lead.website_email_status ?? null,
       };
 
-      // Apply per-source verdicts and capture the latest stage diagnostics
-      // from whichever source we verified last (UI tooltips read these).
-      for (const { source, result } of results) {
-        Object.assign(patch, patchFromResult(result, source));
-        perSource[`${source}_email_status`] = result.status;
+      // Broadcast each verdict to every source that holds that address. The
+      // diagnostic columns (verify_syntax_ok, verify_mx_ok, etc.) end up as
+      // whichever was applied last, which is fine — they're per-address, not
+      // per-source.
+      for (const { sourcesForEmail, result } of verdicts) {
+        for (const source of sourcesForEmail) {
+          Object.assign(patch, patchFromResult(result, source));
+          perSource[`${source}_email_status`] = result.status;
+        }
       }
 
       const resolverInput = {
@@ -251,7 +268,9 @@ router.post('/sync', async (req: Request, res: Response) => {
 
       // Best-effort note per lead summarising the freshened verdicts.
       try {
-        const summary = results.map((r) => `${r.source}=${r.result.status}`).join(', ');
+        const summary = verdicts
+          .map((v) => `${v.sourcesForEmail.join('+')}=${v.result.status}`)
+          .join(', ');
         await createNote(lead.id, {
           type: 'verification',
           content: `Re-verified from wizard: ${summary} (final: ${finalStatus})`,
