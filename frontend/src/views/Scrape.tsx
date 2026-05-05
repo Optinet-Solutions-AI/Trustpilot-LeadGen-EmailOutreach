@@ -96,24 +96,63 @@ export default function Scrape() {
             </h4>
           </div>
 
-          {/* Last job */}
-          {jobs.length > 0 && (
-            <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
-                  history
-                </span>
-              </div>
-              <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Last Scrape</p>
-              <h4
-                className="text-base font-black text-on-surface mt-1"
-                style={{ fontFamily: 'Manrope, sans-serif' }}
-              >
-                {jobs[0].category} — {jobs[0].country}
-              </h4>
-              <p className="text-xs text-secondary mt-1">{jobs[0].total_found} leads found</p>
-            </div>
-          )}
+          {/* Last completed job — running ones are excluded so this widget
+              never lies about an in-progress scrape's lead count. Concurrent
+              running scrapes get their own badge below. */}
+          {(() => {
+            const lastDone = jobs.find((j) => j.status !== 'running');
+            const runningJobs = jobs.filter((j) => j.status === 'running');
+            const otherRunning = runningJobs.filter((j) => j.id !== jobId);
+            return (
+              <>
+                {lastDone && (
+                  <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
+                        history
+                      </span>
+                    </div>
+                    <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Last Scrape</p>
+                    <h4
+                      className="text-base font-black text-on-surface mt-1"
+                      style={{ fontFamily: 'Manrope, sans-serif' }}
+                    >
+                      {lastDone.category} — {lastDone.country}
+                    </h4>
+                    <p className="text-xs text-secondary mt-1">
+                      {lastDone.total_scraped ?? lastDone.total_found ?? 0} leads found
+                      {lastDone.status === 'failed' && (
+                        <span className="ml-2 text-[#b0004a] font-bold">· failed</span>
+                      )}
+                    </p>
+                  </div>
+                )}
+
+                {otherRunning.length > 0 && (
+                  <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 border border-[#ffd9de]">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px] animate-pulse">
+                        sync
+                      </span>
+                    </div>
+                    <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">
+                      Other Scrapes Running
+                    </p>
+                    <div className="mt-2 space-y-1">
+                      {otherRunning.map((j) => (
+                        <p key={j.id} className="text-xs text-on-surface font-semibold">
+                          {j.category} — {j.country}
+                          <span className="ml-2 text-secondary font-normal">
+                            ({j.total_scraped ?? 0}/{j.total_found ?? 0})
+                          </span>
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* Cloud status */}
           <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">

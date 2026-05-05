@@ -33,13 +33,48 @@ const activeHeartbeats = new Map<string, NodeJS.Timeout>();
 
 async function writeHeartbeat(jobId: string): Promise<void> {
   try {
-    await getSupabase()
+    // .select() makes Supabase return the affected rows so we can detect a
+    // vanished row (e.g. user TRUNCATE'd scrape_jobs while we were running).
+    // Without this, .update().eq() silently no-ops on 0 matches and the
+    // Python subprocess keeps burning Cloud Run quota for nothing.
+    const { data, error } = await getSupabase()
       .from('scrape_jobs')
       .update({ last_heartbeat_at: new Date().toISOString() })
-      .eq('id', jobId);
+      .eq('id', jobId)
+      .select('id');
+
+    if (error) {
+      console.warn(`[Heartbeat] Failed for job ${jobId}:`, error.message);
+      return;
+    }
+
+    if (!data || data.length === 0) {
+      console.warn(`[Heartbeat] Row vanished for job ${jobId} — killing orphan subprocess`);
+      abandonOrphanedSubprocess(jobId);
+    }
   } catch (err) {
     console.warn(`[Heartbeat] Failed for job ${jobId}:`, err instanceof Error ? err.message : err);
   }
+}
+
+/**
+ * Kill the Python subprocess and stop the heartbeat for a job whose DB row
+ * no longer exists. We don't write status='failed' here — there's no row to
+ * write to. Used by writeHeartbeat() to detect wipe-during-scrape orphans.
+ */
+function abandonOrphanedSubprocess(jobId: string): void {
+  const proc = activeProcesses.get(jobId);
+  if (proc) {
+    if (process.platform === 'win32') {
+      try { spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']); } catch {}
+    } else {
+      try { process.kill(-proc.pid!, 'SIGKILL'); } catch {
+        try { proc.kill('SIGKILL'); } catch {}
+      }
+    }
+    activeProcesses.delete(jobId);
+  }
+  stopHeartbeat(jobId);
 }
 
 function startHeartbeat(jobId: string): void {
