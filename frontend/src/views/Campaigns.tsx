@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useCampaigns } from '../hooks/useCampaigns';
 import { useCampaignProgress } from '../hooks/useCampaignProgress';
 import CampaignCard from '../components/CampaignCard';
@@ -22,20 +22,27 @@ export default function Campaigns() {
 
   // Hand-off from the Redirected Leads page lands here as
   //   /campaigns?wizard=1&redirectMode=1&leadIds=<csv>
-  // so the wizard opens with redirect-aware mode pre-selected and the
-  // chosen redirected leads pre-selected in the recipient picker.
-  const searchParams = useSearchParams();
+  // We read the URL via window.location instead of next/navigation's
+  // useSearchParams to avoid the Suspense-during-prerender requirement
+  // that breaks the Vercel build for client-only views like this one.
   const router = useRouter();
-  const wizardFromUrl = searchParams?.get('wizard') === '1';
-  const redirectModeFromUrl = searchParams?.get('redirectMode') === '1';
-  const initialLeadIdsFromUrl = useMemo(() => {
-    const raw = searchParams?.get('leadIds');
-    if (!raw) return [] as string[];
-    return raw.split(',').filter(Boolean);
-  }, [searchParams]);
+  const [wizardFromUrl, setWizardFromUrl] = useState(false);
+  const [redirectModeFromUrl, setRedirectModeFromUrl] = useState(false);
+  const [initialLeadIdsFromUrl, setInitialLeadIdsFromUrl] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const wantsWizard = params.get('wizard') === '1';
+    setWizardFromUrl(wantsWizard);
+    setRedirectModeFromUrl(params.get('redirectMode') === '1');
+    const raw = params.get('leadIds');
+    setInitialLeadIdsFromUrl(raw ? raw.split(',').filter(Boolean) : []);
+    if (wantsWizard) setShowWizard(true);
+  }, []);
 
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
-  const [showWizard, setShowWizard] = useState(wizardFromUrl);
+  const [showWizard, setShowWizard] = useState(false);
   const [detailCampaign, setDetailCampaign] = useState<Campaign | null>(null);
 
   const [testFlightCampaignId, setTestFlightCampaignId] = useState<string | null>(null);

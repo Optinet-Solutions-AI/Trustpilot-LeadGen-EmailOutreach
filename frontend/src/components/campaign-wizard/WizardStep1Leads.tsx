@@ -20,6 +20,22 @@ interface PickerLead {
   outreach_status: string;
   country: string | null;
   category: string | null;
+  screenshot_path: string | null;
+}
+
+function buildScreenshotSrc(path: string): string {
+  if (path.startsWith('http')) return path;
+  const filename = path.split(/[/\\]/).pop() || '';
+  return `/api/screenshots/${filename}`;
+}
+
+const preloadedScreenshots = new Set<string>();
+function preloadScreenshot(src: string): void {
+  if (preloadedScreenshots.has(src)) return;
+  preloadedScreenshots.add(src);
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = src;
 }
 
 interface Props {
@@ -64,6 +80,9 @@ export default function WizardStep1Leads({
   const [sortBy, setSortBy]       = useState('star_rating');
   const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('asc');
   const [rotation, setRotation]   = useState<'oldest' | 'random'>('oldest');
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState<string>('');
+  const [previewLoaded, setPreviewLoaded] = useState(false);
 
   // Fetch app mode and dynamic filters on mount
   useEffect(() => {
@@ -484,6 +503,7 @@ export default function WizardStep1Leads({
                   { label: 'Email',   col: 'primary_email' },
                   { label: 'Country', col: null },
                   { label: 'Rating',  col: 'star_rating' },
+                  { label: 'Shot',    col: null },
                   { label: 'Status',  col: null },
                 ].map(({ label, col }) => (
                   <th
@@ -518,6 +538,34 @@ export default function WizardStep1Leads({
                     <td className="px-4 py-3 text-secondary text-xs">{lead.primary_email || <span className="text-slate-300">—</span>}</td>
                     <td className="px-4 py-3 text-secondary text-xs">{lead.country || '—'}</td>
                     <td className="px-4 py-3 font-bold text-[#b0004a] text-xs">{lead.star_rating != null ? `${lead.star_rating} ★` : '—'}</td>
+                    <td className="px-4 py-3 w-12" onClick={(e) => e.stopPropagation()}>
+                      {(() => {
+                        const hasShot = !!lead.screenshot_path;
+                        const shotSrc = hasShot ? buildScreenshotSrc(lead.screenshot_path as string) : null;
+                        return (
+                          <button
+                            type="button"
+                            disabled={!hasShot}
+                            onMouseEnter={() => { if (shotSrc) preloadScreenshot(shotSrc); }}
+                            onFocus={() => { if (shotSrc) preloadScreenshot(shotSrc); }}
+                            onClick={() => {
+                              if (!shotSrc) return;
+                              setPreviewLoaded(false);
+                              setPreviewSrc(shotSrc);
+                              setPreviewName(lead.company_name);
+                            }}
+                            title={hasShot ? 'View Trustpilot screenshot' : 'No screenshot captured'}
+                            className={`p-1 rounded-lg transition-colors ${
+                              hasShot
+                                ? 'text-[#b0004a] hover:bg-[#ffd9de]'
+                                : 'text-slate-200 cursor-not-allowed'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-[18px]">image</span>
+                          </button>
+                        );
+                      })()}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="text-[10px] font-bold bg-surface-container text-secondary px-2 py-0.5 rounded-full capitalize">
                         {lead.outreach_status}
@@ -527,7 +575,7 @@ export default function WizardStep1Leads({
                 );
               })}
               {leads.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-12 text-center text-secondary text-sm">No leads found.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-12 text-center text-secondary text-sm">No leads found.</td></tr>
               )}
             </tbody>
           </table>
@@ -553,6 +601,47 @@ export default function WizardStep1Leads({
           </div>
         )}
       </div>}
+
+      {previewSrc && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPreviewSrc(null)}
+        >
+          <div
+            className="bg-white rounded-2xl ambient-shadow max-w-4xl w-full max-h-[90vh] overflow-hidden border border-slate-100 flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-surface-container">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="material-symbols-outlined text-[18px] text-[#b0004a] shrink-0">screenshot</span>
+                <span className="text-sm font-bold text-on-surface truncate">{previewName}</span>
+              </div>
+              <button
+                onClick={() => setPreviewSrc(null)}
+                className="text-slate-400 hover:text-on-surface p-1 rounded-lg hover:bg-surface-container-high transition-colors"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <div className="overflow-auto bg-surface-container flex items-center justify-center p-4 relative min-h-[200px]">
+              {!previewLoaded && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="w-8 h-8 rounded-full border-2 border-[#ffd9de] border-t-[#b0004a] animate-spin" />
+                </div>
+              )}
+              <img
+                src={previewSrc}
+                alt={`Trustpilot profile of ${previewName}`}
+                decoding="async"
+                fetchPriority="high"
+                onLoad={() => setPreviewLoaded(true)}
+                onError={() => setPreviewLoaded(true)}
+                className={`max-w-full max-h-[75vh] object-contain rounded-lg transition-opacity duration-200 ${previewLoaded ? 'opacity-100' : 'opacity-0'}`}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

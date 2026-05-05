@@ -99,15 +99,15 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
 - Frame this as a polite, curious outreach, NOT a sales pitch on the old listing's rating
 - If they ARE the same operator: offer to help them either consolidate the Trustpilot reputation under the new brand, or recover the old listing's score
 - If they're new owners: offer a free audit of where the inherited reputation stands and what to do about it
-- Keep the CTA low-commitment (a quick reply, a 15-min call) — they may not even know about the redirect issue`
+- Keep the CTA low-commitment via EMAIL only (a quick reply, a short follow-up exchange) — never propose a phone call`
     : manualMode
       ? `- Open with a friendly introduction to OptiRate and why online reputation matters
 - Mention how poor reviews cost businesses customers, trust, and revenue
 - Position OptiRate as a partner that helps businesses turn their reputation around
-- Offer a clear, low-commitment CTA (quick call, free audit, no obligation)`
+- CTA must be email-only: invite a reply, offer a free written audit, suggest a short follow-up email exchange`
       : `- Open with a specific observation about their Trustpilot situation (low rating)
 - Mention the concrete impact (lost customers, lower trust, less revenue)
-- Offer a clear, low-commitment CTA (quick call, no obligation)`;
+- CTA must be email-only: invite a reply, offer a free written audit. NEVER propose a phone call.`;
 
   const prompt = `
 You are a professional B2B email copywriter for OptiRate, a reputation management agency that helps businesses improve their online reputation and Trustpilot scores.
@@ -155,6 +155,7 @@ ${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{bus
 - Tone: professional, empathetic, consultative — NOT pushy or salesy
 - Length: 3-4 short paragraphs
 ${bodyGuidance}
+- HARD RULE — EMAIL-ONLY OUTREACH: OptiRate does not have phone support. NEVER propose a phone call, video call, Zoom, Meet, Teams, or any voice/video meeting. Forbidden phrases include: "give me a call", "hop on a call", "quick call", "phone call", "schedule a call", "jump on a call", "would love to chat", "15-minute call", "discuss over the phone", "call you back". Replace any urge to suggest a call with an email-only equivalent: "reply to this email", "send a quick reply", "email me back", "drop me a line", "a short email exchange", "reply with your thoughts".
 - The sender is ALWAYS "OptiRate" — never write "[Your Name]", "[Name]", "[Your Company]", "[Company]", "[Signature]", or any square-bracket placeholder. If you reference a sender, write "OptiRate" literally (or use it inside spintax, e.g. "{OptiRate|The OptiRate Team}").
 - If the body introduces a person (e.g. "My name is …"), REWRITE to speak from the company voice instead ("I'm reaching out from OptiRate …"). Never leave a human-name placeholder.
 - Close with heavy spintax on every element, e.g.:
