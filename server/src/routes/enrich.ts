@@ -149,6 +149,25 @@ router.post('/', async (req: Request, res: Response) => {
     });
 
     // ── Background execution: in-process, no subprocess, no stdout parsing ──
+    // Heartbeat keeps the orphan reaper from false-flagging long-but-healthy
+    // enrich runs. Without it, jobs get marked failed at started_at + 2 min
+    // even when the enricher is happily chewing through ScrapingBee fallbacks.
+    const HEARTBEAT_INTERVAL_MS = 20_000;
+    const heartbeatTimer = setInterval(() => {
+      void supabase
+        .from('scrape_jobs')
+        .update({ last_heartbeat_at: new Date().toISOString() })
+        .eq('id', jobId)
+        .then(({ error }) => {
+          if (error) console.warn(`[enrich] heartbeat failed: ${error.message}`);
+        });
+    }, HEARTBEAT_INTERVAL_MS);
+    // Beat once immediately so a job that dies in the first 20s still has a stamp
+    void supabase
+      .from('scrape_jobs')
+      .update({ last_heartbeat_at: new Date().toISOString() })
+      .eq('id', jobId);
+
     (async () => {
       try {
         console.log(`[enrich] Job ${jobId} — starting TS enrichment for ${leads.length} leads`);
@@ -290,6 +309,8 @@ router.post('/', async (req: Request, res: Response) => {
           detail: message.slice(0, 200),
           timestamp: new Date().toISOString(),
         });
+      } finally {
+        clearInterval(heartbeatTimer);
       }
     })();
 
