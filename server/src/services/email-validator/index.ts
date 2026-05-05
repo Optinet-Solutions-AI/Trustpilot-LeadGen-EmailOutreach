@@ -13,9 +13,10 @@ import { rcptProbe } from './smtp-probe.js';
 import { probeCatchAll } from './catch-all-probe.js';
 import { getCachedDomainIntel, upsertDomainIntel } from './domain-intel.js';
 import { verifyEmails as verifyEmailsZB } from '../email-verifier.zerobounce.js';
+import { verifyEmailMv, millionVerifierEnabled } from '../email-verifier.millionverifier.js';
 
 export type FinalStatus = 'valid' | 'invalid' | 'catch-all' | 'unknown';
-export type SourceStage = 'syntax' | 'dns' | 'catch-all' | 'smtp' | 'zerobounce';
+export type SourceStage = 'syntax' | 'dns' | 'catch-all' | 'smtp' | 'zerobounce' | 'millionverifier';
 export type SmtpResultLabel =
   | '250'
   | '550'
@@ -230,6 +231,36 @@ export async function validateEmail(
       is_catch_all_domain: isCatchAll,
       raw_smtp_response,
     };
+  }
+
+  // ── Stage 6: MillionVerifier fallback ───────────────────────────────────
+  // Different intel source than ZB; particularly strong on relay/forwarder
+  // domains (ImprovMX, ForwardEmail) where ZB is sparse. Only fires when
+  // both ZB and SMTP probe failed to yield a verdict and the env key is set.
+  if (millionVerifierEnabled()) {
+    try {
+      emit('mv_fallback', norm);
+      const mv = await verifyEmailMv(norm);
+      if (mv && mv.status !== 'unknown') {
+        return {
+          email: norm,
+          status: mv.status,
+          sourceStage: 'millionverifier',
+          reason: `MillionVerifier: ${mv.raw.result ?? mv.status}${mv.raw.quality ? ` (quality: ${mv.raw.quality})` : ''}.`,
+          syntax_ok: true,
+          mx_ok: true,
+          smtp_result,
+          zerobounce_result: zb,
+          mx_top: mxTop,
+          provider_type: providerType,
+          is_catch_all_domain: isCatchAll,
+          raw_smtp_response,
+        };
+      }
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      console.warn(`[validator] MillionVerifier fallback failed for ${norm}: ${m}`);
+    }
   }
 
   // ── No definitive answer anywhere ───────────────────────────────────────

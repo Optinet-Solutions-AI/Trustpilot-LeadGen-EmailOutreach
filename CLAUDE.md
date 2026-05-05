@@ -194,6 +194,7 @@ trustpilot-leadgen/
 | `EMAIL_MAX_DELAY` | Global max ms between sends (per-account cap takes precedence) | `90000` |
 | `PLAYWRIGHT_HEADLESS` | Headless browser in prod | `true` |
 | `PYTHON_PATH` | Python executable | `/usr/bin/python3` |
+| `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `API_SECRET_KEY` | Internal API auth | set |
 | `PORT` | API port | `3001` |
 
