@@ -320,12 +320,14 @@ git add <files> && git commit -m "..." && git push origin main
 
 ### Step 2 — Deploy backend (Cloud Run)
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"
+powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --project=trustpilot-leadgen --quiet"
 ```
+
+**`--project=trustpilot-leadgen` is mandatory.** The gateway routes to the `trustpilot-crm` service in the `trustpilot-leadgen` project (project number `281469818025`). There is also a `trustpilot-crm` service in `pearl-view-491114` — deploying there succeeds silently but the gateway never sees the new code. Always pass the flag.
 
 ### Env var update only (no rebuild)
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --update-env-vars 'KEY=VALUE' --quiet"
+powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --project=trustpilot-leadgen --update-env-vars 'KEY=VALUE' --quiet"
 ```
 
 See `docs/deployment.md` for complete reference.
@@ -430,7 +432,7 @@ After every set of changes, output this block at the end of your response (copy-
 | Start API | `cd server && npm run dev` (port 3001) |
 | Type-check API | `cd server && npx tsc --noEmit` |
 | Type-check frontend | `cd frontend && npx tsc --noEmit` |
-| Deploy backend | `powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --quiet"` |
+| Deploy backend | `powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --project=trustpilot-leadgen --quiet"` |
 | Run scraper manually | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country DE --category casino --max-rating 3.5` |
 | Run migration 008 | `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;` (Supabase SQL editor) |
 
