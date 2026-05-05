@@ -169,10 +169,17 @@ export function translate(event: ScrapeProgress): FeedLine | null {
     case 'enrich_email': {
       // detail = "{idx}|{total}|{domain}|{email}|{tier}"
       const [idx, total, domain, email, tier] = splitPipes(detail);
-      const mxNote = tier === 'mx' ? ' (couldn\'t scrape page, but domain accepts mail)' : '';
+      const tierNote = (() => {
+        if (tier === 'mx') return ' (couldn\'t scrape page, but domain accepts mail)';
+        if (tier === 'whois') return ' (from domain registrant record)';
+        if (tier === 'wayback') return ' (from archived snapshot — verify before sending)';
+        if (tier === 'crtsh') return ' (from TLS cert transparency log)';
+        if (tier === 'scrapingbee') return ' (via managed proxy)';
+        return '';
+      })();
       return {
         kind: 'success',
-        text: `(${idx}/${total}) ${domain} — got ${email}${mxNote}`,
+        text: `(${idx}/${total}) ${domain} — got ${email}${tierNote}`,
         timestamp,
       };
     }

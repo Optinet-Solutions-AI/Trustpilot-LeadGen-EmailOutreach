@@ -27,6 +27,8 @@ import { launchBrowser, TIER_CONFIGS, humanDelay, type Tier } from './browser-la
 import { dismissPopups, handleCloudflareChallenge, detectBlock } from './popup-handler.js';
 import { fetchViaScrapingbee, scrapingbeeEnabled } from './tier5-scrapingbee.js';
 import { tier6WhoisLookup } from './tier6-whois.js';
+import { tier7WaybackLookup } from './tier7-wayback.js';
+import { tier8CrtshLookup } from './tier8-crtsh.js';
 
 // Use explicit DNS servers. System DNS on Cloud Run can be flaky and may refuse
 // MX queries when the instance is cold. Google + Cloudflare are always reachable.
@@ -711,7 +713,7 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
-): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'whois' | 'none'; blockReason?: string }> {
+): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'none'; blockReason?: string }> {
   const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
@@ -776,10 +778,9 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
-  // Tier 6 — WHOIS registrant lookup. Last-line fallback when every page-
-  // scraping tier failed. Most modern domains are GDPR-redacted so this
-  // rarely fires, but it's free, fast, and occasionally surfaces a real
-  // operator email on older domains or non-EU ccTLDs.
+  // Tier 6 — WHOIS registrant lookup. Most modern domains are GDPR-redacted
+  // so this rarely fires, but it's free, fast, and occasionally surfaces a
+  // real operator email on older domains or non-EU ccTLDs.
   if (Date.now() < deadline) {
     try {
       const { email: whoisEmail } = await tier6WhoisLookup(websiteUrl);
@@ -788,6 +789,32 @@ async function enrichSingleLeadWithTiers(
       }
     } catch (err) {
       console.warn(`    [enricher] tier6 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
+  // Tier 7 — Wayback Machine. Older snapshots of the contact/about pages
+  // often still have a plain mailto: that the live site has since stripped.
+  if (Date.now() < deadline) {
+    try {
+      const { email: wbEmail } = await tier7WaybackLookup(websiteUrl, deadline);
+      if (wbEmail) {
+        return { email: wbEmail, tier: 'wayback' };
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier7 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
+  // Tier 8 — crt.sh certificate transparency. Last-gasp scan of historical
+  // TLS cert subjects/SANs for embedded admin emails.
+  if (Date.now() < deadline) {
+    try {
+      const { email: ctEmail } = await tier8CrtshLookup(websiteUrl);
+      if (ctEmail) {
+        return { email: ctEmail, tier: 'crtsh' };
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier8 error: ${(err as Error).message.slice(0, 100)}`);
     }
   }
 
@@ -811,7 +838,7 @@ export interface EnrichmentResult {
   lead: EnrichableLead;
   foundEmail: string | null;
   source: 'scrape' | 'none';
-  tier: Tier | 'scrapingbee' | 'whois' | 'none';
+  tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'none';
   blockReason?: string;
 }
 
