@@ -5,7 +5,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { createNote } from '../db/notes.js';
 import { validateEmail, type ValidationResult, type FinalStatus } from '../services/email-validator/index.js';
 import { getCachedDomainIntel } from '../services/email-validator/domain-intel.js';
-import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
+import { resolvePrimaryEmail, statusForPrimaryEmail } from '../services/email/resolve-primary-email.js';
 
 export const verifyEvents = new EventEmitter();
 verifyEvents.setMaxListeners(50);
@@ -218,17 +218,20 @@ router.post('/sync', async (req: Request, res: Response) => {
         perSource[`${source}_email_status`] = result.status;
       }
 
-      const newPrimary = resolvePrimaryEmail({
+      const resolverInput = {
         trustpilot_email: lead.trustpilot_email,
         website_email: lead.website_email,
         trustpilot_email_status: perSource.trustpilot_email_status,
         website_email_status: perSource.website_email_status,
-      });
+      };
+      const newPrimary = resolvePrimaryEmail(resolverInput);
       patch.primary_email = newPrimary;
 
-      // Lead-level status: worst of the two source verdicts. Drives the
-      // send-gate and the StepRecipients UI badge.
-      const finalStatus = worstOf([perSource.trustpilot_email_status, perSource.website_email_status]);
+      // Lead-level status now mirrors the source the resolver actually picked.
+      // Worst-of was misleading: a TP=invalid + website=valid lead used to
+      // show as 'invalid' even though the picker now correctly displays the
+      // valid website address. Send-gate and wizard badges both read this.
+      const finalStatus = statusForPrimaryEmail(resolverInput) as FinalStatus | null;
       patch.verification_status = finalStatus;
       patch.email_verified = finalStatus === 'valid';
 

@@ -21,6 +21,19 @@ export type LeadEmailFields = {
   affiliate_email_status?: string | null;
 };
 
+/** Per-source verification status that corresponds to whichever address
+ *  resolvePrimaryEmail picked. Used to drive the lead-level
+ *  verification_status field so the wizard / send-gate / lead matrix all
+ *  reflect the *displayed* email's status, not the worst-of all sources. */
+export function statusForPrimaryEmail(lead: LeadEmailFields): string | null {
+  const primary = resolvePrimaryEmail(lead);
+  if (!primary) return null;
+  if (primary === lead.trustpilot_email) return lead.trustpilot_email_status ?? null;
+  if (primary === lead.website_email) return lead.website_email_status ?? null;
+  if (primary === lead.affiliate_email) return lead.affiliate_email_status ?? null;
+  return null;
+}
+
 export function resolvePrimaryEmail(lead: LeadEmailFields): string | null {
   const tpValid = lead.trustpilot_email_status === 'valid';
   const webValid = lead.website_email_status === 'valid';

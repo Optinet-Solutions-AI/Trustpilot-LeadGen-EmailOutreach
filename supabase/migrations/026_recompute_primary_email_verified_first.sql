@@ -12,6 +12,7 @@
 -- Run it any time the verification statuses change in bulk and you want
 -- the lead matrix display to catch up.
 
+-- Step 1 — primary_email: pick the strongest source under verified-first.
 UPDATE leads SET primary_email = CASE
   -- Pass 1: verified wins, by brand order
   WHEN trustpilot_email IS NOT NULL AND trustpilot_email_status = 'valid'
@@ -35,3 +36,25 @@ UPDATE leads SET primary_email = CASE
   -- Pass 3: last resort
   ELSE COALESCE(trustpilot_email, website_email, affiliate_email)
 END;
+
+-- Step 2 — verification_status: mirror the per-source status of whichever
+-- email primary_email now points to, so the lead-level badge in the wizard
+-- and the send-gate at /api/campaigns/:id/send agree with the *displayed*
+-- email instead of the old worst-of-all-sources policy.
+UPDATE leads SET
+  verification_status = CASE
+    WHEN primary_email IS NULL THEN NULL
+    WHEN primary_email = trustpilot_email THEN trustpilot_email_status
+    WHEN primary_email = website_email    THEN website_email_status
+    WHEN primary_email = affiliate_email  THEN affiliate_email_status
+    ELSE NULL
+  END,
+  email_verified = (
+    CASE
+      WHEN primary_email IS NULL THEN NULL
+      WHEN primary_email = trustpilot_email THEN trustpilot_email_status
+      WHEN primary_email = website_email    THEN website_email_status
+      WHEN primary_email = affiliate_email  THEN affiliate_email_status
+      ELSE NULL
+    END
+  ) = 'valid';
