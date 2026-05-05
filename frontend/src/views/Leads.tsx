@@ -497,7 +497,30 @@ export default function Leads() {
 
       {/* Live enrichment progress — inline log panel */}
       {enrichJobId && (
-        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 space-y-4">
+          {enrichJob.stalled && (
+            <div className="flex items-start gap-3 rounded-xl px-5 py-3 text-sm border bg-amber-50 border-amber-200 text-amber-800">
+              <span className="material-symbols-outlined text-[18px] text-amber-600 shrink-0 mt-0.5">warning</span>
+              <div className="flex-1">
+                <p className="font-semibold">Enrichment looks stuck</p>
+                <p className="text-xs mt-0.5 text-amber-700/90">
+                  No progress for more than 90s. The backend may have been killed by a deploy or crashed mid-job.
+                  The orphan reaper will mark this failed within 3 minutes — or click Clear to reset now and re-run.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setEnrichJobId(null);
+                  setEnrichStartedAt(null);
+                  localStorage.removeItem('active_enrich_job');
+                  notify('success', 'Enrichment job cleared. You can run it again.');
+                }}
+                className="ml-2 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors shrink-0"
+              >
+                Clear
+              </button>
+            </div>
+          )}
           <JobProgress
             kind="enrichment"
             status={enrichJob.status === 'idle' ? 'running' : enrichJob.status}

@@ -15,10 +15,19 @@ export interface EnrichJobState {
     failed: number;
   };
   error: string | null;
+  /** True when status is still 'running' but we haven't seen activity in
+   *  STALL_THRESHOLD_MS — the backend died (deploy SIGTERM, OOM, etc.)
+   *  and the orphan reaper hasn't flipped the row yet. Surfacing this
+   *  in the UI prevents the widget from looking frozen-but-fine. */
+  stalled: boolean;
 }
 
 const MAX_PROGRESS_ENTRIES = 200;
 const POLL_INTERVAL_MS = 5000;
+// Two missed polls + headroom. Anything longer than this with no SSE
+// event AND no counter change is genuinely stuck.
+const STALL_THRESHOLD_MS = 90_000;
+const STALL_CHECK_INTERVAL_MS = 5_000;
 
 /**
  * Subscribe to an enrichment job's live events. Mirrors the scrape context's
@@ -34,6 +43,7 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
     progress: [],
     summary: { total: 0, found: 0, failed: 0 },
     error: null,
+    stalled: false,
   });
 
   const statusRef = useRef<EnrichJobStatus>(state.status);
@@ -45,6 +55,11 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
   // 404s in a row, so a transient instance-routing flap can self-heal.
   const missCountRef = useRef(0);
   const MAX_404_RETRIES = 4;
+  // Stall detection: bumped on every SSE event or poll showing changed
+  // counters; checked on a 5s interval while running.
+  const lastActivityRef = useRef<number>(Date.now());
+  const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSummaryRef = useRef<{ total: number; found: number; failed: number }>({ total: 0, found: 0, failed: 0 });
 
   useEffect(() => {
     statusRef.current = state.status;
@@ -57,6 +72,7 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
         progress: [],
         summary: { total: 0, found: 0, failed: 0 },
         error: null,
+        stalled: false,
       });
       return;
     }
@@ -67,8 +83,11 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
       progress: [],
       summary: { total: 0, found: 0, failed: 0 },
       error: null,
+      stalled: false,
     });
     statusRef.current = 'running';
+    lastActivityRef.current = Date.now();
+    lastSummaryRef.current = { total: 0, found: 0, failed: 0 };
 
     const cleanup = () => {
       if (esRef.current) {
@@ -79,6 +98,16 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
+      if (stallTimerRef.current) {
+        clearInterval(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+    };
+
+    const bumpActivity = () => {
+      lastActivityRef.current = Date.now();
+      // If we were marked stalled, clear it now that activity is back
+      setState((prev) => prev.stalled ? { ...prev, stalled: false } : prev);
     };
 
     const markDone = (status: 'completed' | 'failed', errorMsg?: string) => {
@@ -97,6 +126,7 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
     esRef.current = es;
 
     es.onmessage = (event) => {
+      bumpActivity();
       const data = JSON.parse(event.data) as ScrapeProgress & { status?: string };
 
       if (data.stage === 'current') {
@@ -162,6 +192,13 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
           failed: number;
           error?: string;
         };
+        // Counter change counts as activity. A stuck server keeps
+        // returning 200 with the same numbers — that's NOT activity.
+        const last = lastSummaryRef.current;
+        if (d.total !== last.total || d.found !== last.found || d.failed !== last.failed) {
+          bumpActivity();
+          lastSummaryRef.current = { total: d.total, found: d.found, failed: d.failed };
+        }
         setState((prev) => ({
           ...prev,
           summary: { total: d.total, found: d.found, failed: d.failed },
@@ -180,6 +217,16 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
     };
     poll();
     pollRef.current = setInterval(poll, POLL_INTERVAL_MS);
+
+    // Stall detector — flips state.stalled = true once activity has been
+    // silent past the threshold while we still think the job is running.
+    stallTimerRef.current = setInterval(() => {
+      if (statusRef.current !== 'running') return;
+      const silentMs = Date.now() - lastActivityRef.current;
+      if (silentMs >= STALL_THRESHOLD_MS) {
+        setState((prev) => prev.stalled ? prev : { ...prev, stalled: true });
+      }
+    }, STALL_CHECK_INTERVAL_MS);
 
     return cleanup;
   }, [jobId]);
