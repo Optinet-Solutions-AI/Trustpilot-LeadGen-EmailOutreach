@@ -159,6 +159,11 @@ router.post('/', async (req: Request, res: Response) => {
           detail: String(leads.length),
           timestamp: new Date().toISOString(),
         });
+        // Live counters so the polling status endpoint reflects real-time
+        // progress instead of staying at 0 until the job completes.
+        let liveEnriched = 0;
+        let liveFailed = 0;
+
         const results = await enrichLeads(leads as EnrichableLead[], {
           concurrency: 3,
           onProgress: (done, totalItems) => {
@@ -169,7 +174,21 @@ router.post('/', async (req: Request, res: Response) => {
               timestamp: new Date().toISOString(),
             });
           },
-          onEvent: (event) => translateEnricherEvent(jobId, event),
+          onEvent: async (event) => {
+            translateEnricherEvent(jobId, event);
+            let dirty = false;
+            if (event.type === 'enrich_email') { liveEnriched++; dirty = true; }
+            else if (event.type === 'enrich_no_email' || event.type === 'enrich_failed') { liveFailed++; dirty = true; }
+            if (dirty) {
+              // Awaited so the latest write reflects the latest counter and
+              // we don't get out-of-order overwrites under concurrency.
+              const { error } = await supabase
+                .from('scrape_jobs')
+                .update({ total_enriched: liveEnriched, total_failed: liveFailed })
+                .eq('id', jobId);
+              if (error) console.warn(`[enrich] live counter update failed: ${error.message}`);
+            }
+          },
         });
 
         // Filter to only leads that got a new email
