@@ -23,19 +23,43 @@ _VALIDATE_LINKS = os.getenv('UPSERT_VALIDATE_LINKS', '1') != '0'
 
 
 def resolve_primary_email(lead: dict) -> str | None:
-    """Resolution order: trustpilot_email > website_email > affiliate_email.
-    trustpilot_email is review-focused and aligns with the OptiRate
-    reputation-management pitch, so it leads. website_email is the main-domain
-    contact (good fallback). affiliate_email comes from a lateral-prospecting
-    hit (e.g. roosterpartners.com for a casino) — last-resort hop.
-    Per-source invalidation is enforced in the TS resolvePrimaryEmail helper.
+    """Three-pass resolver mirroring server/src/services/email/resolve-primary-email.ts.
+
+    Pass 1 — verified-first: a source explicitly status='valid' beats any
+      unverified source, even from a higher-priority brand. So website=valid
+      wins over trustpilot=unknown. Within the same verification tier, brand
+      order is trustpilot_email > website_email > affiliate_email.
+    Pass 2 — non-invalid: no source is strictly valid, so fall back to any
+      non-'invalid' source by brand priority. Covers the common state where
+      everything is status=null or unknown.
+    Pass 3 — last resort: every non-null source is invalid. Return whatever
+      exists so the row keeps a display email instead of nulling out.
     """
-    return (
-        lead.get('trustpilot_email')
-        or lead.get('website_email')
-        or lead.get('affiliate_email')
-        or None
-    )
+    tp = lead.get('trustpilot_email')
+    web = lead.get('website_email')
+    aff = lead.get('affiliate_email')
+    tp_status = lead.get('trustpilot_email_status')
+    web_status = lead.get('website_email_status')
+    aff_status = lead.get('affiliate_email_status')
+
+    # Pass 1: prefer verified
+    if tp and tp_status == 'valid':
+        return tp
+    if web and web_status == 'valid':
+        return web
+    if aff and aff_status == 'valid':
+        return aff
+
+    # Pass 2: prefer non-invalid
+    if tp and tp_status != 'invalid':
+        return tp
+    if web and web_status != 'invalid':
+        return web
+    if aff and aff_status != 'invalid':
+        return aff
+
+    # Pass 3: any non-null
+    return tp or web or aff or None
 
 
 def normalize_screenshot_path(raw_path: str | None) -> str | None:
