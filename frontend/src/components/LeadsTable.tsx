@@ -109,6 +109,19 @@ function buildScreenshotSrc(path: string): string {
   return `/api/screenshots/${filename}`;
 }
 
+// Module-scoped preload cache. Calling `new Image().src = url` lets the
+// browser fetch and decode in the background; subsequent <img> elements
+// pointing at the same URL hit the HTTP cache and render instantly.
+// We dedupe so hovering across 50 rows doesn't fire 50 redundant requests.
+const preloadedScreenshots = new Set<string>();
+function preloadScreenshot(src: string): void {
+  if (preloadedScreenshots.has(src)) return;
+  preloadedScreenshots.add(src);
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = src;
+}
+
 const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
   company: 'company_name',
   category: 'category',
@@ -146,6 +159,7 @@ export default function LeadsTable({
   const [dragOver, setDragOver] = useState<ColKey | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState<string>('');
+  const [previewLoaded, setPreviewLoaded] = useState(false);
   const dragCol = useRef<ColKey | null>(null);
 
   const toggleSelect = (id: string) => {
@@ -393,14 +407,18 @@ export default function LeadsTable({
       }
       case 'screenshot': {
         const hasShot = !!lead.screenshot_path;
+        const shotSrc = hasShot ? buildScreenshotSrc(lead.screenshot_path as string) : null;
         return (
           <td key={col} className="px-4 py-3 w-12" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               disabled={!hasShot}
+              onMouseEnter={() => { if (shotSrc) preloadScreenshot(shotSrc); }}
+              onFocus={() => { if (shotSrc) preloadScreenshot(shotSrc); }}
               onClick={() => {
-                if (!hasShot) return;
-                setPreviewSrc(buildScreenshotSrc(lead.screenshot_path as string));
+                if (!shotSrc) return;
+                setPreviewLoaded(false);
+                setPreviewSrc(shotSrc);
                 setPreviewName(lead.company_name);
               }}
               title={hasShot ? 'View Trustpilot screenshot' : 'No screenshot captured'}
@@ -509,12 +527,20 @@ export default function LeadsTable({
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             </div>
-            <div className="overflow-auto bg-surface-container flex items-center justify-center p-4">
+            <div className="overflow-auto bg-surface-container flex items-center justify-center p-4 relative min-h-[200px]">
+              {!previewLoaded && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="w-8 h-8 rounded-full border-2 border-[#ffd9de] border-t-[#b0004a] animate-spin" />
+                </div>
+              )}
               <img
                 src={previewSrc}
                 alt={`Trustpilot profile of ${previewName}`}
-                className="max-w-full max-h-[75vh] object-contain rounded-lg"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                decoding="async"
+                fetchPriority="high"
+                onLoad={() => setPreviewLoaded(true)}
+                onError={() => setPreviewLoaded(true)}
+                className={`max-w-full max-h-[75vh] object-contain rounded-lg transition-opacity duration-200 ${previewLoaded ? 'opacity-100' : 'opacity-0'}`}
               />
             </div>
           </div>

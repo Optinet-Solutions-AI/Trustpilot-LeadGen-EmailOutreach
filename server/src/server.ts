@@ -62,9 +62,20 @@ app.use('/api/inbox', inboxRoutes);
 app.use('/api/affiliates', affiliatesRoutes);
 app.use('/api/settings', settingsRoutes);
 
-// Serve screenshots as static files
+// Serve screenshots as static files. Aggressive caching is safe here —
+// scrape-runner overwrites by filename when re-uploading, but the modal
+// preview is read-mostly and 1 day of stale-but-fast is a fine trade.
+// Most fresh leads point at Supabase Storage URLs which are CDN-cached
+// independently; this branch is the local-disk fallback for legacy rows.
 app.use('/api/screenshots', express.static(
-  path.resolve(config.projectRoot, '.tmp', 'screenshots')
+  path.resolve(config.projectRoot, '.tmp', 'screenshots'),
+  {
+    maxAge: '1d',
+    immutable: false,
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    },
+  },
 ));
 
 // Health check
