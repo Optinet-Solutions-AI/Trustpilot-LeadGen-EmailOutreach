@@ -90,14 +90,17 @@ interface Props {
   onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
 }
 
-type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'status';
+type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'status';
 
-const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'rating', 'tags', 'claimed', 'scraped', 'status'];
-const COL_STORAGE_KEY = 'leads_col_order_v5';
+const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'affiliate_email', 'rating', 'tags', 'claimed', 'scraped', 'status'];
+// Bumped to v6 when affiliate_email column was introduced — old keys missing
+// the column would still merge cleanly via loadColOrder, but a clean reset
+// guarantees first-load ordering matches DEFAULT_COLS for everyone.
+const COL_STORAGE_KEY = 'leads_col_order_v6';
 
 const COL_LABELS: Record<ColKey, string> = {
   company: 'Company', country: 'Country', category: 'Category',
-  trustpilot_email: 'TP Email', website_email: 'Website Email',
+  trustpilot_email: 'TP Email', website_email: 'Site Email', affiliate_email: 'Affiliate Email',
   rating: 'Rating', tags: 'Tags', claimed: 'Claimed', scraped: 'Scraped', status: 'Status',
 };
 
@@ -106,6 +109,7 @@ const COL_SORT_KEY: Partial<Record<ColKey, string>> = {
   category: 'category',
   trustpilot_email: 'trustpilot_email',
   website_email: 'website_email',
+  affiliate_email: 'affiliate_email',
   rating: 'star_rating',
   scraped: 'scraped_at',
   status: 'outreach_status',
@@ -260,7 +264,7 @@ export default function LeadsTable({
         );
       case 'trustpilot_email':
         return (
-          <td key={col} className="px-4 py-3 min-w-[170px] max-w-[200px]">
+          <td key={col} className="px-4 py-3 min-w-[140px] max-w-[180px]">
             {lead.trustpilot_email ? (
               <div className="flex flex-col gap-1">
                 <span className={`inline-flex items-center gap-1 text-xs ${lead.trustpilot_email_status === 'invalid' ? 'text-slate-400 line-through' : 'text-on-surface'}`}>
@@ -278,7 +282,7 @@ export default function LeadsTable({
         const hasWebsiteEmail = !!lead.website_email;
         const hasWebsiteUrl = !!lead.website_url;
         return (
-          <td key={col} className="px-4 py-3 min-w-[170px] max-w-[220px]">
+          <td key={col} className="px-4 py-3 min-w-[140px] max-w-[180px]">
             {hasWebsiteEmail ? (
               <div className="flex flex-col gap-1">
                 <span className={`inline-flex items-center gap-1 text-xs ${lead.website_email_status === 'invalid' ? 'text-slate-400 line-through' : 'text-on-surface'}`}>
@@ -298,6 +302,29 @@ export default function LeadsTable({
                 <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full w-fit" title="Has website but no email found yet — run Enrich">
                   <span className="material-symbols-outlined text-[9px]">hourglass_empty</span>not enriched
                 </span>
+              </div>
+            ) : (
+              <span className="text-slate-300 text-xs">—</span>
+            )}
+          </td>
+        );
+      }
+      case 'affiliate_email': {
+        const hasAffEmail = !!lead.affiliate_email;
+        return (
+          <td key={col} className="px-4 py-3 min-w-[140px] max-w-[180px]">
+            {hasAffEmail ? (
+              <div className="flex flex-col gap-1">
+                <span className={`inline-flex items-center gap-1 text-xs ${lead.affiliate_email_status === 'invalid' ? 'text-slate-400 line-through' : 'text-on-surface'}`}>
+                  <span className="material-symbols-outlined text-[12px] text-purple-600 shrink-0">group_add</span>
+                  <span className="truncate font-medium">{lead.affiliate_email}</span>
+                </span>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded-full w-fit" title="Found on an affiliate / partner page">
+                    <span className="material-symbols-outlined text-[9px]">group_add</span>lateral
+                  </span>
+                  <VerifyBadge status={lead.affiliate_email_status} lead={lead} />
+                </div>
               </div>
             ) : (
               <span className="text-slate-300 text-xs">—</span>

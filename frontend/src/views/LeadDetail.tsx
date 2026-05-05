@@ -236,6 +236,7 @@ export default function LeadDetail() {
           {[
             { label: 'Trustpilot Email', value: lead.trustpilot_email || '—', icon: 'alternate_email' },
             { label: 'Website Email', value: lead.website_email || '—', icon: 'mark_email_unread' },
+            { label: 'Affiliate Email', value: lead.affiliate_email || '—', icon: 'group_add' },
             { label: 'Phone', value: lead.phone || '—', icon: 'phone' },
             { label: 'Rating', value: lead.star_rating ? `${lead.star_rating.toFixed(1)} ★` : '—', icon: 'star' },
             { label: 'Status', value: null, icon: 'flag', badge: lead.outreach_status },

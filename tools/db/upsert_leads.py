@@ -23,8 +23,18 @@ _VALIDATE_LINKS = os.getenv('UPSERT_VALIDATE_LINKS', '1') != '0'
 
 
 def resolve_primary_email(lead: dict) -> str | None:
-    """Prefer website_email over trustpilot_email (higher deliverability)."""
-    return lead.get('website_email') or lead.get('trustpilot_email') or None
+    """Resolution order: website_email > affiliate_email > trustpilot_email.
+    website_email comes from the main domain and is the most authoritative.
+    affiliate_email comes from a lateral-prospecting hit on an affiliate page
+    (e.g. roosterpartners.com for a casino) — still strong, but one hop away.
+    trustpilot_email is the listing-page address Trustpilot itself surfaces.
+    """
+    return (
+        lead.get('website_email')
+        or lead.get('affiliate_email')
+        or lead.get('trustpilot_email')
+        or None
+    )
 
 
 def normalize_screenshot_path(raw_path: str | None) -> str | None:
@@ -72,6 +82,7 @@ def upsert_leads(leads: list[dict]) -> int:
             'website_url': lead.get('website_url'),
             'trustpilot_email': lead.get('trustpilot_email'),
             'website_email': lead.get('website_email'),
+            'affiliate_email': lead.get('affiliate_email'),
             'primary_email': resolve_primary_email(lead),
             'phone': lead.get('phone'),
             'country': lead.get('country'),

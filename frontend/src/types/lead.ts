@@ -17,6 +17,10 @@ export interface Lead {
   website_url: string | null;
   trustpilot_email: string | null;
   website_email: string | null;
+  // Email discovered by the lateral-prospecting fallback (affiliate/partner
+  // page, e.g. roosterpartners.com from spinjo.com). Distinct from
+  // website_email so source provenance is preserved per email.
+  affiliate_email: string | null;
   primary_email: string | null;
   phone: string | null;
   country: string | null;
@@ -26,6 +30,7 @@ export interface Lead {
   verification_status: VerificationStatus;
   trustpilot_email_status: VerificationStatus | null;
   website_email_status: VerificationStatus | null;
+  affiliate_email_status: VerificationStatus | null;
   // Per-stage breakdown — populated by the layered validator (Stage 1–5).
   // Surfaced in the UI tooltip so the user can see *why* a verdict landed.
   verify_syntax_ok: boolean | null;

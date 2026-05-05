@@ -209,13 +209,22 @@ router.post('/', async (req: Request, res: Response) => {
           }
 
           try {
+            // Lateral-prospecting hits (affiliate/partner page) write to
+            // affiliate_email; everything else (homepage, sitemap, contact
+            // path, ScrapingBee, WHOIS, Wayback, crt.sh) writes to
+            // website_email. primary_email gets the new address whichever
+            // column receives it, but only if no primary exists yet.
+            const isLateral = r.source === 'lateral';
+            const currentPrimary = (r.lead as { primary_email?: string | null }).primary_email ?? null;
+            const update: Record<string, unknown> = {
+              primary_email: currentPrimary ?? r.foundEmail,
+            };
+            if (isLateral) update.affiliate_email = r.foundEmail;
+            else           update.website_email   = r.foundEmail;
+
             const { error: updateErr } = await supabase
               .from('leads')
-              .update({
-                website_email: r.foundEmail,
-                // Promote to primary_email if no better primary exists
-                primary_email: (r.lead as { primary_email?: string | null }).primary_email ?? r.foundEmail,
-              })
+              .update(update)
               .eq('id', leadId);
 
             if (updateErr) {

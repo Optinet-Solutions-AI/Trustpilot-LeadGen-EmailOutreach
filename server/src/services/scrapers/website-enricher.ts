@@ -109,6 +109,14 @@ const SITEMAP_CONTACT_KEYWORDS = [
   'reach', 'touch', 'company', 'write', 'contatti', 'contato',
 ];
 
+// Lateral-prospecting keywords. When the main domain has no public email,
+// many casino/affiliate-driven brands route business contact through a
+// separate affiliate landing (e.g. spinjo.com → roosterpartners.com). We
+// scan the homepage's <a> tags for these keywords in href OR text and
+// follow the first few unique URLs.
+const AFFILIATE_KEYWORDS = ['affiliate', 'affiliates', 'partner', 'partners'];
+const MAX_AFFILIATE_PROBES = 3;
+
 // ────────────────────────────────────────────────────────────────────────────
 
 function isUndeliverable(email: string): boolean {
@@ -441,12 +449,63 @@ async function fetchContactUrlsFromSitemap(
   return [];
 }
 
+// ─── Lateral prospecting — affiliate/partner page discovery ─────────────────
+
+/**
+ * Scan the currently-loaded page for <a> anchors whose href or visible text
+ * matches an affiliate/partner keyword. Resolves to absolute URLs (so a
+ * relative '/affiliates' becomes 'https://spinjo.com/affiliates' and an
+ * external 'https://roosterpartners.com' is preserved). Dedupes and caps at
+ * MAX_AFFILIATE_PROBES so this never balloons the per-lead time budget.
+ */
+async function findAffiliateUrls(page: Page, baseUrl: string): Promise<string[]> {
+  try {
+    const raw = await page.evaluate((keywords: string[]) => {
+      const out: { href: string }[] = [];
+      const re = new RegExp(`\\b(${keywords.join('|')})\\b`, 'i');
+      document.querySelectorAll('a[href]').forEach((el) => {
+        const a = el as HTMLAnchorElement;
+        const href = a.getAttribute('href') || '';
+        const text = (a.textContent || '').trim();
+        if (!href || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('#')) return;
+        if (re.test(href) || re.test(text)) out.push({ href: a.href });
+      });
+      return out;
+    }, AFFILIATE_KEYWORDS);
+
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const { href } of raw) {
+      try {
+        const u = new URL(href, baseUrl);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+        const norm = u.toString().split('#')[0];
+        if (seen.has(norm)) continue;
+        seen.add(norm);
+        ordered.push(norm);
+        if (ordered.length >= MAX_AFFILIATE_PROBES) break;
+      } catch { /* skip malformed */ }
+    }
+    if (ordered.length > 0) {
+      console.log(`    [enricher] lateral prospecting — ${ordered.length} affiliate/partner link(s)`);
+    }
+    return ordered;
+  } catch {
+    return [];
+  }
+}
+
 // ─── Per-lead enrichment ────────────────────────────────────────────────────
 
 interface ScrapeSiteResult {
   found: string | null;
   candidates?: string[];
   blockReason?: string;
+  // Tags which phase produced `found`. 'lateral' means the email came only
+  // from an affiliate/partner page reached by following an anchor on the
+  // homepage; the route handler writes those to leads.affiliate_email instead
+  // of leads.website_email so source provenance is preserved per email.
+  source?: 'website' | 'lateral';
   // Set when the live site redirected to a different registrable domain. The
   // orchestrator treats this as a hard stop — no further tiers fire and no
   // email is saved, because we can't trust an address scraped off the wrong
@@ -542,13 +601,15 @@ async function scrapeSite(
   // Early exit if we already have a top-priority email
   const topNow = [...all].filter((e) => rankEmail(e) === 0);
   if (topNow.length > 0) {
-    return { found: pickBestEmail([...all])!, candidates: [...all] };
+    return { found: pickBestEmail([...all])!, candidates: [...all], source: 'website' };
   }
 
   // 2. Sitemap-discovered contact URLs (real paths, not guessed)
   if (outOfTime()) {
     const best = pickBestEmail([...all]);
-    return best ? { found: best, candidates: [...all] } : { found: null, blockReason: 'deadline_exceeded' };
+    return best
+      ? { found: best, candidates: [...all], source: 'website' }
+      : { found: null, blockReason: 'deadline_exceeded' };
   }
   const sitemapUrls = await fetchContactUrlsFromSitemap(page, url, timeout);
 
@@ -579,8 +640,47 @@ async function scrapeSite(
     await new Promise((r) => setTimeout(r, 300));
   }
 
+  // 4. Lateral prospecting — affiliate/partner page fallback. Only fires if
+  // homepage + sitemap + static contact paths produced nothing. Reuses the
+  // already-loaded browser page (no fresh launch). External affiliate domains
+  // (e.g. roosterpartners.com from spinjo.com) are followed and the existing
+  // findEmailsOnPage extractor runs on them.
+  const lateralEmails = new Set<string>();
+  if (all.size === 0 && !outOfTime()) {
+    try {
+      // The contact-path loop above probably navigated us off the homepage.
+      // Re-anchor before scanning anchors so we get the homepage's footer/nav.
+      const onHomepage = page.url().replace(/\/$/, '') === url.replace(/\/$/, '');
+      if (!onHomepage) {
+        await safeGoto(page, url, timeout).catch(() => ({ ok: false as const }));
+      }
+      const affiliateUrls = await findAffiliateUrls(page, url);
+      for (const lateralUrl of affiliateUrls) {
+        if (outOfTime()) break;
+        try {
+          const nav = await safeGoto(page, lateralUrl, Math.min(timeout, 20_000));
+          if (!nav.ok) continue;
+          const found = await findEmailsOnPage(page);
+          found.forEach((e) => { lateralEmails.add(e); all.add(e); });
+          if ([...lateralEmails].some((e) => rankEmail(e) === 0)) break;
+          if ([...lateralEmails].some((e) => rankEmail(e) === 1)) break;
+        } catch (err) {
+          console.log(`    [enricher] lateral probe failed (${lateralUrl}): ${(err as Error).message.slice(0, 80)}`);
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    } catch (err) {
+      console.log(`    [enricher] lateral prospecting error: ${(err as Error).message.slice(0, 80)}`);
+    }
+  }
+
   const best = pickBestEmail([...all]);
-  return best ? { found: best, candidates: [...all] } : { found: null };
+  if (!best) return { found: null };
+  // Tag lateral only when the best email appeared exclusively on an affiliate
+  // page (not also on the homepage). Sites that publish the same address on
+  // their main domain stay tagged as 'website'.
+  const fromLateralOnly = lateralEmails.has(best) && !homepage.includes(best);
+  return { found: best, candidates: [...all], source: fromLateralOnly ? 'lateral' : 'website' };
 }
 
 // ─── Tier escalation ────────────────────────────────────────────────────────
@@ -753,7 +853,18 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
   startTier: Tier = 2,
-): Promise<{ email: string | null; tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none'; blockReason?: string; redirectsTo?: string }> {
+): Promise<{
+  email: string | null;
+  tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none';
+  blockReason?: string;
+  redirectsTo?: string;
+  // Set when the in-tier scrapeSite() reports the email came from a lateral
+  // affiliate/partner page rather than the main domain. Used by the route
+  // handler to decide whether to write to leads.affiliate_email or
+  // leads.website_email. Only meaningful when `email` is non-null and
+  // `tier` is one of 2/3/4 (i.e. the browser path produced the hit).
+  scrapeSource?: 'website' | 'lateral';
+}> {
   const deadline = Date.now() + PER_LEAD_BUDGET_MS;
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
@@ -786,7 +897,7 @@ async function enrichSingleLeadWithTiers(
       context = bundle.context;
       const page = await context.newPage();
       const result = await scrapeSite(page, websiteUrl, TIER_CONFIGS[tier].timeout, deadline);
-      if (result.found) return { email: result.found, tier };
+      if (result.found) return { email: result.found, tier, scrapeSource: result.source };
       // Cross-domain redirect: hard stop. Don't escalate to ScrapingBee, WHOIS,
       // Wayback, or crt.sh — the lead's outreach value is now in question and
       // any email we surface would be misattributed.
@@ -883,7 +994,10 @@ export interface EnrichableLead {
 export interface EnrichmentResult {
   lead: EnrichableLead;
   foundEmail: string | null;
-  source: 'scrape' | 'none';
+  // 'lateral' = email came from a followed affiliate/partner page (writes to
+  // leads.affiliate_email). 'scrape' = main-domain scrape or any other tier
+  // (writes to leads.website_email). 'none' = no email found.
+  source: 'scrape' | 'lateral' | 'none';
   tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none';
   blockReason?: string;
   redirectsTo?: string;
@@ -941,11 +1055,15 @@ export async function enrichLeads(
       console.log(`  [enricher] [${done + 1}/${queue.length}] ${websiteUrl}`);
       opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain });
       try {
-        const { email, tier, blockReason, redirectsTo } = await enrichSingleLeadWithTiers(websiteUrl);
+        const { email, tier, blockReason, redirectsTo, scrapeSource } = await enrichSingleLeadWithTiers(websiteUrl);
+        const resolvedSource: 'scrape' | 'lateral' | 'none' =
+          email == null ? 'none' :
+          scrapeSource === 'lateral' ? 'lateral' :
+          'scrape';
         results[idx] = {
           lead,
           foundEmail: email,
-          source: tier === 'none' ? 'none' : 'scrape',
+          source: resolvedSource,
           tier,
           blockReason,
           redirectsTo,

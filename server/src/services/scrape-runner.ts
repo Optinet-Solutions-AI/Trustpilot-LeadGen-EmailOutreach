@@ -157,7 +157,18 @@ async function runTsEnricher(jobId: string, jsonFile: string): Promise<number> {
   let newFound = 0;
   for (let i = 0; i < leads.length; i++) {
     const r = results[i];
-    if (r.foundEmail && !leads[i].website_email) {
+    if (!r.foundEmail) continue;
+    // Lateral hits land in affiliate_email; everything else (homepage,
+    // sitemap, contact paths, ScrapingBee, WHOIS, Wayback, crt.sh) lands
+    // in website_email. Preserves source provenance through the JSON
+    // handoff to upsert_leads.py.
+    if (r.source === 'lateral') {
+      const existing = (leads[i] as { affiliate_email?: string | null }).affiliate_email;
+      if (!existing) {
+        leads[i] = { ...leads[i], affiliate_email: r.foundEmail };
+        newFound++;
+      }
+    } else if (!leads[i].website_email) {
       leads[i] = { ...leads[i], website_email: r.foundEmail };
       newFound++;
     }
