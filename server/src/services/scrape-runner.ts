@@ -135,13 +135,14 @@ export function translateEnricherEvent(jobId: string, event: EnricherEvent): voi
       );
       break;
     case 'enrich_failed': {
-      // Persist the failure so the Retry Failed button can revisit the URL later
-      insertFailure({
-        job_id: jobId,
-        url: event.domain,
-        stage: 'website',
-        error_message: `${event.reasonCode}: ${event.message}`,
-      });
+      // Enrich misses (Cloudflare blocks, empty pages, no email findable
+      // after all 8 tiers) used to write a scrape_failures row, which made
+      // the Recent Jobs "Failed" counter show non-zero even when every
+      // lead actually saved to the DB. Retrying these never helps — the
+      // website is still blocked next time — so we now only emit a
+      // progress event for the Live Activity log. Genuinely retriable
+      // failures (Trustpilot profile-page 403s, timeouts) are written
+      // elsewhere and remain in the Retry Failed pool.
       emitProgress(jobId, 'item_failed', `website|${event.domain}|${event.reasonCode}|${event.message}`);
       break;
     }

@@ -250,7 +250,7 @@ export default function LeadsTable({
                   .slice(0, 30)}
               </a>
             )}
-            {onDismissLinkFlag && onEditLinkUrl && lead.link_status && lead.link_status !== 'VALID' && (
+            {onDismissLinkFlag && onEditLinkUrl && lead.link_status && (lead.link_status === 'FLAGGED_DEAD' || lead.link_status === 'FLAGGED_REMOVED') && (
               <LeadLinkWarning
                 lead={lead}
                 onDismiss={onDismissLinkFlag}
