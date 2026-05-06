@@ -117,7 +117,7 @@ export default function Leads() {
   });
   const [verifyStartedAt, setVerifyStartedAt] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<{ total: number; verified: number; invalid: number; catchAll: number; unknown: number } | null>(null);
-  const [verifyEmailField, setVerifyEmailField] = useState<'trustpilot' | 'website' | 'both'>('trustpilot');
+  const [verifyEmailField, setVerifyEmailField] = useState<'trustpilot' | 'website' | 'affiliate' | 'all'>('trustpilot');
   const [enrichJobId, setEnrichJobId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('active_enrich_job');
@@ -647,14 +647,15 @@ export default function Leads() {
                 </button>
                 <select
                   value={verifyEmailField}
-                  onChange={(e) => setVerifyEmailField(e.target.value as 'trustpilot' | 'website' | 'both')}
+                  onChange={(e) => setVerifyEmailField(e.target.value as 'trustpilot' | 'website' | 'affiliate' | 'all')}
                   disabled={verifying || enriching || checkingLinks || checkingClaimed}
                   title="Which email to verify"
                   className="text-[10px] font-bold text-blue-700 bg-transparent border-0 pl-0.5 pr-1.5 py-1.5 cursor-pointer focus:outline-none rounded-r-full hover:bg-blue-50 disabled:opacity-50 uppercase tracking-wide"
                 >
                   <option value="trustpilot">TP</option>
                   <option value="website">Web</option>
-                  <option value="both">Both</option>
+                  <option value="affiliate">Affil</option>
+                  <option value="all">All</option>
                 </select>
               </div>
 

@@ -110,27 +110,41 @@ router.get('/domain-intel', async (req: Request, res: Response) => {
   }
 });
 
-type EmailField = 'trustpilot' | 'website' | 'both';
+// 'both' is kept as a legacy alias of 'all' for backwards compatibility with
+// any clients that still send the old value (the value lived in browser
+// localStorage on the leads page before the affiliate option existed).
+type EmailField = 'trustpilot' | 'website' | 'affiliate' | 'all' | 'both';
+type Source = 'trustpilot' | 'website' | 'affiliate';
 
-function pickEmails(
-  lead: { id: string; primary_email: string | null; trustpilot_email: string | null; website_email: string | null },
-  field: EmailField,
-): string[] {
-  if (field === 'trustpilot') {
-    return lead.trustpilot_email ? [lead.trustpilot_email] : [];
-  }
-  if (field === 'website') {
-    return lead.website_email ? [lead.website_email] : [];
-  }
-  // both — verify each distinct email separately
-  const emails: string[] = [];
-  if (lead.trustpilot_email) emails.push(lead.trustpilot_email);
-  if (lead.website_email && lead.website_email !== lead.trustpilot_email) emails.push(lead.website_email);
-  return emails;
+type LeadEmails = {
+  trustpilot_email: string | null;
+  website_email: string | null;
+  affiliate_email: string | null;
+};
+
+function pickEmails(lead: LeadEmails, field: EmailField): string[] {
+  if (field === 'trustpilot') return lead.trustpilot_email ? [lead.trustpilot_email] : [];
+  if (field === 'website')    return lead.website_email ? [lead.website_email] : [];
+  if (field === 'affiliate')  return lead.affiliate_email ? [lead.affiliate_email] : [];
+  // 'all' / 'both' — every distinct address across the three sources, deduped
+  // so the same address isn't verified twice when sources overlap.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (e: string | null) => {
+    if (!e) return;
+    const k = e.toLowerCase().trim();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(e);
+  };
+  add(lead.trustpilot_email);
+  add(lead.website_email);
+  add(lead.affiliate_email);
+  return out;
 }
 
 // Map orchestrator's per-stage breakdown into the columns the UI tooltip reads.
-function patchFromResult(r: ValidationResult, source: 'trustpilot' | 'website') {
+function patchFromResult(r: ValidationResult, source: Source) {
   const patch: Record<string, unknown> = {
     email_verified: r.status === 'valid',
     verification_status: r.status,
@@ -142,6 +156,7 @@ function patchFromResult(r: ValidationResult, source: 'trustpilot' | 'website') 
   };
   if (source === 'trustpilot') patch.trustpilot_email_status = r.status;
   if (source === 'website')    patch.website_email_status = r.status;
+  if (source === 'affiliate')  patch.affiliate_email_status = r.status;
   return patch;
 }
 
@@ -166,7 +181,7 @@ router.post('/sync', async (req: Request, res: Response) => {
     const supabase = getSupabase();
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('id, trustpilot_email, website_email, trustpilot_email_status, website_email_status')
+      .select('id, trustpilot_email, website_email, affiliate_email, trustpilot_email_status, website_email_status, affiliate_email_status')
       .in('id', leadIds);
     if (error) throw new Error(error.message);
     if (!leads || leads.length === 0) {
@@ -195,15 +210,16 @@ router.post('/sync', async (req: Request, res: Response) => {
       // would only update trustpilot_email_status — website_email_status
       // would keep whatever it had before, and the lead matrix would show
       // one source as invalid while the other stayed null/clean.
-      const addrToSources = new Map<string, Array<'trustpilot' | 'website'>>();
-      if (lead.trustpilot_email) {
-        addrToSources.set(lead.trustpilot_email, ['trustpilot']);
-      }
-      if (lead.website_email) {
-        const list = addrToSources.get(lead.website_email) ?? [];
-        list.push('website');
-        addrToSources.set(lead.website_email, list);
-      }
+      const addrToSources = new Map<string, Source[]>();
+      const pushSource = (addr: string | null, source: Source) => {
+        if (!addr) return;
+        const list = addrToSources.get(addr) ?? [];
+        list.push(source);
+        addrToSources.set(addr, list);
+      };
+      pushSource(lead.trustpilot_email, 'trustpilot');
+      pushSource(lead.website_email, 'website');
+      pushSource(lead.affiliate_email, 'affiliate');
 
       if (addrToSources.size === 0) {
         updated.push({ id: lead.id, message: 'no emails to verify' });
@@ -222,6 +238,7 @@ router.post('/sync', async (req: Request, res: Response) => {
       const perSource: Record<string, string | null> = {
         trustpilot_email_status: lead.trustpilot_email_status ?? null,
         website_email_status: lead.website_email_status ?? null,
+        affiliate_email_status: lead.affiliate_email_status ?? null,
       };
 
       // Broadcast each verdict to every source that holds that address. The
@@ -238,8 +255,10 @@ router.post('/sync', async (req: Request, res: Response) => {
       const resolverInput = {
         trustpilot_email: lead.trustpilot_email,
         website_email: lead.website_email,
+        affiliate_email: lead.affiliate_email,
         trustpilot_email_status: perSource.trustpilot_email_status,
         website_email_status: perSource.website_email_status,
+        affiliate_email_status: perSource.affiliate_email_status,
       };
       const newPrimary = resolvePrimaryEmail(resolverInput);
       patch.primary_email = newPrimary;
@@ -264,6 +283,7 @@ router.post('/sync', async (req: Request, res: Response) => {
         verification_status: finalStatus,
         trustpilot_email_status: perSource.trustpilot_email_status,
         website_email_status: perSource.website_email_status,
+        affiliate_email_status: perSource.affiliate_email_status,
       });
 
       // Best-effort note per lead summarising the freshened verdicts.
@@ -296,7 +316,7 @@ router.post('/', async (req: Request, res: Response) => {
     const supabase = getSupabase();
 
     const hasIds = leadIds && Array.isArray(leadIds) && leadIds.length > 0;
-    let query = supabase.from('leads').select('id, primary_email, trustpilot_email, website_email, email_verified');
+    let query = supabase.from('leads').select('id, primary_email, trustpilot_email, website_email, affiliate_email, email_verified');
     if (hasIds) {
       query = query.in('id', leadIds!);
     } else {
@@ -328,10 +348,14 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
-    // Map each unique email -> the leads that own it, plus which source
-    // field on those leads (trustpilot vs website) matched. Carrying the
-    // source forward lets us update the per-source status column later.
-    type LeadTarget = { id: string; source: 'trustpilot' | 'website' };
+    // Map each unique email -> the (lead, source) pairs that own it. When the
+    // same address appears under multiple sources on the same lead (e.g. TP
+    // and website both list support@example.com), every matching source goes
+    // into the targets list so the verdict gets broadcast to every per-source
+    // status column. Without this, a re-verify would update one column and
+    // leave the other displaying a stale verdict — the bug behind same-email
+    // leads showing TP=catch-all + website=invalid simultaneously.
+    type LeadTarget = { id: string; source: Source };
     const emailToTargets = new Map<string, LeadTarget[]>();
     const norm = (e: string) => e.toLowerCase().trim();
     for (const lead of leads) {
@@ -341,9 +365,11 @@ router.post('/', async (req: Request, res: Response) => {
         if (lead.trustpilot_email && norm(lead.trustpilot_email) === key) {
           targets.push({ id: lead.id, source: 'trustpilot' });
         }
-        if (lead.website_email && norm(lead.website_email) === key
-            && norm(lead.website_email) !== norm(lead.trustpilot_email || '')) {
+        if (lead.website_email && norm(lead.website_email) === key) {
           targets.push({ id: lead.id, source: 'website' });
+        }
+        if (lead.affiliate_email && norm(lead.affiliate_email) === key) {
+          targets.push({ id: lead.id, source: 'affiliate' });
         }
         emailToTargets.set(key, targets);
       }
@@ -357,7 +383,9 @@ router.post('/', async (req: Request, res: Response) => {
         ? 'Trustpilot email'
         : emailField === 'website'
           ? 'website email'
-          : 'Trustpilot or website email';
+          : emailField === 'affiliate'
+            ? 'affiliate email'
+            : 'Trustpilot, website, or affiliate email';
       res.json({
         success: true,
         data: {
