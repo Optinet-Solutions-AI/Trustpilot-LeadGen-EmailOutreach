@@ -14,9 +14,10 @@ import { probeCatchAll } from './catch-all-probe.js';
 import { getCachedDomainIntel, upsertDomainIntel } from './domain-intel.js';
 import { verifyEmails as verifyEmailsZB } from '../email-verifier.zerobounce.js';
 import { verifyEmailMv, millionVerifierEnabled } from '../email-verifier.millionverifier.js';
+import { verifyEmailHunter, hunterVerifyEnabled } from '../email-verifier.hunter.js';
 
 export type FinalStatus = 'valid' | 'invalid' | 'catch-all' | 'unknown';
-export type SourceStage = 'syntax' | 'dns' | 'catch-all' | 'smtp' | 'zerobounce' | 'millionverifier';
+export type SourceStage = 'syntax' | 'dns' | 'catch-all' | 'smtp' | 'zerobounce' | 'millionverifier' | 'hunter';
 export type SmtpResultLabel =
   | '250'
   | '550'
@@ -260,6 +261,37 @@ export async function validateEmail(
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       console.warn(`[validator] MillionVerifier fallback failed for ${norm}: ${m}`);
+    }
+  }
+
+  // ── Stage 7: Hunter.io email-verifier fallback ──────────────────────────
+  // Last-resort tiebreaker. Only fires when ZB AND MillionVerifier both
+  // returned `unknown` AND the env key is set. Free tier is only 50/month
+  // so the adapter additionally skips free-mailbox providers and enforces
+  // a per-process hourly cap (HUNTER_MAX_CALLS_PER_HOUR, default 20).
+  if (hunterVerifyEnabled()) {
+    try {
+      emit('hunter_fallback', norm);
+      const h = await verifyEmailHunter(norm);
+      if (h && h.status !== 'unknown') {
+        return {
+          email: norm,
+          status: h.status,
+          sourceStage: 'hunter',
+          reason: `Hunter.io: ${h.raw.result ?? h.raw.status ?? h.status}${h.raw.score !== undefined ? ` (score: ${h.raw.score})` : ''}.`,
+          syntax_ok: true,
+          mx_ok: true,
+          smtp_result,
+          zerobounce_result: zb,
+          mx_top: mxTop,
+          provider_type: providerType,
+          is_catch_all_domain: isCatchAll,
+          raw_smtp_response,
+        };
+      }
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      console.warn(`[validator] Hunter fallback failed for ${norm}: ${m}`);
     }
   }
 

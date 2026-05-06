@@ -66,6 +66,53 @@ function domainOf(websiteUrl: string): string | null {
   }
 }
 
+// ─── Cost discipline ───────────────────────────────────────────────────────
+//
+// Hunter's free tier is only 50 domain-searches per month, paid Starter is
+// 500/mo at $34, so this tier needs aggressive guardrails to avoid burning
+// the budget on no-value calls. Three layers:
+//
+//   1. Per-process domain cache — repeated leads from the same operator
+//      (common in casino-affiliate clusters: 5 BPs all redirecting to
+//      rocketplay30.com) only spend one credit. TTL 24h covers a typical
+//      enrichment campaign without growing the cache unbounded.
+//   2. Free/junk-domain skip — Hunter never has useful intel on gmail.com /
+//      yahoo.com / generic webmail or on the project's own affiliate
+//      tracker domains, so we don't pay to ask.
+//   3. Per-process hourly cap (HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR,
+//      default 15) — bounds bursts on a "verify all" click.
+//
+// All three are best-effort and process-local. Cloud Run multi-instance
+// won't share the cache, but max-instances is small enough that the bound
+// is still meaningful.
+
+interface DomainSearchMemo {
+  email: string | null;
+  organization: string | null;
+  ts: number;
+}
+const DOMAIN_TTL_MS = 24 * 60 * 60_000;
+const _domainCache = new Map<string, DomainSearchMemo>();
+
+const SKIP_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com',
+  'yahoo.com', 'yahoo.co.uk', 'yahoo.fr', 'yahoo.de',
+  'hotmail.com', 'hotmail.co.uk',
+  'outlook.com', 'outlook.fr', 'outlook.de',
+  'live.com', 'icloud.com', 'me.com',
+  'aol.com', 'mail.com', 'gmx.com', 'gmx.de', 'web.de',
+  'protonmail.com', 'proton.me',
+  'yandex.com', 'mail.ru',
+]);
+
+const MAX_CALLS_PER_HOUR = +(process.env.HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR ?? '15');
+const _callTimestamps: number[] = [];
+function withinHourlyBudget(): boolean {
+  const cutoff = Date.now() - 60 * 60_000;
+  while (_callTimestamps.length && _callTimestamps[0] < cutoff) _callTimestamps.shift();
+  return _callTimestamps.length < MAX_CALLS_PER_HOUR;
+}
+
 export async function tier9HunterLookup(
   websiteUrl: string,
 ): Promise<{ email: string | null; organization?: string | null }> {
@@ -74,6 +121,22 @@ export async function tier9HunterLookup(
 
   const domain = domainOf(websiteUrl);
   if (!domain) return { email: null };
+
+  // Cheap skips — never burn a credit on these.
+  if (SKIP_DOMAINS.has(domain)) return { email: null };
+
+  // Domain cache — second lead from the same operator returns the cached answer.
+  const cached = _domainCache.get(domain);
+  if (cached && Date.now() - cached.ts < DOMAIN_TTL_MS) {
+    if (cached.email) console.log(`[tier9] cache hit: ${cached.email} for ${domain}`);
+    return { email: cached.email, organization: cached.organization };
+  }
+
+  if (!withinHourlyBudget()) {
+    console.warn(`[tier9] hourly cap (${MAX_CALLS_PER_HOUR}) hit — skipping ${domain}`);
+    return { email: null };
+  }
+  _callTimestamps.push(Date.now());
 
   const params = new URLSearchParams({
     domain,
@@ -112,6 +175,10 @@ export async function tier9HunterLookup(
           }
           const email = pickBestHunterEmail(env.data?.emails ?? []);
           const organization = env.data?.organization ?? null;
+          // Cache the result regardless of hit/miss — repeated leads from
+          // the same operator domain shouldn't re-burn a credit just
+          // because the first lookup was empty.
+          _domainCache.set(domain, { email, organization, ts: Date.now() });
           if (email) console.log(`[tier9] hit: ${email} (org=${organization ?? '?'})`);
           finish({ email, organization });
         } catch (err) {
