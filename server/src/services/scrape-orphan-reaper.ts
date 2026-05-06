@@ -19,8 +19,15 @@
 
 import { getSupabase } from '../lib/supabase.js';
 
-const STALE_HEARTBEAT_MS = 3 * 60 * 1000; // 3 min — covers transient slow updates
-const NEVER_BEAT_GRACE_MS = 2 * 60 * 1000; // 2 min — give a fresh job time to beat
+// Stale-heartbeat threshold. Default 15 min (was 3 min): the old window was
+// too aggressive when Supabase has a transient connectivity blip, since
+// every scheduler share the same fetch and they all stop heartbeating
+// simultaneously. 15 min still catches genuinely dead jobs (Cloud Run
+// instance cycle finishes well under that) but survives a 3-5 min
+// network/quota hiccup without killing healthy long-running enrich jobs.
+// Override via ORPHAN_REAPER_STALE_MS for testing.
+const STALE_HEARTBEAT_MS = +(process.env.ORPHAN_REAPER_STALE_MS ?? 15 * 60 * 1000);
+const NEVER_BEAT_GRACE_MS = +(process.env.ORPHAN_REAPER_GRACE_MS ?? 5 * 60 * 1000);
 
 export async function reapOrphanedScrapeJobs(label = 'Reaper'): Promise<number> {
   const supabase = getSupabase();

@@ -28,7 +28,10 @@ const SCRAPINGBEE_TIMEOUT_MS = 70_000;
 // reaches us before we abort the connection ourselves.
 const SOCKET_TIMEOUT_MS = 90_000;
 // Cap response body to avoid pulling 10MB pages that won't help anyway.
-const MAX_BYTES = 2_000_000;
+// Bumped 2MB → 5MB: some casino/gambling SPAs ship a 3MB hero bundle before
+// the contact page renders, and the truncated HTML missed mailto links sitting
+// further down the document.
+const MAX_BYTES = 5_000_000;
 
 export interface ScrapingbeeFetchOpts {
   /** Render JS via headless browser (5 credits). Required for SPAs. */
@@ -74,12 +77,25 @@ export async function fetchViaScrapingbee(
     api_key: apiKey,
     url: targetUrl,
     render_js: String(opts.renderJs ?? true),
-    premium_proxy: String(opts.premiumProxy ?? true),
     block_resources: String(opts.blockResources ?? false),
     timeout: String(SCRAPINGBEE_TIMEOUT_MS),
   });
+  // stealth_proxy and premium_proxy are mutually exclusive on ScrapingBee's
+  // side. Stealth wins when both are requested; it's the only tier that gets
+  // through Cloudflare challenges on domains that have explicitly blocked
+  // SB's premium residential pool (Trustpilot, several casino operators).
+  if (opts.stealthProxy) {
+    params.set('stealth_proxy', 'true');
+  } else {
+    params.set('premium_proxy', String(opts.premiumProxy ?? true));
+  }
+  if (opts.countryCode) params.set('country_code', opts.countryCode);
+  // wait_browser=networkidle0 holds rendering until network is idle for 500ms,
+  // which catches client-rendered contact widgets that pop in after initial paint.
+  if (opts.renderJs ?? true) params.set('wait_browser', 'networkidle0');
 
   const apiUrl = `${SCRAPINGBEE_BASE}?${params.toString()}`;
+  const proxyTier = opts.stealthProxy ? 'stealth' : 'premium';
 
   return new Promise<string | null>((resolve) => {
     let resolved = false;
@@ -90,9 +106,9 @@ export async function fetchViaScrapingbee(
       // 200: OK with HTML. 4xx/5xx: ScrapingBee couldn't fetch the target — treat as miss.
       // 401/403/429: API key / quota issue — log so the user notices, but don't crash.
       if (status === 401 || status === 403) {
-        console.warn(`[tier5] ScrapingBee returned ${status} — check SCRAPINGBEE_API_KEY validity`);
+        console.warn(`[tier5:${proxyTier}] ScrapingBee returned ${status} — check SCRAPINGBEE_API_KEY validity`);
       } else if (status === 429) {
-        console.warn(`[tier5] ScrapingBee returned 429 — credit pool depleted or rate limited`);
+        console.warn(`[tier5:${proxyTier}] ScrapingBee returned 429 — credit pool depleted or rate limited`);
       }
       if (status < 200 || status >= 300) {
         // Drain body so we can log ScrapingBee's actual error message — they
@@ -103,7 +119,7 @@ export async function fetchViaScrapingbee(
         res.on('data', (chunk: string) => { if (errBody.length < 500) errBody += chunk; });
         res.on('end', () => {
           if (status !== 401 && status !== 403 && status !== 429) {
-            console.warn(`[tier5] ScrapingBee returned ${status}: ${errBody.slice(0, 200)}`);
+            console.warn(`[tier5:${proxyTier}] ScrapingBee returned ${status}: ${errBody.slice(0, 200)}`);
           }
           finish(null);
         });
@@ -126,7 +142,7 @@ export async function fetchViaScrapingbee(
     });
     req.on('timeout', () => { req.destroy(); finish(null); });
     req.on('error', (err) => {
-      console.warn(`[tier5] ScrapingBee request error: ${err.message}`);
+      console.warn(`[tier5:${proxyTier}] ScrapingBee request error: ${err.message}`);
       finish(null);
     });
   });

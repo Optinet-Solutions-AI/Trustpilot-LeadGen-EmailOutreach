@@ -7,3 +7,7 @@ python-dotenv>=1.0.0
 postgrest==0.10.6
 playwright-stealth>=1.0.6
 requests>=2.31.0
+# curl_cffi — Chrome-TLS-fingerprint HTTP for the Tier 1.5 enricher fallback.
+# Pre-built wheels are available for Windows / macOS / manylinux, so pip install
+# does not need a C toolchain in normal environments.
+curl_cffi>=0.7.0

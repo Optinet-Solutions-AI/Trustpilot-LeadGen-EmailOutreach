@@ -197,7 +197,11 @@ router.post('/', async (req: Request, res: Response) => {
             translateEnricherEvent(jobId, event);
             let dirty = false;
             if (event.type === 'enrich_email') { liveEnriched++; dirty = true; }
-            else if (event.type === 'enrich_no_email' || event.type === 'enrich_failed' || event.type === 'enrich_redirected') { liveFailed++; dirty = true; }
+            else if (event.type === 'enrich_no_email' || event.type === 'enrich_failed') { liveFailed++; dirty = true; }
+            // enrich_redirected is no longer a failure: even when no email is
+            // scraped from the destination, the redirect target itself is
+            // useful intel and goes on the Redirected Leads page. The
+            // post-loop redirected[] filter still writes leads.redirects_to.
             if (dirty) {
               // Awaited so the latest write reflects the latest counter and
               // we don't get out-of-order overwrites under concurrency.

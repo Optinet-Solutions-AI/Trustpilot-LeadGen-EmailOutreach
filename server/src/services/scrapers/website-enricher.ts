@@ -25,10 +25,13 @@ import https from 'node:https';
 import http from 'node:http';
 import { launchBrowser, TIER_CONFIGS, humanDelay, type Tier } from './browser-launcher.js';
 import { dismissPopups, handleCloudflareChallenge, detectBlock } from './popup-handler.js';
+import { tier1_5TlsFetch } from './tier1_5_tls.js';
 import { fetchViaScrapingbee, scrapingbeeEnabled } from './tier5-scrapingbee.js';
+import { fetchViaScrapfly, scrapflyEnabled } from './tier5b-scrapfly.js';
 import { tier6WhoisLookup } from './tier6-whois.js';
 import { tier7WaybackLookup } from './tier7-wayback.js';
 import { tier8CrtshLookup } from './tier8-crtsh.js';
+import { tier9HunterLookup, hunterEnabled } from './tier9-hunter.js';
 
 // Use explicit DNS servers. System DNS on Cloud Run can be flaky and may refuse
 // MX queries when the instance is cold. Google + Cloudflare are always reachable.
@@ -118,6 +121,41 @@ const AFFILIATE_KEYWORDS = ['affiliate', 'affiliates', 'partner', 'partners'];
 const MAX_AFFILIATE_PROBES = 3;
 
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Map the lead's free-text country column ("Norway", "United Kingdom") to a
+ * 2-letter ISO code that ScrapingBee / ScrapFly accept for proxy geo-targeting.
+ * Country names come from the Trustpilot scrape so the spelling is consistent.
+ * Unknown values return null — callers fall back to the provider's default pool.
+ */
+const COUNTRY_NAME_TO_ISO2: Record<string, string> = {
+  'norway': 'no', 'sweden': 'se', 'denmark': 'dk', 'finland': 'fi', 'iceland': 'is',
+  'germany': 'de', 'austria': 'at', 'switzerland': 'ch',
+  'united kingdom': 'gb', 'uk': 'gb', 'great britain': 'gb', 'england': 'gb',
+  'ireland': 'ie',
+  'united states': 'us', 'usa': 'us', 'us': 'us',
+  'canada': 'ca', 'australia': 'au', 'new zealand': 'nz',
+  'france': 'fr', 'spain': 'es', 'italy': 'it', 'portugal': 'pt',
+  'netherlands': 'nl', 'belgium': 'be', 'luxembourg': 'lu',
+  'poland': 'pl', 'czech republic': 'cz', 'czechia': 'cz', 'slovakia': 'sk',
+  'hungary': 'hu', 'romania': 'ro', 'bulgaria': 'bg', 'greece': 'gr',
+  'estonia': 'ee', 'latvia': 'lv', 'lithuania': 'lt',
+  'croatia': 'hr', 'slovenia': 'si', 'serbia': 'rs',
+  'turkey': 'tr', 'cyprus': 'cy', 'malta': 'mt',
+  'japan': 'jp', 'south korea': 'kr', 'singapore': 'sg', 'india': 'in',
+  'brazil': 'br', 'mexico': 'mx', 'argentina': 'ar', 'chile': 'cl',
+  'south africa': 'za', 'united arab emirates': 'ae', 'uae': 'ae',
+};
+
+export function countryNameToIso2(country: string | null | undefined): string | undefined {
+  if (!country) return undefined;
+  const key = country.trim().toLowerCase();
+  // The leads.country column historically held full names ("Norway"), but the
+  // newer scraper writes ISO2 codes ("NO"). Accept either form: pass through
+  // anything that already looks like a 2-letter code, look up everything else.
+  if (/^[a-z]{2}$/.test(key)) return key;
+  return COUNTRY_NAME_TO_ISO2[key];
+}
 
 function isUndeliverable(email: string): boolean {
   return UNDELIVERABLE_PREFIXES.has(email.split('@')[0].toLowerCase());
@@ -495,6 +533,82 @@ async function findAffiliateUrls(page: Page, baseUrl: string): Promise<string[]>
   }
 }
 
+// ─── BP (Brand Page) target detection ──────────────────────────────────────
+//
+// Casino/affiliate "BP sites" funnel every CTA — Register, Play, Spill, Visit,
+// Bonus — at a single external operator domain. The contact info we want is
+// at that operator (or further down their JS-redirect chain). Detection is
+// language-agnostic: we count external <a href> by registrable domain and
+// flag the page as a BP iff one external domain accounts for the vast
+// majority of links. The orchestrator then recursively scrapes that target
+// through the full tier ladder so Tier 2 can render the JS chain.
+
+const BP_DOMINANT_THRESHOLD = 0.75;  // 75% of external links → BP signal
+const BP_MIN_LINKS = 3;              // need at least 3 links to call it dominant
+const BP_MAX_DISTINCT_DOMAINS = 3;   // tolerate a handful of social/legal links
+
+// Domains we never treat as BP targets — social, payment, legal, CDN, the
+// project's own infrastructure, etc. Keep loose patterns; better to skip a
+// real signal than chase a Twitter button.
+const BP_TARGET_BLOCKLIST = [
+  'trustpilot.com', 'google.com', 'gstatic.com', 'googleapis.com', 'googleadservices.com',
+  'doubleclick.net', 'youtube.com', 'youtu.be',
+  'facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com', 'tiktok.com',
+  'pinterest.com', 'reddit.com', 'snapchat.com', 'discord.com', 'discord.gg', 'telegram.org', 't.me',
+  'whatsapp.com', 'wa.me', 'medium.com',
+  'visa.com', 'mastercard.com', 'paypal.com', 'stripe.com', 'amazon.com',
+  'cloudflare.com', 'cloudflareinsights.com', 'jsdelivr.net', 'unpkg.com',
+  'wikipedia.org', 'wordpress.org', 'wordpress.com',
+  'gambleaware.org', 'gamcare.org.uk', 'begambleaware.org', 'gamblersanonymous.org',
+  'spelinspektionen.se', 'lotteritilsynet.no', 'mga.org.mt',
+];
+
+async function findBpTarget(page: Page, sourceUrl: string): Promise<string | null> {
+  const sourceRegistrable = (() => {
+    try { return registrableDomain(new URL(sourceUrl).hostname); } catch { return null; }
+  })();
+  if (!sourceRegistrable) return null;
+
+  try {
+    const hrefs = await page.evaluate(() => {
+      const out: string[] = [];
+      document.querySelectorAll('a[href]').forEach((el) => {
+        const a = el as HTMLAnchorElement;
+        if (a.href && /^https?:/.test(a.href)) out.push(a.href);
+      });
+      return out;
+    });
+
+    const counts = new Map<string, { count: number; firstUrl: string }>();
+    let totalExternal = 0;
+    for (const href of hrefs) {
+      try {
+        const reg = registrableDomain(new URL(href).hostname);
+        if (!reg || reg === sourceRegistrable) continue;
+        if (BP_TARGET_BLOCKLIST.some((b) => reg === b || reg.endsWith(`.${b}`))) continue;
+        totalExternal++;
+        const slot = counts.get(reg);
+        if (slot) slot.count++;
+        else counts.set(reg, { count: 1, firstUrl: href });
+      } catch { /* skip malformed */ }
+    }
+
+    if (counts.size === 0 || counts.size > BP_MAX_DISTINCT_DOMAINS) return null;
+    if (totalExternal < BP_MIN_LINKS) return null;
+
+    const sorted = [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
+    const [topDomain, top] = sorted[0];
+    const ratio = top.count / totalExternal;
+    if (top.count < BP_MIN_LINKS) return null;
+    if (ratio < BP_DOMINANT_THRESHOLD) return null;
+
+    console.log(`    [enricher] BP detected — ${top.count}/${totalExternal} external links (${Math.round(ratio * 100)}%) target ${topDomain}`);
+    return top.firstUrl;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Per-lead enrichment ────────────────────────────────────────────────────
 
 interface ScrapeSiteResult {
@@ -506,11 +620,23 @@ interface ScrapeSiteResult {
   // homepage; the route handler writes those to leads.affiliate_email instead
   // of leads.website_email so source provenance is preserved per email.
   source?: 'website' | 'lateral';
-  // Set when the live site redirected to a different registrable domain. The
-  // orchestrator treats this as a hard stop — no further tiers fire and no
-  // email is saved, because we can't trust an address scraped off the wrong
-  // operator's site.
+  // Set when the live site redirected to a different registrable domain.
+  // The orchestrator persists this on the lead row (leads.redirects_to) so
+  // the dedicated Redirected Leads page can surface it, and ALSO follows
+  // the redirect to scrape the destination — emails found there land in
+  // leads.affiliate_email so provenance stays clean.
   redirectsTo?: string;
+  // The actual fully-resolved URL the page landed on (e.g. with locale path
+  // like /no/registration). Used by the orchestrator to scrape the redirect
+  // destination instead of guessing the homepage.
+  finalUrl?: string;
+  // Set when scrapeSite found no email on the source domain but the homepage
+  // is a "BP" (Brand Page / affiliate landing) — i.e. all/most CTAs point at
+  // a single external operator domain. The orchestrator then recursively
+  // scrapes that target through the full tier ladder; the JS-driven redirect
+  // chain (BP → tracker → operator) needs Tier 2 browser rendering to
+  // resolve, which a flat HTTP fetch of the BP target can't do alone.
+  bpTarget?: string;
 }
 
 // Registrable-domain extraction. Multi-level TLDs like .co.uk and .com.au
@@ -582,7 +708,32 @@ async function scrapeSite(
     // (cloudflare/bot/403), a different URL scheme won't help.
     if (lastReason !== 'nav_error') break;
   }
-  if (!navOk) return { found: null, blockReason: lastReason ?? 'nav_error' };
+  if (!navOk) {
+    // Even when navigation failed, the browser may already be on a different
+    // registrable domain — this happens when the source 30x'd to an operator
+    // that itself returns 403/CF-challenge. Surface it as a cross-domain
+    // redirect so the orchestrator can recursively scrape the operator
+    // through tiers that bypass the block (Tier 5 ScrapingBee, ScrapFly).
+    let crossDomainTarget: string | null = null;
+    let crossDomainFinalUrl: string | undefined;
+    try {
+      const finalUrl = page.url();
+      if (finalUrl && /^https?:/.test(finalUrl)) {
+        crossDomainTarget = detectCrossDomainRedirect(url, finalUrl);
+        if (crossDomainTarget) crossDomainFinalUrl = finalUrl;
+      }
+    } catch { /* ignore — page may be in detached state */ }
+    if (crossDomainTarget) {
+      console.log(`    [enricher] ⤳ ${url} 30x'd to blocked ${crossDomainFinalUrl} (${crossDomainTarget}) — surfacing for follow-tier escalation`);
+      return {
+        found: null,
+        blockReason: 'redirected_off_domain',
+        redirectsTo: crossDomainTarget,
+        finalUrl: crossDomainFinalUrl,
+      };
+    }
+    return { found: null, blockReason: lastReason ?? 'nav_error' };
+  }
 
   // Detect cross-domain redirects BEFORE extracting any emails. If the source
   // URL silently 30x'd to a different operator's site, we don't want to
@@ -592,7 +743,7 @@ async function scrapeSite(
   const redirectTarget = detectCrossDomainRedirect(url, finalUrl);
   if (redirectTarget) {
     console.log(`    [enricher] ⤳ ${url} redirected to ${finalUrl} (${redirectTarget})`);
-    return { found: null, blockReason: 'redirected_off_domain', redirectsTo: redirectTarget };
+    return { found: null, blockReason: 'redirected_off_domain', redirectsTo: redirectTarget, finalUrl };
   }
 
   const homepage = await findEmailsOnPage(page);
@@ -602,6 +753,19 @@ async function scrapeSite(
   const topNow = [...all].filter((e) => rankEmail(e) === 0);
   if (topNow.length > 0) {
     return { found: pickBestEmail([...all])!, candidates: [...all], source: 'website' };
+  }
+
+  // BP (Brand Page) detection — fires RIGHT AFTER the homepage scan, before
+  // we burn budget probing 28+ contact paths that on a SPA-driven affiliate
+  // landing all return the same shell HTML. If the homepage funnels every
+  // CTA at one external operator domain (Trustpilot affiliate-landing
+  // pattern), short-circuit and let the orchestrator recursively scrape
+  // that target — that's where the contact info actually lives.
+  if (all.size === 0 && !outOfTime()) {
+    try {
+      const bpTarget = await findBpTarget(page, url);
+      if (bpTarget) return { found: null, blockReason: 'bp_redirect', bpTarget };
+    } catch { /* BP detection best-effort — fall through to normal probing */ }
   }
 
   // 2. Sitemap-discovered contact URLs (real paths, not guessed)
@@ -675,7 +839,22 @@ async function scrapeSite(
   }
 
   const best = pickBestEmail([...all]);
-  if (!best) return { found: null };
+  if (!best) {
+    // BP detection — if the homepage funnels every CTA at one external
+    // operator domain, surface that target so the orchestrator can scrape
+    // it through the full tier ladder. The chain (BP → tracker → operator)
+    // typically needs Tier 2 browser to follow JS redirects, so flat-HTTP
+    // probes of the BP target alone usually return a verification stub.
+    if (!outOfTime()) {
+      try {
+        const onHomepage = page.url().replace(/\/$/, '') === url.replace(/\/$/, '');
+        if (!onHomepage) await safeGoto(page, url, timeout).catch(() => ({ ok: false as const }));
+        const bpTarget = await findBpTarget(page, url);
+        if (bpTarget) return { found: null, blockReason: 'bp_redirect', bpTarget };
+      } catch { /* BP detection best-effort — fall through to no-email */ }
+    }
+    return { found: null };
+  }
   // Tag lateral only when the best email appeared exclusively on an affiliate
   // page (not also on the homepage). Sites that publish the same address on
   // their main domain stay tagged as 'website'.
@@ -692,11 +871,70 @@ const BLOCK_REASONS_THAT_ESCALATE = new Set([
 // Hard per-lead time budget. Without this a single slow site (Cloudflare
 // challenge loops, 28 contact paths each timing out at 15s) could stall a
 // worker for >7 minutes, blowing the Cloud Run 60-min request limit on
-// larger batches. Bumped from 60s → 150s after enabling Tier 5 ScrapingBee:
-// premium_proxy + render_js for Cloudflare-protected sites legitimately takes
-// 30–60s on their backend, and the previous 60s budget often expired before
-// Tier 5 could even start a request.
-const PER_LEAD_BUDGET_MS = 150_000;
+// larger batches. Bumped from 150s → 240s once Tier 1.5 (curl_cffi),
+// premium→stealth ScrapingBee retry, and ScrapFly were added — sequential
+// worst case is now Tier 1.5 (~30s) + Tier 2 (~30s) + Tier 5 premium (~70s)
+// + Tier 5 stealth retry (~70s) + Tier 5b ScrapFly (~30s) ≈ 230s. We give
+// the budget enough headroom that the slowest path still completes; the
+// per-domain tier cache below means most leads finish in well under 30s.
+const PER_LEAD_BUDGET_MS = 240_000;
+
+// ─── Per-domain tier cache ──────────────────────────────────────────────────
+//
+// Process-local memo of which tier last produced a result for a given
+// registrable domain. Lets a follow-up lead from the same operator skip the
+// tiers we already know don't work. Cleared on process restart — no
+// persistence, no cross-process sharing. Keep it small; cap entries to bound
+// memory.
+type CachedTierKey =
+  | 'tier1_5_tls' | 'tier2' | 'tier3' | 'tier4'
+  | 'scrapingbee_premium' | 'scrapingbee_stealth' | 'scrapfly'
+  | 'whois' | 'wayback' | 'crtsh' | 'hunter'
+  | 'cloudflare_blocked' | 'redirected_off_domain' | 'no_email';
+
+interface DomainTierMemo {
+  /** Tier that last produced an email for this domain (if any). */
+  workingTier?: CachedTierKey;
+  /** Last block reason observed — used to fast-track escalation. */
+  lastBlockReason?: string;
+  /** Timestamp; entries older than 30 minutes are ignored (sites recover). */
+  ts: number;
+}
+
+const _domainTierCache = new Map<string, DomainTierMemo>();
+const DOMAIN_CACHE_MAX_ENTRIES = 1000;
+const DOMAIN_CACHE_TTL_MS = 30 * 60_000;
+
+function registrableDomainOf(websiteUrl: string): string {
+  try {
+    const u = new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`);
+    const host = u.hostname.replace(/^www\./, '');
+    return host.toLowerCase();
+  } catch {
+    return websiteUrl.toLowerCase();
+  }
+}
+
+function getDomainMemo(websiteUrl: string): DomainTierMemo | undefined {
+  const key = registrableDomainOf(websiteUrl);
+  const memo = _domainTierCache.get(key);
+  if (!memo) return undefined;
+  if (Date.now() - memo.ts > DOMAIN_CACHE_TTL_MS) {
+    _domainTierCache.delete(key);
+    return undefined;
+  }
+  return memo;
+}
+
+function setDomainMemo(websiteUrl: string, memo: Omit<DomainTierMemo, 'ts'>): void {
+  const key = registrableDomainOf(websiteUrl);
+  // Bound the cache — drop oldest when full (FIFO via insertion order).
+  if (_domainTierCache.size >= DOMAIN_CACHE_MAX_ENTRIES) {
+    const oldestKey = _domainTierCache.keys().next().value;
+    if (oldestKey) _domainTierCache.delete(oldestKey);
+  }
+  _domainTierCache.set(key, { ...memo, ts: Date.now() });
+}
 
 /**
  * Lightweight HTTP/HTTPS fast lane: attempts a raw GET of the homepage and
@@ -799,38 +1037,177 @@ const TIER5_PROBE_PATHS = [
 // Hard cap on Tier 5 calls per lead — each call is ~25 credits with
 // premium_proxy + render_js. 4 caps blocked-lead cost at ~100 credits.
 const TIER5_MAX_PROBES = 4;
+// Stealth_proxy costs ~75 credits per call (3x premium), so cap retries tighter:
+// only re-probe homepage + /contact under stealth — those two cover the
+// realistic email locations on Cloudflare-blocked operator sites.
+const TIER5_MAX_STEALTH_PROBES = 2;
 
-async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> {
+// Markers that the returned HTML is itself a Cloudflare interstitial — i.e.
+// premium_proxy got 200 OK but Cloudflare served the challenge page through
+// it. These are the same strings popup-handler.ts uses to detect blocks in
+// browser-rendered HTML; reusing them keeps detection consistent across tiers.
+const CF_HTML_MARKERS = [
+  'just a moment',
+  'checking your browser',
+  'cf-browser-verification',
+  'attention required',
+  'enable javascript and cookies',
+  'ddos protection by cloudflare',
+];
+
+function htmlLooksCloudflareBlocked(html: string): boolean {
+  const lower = html.toLowerCase();
+  return CF_HTML_MARKERS.some((marker) => lower.includes(marker));
+}
+
+async function tier5ScrapingbeeScan(
+  websiteUrl: string,
+  country?: string,
+): Promise<{ email: string | null; usedStealth: boolean; probes: number }> {
   const url = normalizeUrl(websiteUrl);
-  if (!url) return null;
+  if (!url) return { email: null, usedStealth: false, probes: 0 };
 
+  const countryCode = countryNameToIso2(country);
   const base = url.replace(/\/$/, '');
   const all = new Set<string>();
-  let probes = 0;
+  let premiumProbes = 0;
+  let stealthProbes = 0;
+  let everSawCfBlock = false;
 
+  // ── Pass 1: premium_proxy across all probe paths (cheap tier) ──
   for (const subpath of TIER5_PROBE_PATHS) {
-    if (probes >= TIER5_MAX_PROBES) break;
+    if (premiumProbes >= TIER5_MAX_PROBES) break;
     const target = subpath ? `${base}${subpath}` : url;
-    probes++;
+    premiumProbes++;
 
     const html = await fetchViaScrapingbee(target, {
       renderJs: true,
       premiumProxy: true,
       blockResources: false,
+      countryCode,
     });
     if (!html) continue;
 
+    // ScrapingBee returned HTML but it's a Cloudflare challenge page — the
+    // premium pool is on the target's blocklist. Note this so we escalate
+    // to stealth_proxy, but keep collecting any emails the page might leak
+    // (CF challenge pages are rarely useful, but it's free to scan).
+    if (htmlLooksCloudflareBlocked(html)) {
+      everSawCfBlock = true;
+      continue;
+    }
+
     extractEmailsFromText(html).forEach((e) => all.add(e));
-    // Decode Cloudflare-obfuscated emails embedded in data-cfemail attributes
     const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
     for (const m of html.matchAll(cfPattern)) {
       const decoded = decodeCfEmail(m[1]);
       if (decoded) all.add(decoded);
     }
 
-    // Early exit on a top-priority email (contact/sales/hello). For acceptable
-    // prefixes (info/support) keep probing — legal/terms pages often expose
-    // better operator contact info than the homepage's generic info@.
+    const cleanNow = [...all].filter(
+      (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    );
+    if (cleanNow.some((e) => rankEmail(e) === 0)) break;
+  }
+
+  let cleanedSoFar = [...all].filter(
+    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+  );
+  const haveTopHit = cleanedSoFar.some((e) => rankEmail(e) === 0);
+
+  // ── Pass 2: escalate to stealth_proxy if premium leaked nothing useful ──
+  // Trigger when premium HTML was a CF challenge OR when premium produced no
+  // top-priority email AND no candidates at all. Don't burn stealth credits
+  // when we already have a usable info@/contact@ candidate.
+  const shouldEscalate =
+    !haveTopHit && (everSawCfBlock || cleanedSoFar.length === 0);
+
+  if (shouldEscalate) {
+    const stealthPaths = TIER5_PROBE_PATHS.slice(0, TIER5_MAX_STEALTH_PROBES);
+    for (const subpath of stealthPaths) {
+      stealthProbes++;
+      const target = subpath ? `${base}${subpath}` : url;
+
+      const html = await fetchViaScrapingbee(target, {
+        renderJs: true,
+        stealthProxy: true,
+        blockResources: false,
+        countryCode,
+      });
+      if (!html) continue;
+      if (htmlLooksCloudflareBlocked(html)) continue; // even stealth blocked — give up
+
+      extractEmailsFromText(html).forEach((e) => all.add(e));
+      const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
+      for (const m of html.matchAll(cfPattern)) {
+        const decoded = decodeCfEmail(m[1]);
+        if (decoded) all.add(decoded);
+      }
+
+      cleanedSoFar = [...all].filter(
+        (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+      );
+      if (cleanedSoFar.some((e) => rankEmail(e) === 0)) break;
+    }
+  }
+
+  const totalProbes = premiumProbes + stealthProbes;
+  const usedStealth = stealthProbes > 0;
+  const candidates = [...all].filter(
+    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+  );
+  if (candidates.length === 0) {
+    console.log(`    [tier5] no email after ${premiumProbes} premium + ${stealthProbes} stealth probe(s)${countryCode ? ` (country=${countryCode})` : ''}`);
+    return { email: null, usedStealth, probes: totalProbes };
+  }
+  const verified = await filterByMx(candidates);
+  const best = pickBestEmail(verified);
+  if (best) {
+    console.log(`    [tier5${usedStealth ? ':stealth' : ''}] hit after ${premiumProbes}+${stealthProbes} probe(s): ${best}`);
+  }
+  return { email: best, usedStealth, probes: totalProbes };
+}
+
+/**
+ * Tier 5b — ScrapFly managed-proxy scan. Mirrors Tier 5's probe loop but uses
+ * a different vendor (different IP pool + different anti-bot infra), so this
+ * is the natural follow-on when ScrapingBee can't get through.
+ */
+const TIER5B_PROBE_PATHS = ['', '/contact', '/kontakt', '/impressum'];
+const TIER5B_MAX_PROBES = 3;
+
+async function tier5bScrapflyScan(
+  websiteUrl: string,
+  country?: string,
+): Promise<string | null> {
+  const url = normalizeUrl(websiteUrl);
+  if (!url) return null;
+
+  const countryCode = countryNameToIso2(country);
+  const base = url.replace(/\/$/, '');
+  const all = new Set<string>();
+  let probes = 0;
+
+  for (const subpath of TIER5B_PROBE_PATHS) {
+    if (probes >= TIER5B_MAX_PROBES) break;
+    const target = subpath ? `${base}${subpath}` : url;
+    probes++;
+
+    const html = await fetchViaScrapfly(target, {
+      renderJs: true,
+      asp: true,
+      countryCode,
+    });
+    if (!html) continue;
+    if (htmlLooksCloudflareBlocked(html)) continue;
+
+    extractEmailsFromText(html).forEach((e) => all.add(e));
+    const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
+    for (const m of html.matchAll(cfPattern)) {
+      const decoded = decodeCfEmail(m[1]);
+      if (decoded) all.add(decoded);
+    }
+
     const cleanNow = [...all].filter(
       (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
     );
@@ -841,21 +1218,84 @@ async function tier5ScrapingbeeScan(websiteUrl: string): Promise<string | null> 
     (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
   );
   if (candidates.length === 0) {
-    console.log(`    [tier5] no email after ${probes} probe(s)`);
+    console.log(`    [tier5b] no email after ${probes} probe(s)${countryCode ? ` (country=${countryCode})` : ''}`);
     return null;
   }
   const verified = await filterByMx(candidates);
   const best = pickBestEmail(verified);
-  if (best) console.log(`    [tier5] hit after ${probes} probe(s): ${best}`);
+  if (best) console.log(`    [tier5b] hit after ${probes} probe(s): ${best}`);
   return best;
+}
+
+/**
+ * Tier 1.5 — Chrome-TLS-fingerprint HTTP fetch via curl_cffi subprocess.
+ * Same email-extraction pipeline as the browser path, but no browser launch.
+ * Returns the best email + a flag indicating whether the TLS fetch saw
+ * Cloudflare blocks (used by callers to decide whether to escalate).
+ */
+async function tier1_5TlsScan(
+  websiteUrl: string,
+): Promise<{ email: string | null; sawCfBlock: boolean; ran: boolean }> {
+  const result = await tier1_5TlsFetch(websiteUrl);
+  if (!result) return { email: null, sawCfBlock: false, ran: false };
+
+  const all = new Set<string>();
+  let sawCfBlock = false;
+
+  for (const probe of result.probes) {
+    if (probe.blockReason === 'cloudflare_challenge') sawCfBlock = true;
+    if (!probe.html) continue;
+    extractEmailsFromText(probe.html).forEach((e) => all.add(e));
+    const cfPattern = /data-cfemail="([0-9a-fA-F]+)"/g;
+    for (const m of probe.html.matchAll(cfPattern)) {
+      const decoded = decodeCfEmail(m[1]);
+      if (decoded) all.add(decoded);
+    }
+  }
+
+  const candidates = [...all].filter(
+    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+  );
+  if (candidates.length === 0) {
+    console.log(`    [tier1_5_tls] ran ${result.probes.length} probe(s), no usable email${sawCfBlock ? ' (CF block seen)' : ''}`);
+    return { email: null, sawCfBlock, ran: true };
+  }
+  const verified = await filterByMx(candidates);
+  const best = pickBestEmail(verified);
+  if (best) console.log(`    [tier1_5_tls] hit (impersonate=${result.impersonate}): ${best}`);
+  return { email: best, sawCfBlock, ran: true };
 }
 
 async function enrichSingleLeadWithTiers(
   websiteUrl: string,
-  startTier: Tier = 2,
+  opts: {
+    startTier?: Tier;
+    country?: string | null;
+    /**
+     * Allow one cross-domain 30x redirect at homepage load to be followed
+     * (recursive scrape of destination, result marked 'lateral'). Default
+     * true; recursive calls set this to false to bound the chain.
+     */
+    followRedirect?: boolean;
+    /**
+     * Allow one BP-redirect to be followed: when the source domain funnels
+     * every CTA at one external operator domain (Trustpilot affiliate
+     * landing pattern), recursively scrape the operator. Independent from
+     * followRedirect so a BP target is still allowed to do a single
+     * cross-domain redirect (BP → tracker → operator). Default true;
+     * recursive calls set this to false to prevent BP→BP→... nesting.
+     */
+    followBp?: boolean;
+    /**
+     * Inherited deadline (ms epoch) for recursive scrapes. Caps total
+     * wall-clock at the original lead's PER_LEAD_BUDGET_MS rather than
+     * doubling/tripling it for chained follow-ups.
+     */
+    inheritedDeadline?: number;
+  } = {},
 ): Promise<{
   email: string | null;
-  tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none';
+  tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'redirected' | 'none';
   blockReason?: string;
   redirectsTo?: string;
   // Set when the in-tier scrapeSite() reports the email came from a lateral
@@ -865,7 +1305,19 @@ async function enrichSingleLeadWithTiers(
   // `tier` is one of 2/3/4 (i.e. the browser path produced the hit).
   scrapeSource?: 'website' | 'lateral';
 }> {
-  const deadline = Date.now() + PER_LEAD_BUDGET_MS;
+  const startTier: Tier = opts.startTier ?? 2;
+  const country = opts.country ?? null;
+  const followRedirect = opts.followRedirect ?? true;
+  const followBp = opts.followBp ?? true;
+  const deadline = opts.inheritedDeadline ?? (Date.now() + PER_LEAD_BUDGET_MS);
+
+  // Per-domain memo lookup — if we've enriched this domain in the last 30
+  // minutes, use what we learned to skip tiers that don't work and fast-track
+  // ones that do. Saves both time and ScrapingBee credits when many leads from
+  // the same operator come in (common in casino/affiliate networks).
+  const memo = getDomainMemo(websiteUrl);
+  let seenCfChallenge = false;
+
   const availableTiers: Tier[] = [];
   for (const t of [startTier, 3, 4] as Tier[]) {
     if (t === startTier || !availableTiers.includes(t)) {
@@ -875,20 +1327,52 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
+  // If memo says this domain is Cloudflare-blocked, pre-set the flag so the
+  // browser-tier loop skips Tier 3 (DC proxy is useless against CF) and we
+  // jump faster toward Tier 5 stealth + Tier 5b ScrapFly.
+  if (memo?.lastBlockReason === 'cloudflare_challenge') {
+    seenCfChallenge = true;
+  }
+
   // HTTP fast lane — try raw GET before paying browser-launch cost
   if (Date.now() < deadline) {
     try {
       const fastEmail = await httpFastLane(websiteUrl);
       if (fastEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'tier2', lastBlockReason: undefined });
         console.log(`    [enricher] ✓ fast-lane hit: ${fastEmail}`);
         return { email: fastEmail, tier: 2 };
       }
     } catch { /* best-effort — fall through to browser path */ }
   }
 
-  let lastBlockReason: string | undefined;
+  // Tier 1.5 — Chrome-TLS-fingerprint HTTP via curl_cffi. Bypasses
+  // Cloudflare's TLS-handshake fingerprint check on a large fraction of
+  // protected sites without launching a browser. Free, fast (~1-3s/probe).
+  // Skips silently if curl_cffi isn't installed.
+  if (Date.now() < deadline) {
+    try {
+      const { email: tlsEmail, sawCfBlock, ran } = await tier1_5TlsScan(websiteUrl);
+      if (tlsEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'tier1_5_tls', lastBlockReason: undefined });
+        return { email: tlsEmail, tier: 2 };
+      }
+      // No email but TLS fetch saw a CF challenge — flag for the escalation
+      // logic below so we skip Tier 3 (DC proxy) and head straight to Tier 5.
+      if (ran && sawCfBlock) seenCfChallenge = true;
+    } catch { /* tier 1.5 is best-effort — fall through */ }
+  }
+
+  let lastBlockReason: string | undefined = seenCfChallenge ? 'cloudflare_challenge' : undefined;
   for (const tier of availableTiers) {
     if (Date.now() > deadline) { lastBlockReason = 'per_lead_deadline'; break; }
+    // Datacenter-proxy IPs are pre-flagged by Cloudflare's bot-management.
+    // If we already know this domain serves a CF challenge, skipping Tier 3
+    // saves ~5-45s of wasted timeout and gets us to Tier 5 stealth faster.
+    if (tier === 3 && seenCfChallenge) {
+      console.log(`    [enricher] skipping tier 3 — Cloudflare challenge detected, DC proxy won't help`);
+      continue;
+    }
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
     try {
@@ -897,15 +1381,112 @@ async function enrichSingleLeadWithTiers(
       context = bundle.context;
       const page = await context.newPage();
       const result = await scrapeSite(page, websiteUrl, TIER_CONFIGS[tier].timeout, deadline);
-      if (result.found) return { email: result.found, tier, scrapeSource: result.source };
-      // Cross-domain redirect: hard stop. Don't escalate to ScrapingBee, WHOIS,
-      // Wayback, or crt.sh — the lead's outreach value is now in question and
-      // any email we surface would be misattributed.
+      if (result.found) {
+        setDomainMemo(websiteUrl, {
+          workingTier: tier === 2 ? 'tier2' : tier === 3 ? 'tier3' : 'tier4',
+          lastBlockReason: undefined,
+        });
+        return { email: result.found, tier, scrapeSource: result.source };
+      }
+      // BP (Brand Page) detection: the source domain is itself an affiliate
+      // landing page that funnels every CTA at one external operator. Follow
+      // the operator URL and scrape there — emails land in affiliate_email
+      // since the address belongs to the operator, not the BP brand. We
+      // ALSO surface redirectsTo (the operator's registrable domain) so the
+      // lead appears on the Redirected Leads page and the user can review
+      // the operator-context handoff before approving outreach.
+      if (result.blockReason === 'bp_redirect' && result.bpTarget && followBp && Date.now() < deadline) {
+        console.log(`    [enricher] BP redirect — scraping operator at ${result.bpTarget} (saving as affiliate_email)`);
+        // Compute the BP target's registrable domain up front so we can
+        // surface it as redirectsTo whether or not the recursive scrape
+        // turns up an email. Same domain shows on the Redirected Leads
+        // page in both cases.
+        let bpTargetDomain: string | undefined;
+        try { bpTargetDomain = registrableDomain(new URL(result.bpTarget).hostname); } catch { /* malformed URL — skip */ }
+        try {
+          // Allow ONE more cross-domain redirect at the BP target (chain is
+          // typically BP → tracker → operator; we want to land on the
+          // operator). Don't allow further BP detection from this hop.
+          const inner = await enrichSingleLeadWithTiers(result.bpTarget, {
+            country,
+            followRedirect: true,
+            followBp: false,
+            inheritedDeadline: deadline,
+          });
+          if (inner.email) {
+            return {
+              email: inner.email,
+              tier: inner.tier,
+              scrapeSource: 'lateral',
+              redirectsTo: inner.redirectsTo ?? bpTargetDomain,
+            };
+          }
+          // BP target had no email either — surface what we know. The route
+          // still writes leads.redirects_to from this so the lead is visible
+          // on the Redirected Leads page even with no email scraped.
+          if (bpTargetDomain) {
+            lastBlockReason = 'redirected_off_domain';
+            return {
+              email: null,
+              tier: 'redirected',
+              redirectsTo: inner.redirectsTo ?? bpTargetDomain,
+              blockReason: 'redirected_off_domain',
+            };
+          }
+          lastBlockReason = 'bp_redirect_no_email';
+        } catch (err) {
+          console.warn(`    [enricher] BP-follow error: ${(err as Error).message.slice(0, 100)}`);
+        }
+        // Don't fall through to the cross-domain redirect block — different signal.
+        continue;
+      }
+
+      // Cross-domain redirect: stop tier escalation on the source domain (any
+      // emails scraped there belong to a different operator), but follow the
+      // redirect once and scrape the destination — those hits are written to
+      // leads.affiliate_email so provenance stays clean. The original
+      // `redirectsTo` is preserved on the return so the route still writes
+      // leads.redirects_to for the Redirected Leads page.
       if (result.redirectsTo) {
-        return { email: null, tier: 'redirected', redirectsTo: result.redirectsTo, blockReason: 'redirected_off_domain' };
+        setDomainMemo(websiteUrl, { lastBlockReason: 'redirected_off_domain' });
+        const redirectTarget = result.redirectsTo;
+        const finalUrl = result.finalUrl;
+
+        if (followRedirect && finalUrl && Date.now() < deadline) {
+          console.log(`    [enricher] following redirect → ${finalUrl} (saving as affiliate_email if found)`);
+          try {
+            const inner = await enrichSingleLeadWithTiers(finalUrl, {
+              country,
+              followRedirect: false,
+              followBp: false,
+              inheritedDeadline: deadline,
+            });
+            // Whether the inner scrape found an email or not, we keep the
+            // original redirect target on the result so the route writes
+            // leads.redirects_to. If an email was found, force source to
+            // 'lateral' so it writes to affiliate_email rather than
+            // website_email — the address belongs to the destination
+            // operator, not the original lead's brand.
+            return {
+              email: inner.email,
+              tier: inner.email ? inner.tier : 'redirected',
+              blockReason: inner.email ? undefined : 'redirected_off_domain',
+              redirectsTo: redirectTarget,
+              scrapeSource: inner.email ? 'lateral' : undefined,
+            };
+          } catch (err) {
+            console.warn(`    [enricher] redirect-follow error: ${(err as Error).message.slice(0, 100)}`);
+          }
+        }
+
+        // followRedirect=false (recursive call) or no finalUrl available —
+        // fall through to the original behavior: surface the redirect, no
+        // email scraped.
+        return { email: null, tier: 'redirected', redirectsTo: redirectTarget, blockReason: 'redirected_off_domain' };
       }
       const reason = result.blockReason ?? undefined;
       lastBlockReason = reason || lastBlockReason;
+      if (reason === 'cloudflare_challenge') seenCfChallenge = true;
       if (!reason || !BLOCK_REASONS_THAT_ESCALATE.has(reason)) {
         break;  // page loaded fine, just no emails — escalation won't help
       }
@@ -925,13 +1506,32 @@ async function enrichSingleLeadWithTiers(
   if (scrapingbeeEnabled() && wasBlocked && Date.now() < deadline) {
     try {
       console.log(`    [enricher] tier5 (ScrapingBee) — escalating after ${lastBlockReason}`);
-      const sbEmail = await tier5ScrapingbeeScan(websiteUrl);
+      const { email: sbEmail, usedStealth } = await tier5ScrapingbeeScan(websiteUrl, country ?? undefined);
       if (sbEmail) {
-        console.log(`    [enricher] ✓ tier5 hit: ${sbEmail}`);
+        setDomainMemo(websiteUrl, {
+          workingTier: usedStealth ? 'scrapingbee_stealth' : 'scrapingbee_premium',
+          lastBlockReason: undefined,
+        });
         return { email: sbEmail, tier: 'scrapingbee' };
       }
     } catch (err) {
       console.warn(`    [enricher] tier5 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
+  // Tier 5b — ScrapFly fallback. Different IP pool + different anti-bot
+  // infrastructure than ScrapingBee, so domains that block one tier often
+  // clear the other. Free tier is 1,000 credits/month, permanent.
+  if (scrapflyEnabled() && wasBlocked && Date.now() < deadline) {
+    try {
+      console.log(`    [enricher] tier5b (ScrapFly) — escalating after ScrapingBee miss`);
+      const sfEmail = await tier5bScrapflyScan(websiteUrl, country ?? undefined);
+      if (sfEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'scrapfly', lastBlockReason: undefined });
+        return { email: sfEmail, tier: 'scrapfly' };
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier5b error: ${(err as Error).message.slice(0, 100)}`);
     }
   }
 
@@ -942,6 +1542,7 @@ async function enrichSingleLeadWithTiers(
     try {
       const { email: whoisEmail } = await tier6WhoisLookup(websiteUrl);
       if (whoisEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'whois', lastBlockReason: undefined });
         return { email: whoisEmail, tier: 'whois' };
       }
     } catch (err) {
@@ -955,6 +1556,7 @@ async function enrichSingleLeadWithTiers(
     try {
       const { email: wbEmail } = await tier7WaybackLookup(websiteUrl, deadline);
       if (wbEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'wayback', lastBlockReason: undefined });
         return { email: wbEmail, tier: 'wayback' };
       }
     } catch (err) {
@@ -968,6 +1570,7 @@ async function enrichSingleLeadWithTiers(
     try {
       const { email: ctEmail } = await tier8CrtshLookup(websiteUrl);
       if (ctEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'crtsh', lastBlockReason: undefined });
         return { email: ctEmail, tier: 'crtsh' };
       }
     } catch (err) {
@@ -975,9 +1578,25 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
+  // Tier 9 — Hunter.io domain-search. No scraping, just an aggregated public-
+  // sources lookup, so it works even on fully Cloudflare-blocked domains.
+  // Free tier: 50/month — only triggers after every other tier has missed.
+  if (hunterEnabled() && Date.now() < deadline) {
+    try {
+      const { email: hEmail } = await tier9HunterLookup(websiteUrl);
+      if (hEmail) {
+        setDomainMemo(websiteUrl, { workingTier: 'hunter', lastBlockReason: undefined });
+        return { email: hEmail, tier: 'hunter' };
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier9 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
   // No MX-guess fallback — if real scraping found nothing, return null.
   // Guessed emails (info@<domain>) polluted the DB with addresses that look
   // legitimate but were never actually verified to exist on the page.
+  setDomainMemo(websiteUrl, { lastBlockReason: lastBlockReason ?? 'no_email' });
   return { email: null, tier: 'none', blockReason: lastBlockReason };
 }
 
@@ -998,7 +1617,7 @@ export interface EnrichmentResult {
   // leads.affiliate_email). 'scrape' = main-domain scrape or any other tier
   // (writes to leads.website_email). 'none' = no email found.
   source: 'scrape' | 'lateral' | 'none';
-  tier: Tier | 'scrapingbee' | 'whois' | 'wayback' | 'crtsh' | 'redirected' | 'none';
+  tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'redirected' | 'none';
   blockReason?: string;
   redirectsTo?: string;
 }
@@ -1055,7 +1674,8 @@ export async function enrichLeads(
       console.log(`  [enricher] [${done + 1}/${queue.length}] ${websiteUrl}`);
       opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain });
       try {
-        const { email, tier, blockReason, redirectsTo, scrapeSource } = await enrichSingleLeadWithTiers(websiteUrl);
+        const country = (lead.country as string | null | undefined) ?? null;
+        const { email, tier, blockReason, redirectsTo, scrapeSource } = await enrichSingleLeadWithTiers(websiteUrl, { country });
         const resolvedSource: 'scrape' | 'lateral' | 'none' =
           email == null ? 'none' :
           scrapeSource === 'lateral' ? 'lateral' :
