@@ -30,19 +30,32 @@ interface ZBBatchResponse {
   errors?: Array<{ error: string; email_address: string }>;
 }
 
-function mapStatus(zbStatus: string): ZBStatus {
-  switch (zbStatus.toLowerCase()) {
+// Verdict mapping for ZB's top-level status, with a sub_status carve-out
+// for `do_not_mail` so we don't blanket-block reputational flags that
+// usually still reach a real mailbox. Per ZB's docs
+// (https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-status-codes),
+// `toxic` and `do_not_mail` are reputation/compliance flags rather than
+// mailbox-existence proof — collapsing them to `invalid` permanently silenced
+// real prospects. We keep `invalid` for the genuine landmines: spamtraps,
+// abuse reporters, and the two `do_not_mail` sub-statuses that imply
+// suppression-list / spamtrap exposure (`global_suppression`,
+// `possible_trap`). Everything else (role_based, mx_forward, role-based
+// catch-all, etc.) demotes to `catch-all` or `unknown` — both already
+// selectable and sendable under the campaign send-gate, so the user can
+// opt-in per campaign.
+function mapStatus(zbStatus: string, zbSubStatus: string): ZBStatus {
+  const status = zbStatus.toLowerCase();
+  const subStatus = (zbSubStatus || '').toLowerCase();
+  switch (status) {
     case 'valid':       return 'valid';
     case 'invalid':     return 'invalid';
     case 'catch-all':   return 'catch-all';
-    // ZeroBounce-specific categories that are definitively undeliverable:
-    // role-based addresses flagged as do-not-mail, known spam traps, abuse
-    // reporters, and "toxic" (disposable / complainer) addresses. Treat all
-    // as invalid so they get excluded from campaigns.
+    case 'spamtrap':    return 'invalid';
+    case 'abuse':       return 'invalid';
+    case 'toxic':       return 'unknown';
     case 'do_not_mail':
-    case 'spamtrap':
-    case 'abuse':
-    case 'toxic':       return 'invalid';
+      if (subStatus === 'global_suppression' || subStatus === 'possible_trap') return 'invalid';
+      return 'catch-all';
     default:            return 'unknown';
   }
 }
@@ -98,7 +111,7 @@ export async function verifyEmails(emails: string[]): Promise<Array<{ email: str
     }
 
     for (const item of response.email_batch) {
-      results.push({ email: item.address, status: mapStatus(item.status) });
+      results.push({ email: item.address, status: mapStatus(item.status, item.sub_status) });
     }
   }
 

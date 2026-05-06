@@ -39,11 +39,18 @@ export interface MillionVerifierResult {
   raw: Pick<MvResponse, 'result' | 'quality' | 'free' | 'role' | 'didyoumean' | 'error'>;
 }
 
+// `disposable` is a domain-level provider flag (the address is hosted on a
+// temp-mail provider per
+// https://help.millionverifier.com/email-verification/email-verification-results),
+// not proof the mailbox is dead today. Demoting to `unknown` keeps the lead
+// selectable so the user can opt-in per campaign rather than the validator
+// silently silencing them. The hard-undeliverable cases (`invalid`) still
+// short-circuit to `invalid`.
 function mapStatus(result: string | undefined): FinalStatus {
   switch ((result ?? '').toLowerCase()) {
     case 'ok':           return 'valid';
     case 'invalid':      return 'invalid';
-    case 'disposable':   return 'invalid';   // disposable addresses are functionally undeliverable for outreach
+    case 'disposable':   return 'unknown';
     case 'catch_all':    return 'catch-all';
     case 'unknown':
     case 'error':
