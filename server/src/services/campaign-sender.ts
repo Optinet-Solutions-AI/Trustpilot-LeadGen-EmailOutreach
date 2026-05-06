@@ -170,6 +170,7 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
       scheduledTimes = assignScheduledTimes(total, sendingSchedule);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Campaign] Schedule error for "${campaignName}" (${campaignId}): ${msg}`);
       await updateCampaign(campaignId, { status: 'draft' });
       emitProgress(campaignId, { stage: 'failed', error: `Schedule error: ${msg}`, sent: 0, failed: total });
       return;

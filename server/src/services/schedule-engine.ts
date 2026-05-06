@@ -93,9 +93,16 @@ export function assignScheduledTimes(
 
   const [startH, startM] = startHour.split(':').map(Number);
   const [endH,   endM  ] = endHour.split(':').map(Number);
-  const windowMinutes = (endH * 60 + endM) - (startH * 60 + startM);
+  const startMinOfDay = startH * 60 + startM;
+  const endMinOfDay   = endH * 60 + endM;
+  // Overnight windows (e.g. 22:00 → 10:00) wrap past midnight; the end belongs
+  // to the next calendar day. Each entry in `days` is treated as the START day.
+  const crossesMidnight = endMinOfDay <= startMinOfDay;
+  const windowMinutes = crossesMidnight
+    ? (24 * 60 - startMinOfDay) + endMinOfDay
+    : endMinOfDay - startMinOfDay;
 
-  if (windowMinutes <= 0) throw new Error(`endHour (${endHour}) must be after startHour (${startHour})`);
+  if (windowMinutes <= 0) throw new Error(`Invalid sending window: startHour=${startHour} endHour=${endHour}`);
   if (days.length === 0)  throw new Error('sendingSchedule.days must include at least one day');
   if (dailyLimit <= 0)    throw new Error('sendingSchedule.dailyLimit must be > 0');
 
@@ -114,7 +121,10 @@ export function assignScheduledTimes(
     }
 
     // Is the window still open today? (need at least 2 minutes remaining)
-    const windowEndUtc = localToUtc(local.year, local.month, local.day, endH, endM, timezone);
+    // Overnight windows: end belongs to NEXT local day. Date.UTC normalises day overflow,
+    // so passing day+1 handles month/year boundaries correctly.
+    const endLocalDay = local.day + (crossesMidnight ? 1 : 0);
+    const windowEndUtc = localToUtc(local.year, local.month, endLocalDay, endH, endM, timezone);
     if (windowEndUtc.getTime() <= fromNow.getTime() + 2 * 60_000) {
       // Window already closed — skip to tomorrow
       dayOffset++;
