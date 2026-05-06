@@ -171,9 +171,12 @@ export default function WizardStep1Leads({
     else onSelectionChange([...selectedLeadIds, id]);
   };
 
-  // Select-page skips invalid leads — bulk-reverifying a whole page would be
-  // too credit-hungry. Users can click individual rows to refresh + select.
-  const pageIds = leads.filter((l) => !isInvalid(l)).map((l) => l.id);
+  // Select-page skips invalid AND catch-all leads. Invalid: bulk-reverifying
+  // a whole page is too credit-hungry. Catch-all: domains accept any address,
+  // so the mailbox can't be proven — sending risks spam-trap hits and tanks
+  // sender reputation. Either kind can still be added by clicking the row
+  // directly (conscious override).
+  const pageIds = leads.filter((l) => !isInvalid(l) && l.verification_status !== 'catch-all').map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
   const togglePage = () => {
     if (allPageSelected) onSelectionChange(selectedLeadIds.filter((id) => !pageIds.includes(id)));
@@ -603,7 +606,7 @@ export default function WizardStep1Leads({
                           </span>
                         )}
                         {isCatchAll && (
-                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Domain accepts all mail — individual mailbox can't be proven. Allowed but risky.">
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Domain accepts all mail — individual mailbox can't be proven. Not added by 'Select page'; click the row to include manually.">
                             <span className="material-symbols-outlined text-[9px]">help</span>catch-all
                           </span>
                         )}
