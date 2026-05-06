@@ -21,6 +21,11 @@ export interface GenerateTemplateOptions {
    *  needs to lead with that observation and ask if they're the same operator,
    *  not pitch reputation management on a stale rating. */
   redirectMode?: boolean;
+  /** Human-language name (e.g. "German", "French", "Brazilian Portuguese").
+   *  When set, the entire generated email — subject, body, all spintax
+   *  variants, greeting, and closing — is written in this language while
+   *  {{tokens}} stay verbatim. Falls back to English when undefined. */
+  language?: string;
 }
 
 export interface GenerateTemplateResult {
@@ -76,7 +81,7 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
 
   const genAI = new GoogleGenAI({ apiKey: API_KEY });
 
-  const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode } = options;
+  const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, language } = options;
 
   const companyHint = emailDomain ? `a business with the domain "${emailDomain}"` : 'a business';
   const countryLabel = country ? `in ${country}` : '';
@@ -109,10 +114,15 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
 - Mention the concrete impact (lost customers, lower trust, less revenue)
 - CTA must be email-only: invite a reply, offer a free written audit. NEVER propose a phone call.`;
 
+  const languageDirective = language && language.toLowerCase() !== 'english'
+    ? `\n=== LANGUAGE — NON-NEGOTIABLE ===\nWrite the ENTIRE email in ${language}. Every greeting, sentence, transition, CTA, closing, and EVERY spintax variant must be in ${language}. The subject line is also in ${language}. Tokens like {{company_name}}, {{star_rating}}, {{review_count}}, {{country}}, {{website}} stay EXACTLY as-is — do not translate token names. Use natural, professional ${language} as a native B2B copywriter would write it — not literal English-to-${language} translations. The "no phone call / email-only" rule below applies in ${language} too: do not propose any phone, voice, or video meeting in any phrasing.\n`
+    : '';
+
   const prompt = `
 You are a professional B2B email copywriter for OptiRate, a reputation management agency that helps businesses improve their online reputation and Trustpilot scores.
 
 Write a cold outreach email targeting ${audienceDesc}.
+${languageDirective}
 
 Return your response in this EXACT format (no other text before or after):
 SUBJECT: [the subject line here — one line, no quotes]

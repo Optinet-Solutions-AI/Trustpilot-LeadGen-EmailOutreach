@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { FollowUpStepInput } from '../../types/campaign';
 import { generateEmailTemplate, domainToCompanyName } from '../../lib/gemini';
+import { COUNTRY_LANGUAGE } from './scheduleConfig';
 
 interface Props {
   subject: string;
@@ -57,6 +58,7 @@ export default function WizardStep2Sequence({
         emailDomain: firstEmailDomain,
         manualMode: !!(manualEmails && manualEmails.length > 0),
         redirectMode: !!redirectMode,
+        language: filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined,
       });
       onSubjectChange(result.subject);
       onBodyChange(result.body);

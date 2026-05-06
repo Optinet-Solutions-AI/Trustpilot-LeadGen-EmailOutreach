@@ -72,6 +72,41 @@ export const HOURS = [
 
 export const DAY_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+// Auto-pick a sensible timezone when the user picks a country in Step 1.
+// Values MUST exist in TIMEZONES above so the dropdown stays consistent.
+// Countries not listed here keep whatever the user already selected.
+export const COUNTRY_TIMEZONE: Record<string, string> = {
+  US: 'America/New_York',
+  CA: 'America/New_York',
+  GB: 'Europe/London',
+  AU: 'Australia/Sydney',
+  DE: 'Europe/Paris',
+  FR: 'Europe/Paris',
+  NL: 'Europe/Paris',
+  IT: 'Europe/Paris',
+  ES: 'Europe/Paris',
+  DK: 'Europe/Paris',
+  SE: 'Europe/Paris',
+  NO: 'Europe/Paris',
+  FI: 'Europe/Athens',
+  BR: 'America/Sao_Paulo',
+};
+
+// Auto-pick the AI generation language for non-English-speaking countries.
+// US/GB/AU/CA fall through to English (the default in the Gemini prompt).
+export const COUNTRY_LANGUAGE: Record<string, string> = {
+  DE: 'German',
+  FR: 'French',
+  NL: 'Dutch',
+  IT: 'Italian',
+  ES: 'Spanish',
+  DK: 'Danish',
+  SE: 'Swedish',
+  NO: 'Norwegian',
+  FI: 'Finnish',
+  BR: 'Brazilian Portuguese',
+};
+
 export interface SendingSchedule {
   timezone: string;
   startHour: string;

@@ -7,7 +7,7 @@ import WizardStep2Sequence from './WizardStep2Sequence';
 import WizardStep3Options from './WizardStep3Options';
 import WizardStep4Launch from './WizardStep4Launch';
 import type { FollowUpStepInput } from '../../types/campaign';
-import { DEFAULT_SCHEDULE, type SendingSchedule } from './scheduleConfig';
+import { DEFAULT_SCHEDULE, COUNTRY_TIMEZONE, type SendingSchedule } from './scheduleConfig';
 
 const DEFAULT_SUBJECT = '';
 const DEFAULT_BODY = '';
@@ -61,6 +61,26 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
   // Step 3 — Options
   const [name, setName]         = useState('');
   const [schedule, setSchedule] = useState<SendingSchedule>(DEFAULT_SCHEDULE);
+  const [timezoneTouched, setTimezoneTouched] = useState(false);
+
+  // Auto-shift the schedule timezone when the user picks a country, unless
+  // they've already manually overridden it. Hours / days / dailyLimit stay
+  // the same — only the timezone moves.
+  const handleFilterCountryChange = (code: string) => {
+    setFilterCountry(code);
+    if (timezoneTouched) return;
+    const tz = COUNTRY_TIMEZONE[code];
+    if (tz && tz !== schedule.timezone) {
+      setSchedule((prev) => ({ ...prev, timezone: tz }));
+    }
+  };
+
+  // Mark the timezone "touched" the moment the user changes it manually so
+  // the country auto-pick stops overwriting their choice.
+  const handleScheduleChange = (next: SendingSchedule) => {
+    if (next.timezone !== schedule.timezone) setTimezoneTouched(true);
+    setSchedule(next);
+  };
 
   const canProceed = () => {
     if (step === 0) return selectedLeadIds.length > 0 || manualEmails.length > 0;
@@ -176,7 +196,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
             manualEmails={manualEmails}
             maxLeads={maxLeads}
             redirectMode={redirectMode}
-            onFilterCountryChange={setFilterCountry}
+            onFilterCountryChange={handleFilterCountryChange}
             onFilterCategoryChange={setFilterCategory}
             onSelectionChange={setSelectedLeadIds}
             onManualEmailsChange={setManualEmails}
@@ -204,7 +224,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
             name={name}
             schedule={schedule}
             onNameChange={setName}
-            onScheduleChange={setSchedule}
+            onScheduleChange={handleScheduleChange}
           />
         )}
         {step === 3 && (
