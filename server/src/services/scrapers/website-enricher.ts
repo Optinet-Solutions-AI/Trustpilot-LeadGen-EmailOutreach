@@ -1627,11 +1627,15 @@ export interface EnrichmentResult {
  * /api/enrich route) subscribe to translate these into SSE + scrape_failures rows.
  */
 export type EnricherEvent =
-  | { type: 'enrich_start'; index: number; total: number; domain: string }
-  | { type: 'enrich_email'; index: number; total: number; domain: string; email: string; tier: string }
-  | { type: 'enrich_no_email'; index: number; total: number; domain: string; reason?: string }
-  | { type: 'enrich_redirected'; index: number; total: number; domain: string; redirectsTo: string }
-  | { type: 'enrich_failed'; index: number; total: number; domain: string; reasonCode: string; message: string };
+  | { type: 'enrich_start'; index: number; total: number; domain: string; leadId?: string }
+  // enrich_email carries everything the route needs to write the lead row
+  // immediately (per-lead inline writes), so partial progress survives if
+  // the worker dies mid-job — no more "Yazino was found but never saved"
+  // problems on Cloud Run instance rotations.
+  | { type: 'enrich_email'; index: number; total: number; domain: string; email: string; tier: string; leadId?: string; source: 'scrape' | 'lateral'; redirectsTo?: string }
+  | { type: 'enrich_no_email'; index: number; total: number; domain: string; reason?: string; leadId?: string }
+  | { type: 'enrich_redirected'; index: number; total: number; domain: string; redirectsTo: string; leadId?: string }
+  | { type: 'enrich_failed'; index: number; total: number; domain: string; reasonCode: string; message: string; leadId?: string };
 
 function domainOf(url: string): string {
   const stripped = url.replace(/^https?:\/\//, '').split('/')[0] || url;
@@ -1671,8 +1675,9 @@ export async function enrichLeads(
       const domain = domainOf(websiteUrl);
       const itemIndex = i + 1;
 
+      const leadId = (lead as { id?: string }).id;
       console.log(`  [enricher] [${done + 1}/${queue.length}] ${websiteUrl}`);
-      opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain });
+      opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain, leadId });
       try {
         const country = (lead.country as string | null | undefined) ?? null;
         const { email, tier, blockReason, redirectsTo, scrapeSource } = await enrichSingleLeadWithTiers(websiteUrl, { country });
@@ -1690,22 +1695,34 @@ export async function enrichLeads(
         };
         if (email) {
           console.log(`    [enricher] ✓ ${email} (tier=${tier})`);
-          opts.onEvent?.({ type: 'enrich_email', index: itemIndex, total: queue.length, domain, email, tier: String(tier) });
+          opts.onEvent?.({
+            type: 'enrich_email',
+            index: itemIndex,
+            total: queue.length,
+            domain,
+            email,
+            tier: String(tier),
+            leadId,
+            // resolvedSource is 'scrape' | 'lateral' | 'none', but email!=null
+            // means it can't be 'none' here — narrow it for the route handler.
+            source: resolvedSource === 'lateral' ? 'lateral' : 'scrape',
+            redirectsTo,
+          });
         } else if (redirectsTo) {
           console.log(`    [enricher] ⤳ redirected to ${redirectsTo}`);
-          opts.onEvent?.({ type: 'enrich_redirected', index: itemIndex, total: queue.length, domain, redirectsTo });
+          opts.onEvent?.({ type: 'enrich_redirected', index: itemIndex, total: queue.length, domain, redirectsTo, leadId });
         } else if (blockReason && BLOCK_REASONS_THAT_ESCALATE.has(blockReason.replace(/^error:.*$/, 'bot_detected'))) {
           // A real scanner block — surface as a failed item with a reason code
           console.log(`    [enricher] ✗ blocked (${blockReason})`);
-          opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: blockReason, message: `Site blocked the scanner (${blockReason})` });
+          opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: blockReason, message: `Site blocked the scanner (${blockReason})`, leadId });
         } else {
           console.log(`    [enricher] ✗ no email (blockReason=${blockReason || 'none'})`);
-          opts.onEvent?.({ type: 'enrich_no_email', index: itemIndex, total: queue.length, domain, reason: blockReason });
+          opts.onEvent?.({ type: 'enrich_no_email', index: itemIndex, total: queue.length, domain, reason: blockReason, leadId });
         }
       } catch (err) {
         const message = (err as Error).message.slice(0, 200);
         console.error(`    [enricher] ERROR for ${websiteUrl}:`, message);
-        opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: 'error', message });
+        opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: 'error', message, leadId });
       }
 
       done++;

@@ -183,6 +183,21 @@ router.post('/', async (req: Request, res: Response) => {
         let liveEnriched = 0;
         let liveFailed = 0;
 
+        // Index leads by id so the inline event handler can look up
+        // primary_email when deciding what to write to the row.
+        const leadsById = new Map<string, typeof leads[number]>();
+        for (const l of leads) {
+          if (l.id) leadsById.set(l.id, l);
+        }
+
+        // Per-lead DB writes happen INLINE inside onEvent below. That way
+        // partial progress survives if Cloud Run rotates the instance
+        // mid-job (deploy, scale-down, OOM): every email already found is
+        // already saved, instead of being lost in the worker's in-memory
+        // results array waiting for a post-loop batch flush.
+        let successful = 0;
+        let dbFailed = 0;
+
         const results = await enrichLeads(leads as EnrichableLead[], {
           concurrency: 3,
           onProgress: (done, totalItems) => {
@@ -195,13 +210,50 @@ router.post('/', async (req: Request, res: Response) => {
           },
           onEvent: async (event) => {
             translateEnricherEvent(jobId, event);
+
+            // Inline lead-row write for the two outcomes that produce DB
+            // changes (email found, redirect-only detected). Done here so
+            // each result is durable as soon as it's known.
+            const evLeadId = (event as { leadId?: string }).leadId;
+            if (event.type === 'enrich_email' && evLeadId) {
+              const lead = leadsById.get(evLeadId);
+              const currentPrimary = (lead as { primary_email?: string | null } | undefined)?.primary_email ?? null;
+              const update: Record<string, unknown> = {
+                primary_email: currentPrimary ?? event.email,
+              };
+              if (event.source === 'lateral') update.affiliate_email = event.email;
+              else                            update.website_email   = event.email;
+              if (event.redirectsTo)          update.redirects_to    = event.redirectsTo;
+
+              const { error: updateErr } = await supabase
+                .from('leads')
+                .update(update)
+                .eq('id', evLeadId);
+              if (updateErr) {
+                console.error(`[enrich] Job ${jobId} — DB write failed for ${evLeadId}: ${updateErr.message}`);
+                dbFailed++;
+              } else {
+                successful++;
+              }
+            } else if (event.type === 'enrich_redirected' && evLeadId) {
+              // Redirect detected but no email surfaced from the
+              // destination. Save the redirect target so the lead appears
+              // on the Redirected Leads page; user can flag/approve later.
+              const { error: redirErr } = await supabase
+                .from('leads')
+                .update({ redirects_to: event.redirectsTo })
+                .eq('id', evLeadId);
+              if (redirErr) {
+                console.warn(`[enrich] Job ${jobId} — redirects_to write failed for ${evLeadId}: ${redirErr.message}`);
+              }
+            }
+
             let dirty = false;
             if (event.type === 'enrich_email') { liveEnriched++; dirty = true; }
             else if (event.type === 'enrich_no_email' || event.type === 'enrich_failed') { liveFailed++; dirty = true; }
             // enrich_redirected is no longer a failure: even when no email is
             // scraped from the destination, the redirect target itself is
-            // useful intel and goes on the Redirected Leads page. The
-            // post-loop redirected[] filter still writes leads.redirects_to.
+            // useful intel and goes on the Redirected Leads page.
             if (dirty) {
               // Awaited so the latest write reflects the latest counter and
               // we don't get out-of-order overwrites under concurrency.
@@ -214,65 +266,10 @@ router.post('/', async (req: Request, res: Response) => {
           },
         });
 
-        // Filter to only leads that got a new email
+        // Stats only — the actual lead rows were already written inline above.
         const enriched = results.filter((r) => r.foundEmail !== null);
         const redirected = results.filter((r) => r.redirectsTo);
         console.log(`[enrich] Job ${jobId} — enrichment complete, ${enriched.length}/${leads.length} emails found, ${redirected.length} redirected`);
-
-        // Strict per-lead DB update with error tracking
-        let successful = 0;
-        let dbFailed = 0;
-
-        for (const r of enriched) {
-          const leadId = (r.lead as { id?: string }).id;
-          if (!leadId) {
-            console.error(`[enrich] Job ${jobId} — skipping lead with no id: ${r.lead.trustpilot_url}`);
-            dbFailed++;
-            continue;
-          }
-
-          try {
-            // Lateral-prospecting hits (affiliate/partner page) write to
-            // affiliate_email; everything else (homepage, sitemap, contact
-            // path, ScrapingBee, WHOIS, Wayback, crt.sh) writes to
-            // website_email. primary_email gets the new address whichever
-            // column receives it, but only if no primary exists yet.
-            const isLateral = r.source === 'lateral';
-            const currentPrimary = (r.lead as { primary_email?: string | null }).primary_email ?? null;
-            const update: Record<string, unknown> = {
-              primary_email: currentPrimary ?? r.foundEmail,
-            };
-            if (isLateral) update.affiliate_email = r.foundEmail;
-            else           update.website_email   = r.foundEmail;
-
-            const { error: updateErr } = await supabase
-              .from('leads')
-              .update(update)
-              .eq('id', leadId);
-
-            if (updateErr) {
-              console.error(`[enrich] Job ${jobId} — DB UPDATE FAILED for ${leadId}: ${updateErr.message}`);
-              dbFailed++;
-            } else {
-              successful++;
-            }
-          } catch (err) {
-            console.error(`[enrich] Job ${jobId} — DB UPDATE THREW for ${leadId}:`, (err as Error).message);
-            dbFailed++;
-          }
-        }
-
-        // Persist redirect targets so the Redirected Leads page can surface
-        // them. Best-effort — failures here don't tank the whole job.
-        for (const r of redirected) {
-          const leadId = (r.lead as { id?: string }).id;
-          if (!leadId || !r.redirectsTo) continue;
-          const { error: redirErr } = await supabase
-            .from('leads')
-            .update({ redirects_to: r.redirectsTo })
-            .eq('id', leadId);
-          if (redirErr) console.warn(`[enrich] Job ${jobId} — redirects_to write failed for ${leadId}: ${redirErr.message}`);
-        }
 
         const { error: jobUpdateErr } = await supabase.from('scrape_jobs').update({
           status: 'completed',
