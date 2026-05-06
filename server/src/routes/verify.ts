@@ -295,18 +295,36 @@ router.post('/', async (req: Request, res: Response) => {
     const { leadIds, emailField = 'trustpilot' } = req.body as { leadIds?: string[]; emailField?: EmailField };
     const supabase = getSupabase();
 
-    let query = supabase.from('leads').select('id, primary_email, trustpilot_email, website_email');
-    if (leadIds && Array.isArray(leadIds) && leadIds.length > 0) {
-      query = query.in('id', leadIds);
+    const hasIds = leadIds && Array.isArray(leadIds) && leadIds.length > 0;
+    let query = supabase.from('leads').select('id, primary_email, trustpilot_email, website_email, email_verified');
+    if (hasIds) {
+      query = query.in('id', leadIds!);
     } else {
       query = query.eq('email_verified', false);
     }
 
-    const { data: leads, error } = await query;
+    const { data: rawLeads, error } = await query;
     if (error) throw new Error(error.message);
 
-    if (!leads || leads.length === 0) {
-      res.json({ success: true, data: { jobId: null, total: 0, message: 'No leads to verify' } });
+    // Skip leads already verified as valid. Re-verifying a proven mailbox
+    // burns ZB credits (especially on Google Workspace / Outlook365 where
+    // every verdict requires a cloud-verifier round-trip) without changing
+    // the outcome. The default-branch query already filters to
+    // email_verified=false; this guard catches the leadIds-supplied case
+    // where the UI selection includes already-valid rows.
+    let leads = rawLeads ?? [];
+    let skippedValid = 0;
+    if (hasIds) {
+      const eligible = leads.filter((l) => l.email_verified !== true);
+      skippedValid = leads.length - eligible.length;
+      leads = eligible;
+    }
+
+    if (leads.length === 0) {
+      const message = skippedValid > 0
+        ? `All ${skippedValid} selected lead${skippedValid === 1 ? '' : 's'} ${skippedValid === 1 ? 'is' : 'are'} already verified as valid — nothing to re-verify.`
+        : 'No leads to verify';
+      res.json({ success: true, data: { jobId: null, total: 0, skippedValid, message } });
       return;
     }
 
@@ -364,7 +382,7 @@ router.post('/', async (req: Request, res: Response) => {
     jobs.set(jobId, job);
     setTimeout(() => jobs.delete(jobId), 30 * 60 * 1000);
 
-    res.json({ success: true, data: { jobId, total: emails.length } });
+    res.json({ success: true, data: { jobId, total: emails.length, skippedValid } });
 
     (async () => {
       try {

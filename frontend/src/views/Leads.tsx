@@ -149,12 +149,15 @@ export default function Leads() {
     if (selectedIds.length === 0) return;
     try {
       const res = await api.post('/verify', { leadIds: selectedIds, emailField: verifyEmailField });
-      const { jobId, total, message } = res.data.data;
+      const { jobId, total, message, skippedValid } = res.data.data;
       if (!jobId) {
         notify('success', message || 'No leads needed verification');
         return;
       }
-      notify('success', `Verifying ${total} email address${total !== 1 ? 'es' : ''} — watch the live log below`);
+      const skipNote = skippedValid > 0
+        ? ` (skipped ${skippedValid} already-valid lead${skippedValid === 1 ? '' : 's'})`
+        : '';
+      notify('success', `Verifying ${total} email address${total !== 1 ? 'es' : ''}${skipNote} — watch the live log below`);
       localStorage.setItem('active_verify_job', jobId);
       setVerifyJobId(jobId);
       setVerifyStartedAt(new Date().toISOString());
