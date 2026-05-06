@@ -6,15 +6,39 @@ function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
 }
 
+// "not_verified" is a UI-only pseudo-status: the email exists on the lead
+// but no verification has ever been run against it. Distinct from "unknown"
+// (which means a verifier was run and returned inconclusive).
+type DisplayStatus = VerificationStatus | 'not_verified';
+
+// Resolve which status to render for a per-source email column. Older leads
+// that were verified before commit 2a600cf only have lead-level
+// verification_status set; the per-source columns stayed null. When the
+// per-source email matches primary_email, the lead-level verdict applies and
+// we use it as a fallback so the badge renders.
+function resolveDisplayStatus(
+  perSource: VerificationStatus | null | undefined,
+  sourceEmail: string | null | undefined,
+  lead: Lead
+): DisplayStatus | null {
+  if (perSource) return perSource;
+  if (sourceEmail && sourceEmail === lead.primary_email && lead.verification_status) {
+    return lead.verification_status;
+  }
+  if (sourceEmail) return 'not_verified';
+  return null;
+}
+
 // Build a multi-line tooltip showing the stage-by-stage breakdown the
 // validator wrote. Lets the user see exactly *which* stage produced the
 // verdict ("SMTP RCPT-TO 250 from mail.bluehost.com" vs "ZeroBounce: catch-all").
-function buildStageTooltip(status: VerificationStatus, lead?: Lead): string {
-  const headlines: Record<VerificationStatus, string> = {
-    'valid':     'Deliverable — safe to send',
-    'invalid':   'Will bounce — excluded from campaigns',
-    'catch-all': 'Domain accepts all mail — individual mailbox can\'t be proven',
-    'unknown':   'Inconclusive — couldn\'t prove either way',
+function buildStageTooltip(status: DisplayStatus, lead?: Lead): string {
+  const headlines: Record<DisplayStatus, string> = {
+    'valid':        'Deliverable — safe to send',
+    'invalid':      'Will bounce — excluded from campaigns',
+    'catch-all':    'Domain accepts all mail — individual mailbox can\'t be proven',
+    'unknown':      'Inconclusive — couldn\'t prove either way',
+    'not_verified': 'Not verified yet — run Verify before adding to a campaign',
   };
   if (!lead) return headlines[status];
 
@@ -50,19 +74,29 @@ function buildStageTooltip(status: VerificationStatus, lead?: Lead): string {
   return lines.join('\n');
 }
 
-function VerifyBadge({ status, lead }: { status: VerificationStatus | null | undefined; lead?: Lead }) {
-  if (!status) return null;
-  const styles: Record<VerificationStatus, { bg: string; fg: string; icon: string; label: string }> = {
-    'valid':     { bg: 'bg-green-50',  fg: 'text-green-700',  icon: 'verified',          label: 'valid' },
-    'invalid':   { bg: 'bg-red-50',    fg: 'text-red-700',    icon: 'cancel',            label: 'invalid' },
-    'catch-all': { bg: 'bg-amber-50',  fg: 'text-amber-700',  icon: 'help',              label: 'catch-all' },
-    'unknown':   { bg: 'bg-slate-50',  fg: 'text-slate-500',  icon: 'help_outline',      label: 'unknown' },
+function VerifyBadge({
+  status,
+  sourceEmail,
+  lead,
+}: {
+  status: VerificationStatus | null | undefined;
+  sourceEmail?: string | null;
+  lead: Lead;
+}) {
+  const effective = resolveDisplayStatus(status, sourceEmail, lead);
+  if (!effective) return null;
+  const styles: Record<DisplayStatus, { bg: string; fg: string; icon: string; label: string }> = {
+    'valid':        { bg: 'bg-green-50',  fg: 'text-green-700',  icon: 'verified',     label: 'verified' },
+    'invalid':      { bg: 'bg-red-50',    fg: 'text-red-700',    icon: 'cancel',       label: 'invalid' },
+    'catch-all':    { bg: 'bg-amber-50',  fg: 'text-amber-700',  icon: 'help',         label: 'catch-all' },
+    'unknown':      { bg: 'bg-slate-50',  fg: 'text-slate-500',  icon: 'help_outline', label: 'unknown' },
+    'not_verified': { bg: 'bg-amber-50',  fg: 'text-amber-700',  icon: 'pending',      label: 'not verified' },
   };
-  const s = styles[status];
+  const s = styles[effective];
   return (
     <span
       className={`inline-flex items-center gap-0.5 text-[9px] font-bold ${s.bg} ${s.fg} px-1.5 py-0.5 rounded-full w-fit`}
-      title={buildStageTooltip(status, lead)}
+      title={buildStageTooltip(effective, lead)}
     >
       <span className="material-symbols-outlined text-[9px]">{s.icon}</span>{s.label}
     </span>
@@ -292,7 +326,7 @@ export default function LeadsTable({
                   <span className="material-symbols-outlined text-[12px] text-blue-400 shrink-0">alternate_email</span>
                   <span className="truncate">{lead.trustpilot_email}</span>
                 </span>
-                <VerifyBadge status={lead.trustpilot_email_status} lead={lead} />
+                <VerifyBadge status={lead.trustpilot_email_status} sourceEmail={lead.trustpilot_email} lead={lead} />
               </div>
             ) : (
               <span className="text-slate-300 text-xs">—</span>
@@ -314,7 +348,7 @@ export default function LeadsTable({
                   <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded-full w-fit">
                     <span className="material-symbols-outlined text-[9px]">language</span>enriched
                   </span>
-                  <VerifyBadge status={lead.website_email_status} lead={lead} />
+                  <VerifyBadge status={lead.website_email_status} sourceEmail={lead.website_email} lead={lead} />
                 </div>
               </div>
             ) : hasWebsiteUrl ? (
@@ -344,7 +378,7 @@ export default function LeadsTable({
                   <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded-full w-fit" title="Found on an affiliate / partner page">
                     <span className="material-symbols-outlined text-[9px]">group_add</span>lateral
                   </span>
-                  <VerifyBadge status={lead.affiliate_email_status} lead={lead} />
+                  <VerifyBadge status={lead.affiliate_email_status} sourceEmail={lead.affiliate_email} lead={lead} />
                 </div>
               </div>
             ) : (

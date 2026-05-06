@@ -104,12 +104,16 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
     else onSelectionChange([...selectedLeadIds, id]);
   };
 
-  // "Select page" skips invalid AND catch-all leads. Invalid: bulk-reverifying
-  // a whole page is too credit-hungry. Catch-all: domains accept any address,
-  // so we can't prove the mailbox exists — sending to them risks spam-trap
-  // hits and tanks sender reputation. Either kind can still be added by
-  // clicking the row directly (conscious override).
-  const pageIds = leads.filter((l) => !isInvalid(l) && l.verification_status !== 'catch-all').map((l) => l.id);
+  // "Select page" only auto-adds leads with verification_status === 'valid'.
+  // Everything else (invalid, catch-all, unknown, not-yet-verified) requires
+  // a deliberate row click. Reasoning:
+  //   - invalid: would bounce; bulk-reverify is too credit-hungry.
+  //   - catch-all: domain accepts any address; spam-trap risk.
+  //   - unknown: verifier returned inconclusive; treat as risky.
+  //   - null (not verified): never run through verify; sending blind risks
+  //     bouncing on dead addresses and burning sender reputation.
+  // Manual click on any row still works as a conscious override.
+  const pageIds = leads.filter((l) => l.verification_status === 'valid').map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
 
   const togglePage = () => {
@@ -225,6 +229,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                 const isReverifying = reverifying.has(lead.id);
                 const isCatchAll = lead.verification_status === 'catch-all';
                 const isUnknown = lead.verification_status === 'unknown';
+                const isNotVerified = lead.verification_status == null;
                 return (
                   <tr
                     key={lead.id}
@@ -272,8 +277,13 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                           </span>
                         )}
                         {isUnknown && (
-                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-slate-50 text-slate-500 px-1.5 py-0.5 rounded-full" title="Not yet proven deliverable. Allowed but consider re-verifying.">
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-slate-50 text-slate-500 px-1.5 py-0.5 rounded-full" title="Verification was inconclusive. Not added by 'Select page'; click the row to include manually.">
                             <span className="material-symbols-outlined text-[9px]">help_outline</span>unknown
+                          </span>
+                        )}
+                        {isNotVerified && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Not verified yet. Not added by 'Select page'; click the row to include manually, or run Verify on the Leads page first.">
+                            <span className="material-symbols-outlined text-[9px]">pending</span>not verified
                           </span>
                         )}
                       </div>
