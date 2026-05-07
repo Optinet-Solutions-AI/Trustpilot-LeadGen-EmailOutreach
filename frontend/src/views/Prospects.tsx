@@ -458,10 +458,11 @@ export default function Prospects() {
             onSortChange={toggleSort}
             extraColumns={extraColumns}
             extraRowActions={extraRowActions}
-            // Original cold-target emails are noise on this view — the
-            // discovered email column on the right is the only one that
-            // matters for prospect outreach.
-            hideColumns={['trustpilot_email', 'website_email', 'affiliate_email']}
+            // The cold-target email columns plus a few rarely-useful matrix
+            // columns are hidden so the new Discovered Email + Source URL +
+            // action buttons fit without horizontal scrolling. The user can
+            // open Lead Detail to see everything at full fidelity.
+            hideColumns={['trustpilot_email', 'website_email', 'affiliate_email', 'tags', 'claimed', 'screenshot']}
           />
         )}
       </div>

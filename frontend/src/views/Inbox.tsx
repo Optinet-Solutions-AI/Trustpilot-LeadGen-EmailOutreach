@@ -34,6 +34,12 @@ interface CampaignMessage {
   reply_snippet: string | null;
   gmail_thread_id: string | null;
   gmail_message_id: string | null;
+  /** True when at least one non-dismissed discovered_contacts row exists for
+   *  this campaign_lead — i.e. the user has already promoted this reply, or
+   *  the auto-detector flagged it. Drives the green "Prospect" pill so the
+   *  user can tell promoted-replies at a glance without losing them from the
+   *  inbox. */
+  is_prospect?: boolean;
 }
 
 interface ThreadMessage {
@@ -908,9 +914,20 @@ export default function Inbox() {
                       </p>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[10px] text-slate-400 truncate">{msg.email_used || '—'}</span>
-                        <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
-                          {badge.label}
-                        </span>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {msg.is_prospect && (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#006630]/10 text-[#006630] inline-flex items-center gap-0.5"
+                              title="Already promoted to Prospects — has at least one live discovered contact"
+                            >
+                              <span className="material-symbols-outlined text-[11px]">how_to_reg</span>
+                              Prospect
+                            </span>
+                          )}
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
+                            {badge.label}
+                          </span>
+                        </div>
                       </div>
                       {msg.status === 'replied' && msg.reply_snippet && (
                         <p className="text-[11px] text-[#006630] truncate mt-1 italic">{msg.reply_snippet}</p>

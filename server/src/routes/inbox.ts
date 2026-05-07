@@ -350,11 +350,12 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
 // can track unseen replies.
 router.get('/campaign-replies', async (req: Request, res: Response) => {
   const folder = (req.query.folder as string) || 'replies';
-  // 'sent' includes auto_replied so the user can still read the auto-response
-  // body inside the inbox; 'replies' deliberately excludes auto_replied so the
-  // human-engagement filter stays clean (auto-replies live on Prospects).
+  // Both 'replied' (human) and 'auto_replied' (auto-detector flagged) belong
+  // in the Replies folder. They look different in metrics — total_replied
+  // stays human-only — but the user wants both visible in the inbox so a
+  // "Prospect" badge can call out the ones that were promoted/auto-flagged.
   const statusFilter = folder === 'replies'
-    ? ['replied']
+    ? ['replied', 'auto_replied']
     : ['sent', 'opened', 'replied', 'bounced', 'auto_replied'];
   const groupBy = req.query.groupBy as string | undefined;
   const campaignTypeFilter = req.query.campaignType as string | undefined;
@@ -370,6 +371,24 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
     if (error) {
       res.status(500).json({ success: false, error: error.message });
       return;
+    }
+
+    // is_prospect — true when the campaign_lead has at least one non-dismissed
+    // discovered_contacts row. Drives the "Prospect" badge in the inbox UI so
+    // the user can tell at a glance which replies they've already promoted.
+    // One batched query keyed by source_campaign_lead_id keeps this O(1) per
+    // page render regardless of message count.
+    const campaignLeadIds = (data ?? []).map((r) => r.id as string).filter(Boolean);
+    const prospectIds = new Set<string>();
+    if (campaignLeadIds.length > 0) {
+      const { data: discoveries } = await getSupabase()
+        .from('discovered_contacts')
+        .select('source_campaign_lead_id')
+        .in('source_campaign_lead_id', campaignLeadIds)
+        .in('status', ['pending_review', 'accepted', 'spawned_lead']);
+      for (const d of discoveries ?? []) {
+        if (d.source_campaign_lead_id) prospectIds.add(d.source_campaign_lead_id as string);
+      }
     }
 
     // Resolve auth_type for each unique sender_email so the UI can branch on
@@ -411,6 +430,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
         reply_snippet: row.reply_snippet,
         gmail_thread_id: row.gmail_thread_id,
         gmail_message_id: row.gmail_message_id,
+        is_prospect: prospectIds.has(row.id as string),
       };
     });
 
@@ -1513,15 +1533,15 @@ router.post('/promote-to-prospects', async (req: Request, res: Response) => {
           });
         }
 
-        // Flip source campaign_lead off the Human Replies feed and pause every
-        // sequence row for this lead so the cold follow-up cadence doesn't keep
-        // firing. The user will create a new discovery follow-up campaign
-        // manually for this prospect.
-        await supabase
-          .from('campaign_leads')
-          .update({ status: 'auto_replied' })
-          .eq('id', cl.id);
-
+        // Pause every sequence row for this lead so the cold follow-up
+        // cadence doesn't keep firing — the user will create a new discovery
+        // follow-up campaign manually for this prospect. We deliberately do
+        // NOT flip campaign_leads.status to 'auto_replied' on manual promote:
+        // the user wants the reply to stay visible in the Inbox > Replies
+        // folder with a "Prospect" badge so they can revisit it (especially
+        // when the source URL turns out to be unscrapeable). The badge is
+        // driven by the existence of any non-dismissed discovered_contacts
+        // row pointing back at this campaign_lead — see /inbox/campaign-replies.
         await supabase
           .from('campaign_leads')
           .update({ sequence_paused: true, next_step_at: null })
