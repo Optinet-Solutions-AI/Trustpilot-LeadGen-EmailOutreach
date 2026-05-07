@@ -195,14 +195,30 @@ export default function Prospects() {
         const r = (lead as Lead & { _discovery?: DiscoveredContactWithLead })._discovery;
         if (!r) return <span className="text-slate-300 text-xs">—</span>;
         const isAccepted = r.status === 'accepted';
+        // Source URL — for kind='email' candidates harvested by scraping a
+        // partner URL the auto-reply pointed at, the worker stamps
+        // auto_reply_metadata.harvested_from_url. Surfacing it here gives the
+        // user the full provenance ("this affiliate@ came from THIS site")
+        // without making them open Lead Detail.
+        const harvestedFromUrl = r.auto_reply_metadata && typeof r.auto_reply_metadata === 'object'
+          ? (r.auto_reply_metadata as Record<string, unknown>).harvested_from_url as string | undefined
+          : undefined;
         return (
-          <div className="flex flex-col gap-1 max-w-[280px]">
+          <div className="flex flex-col gap-1 max-w-[320px]">
             <span className="inline-flex items-center gap-1 text-xs">
               <span className={`material-symbols-outlined text-[14px] ${r.kind === 'email' ? 'text-blue-500' : 'text-purple-500'}`}>
                 {r.kind === 'email' ? 'alternate_email' : 'link'}
               </span>
-              <span className={`font-medium truncate ${isAccepted ? 'text-on-surface' : 'text-secondary'}`}>{r.value}</span>
+              <span className={`font-medium truncate ${isAccepted ? 'text-on-surface' : 'text-secondary'}`} title={r.value}>
+                {r.value}
+              </span>
             </span>
+            {harvestedFromUrl && r.kind === 'email' && (
+              <span className="inline-flex items-center gap-1 text-[10px] text-slate-500" title={harvestedFromUrl}>
+                <span className="material-symbols-outlined text-[11px] text-purple-400">link</span>
+                <span className="truncate">scraped from {harvestedFromUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')}</span>
+              </span>
+            )}
             <div className="flex items-center gap-1 flex-wrap">
               {r.role && (
                 <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">{r.role}</span>

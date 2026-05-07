@@ -58,8 +58,11 @@ const FREEMAIL_DOMAINS = new Set([
 ]);
 
 // Helpdesk / tracking / SaaS domains that auto-replies routinely include but
-// that are never the human contact we want.
-const TRACKING_DOMAIN_RX = /(?:^|\.)(zendesk\.com|freshdesk\.com|helpscout\.net|helpscout\.com|intercom(?:cdn)?\.com|kayako\.com|gorgias\.help|frontapp\.com|frontapp\.io|mailgun\.org|mailgun\.com|sentry\.io|sendgrid\.net|amazonaws\.com|cloudfront\.net|googleusercontent\.com|gstatic\.com|google-analytics\.com|doubleclick\.net|facebook\.com|fbcdn\.net|twimg\.com|cdn\.|s3\.amazonaws|herokuapp\.com|sendinblue\.com|mailchimp\.com|hubspot\.com|salesforce\.com|pardot\.com)$/i;
+// that are never the human contact we want. Most are click-tracking redirects
+// that ESPs inject into outbound mail — pursuing them just leads to a
+// redirect-to-redirect-to-1px-pixel chain. Anything appearing here gets
+// dropped from both the email and URL candidate lists.
+const TRACKING_DOMAIN_RX = /(?:^|\.)(zendesk\.com|freshdesk\.com|helpscout\.net|helpscout\.com|intercom(?:cdn)?\.com|intercom-mail\.com|intercom-mail\.eu|kayako\.com|gorgias\.help|frontapp\.com|frontapp\.io|mailgun\.org|mailgun\.com|mailtrack\.io|mandrillapp\.com|list-manage\.com|sentry\.io|sendgrid\.net|amazonses\.com|amazonaws\.com|cloudfront\.net|googleusercontent\.com|gstatic\.com|google-analytics\.com|doubleclick\.net|facebook\.com|fbcdn\.net|twimg\.com|cdn\.|s3\.amazonaws|herokuapp\.com|sendinblue\.com|mailchimp\.com|hubspot\.com|salesforce\.com|pardot\.com|hubspotemail\.net|emltrk\.com)$/i;
 
 const NOREPLY_LOCAL_RX = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|notify|mailer-daemon|postmaster|bounce|bounces|automated|autoresponder)$/i;
 
