@@ -43,14 +43,18 @@ const COUNTRIES = [
 ];
 
 // Pick the strongest discovery for a lead from its list of discovered_contacts.
-// Priority axes (in order):
-//   1. Lifecycle status — accepted > pending-valid > pending-verifying >
-//      pending-other > spawned > dismissed.
-//   2. Kind — emails always rank above URLs within the same tier. An email
-//      is directly actionable; a URL is just a path to an email. So
-//      affiliates@brand.com beats brand.com/partners every time, even when
-//      both score the same on role-relevance.
-//   3. Role/signal score from the extractor.
+//
+// Strict email preference: an email is the actionable artefact (you can
+// send to it, accept it, build a campaign from it). A URL is only ever an
+// intermediate scrape target. Even an *accepted* URL is less useful than a
+// pending email — accepting a URL is a no-op against `leads.discovered_email`.
+// So:
+//   - if the lead has ANY non-dismissed email candidate → pick the best email
+//   - otherwise → pick the best URL (so the user can see the dead-end)
+//
+// Within a kind, ranking is: accepted > pending-valid > pending-verifying
+// > pending-other > spawned, with the extractor's role/signal score as
+// the tiebreaker.
 function pickBestForLead(rows: DiscoveredContactWithLead[]): DiscoveredContactWithLead {
   const score = (r: DiscoveredContactWithLead): number => {
     let tier = 0;
@@ -60,10 +64,30 @@ function pickBestForLead(rows: DiscoveredContactWithLead[]): DiscoveredContactWi
     else if (r.status === 'pending_review' && !r.verification_status) tier = 500;  // verifying / scraping
     else if (r.status === 'pending_review')                            tier = 400;  // unknown / invalid
     else if (r.status === 'spawned_lead')                              tier = 200;
-    const kindBonus = r.kind === 'email' ? 50 : 0;
-    return tier + kindBonus + r.score;
+    return tier + r.score;
   };
-  return [...rows].sort((a, b) => score(b) - score(a))[0];
+  const emails = rows.filter((r) => r.kind === 'email');
+  const pool = emails.length > 0 ? emails : rows;
+  return [...pool].sort((a, b) => score(b) - score(a))[0];
+}
+
+// Pick the URL most worth surfacing as "source" — the URL the scraper was
+// given (or the URL the harvested email originally came from). Returns null
+// when the lead has no URL provenance at all.
+function pickSourceUrl(
+  rows: DiscoveredContactWithLead[],
+  best: DiscoveredContactWithLead,
+): DiscoveredContactWithLead | { value: string; status: 'harvested' } | null {
+  // 1. Best candidate is an email harvested from a URL the worker scraped.
+  //    The metadata records where it came from — the most informative source.
+  if (best.kind === 'email' && best.auto_reply_metadata && typeof best.auto_reply_metadata === 'object') {
+    const url = (best.auto_reply_metadata as Record<string, unknown>).harvested_from_url as string | undefined;
+    if (url) return { value: url, status: 'harvested' };
+  }
+  // 2. Otherwise pick the highest-scoring non-dismissed URL candidate.
+  const urls = rows.filter((r) => r.kind === 'url');
+  if (urls.length === 0) return null;
+  return [...urls].sort((a, b) => b.score - a.score)[0];
 }
 
 export default function Prospects() {
@@ -204,16 +228,8 @@ export default function Prospects() {
         const r = (lead as Lead & { _discovery?: DiscoveredContactWithLead })._discovery;
         if (!r) return <span className="text-slate-300 text-xs">—</span>;
         const isAccepted = r.status === 'accepted';
-        // Source URL — for kind='email' candidates harvested by scraping a
-        // partner URL the auto-reply pointed at, the worker stamps
-        // auto_reply_metadata.harvested_from_url. Surfacing it here gives the
-        // user the full provenance ("this affiliate@ came from THIS site")
-        // without making them open Lead Detail.
-        const harvestedFromUrl = r.auto_reply_metadata && typeof r.auto_reply_metadata === 'object'
-          ? (r.auto_reply_metadata as Record<string, unknown>).harvested_from_url as string | undefined
-          : undefined;
         return (
-          <div className="flex flex-col gap-1 max-w-[320px]">
+          <div className="flex flex-col gap-1 max-w-[280px]">
             <span className="inline-flex items-center gap-1 text-xs">
               <span className={`material-symbols-outlined text-[14px] ${r.kind === 'email' ? 'text-blue-500' : 'text-purple-500'}`}>
                 {r.kind === 'email' ? 'alternate_email' : 'link'}
@@ -222,19 +238,11 @@ export default function Prospects() {
                 {r.value}
               </span>
             </span>
-            {harvestedFromUrl && r.kind === 'email' && (
-              <span className="inline-flex items-center gap-1 text-[10px] text-slate-500" title={harvestedFromUrl}>
-                <span className="material-symbols-outlined text-[11px] text-purple-400">link</span>
-                <span className="truncate">scraped from {harvestedFromUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')}</span>
-              </span>
-            )}
             <div className="flex items-center gap-1 flex-wrap">
               {r.role && (
                 <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">{r.role}</span>
               )}
               {r.kind === 'url'
-                // URLs aren't verified — they're scraped. The badge reflects
-                // scraper state, not email-validator state.
                 ? (() => {
                     if (!r.scrape_result) {
                       return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">scraping…</span>;
@@ -248,9 +256,6 @@ export default function Prospects() {
                     }
                     return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">no email found</span>;
                   })()
-                // Emails go through the layered validator and get one of
-                // valid / invalid / catch-all / unknown — or null while
-                // verification is still in flight.
                 : r.verification_status ? (
                     <span
                       className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
@@ -277,6 +282,54 @@ export default function Prospects() {
                 {r.status === 'pending_review' ? 'pending' : r.status === 'spawned_lead' ? 'spawned' : r.status}
               </span>
             </div>
+          </div>
+        );
+      },
+    },
+    {
+      key: 'source_url',
+      label: 'Source URL',
+      render: (lead) => {
+        const row = lead as Lead & { _discovery?: DiscoveredContactWithLead; _allDiscoveries?: DiscoveredContactWithLead[] };
+        if (!row._discovery || !row._allDiscoveries) return <span className="text-slate-300 text-xs">—</span>;
+        const source = pickSourceUrl(row._allDiscoveries, row._discovery);
+        if (!source) return <span className="text-slate-300 text-xs">—</span>;
+
+        // 'harvested_from_url' synthetic entry vs a real DiscoveredContact row
+        const isHarvestedRef = !('id' in source);
+        const url = source.value;
+        const display = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+        let badge: React.ReactNode = null;
+        if (isHarvestedRef) {
+          badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title="Scrape produced the email shown on the left">harvested ✓</span>;
+        } else {
+          const r = source as DiscoveredContactWithLead;
+          if (!r.scrape_result) {
+            badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">scraping…</span>;
+          } else {
+            const sr = r.scrape_result as Record<string, unknown>;
+            if (sr.error)              badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-700" title={String(sr.error)}>scrape failed</span>;
+            else if (sr.website_email) badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title={`Harvested ${sr.website_email}`}>email harvested</span>;
+            else                       badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700" title="Scrape ran but found no email — open the URL manually to investigate">no email found</span>;
+          }
+        }
+
+        return (
+          <div className="flex flex-col gap-1 max-w-[260px]">
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 text-xs text-[#b0004a] hover:underline"
+              title={url}
+            >
+              <span className="material-symbols-outlined text-[12px] text-purple-500">link</span>
+              <span className="truncate">{display}</span>
+              <span className="material-symbols-outlined text-[10px] shrink-0">open_in_new</span>
+            </a>
+            {badge}
           </div>
         );
       },
