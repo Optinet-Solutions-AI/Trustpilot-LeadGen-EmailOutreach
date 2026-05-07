@@ -423,18 +423,30 @@ function extractCompanyFromUrl(url: string): string {
   }
 }
 
-/** Count of pending discoveries — drives the sidebar badge. */
+/** Count of *distinct leads* with pending discoveries — drives the sidebar
+ *  badge. Counts leads, not individual discovery rows: a single lead with 3
+ *  candidates (e.g. an email + a URL + a harvested email) only contributes 1
+ *  to the badge, matching what shows on the Prospects page (which dedupes to
+ *  one row per lead via pickBestForLead). */
 export async function countPending(): Promise<number> {
   const supabase = getSupabase();
-  const { count, error } = await supabase
+  // Supabase-js doesn't support COUNT(DISTINCT) directly; pull lead_ids of
+  // pending rows (paginated to a sane upper bound) and dedupe in JS. The
+  // query is indexed on (status, score, created_at) so this stays cheap.
+  const { data, error } = await supabase
     .from('discovered_contacts')
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'pending_review');
+    .select('lead_id')
+    .eq('status', 'pending_review')
+    .limit(2000);
   if (error) {
     console.warn('[discovered-contacts] countPending failed:', error.message);
     return 0;
   }
-  return count ?? 0;
+  const distinct = new Set<string>();
+  for (const row of data ?? []) {
+    if (row.lead_id) distinct.add(row.lead_id as string);
+  }
+  return distinct.size;
 }
 
 /** Used by the worker to find rows still waiting for verification or scrape. */
