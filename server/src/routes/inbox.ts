@@ -14,6 +14,8 @@ import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { ImapFlow } from 'imapflow';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
 import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache } from '../services/imap-thread-fetcher.js';
+import { extractContacts } from '../services/auto-reply-extractor.js';
+import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 import { renderAndSpin } from '../services/template-engine.js';
 import { applyTestMode } from '../services/test-mode.js';
 import { createNote } from '../db/notes.js';
@@ -1394,5 +1396,261 @@ router.post('/mark-read', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: message });
   }
 });
+
+// ── POST /api/inbox/promote-to-prospects ──────────────────────────────────────
+// User selects replies from the inbox, clicks "Promote to Prospects". For each:
+//   1. Fetch the inbound reply body (Gmail thread or SMTP/IMAP reconstruction).
+//   2. Run the auto-reply extractor — pulls candidate emails + URLs.
+//   3. Insert each candidate into discovered_contacts (status=pending_review).
+//   4. Flip the source campaign_leads row to status='auto_replied' so it
+//      drops out of "Human Replies" and feeds the Prospects list.
+//   5. PAUSE the lead's follow-up sequence on every campaign_leads row that
+//      lead participates in — the user is creating a fresh discovery follow-up
+//      campaign manually and doesn't want the cold sequence still firing.
+//
+// The Discovery worker (server/src/jobs/process-discovered-contacts.ts) picks
+// up the queued rows on its next 5-min tick: it verifies emails through the
+// layered validator and runs scrape_website.py against URLs to harvest more
+// emails. The user sees the candidate land on /prospects, then Accepts to
+// promote to leads.discovered_email.
+router.post('/promote-to-prospects', async (req: Request, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.campaignLeadIds) ? (req.body.campaignLeadIds as string[]) : [];
+    if (ids.length === 0) {
+      res.status(400).json({ success: false, error: 'campaignLeadIds (non-empty array) is required' });
+      return;
+    }
+    if (ids.length > 50) {
+      res.status(400).json({ success: false, error: 'Cap is 50 promotions per call — split into batches' });
+      return;
+    }
+
+    const supabase = getSupabase();
+
+    const { data: rows, error: rowsErr } = await supabase
+      .from('campaign_leads')
+      .select('id, lead_id, campaign_id, email_used, sender_email, gmail_thread_id, gmail_message_id')
+      .in('id', ids);
+    if (rowsErr) throw new Error(rowsErr.message);
+    if (!rows || rows.length === 0) {
+      res.json({ success: true, data: { promoted: 0, candidatesQueued: 0, results: [] } });
+      return;
+    }
+
+    // Resolve each sender's auth_type so we know whether to fetch via Gmail
+    // API or IMAP. Single batched lookup, indexed by sender_email.
+    const senderEmails = Array.from(new Set(
+      rows.map((r) => (r.sender_email as string | null)?.toLowerCase()).filter(Boolean) as string[],
+    ));
+    const accountByEmail = new Map<string, { auth_type: string; imap_host: string | null; imap_port: number | null; imap_user: string | null; imap_pass: string | null; gmail_client_id: string | null; gmail_client_secret: string | null; gmail_refresh_token: string | null; }>();
+    if (senderEmails.length > 0) {
+      const { data: accounts } = await supabase
+        .from('email_accounts')
+        .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+        .in('email', senderEmails);
+      for (const a of accounts ?? []) {
+        accountByEmail.set((a.email as string).toLowerCase(), a as never);
+      }
+    }
+
+    const results: Array<{ campaign_lead_id: string; status: 'queued' | 'no_body' | 'no_candidates' | 'error'; emailsQueued: number; urlsQueued: number; error?: string }> = [];
+    let totalCandidates = 0;
+    let promotedCount = 0;
+
+    for (const row of rows) {
+      const cl = row as {
+        id: string; lead_id: string; campaign_id: string;
+        email_used: string | null; sender_email: string | null;
+        gmail_thread_id: string | null; gmail_message_id: string | null;
+      };
+      try {
+        const body = await fetchInboundReplyBody(cl, accountByEmail);
+        if (!body) {
+          results.push({ campaign_lead_id: cl.id, status: 'no_body', emailsQueued: 0, urlsQueued: 0 });
+          continue;
+        }
+
+        const leadDomain = (cl.email_used ?? '').split('@')[1] ?? null;
+        const { emails, urls } = extractContacts(body.text, {
+          email_used: cl.email_used,
+          lead_domain: leadDomain,
+        });
+
+        if (emails.length === 0 && urls.length === 0) {
+          results.push({ campaign_lead_id: cl.id, status: 'no_candidates', emailsQueued: 0, urlsQueued: 0 });
+          continue;
+        }
+
+        const auditMetadata = {
+          subject: body.subject,
+          snippet: body.text.slice(0, 200),
+          source: 'inbox-promote',
+          discovered_at: new Date().toISOString(),
+        };
+
+        for (const c of emails) {
+          await insertDiscoveredContact({
+            lead_id: cl.lead_id,
+            source_campaign_lead_id: cl.id,
+            kind: 'email',
+            value: c.value,
+            role: c.role,
+            score: c.score,
+            auto_reply_message_id: cl.gmail_message_id ?? cl.gmail_thread_id ?? null,
+            auto_reply_metadata: auditMetadata,
+          });
+        }
+        for (const c of urls) {
+          await insertDiscoveredContact({
+            lead_id: cl.lead_id,
+            source_campaign_lead_id: cl.id,
+            kind: 'url',
+            value: c.value,
+            role: c.signal,
+            score: c.score,
+            auto_reply_message_id: cl.gmail_message_id ?? cl.gmail_thread_id ?? null,
+            auto_reply_metadata: auditMetadata,
+          });
+        }
+
+        // Flip source campaign_lead off the Human Replies feed and pause every
+        // sequence row for this lead so the cold follow-up cadence doesn't keep
+        // firing. The user will create a new discovery follow-up campaign
+        // manually for this prospect.
+        await supabase
+          .from('campaign_leads')
+          .update({ status: 'auto_replied' })
+          .eq('id', cl.id);
+
+        await supabase
+          .from('campaign_leads')
+          .update({ sequence_paused: true, next_step_at: null })
+          .eq('lead_id', cl.lead_id);
+
+        await createNote(cl.lead_id, {
+          type: 'auto_reply_received',
+          content: `Manually promoted from Inbox — ${emails.length} email + ${urls.length} URL candidate(s) queued. Cold sequences paused.`,
+          metadata: {
+            campaign_id: cl.campaign_id,
+            source_campaign_lead_id: cl.id,
+            promoted_by: 'inbox-button',
+            email_count: emails.length,
+            url_count: urls.length,
+          },
+        });
+
+        results.push({ campaign_lead_id: cl.id, status: 'queued', emailsQueued: emails.length, urlsQueued: urls.length });
+        totalCandidates += emails.length + urls.length;
+        promotedCount++;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[promote-to-prospects] ${cl.id} failed:`, msg);
+        results.push({ campaign_lead_id: cl.id, status: 'error', emailsQueued: 0, urlsQueued: 0, error: msg });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        promoted: promotedCount,
+        candidatesQueued: totalCandidates,
+        results,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+/**
+ * Fetch the latest inbound reply body for a given campaign_lead. Tries Gmail
+ * thread first when the lead has gmail_thread_id + a Gmail account, falls
+ * back to IMAP thread reconstruction for SMTP accounts. Returns the latest
+ * inbound message's plain body + subject, or null when nothing is reachable.
+ *
+ * The returned `text` is what the auto-reply extractor scans — HTML is
+ * tolerable (the extractor's regexes work on tags-stripped content), but
+ * plain text is preferred when available.
+ */
+async function fetchInboundReplyBody(
+  cl: { id: string; sender_email: string | null; gmail_thread_id: string | null; gmail_message_id: string | null; email_used: string | null },
+  accountByEmail: Map<string, { auth_type: string; imap_host: string | null; imap_port: number | null; imap_user: string | null; imap_pass: string | null; gmail_client_id: string | null; gmail_client_secret: string | null; gmail_refresh_token: string | null }>,
+): Promise<{ text: string; subject: string } | null> {
+  const sender = cl.sender_email?.toLowerCase() ?? '';
+  const account = sender ? accountByEmail.get(sender) : undefined;
+
+  // ── Gmail path ──────────────────────────────────────────────────────
+  if (cl.gmail_thread_id && (!account || account.auth_type === 'gmail_oauth' || account.auth_type === 'app_password')) {
+    try {
+      const gmail = account?.gmail_refresh_token
+        ? createGmailClientFromCredentials(
+            account.gmail_client_id || config.gmail.clientId,
+            account.gmail_client_secret || config.gmail.clientSecret,
+            account.gmail_refresh_token,
+          )
+        : getGmailClient();
+
+      const threadRes = await gmail.users.threads.get({
+        userId: 'me',
+        id: cl.gmail_thread_id,
+        format: 'full',
+      });
+
+      const messages = threadRes.data.messages ?? [];
+      const senderAddr = (sender || config.gmail.fromEmail).toLowerCase();
+      // Pick the latest inbound (not from sender) — most recent reply wins
+      // when the conversation has multiple inbound messages.
+      const inbound = [...messages].reverse().find((msg) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const headers = ((msg.payload as any)?.headers ?? []) as { name?: string; value?: string }[];
+        const fromHdr = headers.find((h) => h.name?.toLowerCase() === 'from')?.value ?? '';
+        return !fromHdr.toLowerCase().includes(senderAddr);
+      });
+      if (!inbound) return null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const headers = ((inbound.payload as any)?.headers ?? []) as { name?: string; value?: string }[];
+      const subject = headers.find((h) => h.name?.toLowerCase() === 'subject')?.value ?? '';
+      const { html, plain } = extractBody(inbound.payload);
+      return { text: plain || html || (inbound.snippet ?? ''), subject };
+    } catch (e) {
+      console.warn('[promote-to-prospects] Gmail fetch failed:', e instanceof Error ? e.message : e);
+      return null;
+    }
+  }
+
+  // ── IMAP path ───────────────────────────────────────────────────────
+  if (account?.auth_type === 'smtp' && account.imap_host && account.imap_user && account.imap_pass) {
+    try {
+      const auth = {
+        imap_host: account.imap_host,
+        imap_port: account.imap_port ?? 993,
+        imap_user: account.imap_user,
+        imap_pass: account.imap_pass,
+      };
+      let thread = null;
+      if (cl.gmail_message_id) {
+        thread = await fetchSmtpThread(auth, cl.gmail_message_id, sender, cl.email_used ?? undefined);
+      }
+      if (!thread && cl.email_used) {
+        thread = await searchImapThreadByEmail(auth, cl.email_used, sender);
+      }
+      if (!thread || thread.messages.length === 0) return null;
+      // Latest inbound = highest date with `from` not equal to the sender account
+      const inbound = [...thread.messages].reverse().find((m) => {
+        const fromAddr = (m.from || '').toLowerCase();
+        return !fromAddr.includes(sender);
+      });
+      if (!inbound) return null;
+      // ThreadMessage.body is HTML; the extractor strips tags internally.
+      return { text: inbound.body, subject: inbound.subject };
+    } catch (e) {
+      console.warn('[promote-to-prospects] IMAP fetch failed:', e instanceof Error ? e.message : e);
+      return null;
+    }
+  }
+
+  return null;
+}
 
 export default router;

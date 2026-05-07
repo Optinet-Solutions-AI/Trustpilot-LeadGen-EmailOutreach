@@ -35,10 +35,13 @@ function pickReviewer(req: Request): string | undefined {
   return headerKey ? `apikey:${headerKey.slice(0, 6)}` : undefined;
 }
 
-// GET /api/discovered-contacts?status=pending&kind=email|url&limit=&offset=
+// GET /api/discovered-contacts?status=pending|accepted|all&kind=email|url&limit=&offset=
+// Pass status=all to fetch every lifecycle state — used by the Prospects
+// page which shows pending + accepted + spawned together as one list.
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const status = (req.query.status as DiscoveredStatus | undefined) ?? 'pending_review';
+    const statusRaw = (req.query.status as string | undefined) ?? 'pending_review';
+    const status = (statusRaw === 'all' ? 'all' : statusRaw) as DiscoveredStatus | 'all';
     const kind = req.query.kind as DiscoveredKind | undefined;
     const limit = Number.parseInt(String(req.query.limit ?? '50'), 10);
     const offset = Number.parseInt(String(req.query.offset ?? '0'), 10);

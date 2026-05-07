@@ -110,6 +110,11 @@ export default function Inbox() {
     const saved = localStorage.getItem('inbox_campaign_type_filter');
     return saved === 'outreach' || saved === 'discovery_followup' ? saved : 'all';
   });
+  // Multi-select state for "Promote to Prospects". Scoped to the Replies
+  // folder — selection clears when folder switches or messages refetch.
+  const [selectedReplyIds, setSelectedReplyIds] = useState<Set<string>>(new Set());
+  const [promoting, setPromoting] = useState(false);
+  const [promoteResult, setPromoteResult] = useState<{ promoted: number; candidatesQueued: number; skipped: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadData | null>(null);
@@ -335,6 +340,7 @@ export default function Inbox() {
     setSelectedId(null);
     setThread(null);
     setSelectedMsg(null);
+    setSelectedReplyIds(new Set());
     const params: Record<string, string> = { folder };
     if (campaignTypeFilter !== 'all') params.campaignType = campaignTypeFilter;
     api.get('/inbox/campaign-replies', { params })
@@ -345,6 +351,36 @@ export default function Inbox() {
       })
       .finally(() => setLoading(false));
   }, [folder, campaignTypeFilter]);
+
+  const toggleReplySelected = useCallback((id: string) => {
+    setSelectedReplyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const promoteToProspects = useCallback(async () => {
+    if (selectedReplyIds.size === 0 || promoting) return;
+    setPromoting(true);
+    setPromoteResult(null);
+    try {
+      const res = await api.post('/inbox/promote-to-prospects', {
+        campaignLeadIds: [...selectedReplyIds],
+      });
+      const data = res.data?.data ?? {};
+      const promoted = data.promoted ?? 0;
+      const candidatesQueued = data.candidatesQueued ?? 0;
+      const skipped = (data.results ?? []).filter((r: { status: string }) => r.status !== 'queued').length;
+      setPromoteResult({ promoted, candidatesQueued, skipped });
+      fetchMessages();
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      setError(e?.response?.data?.error ?? e?.message ?? 'Failed to promote replies');
+    } finally {
+      setPromoting(false);
+    }
+  }, [selectedReplyIds, promoting, fetchMessages]);
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
 
@@ -568,6 +604,51 @@ export default function Inbox() {
           </div>
         </div>
 
+        {/* Promote toolbar — appears in Replies folder when 1+ messages are
+            selected. Triggers /api/inbox/promote-to-prospects which scrapes
+            URLs in each reply, queues candidates on Prospects, and pauses the
+            lead's cold sequences. */}
+        {folder === 'replies' && selectedReplyIds.size > 0 && (
+          <div className="px-4 py-2.5 border-b border-slate-100 bg-[#8ff9a8]/10 flex items-center gap-2">
+            <span className="text-[11px] font-bold text-[#006630] flex-1">
+              {selectedReplyIds.size} selected
+            </span>
+            <button
+              onClick={() => setSelectedReplyIds(new Set())}
+              disabled={promoting}
+              className="text-[10px] font-bold uppercase tracking-wider text-secondary hover:text-on-surface disabled:opacity-40"
+            >
+              Clear
+            </button>
+            <button
+              onClick={promoteToProspects}
+              disabled={promoting}
+              className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white bg-[#006630] hover:bg-[#005528] rounded-md px-2.5 py-1 transition-colors disabled:opacity-40"
+              title="Scrape URL(s) in selected replies, surface candidates on Prospects, and pause cold sequences for these leads"
+            >
+              <span className={`material-symbols-outlined text-[13px] ${promoting ? 'animate-spin' : ''}`}>
+                {promoting ? 'progress_activity' : 'how_to_reg'}
+              </span>
+              {promoting ? 'Promoting…' : 'Promote to Prospects'}
+            </button>
+          </div>
+        )}
+
+        {promoteResult && (
+          <div className="px-4 py-2 border-b border-slate-100 bg-blue-50 flex items-center gap-2">
+            <span className="material-symbols-outlined text-[14px] text-blue-700">check_circle</span>
+            <span className="text-[11px] font-semibold text-blue-800 flex-1">
+              Promoted {promoteResult.promoted}, {promoteResult.candidatesQueued} candidate{promoteResult.candidatesQueued === 1 ? '' : 's'} queued{promoteResult.skipped > 0 ? ` (${promoteResult.skipped} skipped — no contacts in body)` : ''}.
+            </span>
+            <button
+              onClick={() => setPromoteResult(null)}
+              className="text-blue-700 hover:text-blue-900"
+            >
+              <span className="material-symbols-outlined text-[14px]">close</span>
+            </button>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center py-16 gap-2 text-secondary text-sm">
@@ -601,46 +682,69 @@ export default function Inbox() {
               const badge = msg.status === 'replied' && !isUnread
                 ? REPLIED_READ_BADGE
                 : STATUS_BADGE[msg.status] || STATUS_BADGE.sent;
+              const isPromoteSelected = selectedReplyIds.has(msg.id);
+              const showCheckbox = folder === 'replies';
               return (
-                <button
+                <div
                   key={msg.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => openMessage(msg)}
-                  className={`w-full text-left px-4 py-3.5 border-b border-slate-100 transition-colors hover:bg-white ${
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMessage(msg); } }}
+                  className={`w-full text-left px-4 py-3.5 border-b border-slate-100 transition-colors hover:bg-white cursor-pointer ${
                     isSelected ? 'bg-white border-l-2 border-l-[#b0004a]' : isUnread ? 'bg-[#8ff9a8]/5' : ''
-                  }`}
+                  } ${isPromoteSelected ? 'ring-1 ring-[#006630]/30 ring-inset' : ''}`}
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                      {isUnread && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#006630] flex-shrink-0" aria-label="Unread" />
-                      )}
-                      <span className={`text-sm truncate ${isUnread ? 'font-black text-on-surface' : 'font-bold text-on-surface'}`}>
-                        {msg.company_name}
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.replied_at || msg.sent_at)}</span>
-                  </div>
-                  <p className="text-xs text-secondary truncate mb-1.5 flex items-center gap-1.5">
-                    {msg.campaign_type === 'discovery_followup' && (
-                      <span
-                        title="Discovery Follow-Up Campaign"
-                        className="text-[9px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                  <div className="flex items-start gap-2">
+                    {showCheckbox && (
+                      <label
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center pt-0.5 flex-shrink-0 cursor-pointer"
+                        title="Select to promote to Prospects"
                       >
-                        D-FU
-                      </span>
+                        <input
+                          type="checkbox"
+                          checked={isPromoteSelected}
+                          onChange={() => toggleReplySelected(msg.id)}
+                          className="w-3.5 h-3.5 rounded border-slate-300 accent-[#006630]"
+                        />
+                      </label>
                     )}
-                    <span className="truncate">{msg.campaign_name}</span>
-                  </p>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] text-slate-400 truncate">{msg.email_used || '—'}</span>
-                    <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
-                      {badge.label}
-                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          {isUnread && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#006630] flex-shrink-0" aria-label="Unread" />
+                          )}
+                          <span className={`text-sm truncate ${isUnread ? 'font-black text-on-surface' : 'font-bold text-on-surface'}`}>
+                            {msg.company_name}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.replied_at || msg.sent_at)}</span>
+                      </div>
+                      <p className="text-xs text-secondary truncate mb-1.5 flex items-center gap-1.5">
+                        {msg.campaign_type === 'discovery_followup' && (
+                          <span
+                            title="Discovery Follow-Up Campaign"
+                            className="text-[9px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                          >
+                            D-FU
+                          </span>
+                        )}
+                        <span className="truncate">{msg.campaign_name}</span>
+                      </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-slate-400 truncate">{msg.email_used || '—'}</span>
+                        <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
+                          {badge.label}
+                        </span>
+                      </div>
+                      {msg.status === 'replied' && msg.reply_snippet && (
+                        <p className="text-[11px] text-[#006630] truncate mt-1 italic">{msg.reply_snippet}</p>
+                      )}
+                    </div>
                   </div>
-                  {msg.status === 'replied' && msg.reply_snippet && (
-                    <p className="text-[11px] text-[#006630] truncate mt-1 italic">{msg.reply_snippet}</p>
-                  )}
-                </button>
+                </div>
               );
             })
           )}

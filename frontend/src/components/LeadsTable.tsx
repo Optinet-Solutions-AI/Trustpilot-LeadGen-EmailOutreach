@@ -139,6 +139,11 @@ interface Props {
   // gets the unchanged matrix.
   extraColumns?: ExtraColumn[];
   extraRowActions?: (lead: Lead) => React.ReactNode;
+  // Suppress specific built-in columns. Used by Prospects to hide TP / Site /
+  // Affiliate email columns since the discovered email is the only one that
+  // matters there. Drag-reorder still works on the remaining columns; the
+  // hidden ones simply never render.
+  hideColumns?: ColKey[];
 }
 
 type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'screenshot' | 'status';
@@ -204,9 +209,16 @@ export default function LeadsTable({
   onPageChange, onStatusChange, onDelete, selectedIds, onSelect, onLeadClick,
   sortBy, sortDir, onSortChange,
   onDismissLinkFlag, onEditLinkUrl,
-  extraColumns, extraRowActions,
+  extraColumns, extraRowActions, hideColumns,
 }: Props) {
-  const [columns, setColumns] = useState<ColKey[]>(loadColOrder);
+  // The persisted order; drag-reorder mutates this and writes to localStorage.
+  const [columnOrder, setColumns] = useState<ColKey[]>(loadColOrder);
+  // Visible-column projection: order minus any keys the parent asked us to hide.
+  // Drag-reorder still operates on columnOrder; hiding from one page (e.g. the
+  // Prospects view dropping TP / Site / Affiliate Email) doesn't wipe the
+  // user's drag preferences on the regular Leads page.
+  const hideSet = useMemo(() => new Set(hideColumns ?? []), [hideColumns]);
+  const columns = useMemo(() => columnOrder.filter((c) => !hideSet.has(c)), [columnOrder, hideSet]);
   const [dragOver, setDragOver] = useState<ColKey | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState<string>('');
@@ -262,7 +274,9 @@ export default function LeadsTable({
   const handleDrop = (col: ColKey) => {
     const from = dragCol.current;
     if (!from || from === col) { setDragOver(null); return; }
-    const next = [...columns];
+    // Splice against the full columnOrder (not the filtered `columns`) so
+    // hidden entries keep their positions for views that don't hide them.
+    const next = [...columnOrder];
     next.splice(next.indexOf(from), 1);
     next.splice(next.indexOf(col), 0, from);
     setColumns(next);

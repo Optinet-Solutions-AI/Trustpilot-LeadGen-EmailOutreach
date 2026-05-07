@@ -119,7 +119,10 @@ export async function listPendingByLead(leadId: string): Promise<DiscoveredConta
 
 export interface ListForReviewFilters {
   kind?: DiscoveredKind;
-  status?: DiscoveredStatus;
+  /** Filter by status, or omit / pass 'all' to skip the filter and return
+   *  rows across every lifecycle state — used by the Prospects single-page
+   *  view that aggregates pending + accepted + spawned together. */
+  status?: DiscoveredStatus | 'all';
   limit?: number;
   offset?: number;
 }
@@ -128,14 +131,16 @@ export async function listForReview(
   filters: ListForReviewFilters = {},
 ): Promise<{ data: Array<DiscoveredContact & { lead: Record<string, unknown> | null }>; total: number }> {
   const supabase = getSupabase();
-  const limit = Math.min(filters.limit ?? 50, 200);
+  const limit = Math.min(filters.limit ?? 50, 500);
   const offset = filters.offset ?? 0;
   const status = filters.status ?? 'pending_review';
 
   let query = supabase
     .from('discovered_contacts')
-    .select('*, lead:leads(*)', { count: 'exact' })
-    .eq('status', status);
+    .select('*, lead:leads(*)', { count: 'exact' });
+  if (status !== 'all') {
+    query = query.eq('status', status);
+  }
   if (filters.kind) query = query.eq('kind', filters.kind);
 
   const { data, error, count } = await query
