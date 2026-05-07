@@ -452,30 +452,52 @@ function extractCompanyFromUrl(url: string): string {
   }
 }
 
-/** Count of *distinct leads* with pending discoveries — drives the sidebar
- *  badge. Counts leads, not individual discovery rows: a single lead with 3
- *  candidates (e.g. an email + a URL + a harvested email) only contributes 1
- *  to the badge, matching what shows on the Prospects page (which dedupes to
- *  one row per lead via pickBestForLead). */
+/** Count of distinct leads that still need attention — drives the sidebar
+ *  badge. A lead "needs attention" iff it has at least one pending_review
+ *  discovery AND zero accepted (or spawned) ones. The moment the user
+ *  accepts a discovery on a lead, that lead drops off the badge — even if
+ *  background URL rows are still pending. Matches the user's mental model:
+ *  "I already actioned this lead, stop counting it." */
 export async function countPending(): Promise<number> {
   const supabase = getSupabase();
-  // Supabase-js doesn't support COUNT(DISTINCT) directly; pull lead_ids of
-  // pending rows (paginated to a sane upper bound) and dedupe in JS. The
-  // query is indexed on (status, score, created_at) so this stays cheap.
-  const { data, error } = await supabase
-    .from('discovered_contacts')
-    .select('lead_id')
-    .eq('status', 'pending_review')
-    .limit(2000);
-  if (error) {
-    console.warn('[discovered-contacts] countPending failed:', error.message);
+
+  // Two queries because supabase-js doesn't expose anti-join syntax. Both
+  // queries hit indexes (status, score, created_at) and stay cheap. Lead-id
+  // sets get diffed in JS.
+  const [pendingRes, actionedRes] = await Promise.all([
+    supabase
+      .from('discovered_contacts')
+      .select('lead_id')
+      .eq('status', 'pending_review')
+      .limit(2000),
+    supabase
+      .from('discovered_contacts')
+      .select('lead_id')
+      .in('status', ['accepted', 'spawned_lead'])
+      .limit(2000),
+  ]);
+
+  if (pendingRes.error) {
+    console.warn('[discovered-contacts] countPending pending-query failed:', pendingRes.error.message);
     return 0;
   }
-  const distinct = new Set<string>();
-  for (const row of data ?? []) {
-    if (row.lead_id) distinct.add(row.lead_id as string);
+  if (actionedRes.error) {
+    console.warn('[discovered-contacts] countPending actioned-query failed:', actionedRes.error.message);
+    // Fall through with a permissive empty actioned set rather than zeroing
+    // the badge — better to slightly over-count than disappear silently.
   }
-  return distinct.size;
+
+  const actioned = new Set<string>();
+  for (const row of actionedRes.data ?? []) {
+    if (row.lead_id) actioned.add(row.lead_id as string);
+  }
+
+  const needs = new Set<string>();
+  for (const row of pendingRes.data ?? []) {
+    const id = row.lead_id as string | undefined;
+    if (id && !actioned.has(id)) needs.add(id);
+  }
+  return needs.size;
 }
 
 /** Used by the worker to find rows still waiting for verification or scrape. */
