@@ -39,11 +39,11 @@ export default function Analytics() {
   }
 
   const totalSent    = data.campaigns.reduce((s, c) => s + c.total_sent, 0);
-  const totalOpened  = data.campaigns.reduce((s, c) => s + c.total_opened, 0);
   const totalReplied = data.campaigns.reduce((s, c) => s + c.total_replied, 0);
   const totalBounced = data.campaigns.reduce((s, c) => s + c.total_bounced, 0);
-  const openRate     = totalSent > 0 ? ((totalOpened / totalSent) * 100).toFixed(1) : '0.0';
   const replyRate    = totalSent > 0 ? ((totalReplied / totalSent) * 100).toFixed(1) : '0.0';
+  const bounceRate   = totalSent > 0 ? ((totalBounced / totalSent) * 100).toFixed(1) : '0.0';
+  const inboxPlacement = totalSent > 0 ? Math.max(0, 100 - (totalBounced / totalSent * 100)).toFixed(1) : '100.0';
 
   const statusData = Object.entries(data.leadsByStatus)
     .filter(([, v]) => v > 0)
@@ -63,7 +63,6 @@ export default function Analytics() {
 
   const metricCards = [
     { label: 'Total Emails Sent', value: totalSent.toLocaleString(), icon: 'send',        accent: 'border-[#b0004a]',  big: true },
-    { label: 'Open Rate',         value: `${openRate}%`,             icon: 'drafts',       accent: 'border-pink-300',   big: false },
     { label: 'Reply Rate',        value: `${replyRate}%`,            icon: 'reply',        accent: 'border-tertiary',   big: false },
     { label: 'Bounced',           value: totalBounced.toLocaleString(), icon: 'bounce',    accent: 'border-error',      big: false },
   ];
@@ -97,7 +96,7 @@ export default function Analytics() {
       </div>
 
       {/* Metrics Bento */}
-      <div className="grid grid-cols-4 gap-5">
+      <div className="grid grid-cols-3 gap-5">
         {metricCards.map(({ label, value, icon, accent, big }) => (
           <div
             key={label}
@@ -172,10 +171,9 @@ export default function Analytics() {
           </h3>
           <div className="flex-1 flex flex-col justify-center gap-6">
             {[
-              { label: 'Inbox Placement', pct: totalSent > 0 ? Math.max(0, 100 - (totalBounced / totalSent * 100)).toFixed(1) : '100.0', color: 'bg-tertiary', textColor: 'text-tertiary' },
-              { label: 'Open Rate',       pct: openRate,  color: 'bg-[#b0004a]',   textColor: 'text-[#b0004a]' },
-              { label: 'Reply Rate',      pct: replyRate, color: 'bg-secondary',   textColor: 'text-secondary' },
-              { label: 'Bounce Rate',     pct: totalSent > 0 ? (totalBounced / totalSent * 100).toFixed(1) : '0.0', color: 'bg-error', textColor: 'text-error' },
+              { label: 'Inbox Placement', pct: inboxPlacement, color: 'bg-tertiary',  textColor: 'text-tertiary' },
+              { label: 'Reply Rate',      pct: replyRate,      color: 'bg-secondary', textColor: 'text-secondary' },
+              { label: 'Bounce Rate',     pct: bounceRate,     color: 'bg-error',     textColor: 'text-error' },
             ].map(({ label, pct, color, textColor }) => (
               <div key={label}>
                 <div className="flex justify-between mb-1.5">
@@ -196,7 +194,7 @@ export default function Analytics() {
               <span className="font-bold text-[#b0004a]">Insight: </span>
               {parseFloat(replyRate) > 5
                 ? 'Great reply rate! Consider scaling your sending volume.'
-                : 'Optimize your subject lines to improve open and reply rates.'}
+                : 'Tighten your subject lines and opening hook to improve reply rate.'}
             </p>
           </div>
         </div>
@@ -288,21 +286,22 @@ export default function Analytics() {
                 <tr className="bg-surface-container-low">
                   <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Campaign Name</th>
                   <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Sent</th>
-                  <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Open Rate</th>
+                  <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Replied</th>
                   <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Reply Rate</th>
+                  <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Bounced</th>
                   <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-secondary">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
                 {data.campaigns.map((c) => {
-                  const or = c.total_sent > 0 ? ((c.total_opened / c.total_sent) * 100).toFixed(1) : '0.0';
                   const rr = c.total_sent > 0 ? ((c.total_replied / c.total_sent) * 100).toFixed(1) : '0.0';
                   return (
                     <tr key={c.id} className="hover:bg-surface-container/30 transition-colors">
                       <td className="px-8 py-5 font-bold text-sm text-on-surface">{c.name}</td>
                       <td className="px-8 py-5 font-medium text-sm">{c.total_sent}</td>
-                      <td className="px-8 py-5 font-bold text-sm text-[#b0004a]">{or}%</td>
+                      <td className="px-8 py-5 font-bold text-sm text-[#006630]">{c.total_replied}</td>
                       <td className="px-8 py-5 font-medium text-sm">{rr}%</td>
+                      <td className="px-8 py-5 font-bold text-sm text-error">{c.total_bounced}</td>
                       <td className="px-8 py-5">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
                           c.status === 'sending' || c.status === 'sent'

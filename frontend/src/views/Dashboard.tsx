@@ -207,7 +207,6 @@ export default function Dashboard() {
                 <tr className="bg-slate-50/50">
                   <th className="px-7 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400">Campaign</th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400 text-right">Sent</th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400 text-right">Opened</th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400 text-right">Replied</th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400 text-right">Bounced</th>
                 </tr>
@@ -217,7 +216,6 @@ export default function Dashboard() {
                   <tr key={c.id} className="hover:bg-surface-container/40 transition-colors">
                     <td className="px-7 py-4 font-bold text-sm text-on-surface">{c.name}</td>
                     <td className="px-6 py-4 text-right text-sm font-medium">{c.total_sent}</td>
-                    <td className="px-6 py-4 text-right text-sm font-bold text-[#b0004a]">{c.total_opened}</td>
                     <td className="px-6 py-4 text-right text-sm font-bold text-[#006630]">{c.total_replied}</td>
                     <td className="px-6 py-4 text-right text-sm font-bold text-error">{c.total_bounced}</td>
                   </tr>
