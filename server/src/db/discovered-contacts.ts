@@ -283,6 +283,34 @@ export async function dismissContact(
     .single();
   if (error) throw new Error(error.message);
 
+  // Restore-to-inbox: if this was the last live discovery for the source
+  // reply, revert that campaign_lead from 'auto_replied' back to 'replied'
+  // so the user sees it again in the Inbox > Replies folder. The promote
+  // flow flipped the status when queueing candidates; dismissing the only
+  // candidate is the explicit "scratch that, I want to retry" signal.
+  // We deliberately leave sequence_paused alone — un-pausing automated
+  // sequences after the user has already manually intervened is risky;
+  // the user can un-pause from the lead detail if they want cold cadence
+  // to resume.
+  if (contact.source_campaign_lead_id) {
+    const { data: liveSiblings } = await supabase
+      .from('discovered_contacts')
+      .select('id', { count: 'exact', head: true })
+      .eq('source_campaign_lead_id', contact.source_campaign_lead_id)
+      .in('status', ['pending_review', 'accepted', 'spawned_lead']);
+    const liveCount = (liveSiblings as unknown as { count?: number } | null)?.count ?? 0;
+    if (liveCount === 0) {
+      const { error: revertErr } = await supabase
+        .from('campaign_leads')
+        .update({ status: 'replied' })
+        .eq('id', contact.source_campaign_lead_id)
+        .eq('status', 'auto_replied');
+      if (revertErr) {
+        console.warn('[discovered-contacts] campaign_lead revert failed:', revertErr.message);
+      }
+    }
+  }
+
   try {
     await createNote(contact.lead_id, {
       type: 'discovered_contact_dismissed',
