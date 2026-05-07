@@ -12,6 +12,17 @@ import { DEFAULT_SCHEDULE, COUNTRY_TIMEZONE, type SendingSchedule } from './sche
 const DEFAULT_SUBJECT = '';
 const DEFAULT_BODY = '';
 
+// Pre-fill copy for discovery follow-up campaigns. Mentions the original
+// support inbox we emailed and the brand we found on Trustpilot — the
+// recipient already disclosed the right contact via auto-reply, so the
+// follow-up acknowledges that handoff explicitly to feel less spammy.
+const DISCOVERY_FOLLOWUP_SUBJECT = '{{company_name}} — quick follow-up on what I sent your support inbox';
+const DISCOVERY_FOLLOWUP_BODY = `<p>Hi there,</p>
+<p>I reached out to your team a little earlier and was pointed to this address as the right place to follow up.</p>
+<p>I came across <strong>{{company_name}}</strong> on Trustpilot — at <strong>{{star_rating}}/5</strong> there's room to lift conversion just by tightening up how reviews are managed. We help brands like yours respond faster, surface the good ones, and rebuild rating velocity.</p>
+<p>Worth a 10-minute look?</p>
+<p>— OptiRate</p>`;
+
 const STEPS = [
   { n: 1, label: 'Select Leads',  next: 'Continue to Sequence'  },
   { n: 2, label: 'Sequence',      next: 'Continue to Options'   },
@@ -30,18 +41,24 @@ interface Props {
     manualEmails?: string[];
     followUpSteps?: FollowUpStepInput[];
     sendingSchedule?: SendingSchedule;
+    campaignType?: 'outreach' | 'discovery_followup';
   }) => Promise<void>;
   /** Launched from the Redirected Leads page. Filters the lead picker to
    *  leads whose Trustpilot listing redirects to a different brand and
    *  switches the AI prompt to redirect-aware copy. */
   redirectMode?: boolean;
+  /** Launched from the Prospects → Accepted tab. Pre-fills a discovery
+   *  follow-up template, marks the campaign as type='discovery_followup'
+   *  on submit, and the backend's addLeadsToCampaign routes sends to
+   *  lead.discovered_email instead of primary_email. */
+  discoveryMode?: boolean;
   /** Pre-select these leads when the wizard mounts. Used by the
    *  Redirected Leads page to hand off a chosen set straight into the
    *  recipient picker. */
   initialLeadIds?: string[];
 }
 
-export default function CampaignWizard({ onClose, onCreate, redirectMode, initialLeadIds }: Props) {
+export default function CampaignWizard({ onClose, onCreate, redirectMode, discoveryMode, initialLeadIds }: Props) {
   const [step, setStep]             = useState(0);
   const [saving, setSaving]         = useState(false);
 
@@ -52,9 +69,11 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
   const [manualEmails, setManualEmails]       = useState<string[]>([]);
   const [maxLeads, setMaxLeads]               = useState(500);
 
-  // Step 2 — Sequence
-  const [subject, setSubject]               = useState(DEFAULT_SUBJECT);
-  const [body, setBody]                     = useState(DEFAULT_BODY);
+  // Step 2 — Sequence. Discovery follow-up gets a dedicated pre-fill so the
+  // user lands in the editor with a draft that already references the
+  // original support handoff.
+  const [subject, setSubject]               = useState(discoveryMode ? DISCOVERY_FOLLOWUP_SUBJECT : DEFAULT_SUBJECT);
+  const [body, setBody]                     = useState(discoveryMode ? DISCOVERY_FOLLOWUP_BODY : DEFAULT_BODY);
   const [includeScreenshot, setIncludeScreenshot] = useState(true);
   const [followUpSteps, setFollowUpSteps]   = useState<FollowUpStepInput[]>([]);
 
@@ -101,6 +120,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
         manualEmails: manualEmails.length > 0 ? manualEmails : undefined,
         followUpSteps: followUpSteps.length > 0 ? followUpSteps : undefined,
         sendingSchedule: schedule,
+        campaignType: discoveryMode ? 'discovery_followup' : undefined,
       });
       onClose();
     } catch {
@@ -153,6 +173,14 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
           </div>
         </div>
       </div>
+
+      {/* ── Mode banner ── */}
+      {discoveryMode && (
+        <div className="bg-amber-50 border-b border-amber-200 px-8 py-2 text-xs font-bold text-amber-800 flex items-center gap-2 flex-shrink-0">
+          <span className="material-symbols-outlined text-[14px]">forward_to_inbox</span>
+          Discovery Follow-Up Campaign — sends to each lead's accepted discovered_email rather than primary_email.
+        </div>
+      )}
 
       {/* ── Step indicator ── */}
       <div className="bg-white border-b border-slate-100 px-8 py-4 flex items-center justify-center flex-shrink-0">
@@ -213,6 +241,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, initia
             manualEmails={manualEmails}
             followUpSteps={followUpSteps}
             redirectMode={redirectMode}
+            discoveryMode={discoveryMode}
             onSubjectChange={setSubject}
             onBodyChange={setBody}
             onIncludeScreenshotChange={setIncludeScreenshot}

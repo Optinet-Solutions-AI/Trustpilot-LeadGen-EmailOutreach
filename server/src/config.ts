@@ -55,4 +55,11 @@ export const config = {
 
   /** Public URL for webhook callbacks (e.g. https://your-app.run.app) */
   webhookBaseUrl: process.env.WEBHOOK_BASE_URL || '',
+
+  /** Feature flag: classify auto-replies and extract discovered contacts.
+   *  When false, replies that LOOK automated still flip status='replied' (the
+   *  legacy behaviour) and the system additionally writes a shadow lead_notes
+   *  entry tagged 'auto_reply_candidate' so we can score detector precision
+   *  on real traffic before turning it on. Defaults to true. */
+  autoReplyHandlingEnabled: process.env.AUTO_REPLY_HANDLING_ENABLED !== 'false',
 };

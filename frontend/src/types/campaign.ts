@@ -12,12 +12,19 @@ export interface Campaign {
   total_sent: number;
   total_opened: number;
   total_replied: number;
+  /** Auto-routed contact info from auto-replies (added in migration 028).
+   *  Tracked separately from total_replied so reply-rate metrics stay
+   *  human-only. */
+  total_auto_replied?: number;
   total_bounced: number;
   lead_count: number;
   sent_at: string | null;
   created_at: string;
   /** Number of follow-up steps (0 = single email, 1+ = has sequence) */
   step_count: number;
+  /** 'outreach' (default) or 'discovery_followup' (set by the Prospects view). */
+  campaign_type?: 'outreach' | 'discovery_followup';
+  parent_campaign_id?: string | null;
   /** Platform integration — set when campaign is managed by Instantly/Smartlead */
   platform_campaign_id?: string | null;
   email_platform?: string | null;
@@ -36,7 +43,7 @@ export interface CampaignLead {
   campaign_id: string;
   lead_id: string;
   email_used: string | null;
-  status: 'pending' | 'sent' | 'opened' | 'replied' | 'bounced';
+  status: 'pending' | 'sent' | 'opened' | 'replied' | 'auto_replied' | 'bounced';
   sent_at: string | null;
   gmail_message_id?: string | null;
   gmail_thread_id?: string | null;

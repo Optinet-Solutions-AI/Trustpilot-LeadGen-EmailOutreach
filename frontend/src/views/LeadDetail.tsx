@@ -6,6 +6,7 @@ import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
 import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
+import { useLeadDiscoveries, useDiscoveryActions } from '../hooks/useDiscoveredContacts';
 import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
@@ -56,6 +57,9 @@ export default function LeadDetail() {
 
   const { notes, fetchNotes, addNote } = useNotes(id || '');
   const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id);
+  const { data: leadDiscoveries, refresh: refreshDiscoveries } = useLeadDiscoveries(id || null);
+  const discoveryActions = useDiscoveryActions();
+  const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id || id === '_id') return;
@@ -145,6 +149,87 @@ export default function LeadDetail() {
         <span className="material-symbols-outlined text-[18px]">arrow_back</span>
         Back to Lead Matrix
       </button>
+
+      {/* Discovery banner — surfaces pending discovered_contacts so the user
+          can Accept / Dismiss without leaving the lead detail page. */}
+      {leadDiscoveries.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-bold text-amber-800">
+            <span className="material-symbols-outlined text-[18px]">forward_to_inbox</span>
+            Auto-reply suggested {leadDiscoveries.length} discovered contact{leadDiscoveries.length === 1 ? '' : 's'} — review:
+          </div>
+          <div className="space-y-1.5">
+            {leadDiscoveries.map((d) => {
+              const busy = discoveryBusyId === d.id;
+              return (
+                <div key={d.id} className="flex items-center gap-2 text-sm">
+                  <span className={`material-symbols-outlined text-[14px] ${d.kind === 'email' ? 'text-blue-500' : 'text-purple-500'}`}>
+                    {d.kind === 'email' ? 'alternate_email' : 'link'}
+                  </span>
+                  <span className="font-medium text-on-surface truncate flex-1">{d.value}</span>
+                  {d.role && <span className="text-xs text-secondary capitalize">{d.role}</span>}
+                  {d.verification_status && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-white border border-amber-200 text-amber-800 capitalize">
+                      {d.verification_status}
+                    </span>
+                  )}
+                  <button
+                    onClick={async () => {
+                      setDiscoveryBusyId(d.id);
+                      try {
+                        const result = await discoveryActions.accept(d.id);
+                        if (result?.lead) setLead(result.lead);
+                        await refreshDiscoveries();
+                        await fetchNotes();
+                      } finally {
+                        setDiscoveryBusyId(null);
+                      }
+                    }}
+                    disabled={busy}
+                    className="px-2 py-1 rounded-md bg-green-600 text-white text-xs font-bold hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Accept
+                  </button>
+                  {d.kind === 'url' && (
+                    <button
+                      onClick={async () => {
+                        setDiscoveryBusyId(d.id);
+                        try {
+                          await discoveryActions.spawnLead(d.id);
+                          await refreshDiscoveries();
+                          await fetchNotes();
+                        } finally {
+                          setDiscoveryBusyId(null);
+                        }
+                      }}
+                      disabled={busy}
+                      className="px-2 py-1 rounded-md bg-purple-600 text-white text-xs font-bold hover:bg-purple-700 disabled:opacity-50"
+                    >
+                      Spawn lead
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      setDiscoveryBusyId(d.id);
+                      try {
+                        await discoveryActions.dismiss(d.id);
+                        await refreshDiscoveries();
+                        await fetchNotes();
+                      } finally {
+                        setDiscoveryBusyId(null);
+                      }
+                    }}
+                    disabled={busy}
+                    className="px-2 py-1 rounded-md bg-white border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Live claimed-check progress — inline log panel (resumes on refresh) */}
       {claimedJobId && (

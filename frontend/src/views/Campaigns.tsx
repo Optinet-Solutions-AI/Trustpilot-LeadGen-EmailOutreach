@@ -28,6 +28,7 @@ export default function Campaigns() {
   const router = useRouter();
   const [wizardFromUrl, setWizardFromUrl] = useState(false);
   const [redirectModeFromUrl, setRedirectModeFromUrl] = useState(false);
+  const [discoveryModeFromUrl, setDiscoveryModeFromUrl] = useState(false);
   const [initialLeadIdsFromUrl, setInitialLeadIdsFromUrl] = useState<string[]>([]);
 
   useEffect(() => {
@@ -36,6 +37,7 @@ export default function Campaigns() {
     const wantsWizard = params.get('wizard') === '1';
     setWizardFromUrl(wantsWizard);
     setRedirectModeFromUrl(params.get('redirectMode') === '1');
+    setDiscoveryModeFromUrl(params.get('discoveryMode') === '1');
     const raw = params.get('leadIds');
     setInitialLeadIdsFromUrl(raw ? raw.split(',').filter(Boolean) : []);
     if (wantsWizard) setShowWizard(true);
@@ -94,10 +96,11 @@ export default function Campaigns() {
     setTimeout(() => setNotification(null), 6000);
   };
 
-  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[]; manualEmails?: string[]; followUpSteps?: Array<{ delayDays: number; subject: string; body: string }> }) => {
+  const handleCreate = async (data: { name: string; templateSubject: string; templateBody: string; includeScreenshot: boolean; leadIds: string[]; manualEmails?: string[]; followUpSteps?: Array<{ delayDays: number; subject: string; body: string }>; campaignType?: 'outreach' | 'discovery_followup' }) => {
     const campaign = await createCampaign(data);
     const stepsMsg = data.followUpSteps?.length ? ` + ${data.followUpSteps.length} follow-up(s)` : '';
-    notify('success', `Campaign "${campaign.name}" created with ${data.leadIds.length} lead${data.leadIds.length !== 1 ? 's' : ''}${stepsMsg}.`);
+    const typeMsg = data.campaignType === 'discovery_followup' ? ' (discovery follow-up)' : '';
+    notify('success', `Campaign "${campaign.name}"${typeMsg} created with ${data.leadIds.length} lead${data.leadIds.length !== 1 ? 's' : ''}${stepsMsg}.`);
     fetchCampaigns();
   };
 
@@ -204,6 +207,7 @@ export default function Campaigns() {
           }}
           onCreate={handleCreate}
           redirectMode={redirectModeFromUrl}
+          discoveryMode={discoveryModeFromUrl}
           initialLeadIds={initialLeadIdsFromUrl}
         />
       </div>

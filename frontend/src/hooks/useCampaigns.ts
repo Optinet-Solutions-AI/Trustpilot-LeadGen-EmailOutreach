@@ -36,6 +36,10 @@ export function useCampaigns() {
       days: number[];
       dailyLimit: number;
     };
+    /** 'outreach' (default) sends to primary_email. 'discovery_followup'
+     *  targets lead.discovered_email and is launched from the Prospects view. */
+    campaignType?: 'outreach' | 'discovery_followup';
+    parentCampaignId?: string;
   }) => {
     const res = await api.post('/campaigns', data);
     setCampaigns((prev) => [res.data.data, ...prev]);

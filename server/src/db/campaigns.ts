@@ -28,25 +28,31 @@ export async function getCampaigns() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .in('campaign_id', campaigns.map((c: any) => c.id));
 
-  const stats: Record<string, { total_sent: number; total_replied: number; total_bounced: number; total_opened: number }> = {};
+  const stats: Record<string, { total_sent: number; total_replied: number; total_auto_replied: number; total_bounced: number; total_opened: number }> = {};
   for (const row of clRows || []) {
     if (!stats[row.campaign_id]) {
-      stats[row.campaign_id] = { total_sent: 0, total_replied: 0, total_bounced: 0, total_opened: 0 };
+      stats[row.campaign_id] = { total_sent: 0, total_replied: 0, total_auto_replied: 0, total_bounced: 0, total_opened: 0 };
     }
     const s = row.status as string;
-    if (s === 'sent' || s === 'opened' || s === 'replied') stats[row.campaign_id].total_sent++;
-    if (s === 'replied') stats[row.campaign_id].total_replied++;
-    if (s === 'bounced')  stats[row.campaign_id].total_bounced++;
-    if (s === 'opened')  stats[row.campaign_id].total_opened++;
+    // 'auto_replied' is a terminal status that started life as 'sent' before
+    // the auto-reply landed — count it toward total_sent so the campaign's
+    // delivery total stays accurate, but track total_replied separately so
+    // reply-rate metrics reflect human engagement only.
+    if (s === 'sent' || s === 'opened' || s === 'replied' || s === 'auto_replied') stats[row.campaign_id].total_sent++;
+    if (s === 'replied')      stats[row.campaign_id].total_replied++;
+    if (s === 'auto_replied') stats[row.campaign_id].total_auto_replied++;
+    if (s === 'bounced')      stats[row.campaign_id].total_bounced++;
+    if (s === 'opened')       stats[row.campaign_id].total_opened++;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return campaigns.map((c: any) => ({
     ...c,
-    total_sent:    stats[c.id]?.total_sent    ?? c.total_sent    ?? 0,
-    total_replied: stats[c.id]?.total_replied ?? c.total_replied ?? 0,
-    total_bounced: stats[c.id]?.total_bounced ?? c.total_bounced ?? 0,
-    total_opened:  stats[c.id]?.total_opened  ?? c.total_opened  ?? 0,
+    total_sent:         stats[c.id]?.total_sent         ?? c.total_sent         ?? 0,
+    total_replied:      stats[c.id]?.total_replied      ?? c.total_replied      ?? 0,
+    total_auto_replied: stats[c.id]?.total_auto_replied ?? c.total_auto_replied ?? 0,
+    total_bounced:      stats[c.id]?.total_bounced      ?? c.total_bounced      ?? 0,
+    total_opened:       stats[c.id]?.total_opened       ?? c.total_opened       ?? 0,
   }));
 }
 
@@ -58,6 +64,11 @@ export async function createCampaign(campaign: {
   filter_country?: string;
   filter_category?: string;
   sending_schedule?: Record<string, unknown> | null;
+  // Optional. 'outreach' (default) sends to lead.primary_email like every
+  // existing campaign. 'discovery_followup' targets lead.discovered_email
+  // and is launched from the Prospects → Accepted tab.
+  campaign_type?: 'outreach' | 'discovery_followup';
+  parent_campaign_id?: string;
 }) {
   const supabase = getSupabase();
   const { data, error } = await supabase.from('campaigns').insert(campaign).select().single();
@@ -81,15 +92,18 @@ export async function deleteCampaign(id: string) {
 
 /**
  * Returns a Set of email addresses that should NOT receive another campaign email.
- * Includes: previously sent/opened/replied (already contacted) + bounced (permanently failed).
- * This prevents re-sending to hard-bounced addresses and double-emailing active conversations.
+ * Includes: previously sent/opened/replied/auto_replied (already contacted) +
+ * bounced (permanently failed). auto_replied is in here because the original
+ * support inbox is unmonitored — re-emailing it just produces another
+ * auto-reply. This prevents re-sending to hard-bounced addresses and
+ * double-emailing active conversations.
  */
 export async function getSentEmails(): Promise<Set<string>> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('campaign_leads')
     .select('email_used')
-    .in('status', ['sent', 'opened', 'replied', 'bounced']);
+    .in('status', ['sent', 'opened', 'replied', 'auto_replied', 'bounced']);
   if (error) throw new Error(error.message);
   return new Set(
     (data || []).map((r: { email_used: string | null }) => r.email_used).filter(Boolean) as string[]
@@ -98,22 +112,35 @@ export async function getSentEmails(): Promise<Set<string>> {
 
 export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) {
   const supabase = getSupabase();
-  // Pull both source emails + per-source statuses so resolvePrimaryEmail can
-  // skip an "invalid" preferred source. Falls back to the lead's stored
-  // primary_email when resolution returns null (defensive — shouldn't happen
-  // if upsert_leads.py ran).
+
+  // Look up the campaign type so discovery_followup campaigns can target
+  // lead.discovered_email instead of the resolver's primary pick. Outreach
+  // campaigns (the default) keep the unchanged primary_email path.
+  const { data: campaignRow } = await supabase
+    .from('campaigns')
+    .select('campaign_type')
+    .eq('id', campaignId)
+    .single();
+  const isDiscoveryFollowup = campaignRow?.campaign_type === 'discovery_followup';
+
   const { data: leads, error: leadsError } = await supabase
     .from('leads')
-    .select('id, primary_email, trustpilot_email, website_email, affiliate_email, trustpilot_email_status, website_email_status, affiliate_email_status')
+    .select('id, primary_email, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status')
     .in('id', leadIds);
   if (leadsError) throw new Error(leadsError.message);
 
-  const rows = (leads || []).map((lead) => ({
-    campaign_id: campaignId,
-    lead_id: lead.id,
-    email_used: resolvePrimaryEmail(lead) ?? lead.primary_email,
-    status: 'pending',
-  }));
+  const rows = (leads || [])
+    .map((lead) => ({
+      campaign_id: campaignId,
+      lead_id: lead.id,
+      email_used: isDiscoveryFollowup
+        ? lead.discovered_email ?? null
+        : (resolvePrimaryEmail(lead) ?? lead.primary_email),
+      status: 'pending',
+    }))
+    // Drop rows the discovery follow-up can't actually target — a lead with
+    // no accepted discovered_email shouldn't end up in this campaign.
+    .filter((row) => row.email_used);
 
   const { data, error } = await supabase.from('campaign_leads').upsert(rows, {
     onConflict: 'campaign_id,lead_id',
@@ -137,7 +164,7 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
 
   let query = supabase
     .from('leads')
-    .select('id, primary_email, trustpilot_email, website_email, affiliate_email, trustpilot_email_status, website_email_status, affiliate_email_status')
+    .select('id, primary_email, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status')
     .not('primary_email', 'is', null);
 
   if (filters.country) query = query.eq('country', filters.country);
@@ -183,7 +210,7 @@ export async function getCampaignStats(campaignId: string) {
     .eq('campaign_id', campaignId);
   if (error) throw new Error(error.message);
 
-  const stats = { pending: 0, sent: 0, opened: 0, replied: 0, bounced: 0 };
+  const stats = { pending: 0, sent: 0, opened: 0, replied: 0, auto_replied: 0, bounced: 0 };
   for (const row of data || []) {
     const s = row.status as keyof typeof stats;
     if (s in stats) stats[s]++;

@@ -793,6 +793,7 @@ export default function Leads() {
             onPageChange={setPage}
             onStatusChange={handleStatusChange}
             onDelete={(id) => deleteLead(id)}
+            selectedIds={selectedIds}
             onSelect={setSelectedIds}
             onLeadClick={(id) => router.push(`/leads/${id}`)}
             sortBy={sortBy}

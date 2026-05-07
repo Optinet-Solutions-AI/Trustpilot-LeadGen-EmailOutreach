@@ -181,7 +181,7 @@ router.post('/sync', async (req: Request, res: Response) => {
     const supabase = getSupabase();
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('id, trustpilot_email, website_email, affiliate_email, trustpilot_email_status, website_email_status, affiliate_email_status')
+      .select('id, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status')
       .in('id', leadIds);
     if (error) throw new Error(error.message);
     if (!leads || leads.length === 0) {
@@ -255,9 +255,14 @@ router.post('/sync', async (req: Request, res: Response) => {
       const resolverInput = {
         trustpilot_email: lead.trustpilot_email,
         website_email: lead.website_email,
+        // discovered_email isn't re-verified by this route (background job
+        // owns it), but include it so primary_email recomputation respects an
+        // already-accepted discovered contact and doesn't blank it.
+        discovered_email: lead.discovered_email ?? null,
         affiliate_email: lead.affiliate_email,
         trustpilot_email_status: perSource.trustpilot_email_status,
         website_email_status: perSource.website_email_status,
+        discovered_email_status: lead.discovered_email_status ?? null,
         affiliate_email_status: perSource.affiliate_email_status,
       };
       const newPrimary = resolvePrimaryEmail(resolverInput);

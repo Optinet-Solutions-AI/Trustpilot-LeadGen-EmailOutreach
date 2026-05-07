@@ -16,12 +16,23 @@
  * original email.
  *
  * Scans messages from the last 7 days to keep fetch volume bounded.
+ *
+ * Auto-reply handling: once a message matches, we fetch its full RFC822
+ * source via mailparser, run the auto-reply detector, and route to either
+ * the human-reply path (status='replied') or the auto-reply path
+ * (status='auto_replied' + extract candidates → discovered_contacts).
+ * Gated on config.autoReplyHandlingEnabled.
  */
 
-import { ImapFlow } from 'imapflow';
+import { ImapFlow, type FetchMessageObject } from 'imapflow';
+import { simpleParser } from 'mailparser';
 import { getSupabase } from '../lib/supabase.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
+import { config } from '../config.js';
+import { classifyReply } from './auto-reply-detector.js';
+import { extractContacts } from './auto-reply-extractor.js';
+import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 
 export interface ImapAccount {
   id: string;
@@ -32,16 +43,20 @@ export interface ImapAccount {
   imap_pass: string;
 }
 
-type LeadRef = { id: string; lead_id: string; campaign_id: string };
+type LeadRef = { id: string; lead_id: string; campaign_id: string; email_used: string | null };
+type MatchStrategy = 'from' | 'in-reply-to' | 'references';
 
 function normalizeMessageId(raw: string | null | undefined): string {
   if (!raw) return '';
   return raw.trim().replace(/^</, '').replace(/>$/, '').toLowerCase();
 }
 
-export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesFound: number; scanned: number }> {
+export async function checkRepliesImap(
+  account: ImapAccount,
+): Promise<{ repliesFound: number; autoRepliesFound: number; scanned: number }> {
   const supabase = getSupabase();
   let repliesFound = 0;
+  let autoRepliesFound = 0;
   let scanned = 0;
 
   // Load every campaign_lead this account has sent to (and isn't already replied/bounced)
@@ -53,7 +68,7 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
 
   if (!sentLeads?.length) {
     console.log(`[ImapReplyTracker] ${account.email}: no sent-and-unreplied leads to watch`);
-    return { repliesFound: 0, scanned: 0 };
+    return { repliesFound: 0, autoRepliesFound: 0, scanned: 0 };
   }
 
   // Two parallel lookup maps — From-address match and Message-ID threading.
@@ -62,7 +77,7 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
   const leadByEmail = new Map<string, LeadRef>();
   const leadByMessageId = new Map<string, LeadRef>();
   for (const l of sentLeads) {
-    const ref: LeadRef = { id: l.id, lead_id: l.lead_id, campaign_id: l.campaign_id };
+    const ref: LeadRef = { id: l.id, lead_id: l.lead_id, campaign_id: l.campaign_id, email_used: l.email_used };
     if (l.email_used) leadByEmail.set(l.email_used.toLowerCase(), ref);
     const mid = normalizeMessageId(l.gmail_message_id);
     if (mid) leadByMessageId.set(mid, ref);
@@ -88,7 +103,7 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
       const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const uids = await client.search({ since });
       if (!uids || uids.length === 0) {
-        return { repliesFound: 0, scanned: 0 };
+        return { repliesFound: 0, autoRepliesFound: 0, scanned: 0 };
       }
 
       // Helper: drop a matched lead from BOTH lookup maps so the same campaign_lead
@@ -99,9 +114,70 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
         for (const [k, v] of leadByMessageId) if (v.id === ref.id) leadByMessageId.delete(k);
       };
 
+      const handleMatch = async (
+        lead: LeadRef,
+        msg: FetchMessageObject,
+        opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy },
+      ): Promise<{ matched: boolean; isAuto: boolean }> => {
+        // Fetch the body for the matched UID. We deliberately don't carry
+        // source through the initial fetch — that would download the body of
+        // every message in the 7-day window even though most aren't matches.
+        // A second per-match fetch costs one extra round-trip but keeps the
+        // common case (1–2 matches per poll) cheap.
+        const sourceBuf = await fetchSourceForUid(client, msg.uid!);
+        const parsedBody = sourceBuf ? await parseBody(sourceBuf) : { headers: {}, body: '' };
+
+        const verdict = classifyReply({
+          headers: parsedBody.headers,
+          subject: opts.subject,
+          body: parsedBody.body,
+        });
+        const isAuto = verdict.kind === 'auto' || verdict.kind === 'ticket';
+
+        if (isAuto && config.autoReplyHandlingEnabled) {
+          const ok = await markAutoReplied({
+            lead,
+            account,
+            classifier: verdict,
+            opts,
+            body: parsedBody.body,
+            messageId: opts.matchedBy === 'in-reply-to' || opts.matchedBy === 'references'
+              ? `imap:${msg.uid}`
+              : `imap:${msg.uid}`,
+          });
+          if (ok) dropLead(lead);
+          return { matched: ok, isAuto: true };
+        }
+
+        const ok = await markReplied(lead, opts);
+        if (ok) {
+          dropLead(lead);
+
+          if (isAuto && !config.autoReplyHandlingEnabled) {
+            try {
+              await createNote(lead.lead_id, {
+                type: 'auto_reply_candidate',
+                content: `Reply LOOKS auto (${verdict.kind}, conf=${verdict.confidence.toFixed(2)}). Status kept as 'replied' because autoReplyHandlingEnabled=false.`,
+                metadata: {
+                  campaign_id: lead.campaign_id,
+                  account: account.email,
+                  matched_by: opts.matchedBy,
+                  signals: verdict.signals,
+                  confidence: verdict.confidence,
+                  subject: opts.subject,
+                },
+              });
+            } catch (e) {
+              console.warn('[ImapReplyTracker] auto_reply_candidate note failed:', e instanceof Error ? e.message : e);
+            }
+          }
+        }
+        return { matched: ok, isAuto: false };
+      };
+
       const markReplied = async (
         lead: LeadRef,
-        opts: { fromAddr: string; subject: string; matchedBy: 'from' | 'in-reply-to' | 'references' },
+        opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy },
       ): Promise<boolean> => {
         const { error: updateErr } = await supabase
           .from('campaign_leads')
@@ -127,7 +203,6 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
         }
 
         console.log(`[ImapReplyTracker] ${account.email}: reply from ${opts.fromAddr} (${opts.matchedBy}) → campaign_lead ${lead.id}`);
-        dropLead(lead);
         return true;
       };
 
@@ -139,40 +214,50 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
         const fromAddr = msg.envelope?.from?.[0]?.address?.toLowerCase() ?? '';
         const subject  = msg.envelope?.subject ?? '';
 
+        let lead: LeadRef | undefined;
+        let matchedBy: MatchStrategy | null = null;
+
         // Strategy 1 — From-address match
         if (fromAddr) {
-          const lead = leadByEmail.get(fromAddr);
-          if (lead) {
-            const ok = await markReplied(lead, { fromAddr, subject, matchedBy: 'from' });
-            if (ok) repliesFound++;
-            continue;
-          }
+          lead = leadByEmail.get(fromAddr);
+          if (lead) matchedBy = 'from';
         }
 
         // Strategy 2 — In-Reply-To header points at one of our outgoing Message-IDs
-        const irt = normalizeMessageId(msg.envelope?.inReplyTo);
-        if (irt) {
-          const lead = leadByMessageId.get(irt);
-          if (lead) {
-            const ok = await markReplied(lead, { fromAddr: fromAddr || '(unknown)', subject, matchedBy: 'in-reply-to' });
-            if (ok) repliesFound++;
-            continue;
+        if (!lead) {
+          const irt = normalizeMessageId(msg.envelope?.inReplyTo);
+          if (irt) {
+            lead = leadByMessageId.get(irt);
+            if (lead) matchedBy = 'in-reply-to';
           }
         }
 
         // Strategy 3 — References chain contains one of our outgoing Message-IDs
-        const refsHeader = msg.headers?.toString('utf8') ?? '';
-        if (refsHeader) {
-          // Extract every <id@domain> token from the References header
-          const refs = refsHeader.match(/<[^<>]+>/g) ?? [];
-          for (const ref of refs) {
-            const lead = leadByMessageId.get(normalizeMessageId(ref));
-            if (lead) {
-              const ok = await markReplied(lead, { fromAddr: fromAddr || '(unknown)', subject, matchedBy: 'references' });
-              if (ok) repliesFound++;
-              break;
+        if (!lead) {
+          const refsHeader = msg.headers?.toString('utf8') ?? '';
+          if (refsHeader) {
+            const refs = refsHeader.match(/<[^<>]+>/g) ?? [];
+            for (const ref of refs) {
+              lead = leadByMessageId.get(normalizeMessageId(ref));
+              if (lead) {
+                matchedBy = 'references';
+                break;
+              }
             }
           }
+        }
+
+        if (!lead || !matchedBy) continue;
+
+        const result = await handleMatch(lead, msg, {
+          fromAddr: fromAddr || '(unknown)',
+          subject,
+          matchedBy,
+        });
+
+        if (result.matched) {
+          if (result.isAuto) autoRepliesFound++;
+          else repliesFound++;
         }
       }
     } finally {
@@ -186,11 +271,145 @@ export async function checkRepliesImap(account: ImapAccount): Promise<{ repliesF
     }
   }
 
-  return { repliesFound, scanned };
+  return { repliesFound, autoRepliesFound, scanned };
+}
+
+async function fetchSourceForUid(client: ImapFlow, uid: number): Promise<Buffer | null> {
+  try {
+    for await (const msg of client.fetch(String(uid), { uid: true, source: true }, { uid: true })) {
+      if (msg.source) return msg.source as Buffer;
+    }
+  } catch (e) {
+    console.warn('[ImapReplyTracker] fetchSourceForUid failed:', e instanceof Error ? e.message : e);
+  }
+  return null;
+}
+
+async function parseBody(raw: Buffer): Promise<{ headers: Record<string, string>; body: string }> {
+  const parsed = await simpleParser(raw, { skipImageLinks: true, skipHtmlToText: false });
+  const headers: Record<string, string> = {};
+  parsed.headerLines?.forEach((h) => {
+    if (!h.key) return;
+    // Last value wins (consistent with Gmail tracker). simpleParser splits the
+    // header line so h.line includes "name: value\r\n".
+    const colon = h.line.indexOf(':');
+    if (colon === -1) return;
+    headers[h.key.toLowerCase()] = h.line.slice(colon + 1).trim();
+  });
+  // Prefer text/plain; fall back to text/html stripped.
+  const body = parsed.text || (parsed.html ? String(parsed.html) : '') || '';
+  return { headers, body };
+}
+
+async function markAutoReplied(args: {
+  lead: LeadRef;
+  account: ImapAccount;
+  classifier: ReturnType<typeof classifyReply>;
+  opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy };
+  body: string;
+  messageId: string;
+}): Promise<boolean> {
+  const { lead, account, classifier, opts, body, messageId } = args;
+  const supabase = getSupabase();
+
+  const { error: updateErr } = await supabase
+    .from('campaign_leads')
+    .update({ status: 'auto_replied', replied_at: new Date().toISOString() })
+    .eq('id', lead.id)
+    .eq('status', 'sent');
+  if (updateErr) return false;
+
+  // Increment campaign auto-reply counter (separate from total_replied)
+  const { data: campaign } = await supabase
+    .from('campaigns').select('total_auto_replied').eq('id', lead.campaign_id).single();
+  if (campaign) {
+    await supabase
+      .from('campaigns')
+      .update({ total_auto_replied: (campaign.total_auto_replied || 0) + 1 })
+      .eq('id', lead.campaign_id);
+  }
+
+  // Audit note (always)
+  await createNote(lead.lead_id, {
+    type: 'auto_reply_received',
+    content: `Auto-reply via IMAP (${account.email}, matched by ${opts.matchedBy}, kind=${classifier.kind}, conf=${classifier.confidence.toFixed(2)})`,
+    metadata: {
+      campaign_id: lead.campaign_id,
+      account: account.email,
+      from: opts.fromAddr,
+      subject: opts.subject,
+      matched_by: opts.matchedBy,
+      kind: classifier.kind,
+      confidence: classifier.confidence,
+      signals: classifier.signals,
+    },
+  });
+
+  // Pre-gate: extract; if empty, log + bail without touching discovered_contacts.
+  const leadDomain = (lead.email_used ?? '').split('@')[1] ?? null;
+  const { emails, urls } = extractContacts(body, {
+    email_used: lead.email_used,
+    lead_domain: leadDomain,
+  });
+
+  if (emails.length === 0 && urls.length === 0) {
+    await createNote(lead.lead_id, {
+      type: 'auto_reply_no_contacts',
+      content: 'Auto-reply contained no extractable contact emails or partner URLs — skipping discovery pipeline.',
+      metadata: {
+        campaign_id: lead.campaign_id,
+        account: account.email,
+        matched_by: opts.matchedBy,
+      },
+    });
+    console.log(`[ImapReplyTracker] auto-reply on lead ${lead.lead_id} produced no candidates — pre-gated`);
+    return true;
+  }
+
+  const auditMetadata = {
+    from: opts.fromAddr,
+    subject: opts.subject,
+    matched_by: opts.matchedBy,
+    account: account.email,
+    kind: classifier.kind,
+    confidence: classifier.confidence,
+    signals: classifier.signals,
+    discovered_at: new Date().toISOString(),
+  };
+
+  for (const candidate of emails) {
+    await insertDiscoveredContact({
+      lead_id: lead.lead_id,
+      source_campaign_lead_id: lead.id,
+      kind: 'email',
+      value: candidate.value,
+      role: candidate.role,
+      score: candidate.score,
+      auto_reply_message_id: messageId,
+      auto_reply_metadata: auditMetadata,
+    });
+  }
+  for (const candidate of urls) {
+    await insertDiscoveredContact({
+      lead_id: lead.lead_id,
+      source_campaign_lead_id: lead.id,
+      kind: 'url',
+      value: candidate.value,
+      role: candidate.signal,
+      score: candidate.score,
+      auto_reply_message_id: messageId,
+      auto_reply_metadata: auditMetadata,
+    });
+  }
+
+  console.log(
+    `[ImapReplyTracker] ${account.email}: auto-reply on lead ${lead.lead_id} → ${emails.length} email + ${urls.length} URL candidate(s) queued`,
+  );
+  return true;
 }
 
 /** Poll every active SMTP account that has IMAP credentials. */
-export async function checkAllImapReplies(): Promise<{ accountsChecked: number; repliesFound: number }> {
+export async function checkAllImapReplies(): Promise<{ accountsChecked: number; repliesFound: number; autoRepliesFound: number }> {
   const supabase = getSupabase();
   const { data: accounts } = await supabase
     .from('email_accounts')
@@ -201,9 +420,10 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
     .not('imap_user', 'is', null)
     .not('imap_pass', 'is', null);
 
-  if (!accounts?.length) return { accountsChecked: 0, repliesFound: 0 };
+  if (!accounts?.length) return { accountsChecked: 0, repliesFound: 0, autoRepliesFound: 0 };
 
-  let total = 0;
+  let totalReplies = 0;
+  let totalAuto = 0;
   for (const acc of accounts) {
     const result = await checkRepliesImap({
       id: acc.id,
@@ -213,7 +433,8 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
       imap_user: acc.imap_user,
       imap_pass: acc.imap_pass,
     });
-    total += result.repliesFound;
+    totalReplies += result.repliesFound;
+    totalAuto += result.autoRepliesFound;
   }
-  return { accountsChecked: accounts.length, repliesFound: total };
+  return { accountsChecked: accounts.length, repliesFound: totalReplies, autoRepliesFound: totalAuto };
 }

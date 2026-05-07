@@ -1,4 +1,4 @@
-import { MessageSquare, ArrowRight, Mail, Phone, Clock, ShieldCheck } from 'lucide-react';
+import { MessageSquare, ArrowRight, Mail, Phone, Clock, ShieldCheck, MailQuestion, MailX, UserCheck, UserX, Sparkles, Search } from 'lucide-react';
 import type { LeadNote } from '../types/lead';
 
 const TYPE_CONFIG: Record<string, { icon: typeof MessageSquare; color: string }> = {
@@ -11,6 +11,13 @@ const TYPE_CONFIG: Record<string, { icon: typeof MessageSquare; color: string }>
   call: { icon: Phone, color: 'text-orange-500 bg-orange-100' },
   follow_up: { icon: Clock, color: 'text-yellow-500 bg-yellow-100' },
   verification: { icon: ShieldCheck, color: 'text-cyan-500 bg-cyan-100' },
+  // Auto-reply lifecycle (added in migration 028).
+  auto_reply_received:        { icon: MailQuestion, color: 'text-amber-600 bg-amber-100' },
+  auto_reply_no_contacts:     { icon: MailX,        color: 'text-slate-500 bg-slate-100' },
+  auto_reply_candidate:       { icon: Search,       color: 'text-slate-500 bg-slate-100' },
+  discovered_contact_accepted:  { icon: UserCheck, color: 'text-green-600 bg-green-100' },
+  discovered_contact_dismissed: { icon: UserX,     color: 'text-slate-500 bg-slate-100' },
+  lead_spawned_from_discovery:  { icon: Sparkles,  color: 'text-purple-600 bg-purple-100' },
 };
 
 export default function ActivityTimeline({ notes }: { notes: LeadNote[] }) {

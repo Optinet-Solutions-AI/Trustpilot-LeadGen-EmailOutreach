@@ -16,6 +16,10 @@ interface Props {
   /** Wizard launched from the Redirected Leads page — switches the AI prompt
    *  to "I noticed your Trustpilot redirects to a different brand…" framing. */
   redirectMode?: boolean;
+  /** Wizard launched from Prospects → Accepted — switches the AI prompt to
+   *  the "I previously emailed your support inbox and was redirected here…"
+   *  framing so the discovered contact recognises the prior handoff. */
+  discoveryMode?: boolean;
   onSubjectChange: (v: string) => void;
   onBodyChange: (v: string) => void;
   onIncludeScreenshotChange: (v: boolean) => void;
@@ -36,7 +40,7 @@ const SPINTAX_EXAMPLES = [
 
 export default function WizardStep2Sequence({
   subject, body, includeScreenshot, filterCountry, filterCategory, manualEmails, followUpSteps,
-  redirectMode,
+  redirectMode, discoveryMode,
   onSubjectChange, onBodyChange, onIncludeScreenshotChange, onFollowUpStepsChange,
 }: Props) {
   const [activeStep, setActiveStep] = useState<'intro' | number>('intro');
@@ -58,6 +62,7 @@ export default function WizardStep2Sequence({
         emailDomain: firstEmailDomain,
         manualMode: !!(manualEmails && manualEmails.length > 0),
         redirectMode: !!redirectMode,
+        discoveryMode: !!discoveryMode,
         language: filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined,
       });
       onSubjectChange(result.subject);

@@ -4,11 +4,13 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useScrape } from '../hooks/useScrape';
 import { useNotifications } from '../context/NotificationsContext';
+import { useDiscoveryCount } from '../hooks/useDiscoveredContacts';
 
 const NAV_ITEMS = [
   { href: '/scrape',          icon: 'search_check',     label: 'Lead Scraping' },
   { href: '/leads',           icon: 'grid_view',        label: 'Lead Matrix' },
   { href: '/redirected-leads', icon: 'compare_arrows',  label: 'Redirected Leads' },
+  { href: '/prospects',       icon: 'how_to_reg',       label: 'Prospects' },
   { href: '/inbox',           icon: 'inbox',            label: 'Inbox' },
   { href: '/analytics',       icon: 'bar_chart',        label: 'Analytics' },
   { href: '/campaigns',       icon: 'magic_button',     label: 'Campaign Wizard' },
@@ -24,6 +26,7 @@ export default function Sidebar() {
   const router = useRouter();
   const { status } = useScrape();
   const { unreadCount } = useNotifications();
+  const pendingDiscoveries = useDiscoveryCount();
 
   return (
     <aside className="h-full w-64 fixed left-0 top-0 bg-slate-50 flex flex-col py-6 px-4 z-50">
@@ -71,6 +74,7 @@ export default function Sidebar() {
           const isActive = href === '/' ? pathname === '/' : (pathname ?? '').startsWith(href);
           const isScrapeRunning = href === '/scrape' && status === 'running';
           const showInboxBadge = href === '/inbox' && unreadCount > 0;
+          const showProspectsBadge = href === '/prospects' && pendingDiscoveries > 0;
 
           return (
             <Link
@@ -99,6 +103,11 @@ export default function Sidebar() {
               {showInboxBadge && (
                 <span className="ml-auto text-[10px] font-black bg-[#b0004a] text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center leading-none">
                   {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+              {showProspectsBadge && (
+                <span className="ml-auto text-[10px] font-black bg-[#006630] text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center leading-none">
+                  {pendingDiscoveries > 99 ? '99+' : pendingDiscoveries}
                 </span>
               )}
             </Link>

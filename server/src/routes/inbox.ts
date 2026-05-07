@@ -348,17 +348,22 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
 // can track unseen replies.
 router.get('/campaign-replies', async (req: Request, res: Response) => {
   const folder = (req.query.folder as string) || 'replies';
+  // 'sent' includes auto_replied so the user can still read the auto-response
+  // body inside the inbox; 'replies' deliberately excludes auto_replied so the
+  // human-engagement filter stays clean (auto-replies live on Prospects).
   const statusFilter = folder === 'replies'
     ? ['replied']
-    : ['sent', 'opened', 'replied', 'bounced'];
+    : ['sent', 'opened', 'replied', 'bounced', 'auto_replied'];
+  const groupBy = req.query.groupBy as string | undefined;
+  const campaignTypeFilter = req.query.campaignType as string | undefined;
 
   try {
     const { data, error } = await getSupabase()
       .from('campaign_leads')
-      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name), leads(company_name, country)')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name, campaign_type), leads(company_name, country)')
       .in('status', statusFilter)
       .order('sent_at', { ascending: false })
-      .limit(200);
+      .limit(400);
 
     if (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -385,10 +390,12 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
     const messages = (data || []).map((row: Record<string, unknown>) => {
       const sender = (row.sender_email as string | null)?.toLowerCase() ?? '';
       const authType = authByEmail.get(sender) ?? (sender ? 'gmail_oauth' : 'unknown');
+      const campaign = row.campaigns as { name?: string; campaign_type?: string } | null;
       return {
         id: row.id,
         campaign_id: row.campaign_id,
-        campaign_name: (row.campaigns as { name?: string } | null)?.name || 'Unknown Campaign',
+        campaign_name: campaign?.name || 'Unknown Campaign',
+        campaign_type: campaign?.campaign_type || 'outreach',
         lead_id: row.lead_id,
         company_name: (row.leads as { company_name?: string } | null)?.company_name || 'Unknown',
         country: (row.leads as { country?: string } | null)?.country || '',
@@ -405,7 +412,51 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       };
     });
 
-    res.json({ success: true, data: messages });
+    // Optional campaign_type filter (e.g. 'outreach' / 'discovery_followup') —
+    // applied after the join so a single endpoint supports both feeds.
+    const filtered = campaignTypeFilter
+      ? messages.filter((m) => m.campaign_type === campaignTypeFilter)
+      : messages;
+
+    if (groupBy === 'campaign') {
+      // Group flat messages by campaign_id so the frontend can render a
+      // collapsible section per campaign with type badge + counts.
+      const groups = new Map<string, {
+        campaign_id: string;
+        campaign_name: string;
+        campaign_type: string;
+        message_count: number;
+        latest_at: string | null;
+        messages: typeof filtered;
+      }>();
+      for (const msg of filtered) {
+        const cid = String(msg.campaign_id);
+        const g = groups.get(cid);
+        if (g) {
+          g.messages.push(msg);
+          g.message_count++;
+          const at = (msg.sent_at as string | null) ?? null;
+          if (at && (!g.latest_at || at > g.latest_at)) g.latest_at = at;
+        } else {
+          groups.set(cid, {
+            campaign_id: cid,
+            campaign_name: msg.campaign_name,
+            campaign_type: msg.campaign_type,
+            message_count: 1,
+            latest_at: (msg.sent_at as string | null) ?? null,
+            messages: [msg],
+          });
+        }
+      }
+      // Default sort: most-recent campaign first
+      const sorted = [...groups.values()].sort((a, b) =>
+        (b.latest_at ?? '').localeCompare(a.latest_at ?? ''),
+      );
+      res.json({ success: true, data: { campaigns: sorted } });
+      return;
+    }
+
+    res.json({ success: true, data: filtered });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

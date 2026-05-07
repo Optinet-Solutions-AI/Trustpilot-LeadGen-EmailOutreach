@@ -20,6 +20,7 @@ import warmupRoutes from './routes/warmup.js';
 import inboxRoutes from './routes/inbox.js';
 import affiliatesRoutes from './routes/affiliates.js';
 import settingsRoutes from './routes/settings.js';
+import discoveredContactsRoutes, { leadDiscoveredContactsRouter } from './routes/discovered-contacts.js';
 
 const app = express();
 
@@ -50,6 +51,7 @@ app.use('/api/scrape', scrapeRoutes);
 app.use('/api/leads', leadsRoutes);
 app.use('/api/leads', notesRoutes);       // /api/leads/:leadId/notes
 app.use('/api/leads', followUpsRoutes);   // /api/leads/:leadId/follow-ups (nested)
+app.use('/api/leads', leadDiscoveredContactsRouter); // /api/leads/:leadId/discovered-contacts
 app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/verify', verifyRoutes);
 app.use('/api/enrich', enrichRoutes);
@@ -61,6 +63,7 @@ app.use('/api/warmup', warmupRoutes);
 app.use('/api/inbox', inboxRoutes);
 app.use('/api/affiliates', affiliatesRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/discovered-contacts', discoveredContactsRoutes);
 
 // Serve screenshots as static files. Aggressive caching is safe here —
 // scrape-runner overwrites by filename when re-uploading, but the modal
@@ -195,22 +198,44 @@ const server = app.listen(config.port, async () => {
   setInterval(async () => {
     try {
       const { checkForReplies } = await import('./services/reply-tracker.js');
-      const { repliesFound } = await checkForReplies();
-      if (repliesFound > 0) console.log(`[ReplyTracker] Gmail: ${repliesFound} new replies`);
+      const { repliesFound, autoRepliesFound } = await checkForReplies();
+      if (repliesFound > 0 || autoRepliesFound > 0) {
+        console.log(`[ReplyTracker] Gmail: ${repliesFound} human / ${autoRepliesFound} auto reply(s)`);
+      }
     } catch (e) {
       console.error('[ReplyTracker] Gmail poll error:', e instanceof Error ? e.message : e);
     }
     try {
       const { checkAllImapReplies } = await import('./services/reply-tracker.imap.js');
-      const { accountsChecked, repliesFound } = await checkAllImapReplies();
+      const { accountsChecked, repliesFound, autoRepliesFound } = await checkAllImapReplies();
       if (accountsChecked > 0) {
-        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} new replies`);
+        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} human / ${autoRepliesFound} auto reply(s)`);
       }
     } catch (e) {
       console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
     }
   }, REPLY_CHECK_INTERVAL);
   console.log('Reply tracker: polling Gmail + IMAP every 10 minutes');
+
+  // Discovered-contacts worker — verifies pending email candidates through
+  // the existing layered validator, and scrapes pending URL candidates via
+  // scrape_website.py to harvest contact emails. Runs every 5 minutes; the
+  // worker is reentrancy-guarded so overlapping ticks no-op rather than queue.
+  const DISCOVERY_WORKER_INTERVAL = 5 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      const { processDiscoveredContacts } = await import('./jobs/process-discovered-contacts.js');
+      const { verified, scraped, harvested } = await processDiscoveredContacts();
+      if (verified > 0 || scraped > 0 || harvested > 0) {
+        console.log(
+          `[DiscoveryWorker] verified=${verified} scraped=${scraped} harvested=${harvested}`,
+        );
+      }
+    } catch (e) {
+      console.error('[DiscoveryWorker] tick error:', e instanceof Error ? e.message : e);
+    }
+  }, DISCOVERY_WORKER_INTERVAL);
+  console.log('Discovery worker: verifying + scraping every 5 minutes');
 });
 
 // Graceful shutdown — Cloud Run sends SIGTERM before killing the instance.

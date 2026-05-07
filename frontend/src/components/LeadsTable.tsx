@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
 import LeadLinkWarning from './LeadLinkWarning';
 
@@ -103,6 +103,16 @@ function VerifyBadge({
   );
 }
 
+// Extra column slot — used by the Prospects view to append discovery-specific
+// columns (discovered_value, discovered_role, verification_status). Kept
+// non-reorderable since they're context-specific to the view that adds them.
+export interface ExtraColumn {
+  key: string;
+  label: string;
+  render: (lead: Lead) => React.ReactNode;
+  sortKey?: string;
+}
+
 interface Props {
   leads: Lead[];
   total: number;
@@ -111,6 +121,7 @@ interface Props {
   onPageChange: (page: number) => void;
   onStatusChange: (id: string, status: LeadStatus) => void;
   onDelete: (id: string) => void;
+  selectedIds: string[];
   onSelect: (ids: string[]) => void;
   onLeadClick: (id: string) => void;
   sortBy: string;
@@ -122,6 +133,12 @@ interface Props {
   // live in the parent's existing top-right chip group, not here.
   onDismissLinkFlag?: (id: string) => Promise<void> | void;
   onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
+  // Optional context-specific extras — appended after the standard columns.
+  // Used by the Prospects view to surface per-discovery fields without
+  // forking LeadsTable. Default behaviour (Leads page) passes nothing and
+  // gets the unchanged matrix.
+  extraColumns?: ExtraColumn[];
+  extraRowActions?: (lead: Lead) => React.ReactNode;
 }
 
 type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'screenshot' | 'status';
@@ -184,11 +201,11 @@ function loadColOrder(): ColKey[] {
 
 export default function LeadsTable({
   leads, total, page, totalPages,
-  onPageChange, onStatusChange, onDelete, onSelect, onLeadClick,
+  onPageChange, onStatusChange, onDelete, selectedIds, onSelect, onLeadClick,
   sortBy, sortDir, onSortChange,
   onDismissLinkFlag, onEditLinkUrl,
+  extraColumns, extraRowActions,
 }: Props) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [columns, setColumns] = useState<ColKey[]>(loadColOrder);
   const [dragOver, setDragOver] = useState<ColKey | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -196,18 +213,41 @@ export default function LeadsTable({
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const dragCol = useRef<ColKey | null>(null);
 
+  // Selection state lives in the parent; mirror it as a Set here for O(1)
+  // membership checks. This is the single source of truth — pagination no
+  // longer drops cross-page selections because nothing local resets here.
+  const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  // The header checkbox must reflect *current page* selection only,
+  // otherwise a 25-id page-1 selection makes the page-2 header look
+  // checked even though no page-2 row is selected — and clicking it
+  // would wipe the page-1 selection.
+  const selectedOnPage = leads.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
+  const allOnPageSelected = leads.length > 0 && selectedOnPage === leads.length;
+  const someOnPageSelected = selectedOnPage > 0 && selectedOnPage < leads.length;
+
+  const headerCheckboxRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (headerCheckboxRef.current) {
+      headerCheckboxRef.current.indeterminate = someOnPageSelected;
+    }
+  }, [someOnPageSelected]);
+
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
-    setSelected(next);
     onSelect([...next]);
   };
   const toggleAll = () => {
-    if (selected.size === leads.length) {
-      setSelected(new Set()); onSelect([]);
+    const pageIds = new Set(leads.map((l) => l.id));
+    if (allOnPageSelected) {
+      // Remove only current-page IDs; preserve selections from other pages.
+      onSelect(selectedIds.filter((id) => !pageIds.has(id)));
     } else {
-      const all = new Set(leads.map((l) => l.id));
-      setSelected(all); onSelect([...all]);
+      // Add current-page IDs to whatever was already selected on other pages.
+      const next = new Set(selected);
+      pageIds.forEach((id) => next.add(id));
+      onSelect([...next]);
     }
   };
 
@@ -492,13 +532,35 @@ export default function LeadsTable({
             <tr>
               <th className="w-10 px-4 py-3">
                 <input
+                  ref={headerCheckboxRef}
                   type="checkbox"
-                  checked={selected.size === leads.length && leads.length > 0}
+                  checked={allOnPageSelected}
                   onChange={toggleAll}
                   className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
                 />
               </th>
               {columns.map(renderHeader)}
+              {extraColumns?.map((extra) => {
+                const active = extra.sortKey && sortBy === extra.sortKey;
+                return (
+                  <th
+                    key={`extra-${extra.key}`}
+                    className="text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary whitespace-nowrap"
+                  >
+                    <span
+                      className={`inline-flex items-center gap-1 ${extra.sortKey ? 'cursor-pointer hover:text-on-surface' : ''}`}
+                      onClick={extra.sortKey ? () => onSortChange(extra.sortKey!) : undefined}
+                    >
+                      {extra.label}
+                      {extra.sortKey && (
+                        <span className={`material-symbols-outlined text-[14px] ${active ? 'text-[#b0004a]' : 'text-slate-300'}`}>
+                          {active ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+                        </span>
+                      )}
+                    </span>
+                  </th>
+                );
+              })}
               <th className="w-12 px-4 py-3" />
             </tr>
           </thead>
@@ -518,19 +580,31 @@ export default function LeadsTable({
                   />
                 </td>
                 {columns.map((col) => renderCell(col, lead))}
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() => onDelete(lead.id)}
-                    className="text-slate-300 hover:text-error p-1 rounded-lg hover:bg-red-50 transition-colors"
+                {extraColumns?.map((extra) => (
+                  <td
+                    key={`extra-${extra.key}`}
+                    className="px-4 py-3"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <span className="material-symbols-outlined text-[16px]">delete</span>
-                  </button>
+                    {extra.render(lead)}
+                  </td>
+                ))}
+                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-1 justify-end">
+                    {extraRowActions?.(lead)}
+                    <button
+                      onClick={() => onDelete(lead.id)}
+                      className="text-slate-300 hover:text-error p-1 rounded-lg hover:bg-red-50 transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
             {leads.length === 0 && (
               <tr>
-                <td colSpan={columns.length + 2} className="p-12 text-center text-secondary">
+                <td colSpan={columns.length + 2 + (extraColumns?.length ?? 0)} className="p-12 text-center text-secondary">
                   <span className="material-symbols-outlined text-[32px] text-slate-200 block mb-2">search_off</span>
                   No leads found
                 </td>

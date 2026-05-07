@@ -81,7 +81,7 @@ const MAX_CAMPAIGN_RECIPIENTS = 5000;
 // POST /api/campaigns
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds: rawLeadIds, manualEmails, filterCountry, filterCategory, followUpSteps, sendingSchedule } = req.body;
+    const { name, templateSubject, templateBody, includeScreenshot = false, leadIds: rawLeadIds, manualEmails, filterCountry, filterCategory, followUpSteps, sendingSchedule, campaignType, parentCampaignId } = req.body;
 
     // Reject oversized arrays up front so we don't spend time parsing/validating them.
     const inboundLeadCount = Array.isArray(rawLeadIds) ? rawLeadIds.length : 0;
@@ -127,6 +127,11 @@ router.post('/', async (req: Request, res: Response) => {
       filter_country: filterCountry || undefined,
       filter_category: filterCategory || undefined,
       sending_schedule: sendingSchedule || null,
+      // Discovery follow-up campaigns target leads.discovered_email instead
+      // of primary_email at send time. Defaults to 'outreach' so existing
+      // create-call sites land on the unchanged code path.
+      campaign_type: campaignType === 'discovery_followup' ? 'discovery_followup' : undefined,
+      parent_campaign_id: parentCampaignId || undefined,
     });
 
     // Save follow-up steps if provided (step 1 = initial email from campaign template)

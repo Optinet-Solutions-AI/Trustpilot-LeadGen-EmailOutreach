@@ -1,11 +1,14 @@
 // Policy: prefer the most-verified source; within the same verification tier,
-// honour the brand priority trustpilot_email > website_email > affiliate_email.
-// trustpilot_email leads in a tie because it aligns with OptiRate's reputation
-// pitch. website_email is the main-domain contact. affiliate_email is a
-// lateral-prospecting fallback (partner pages).
+// honour the brand priority trustpilot_email > website_email > discovered_email
+// > affiliate_email. trustpilot_email leads in a tie because it aligns with
+// OptiRate's reputation pitch. website_email is the main-domain contact.
+// discovered_email is a recipient-disclosed contact (auto-reply directed us
+// here) — slots above affiliate because the recipient explicitly told us to
+// use it, but below website which is still the proven main-domain address.
+// affiliate_email is a lateral-prospecting fallback (partner pages).
 //
 // Three-pass cascade:
-//   1) Both/any source explicitly verified as 'valid' → pick by brand priority
+//   1) Any source explicitly verified as 'valid' → pick by brand priority
 //      among only the valid ones. So TP=valid + website=valid → TP. But
 //      TP=unknown + website=valid → website (the proven address wins).
 //   2) Nothing strictly valid → fall back to non-'invalid' sources by brand
@@ -15,13 +18,15 @@
 export type LeadEmailFields = {
   trustpilot_email: string | null;
   website_email: string | null;
+  discovered_email?: string | null;
   affiliate_email?: string | null;
   trustpilot_email_status?: string | null;
   website_email_status?: string | null;
+  discovered_email_status?: string | null;
   affiliate_email_status?: string | null;
 };
 
-export type EmailSource = 'trustpilot' | 'website' | 'affiliate';
+export type EmailSource = 'trustpilot' | 'website' | 'discovered' | 'affiliate';
 
 /** Resolves the primary email AND records which source the decision came from.
  *  Use this when the caller needs both — string-equality between email values
@@ -38,6 +43,8 @@ export function resolvePrimaryEmailWithSource(
     return { email: lead.trustpilot_email, source: 'trustpilot' };
   if (lead.website_email && lead.website_email_status === 'valid')
     return { email: lead.website_email, source: 'website' };
+  if (lead.discovered_email && lead.discovered_email_status === 'valid')
+    return { email: lead.discovered_email, source: 'discovered' };
   if (lead.affiliate_email && lead.affiliate_email_status === 'valid')
     return { email: lead.affiliate_email, source: 'affiliate' };
 
@@ -46,12 +53,15 @@ export function resolvePrimaryEmailWithSource(
     return { email: lead.trustpilot_email, source: 'trustpilot' };
   if (lead.website_email && lead.website_email_status !== 'invalid')
     return { email: lead.website_email, source: 'website' };
+  if (lead.discovered_email && lead.discovered_email_status !== 'invalid')
+    return { email: lead.discovered_email, source: 'discovered' };
   if (lead.affiliate_email && lead.affiliate_email_status !== 'invalid')
     return { email: lead.affiliate_email, source: 'affiliate' };
 
   // Pass 3: any non-null source so we don't blank the row.
   if (lead.trustpilot_email) return { email: lead.trustpilot_email, source: 'trustpilot' };
   if (lead.website_email) return { email: lead.website_email, source: 'website' };
+  if (lead.discovered_email) return { email: lead.discovered_email, source: 'discovered' };
   if (lead.affiliate_email) return { email: lead.affiliate_email, source: 'affiliate' };
 
   return { email: null, source: null };
@@ -66,6 +76,7 @@ export function statusForPrimaryEmail(lead: LeadEmailFields): string | null {
   if (!source) return null;
   if (source === 'trustpilot') return lead.trustpilot_email_status ?? null;
   if (source === 'website') return lead.website_email_status ?? null;
+  if (source === 'discovered') return lead.discovered_email_status ?? null;
   return lead.affiliate_email_status ?? null;
 }
 

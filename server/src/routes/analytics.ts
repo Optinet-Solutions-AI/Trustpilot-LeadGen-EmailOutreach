@@ -44,10 +44,13 @@ router.get('/', async (req: Request, res: Response) => {
       leadsByCategory[c] = (leadsByCategory[c] || 0) + 1;
     }
 
-    // Campaign stats — filtered by period
+    // Campaign stats — filtered by period.
+    // total_replied counts only human replies (campaign_leads.status='replied').
+    // total_auto_replied (added in migration 028) tracks auto-routed contact
+    // info separately so the dashboard reply-rate stays human-only.
     let campaignQuery = supabase
       .from('campaigns')
-      .select('id, name, status, total_sent, total_opened, total_replied, total_bounced, created_at');
+      .select('id, name, status, campaign_type, total_sent, total_opened, total_replied, total_auto_replied, total_bounced, created_at');
     if (cutoffDate) campaignQuery = campaignQuery.gte('created_at', cutoffDate);
     const { data: campaigns } = await campaignQuery;
 

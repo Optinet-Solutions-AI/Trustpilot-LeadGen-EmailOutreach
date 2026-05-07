@@ -21,6 +21,12 @@ export interface GenerateTemplateOptions {
    *  needs to lead with that observation and ask if they're the same operator,
    *  not pitch reputation management on a stale rating. */
   redirectMode?: boolean;
+  /** When true, the email is a discovery follow-up: we previously emailed
+   *  this company's support inbox, got an auto-reply that disclosed the
+   *  real contact email, and are now reaching out to that contact. The
+   *  copy should acknowledge the prior support handoff so the recipient
+   *  doesn't feel cold-pitched. */
+  discoveryMode?: boolean;
   /** Human-language name (e.g. "German", "French", "Brazilian Portuguese").
    *  When set, the entire generated email — subject, body, all spintax
    *  variants, greeting, and closing — is written in this language while
@@ -81,36 +87,46 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
 
   const genAI = new GoogleGenAI({ apiKey: API_KEY });
 
-  const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, language } = options;
+  const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, discoveryMode, language } = options;
 
   const companyHint = emailDomain ? `a business with the domain "${emailDomain}"` : 'a business';
   const countryLabel = country ? `in ${country}` : '';
   const categoryLabel = category ? `in the ${category.replace(/_/g, ' ')} industry` : '';
-  const audienceDesc = redirectMode
-    ? `companies whose Trustpilot listing has a website that redirects to a different brand or domain ${countryLabel} ${categoryLabel} — likely a rebrand, an affiliate, or a new operator running the original brand`.trim()
-    : manualMode
-      ? `${companyHint}${countryLabel ? ' ' + countryLabel : ''}${categoryLabel ? ' ' + categoryLabel : ''}`
-      : `companies ${countryLabel} ${categoryLabel} with a Trustpilot rating between ${minRating} and ${maxRating} stars`.trim();
+  const audienceDesc = discoveryMode
+    ? `companies whose support inbox we already emailed and that auto-replied with the address of their real contact (e.g. an affiliate or partnerships manager). We are now following up with that disclosed contact ${countryLabel} ${categoryLabel}`.trim()
+    : redirectMode
+      ? `companies whose Trustpilot listing has a website that redirects to a different brand or domain ${countryLabel} ${categoryLabel} — likely a rebrand, an affiliate, or a new operator running the original brand`.trim()
+      : manualMode
+        ? `${companyHint}${countryLabel ? ' ' + countryLabel : ''}${categoryLabel ? ' ' + categoryLabel : ''}`
+        : `companies ${countryLabel} ${categoryLabel} with a Trustpilot rating between ${minRating} and ${maxRating} stars`.trim();
 
-  const ratingTokens = redirectMode
-    ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{website}} — the redirect target / current website\n  - {{star_rating}} — their Trustpilot star rating (still relevant context)\n  - {{country}} — their country`
-    : manualMode
-      ? `  - {{company_name}} — company name (use this token, not the actual domain name)\n  - {{website}} — their website`
-      : `  - {{company_name}} — company name\n  - {{star_rating}} — their current Trustpilot star rating\n  - {{review_count}} — number of reviews`;
+  const ratingTokens = discoveryMode
+    ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{star_rating}} — their Trustpilot star rating\n  - {{country}} — their country`
+    : redirectMode
+      ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{website}} — the redirect target / current website\n  - {{star_rating}} — their Trustpilot star rating (still relevant context)\n  - {{country}} — their country`
+      : manualMode
+        ? `  - {{company_name}} — company name (use this token, not the actual domain name)\n  - {{website}} — their website`
+        : `  - {{company_name}} — company name\n  - {{star_rating}} — their current Trustpilot star rating\n  - {{review_count}} — number of reviews`;
 
-  const bodyGuidance = redirectMode
-    ? `- Open by saying you came across {{company_name}}'s Trustpilot listing while researching reputation in this space
+  const bodyGuidance = discoveryMode
+    ? `- Open by acknowledging that you previously sent a message to their support inbox and were directed to this address
+- Reference that you found {{company_name}} on Trustpilot ({{star_rating}}/5) while researching brands in this space
+- Position the email as a follow-up to the prior support handoff — NOT a fresh cold outreach
+- Briefly explain what OptiRate does: helps brands fix slipping Trustpilot ratings and rebuild review velocity
+- CTA must be email-only: invite a quick reply confirming whether this is the right contact and offering a free written audit. NEVER propose a phone call.`
+    : redirectMode
+      ? `- Open by saying you came across {{company_name}}'s Trustpilot listing while researching reputation in this space
 - Note that the listed website now redirects to {{website}} (a different brand) — and ask whether they're the same operator or new owners
 - Frame this as a polite, curious outreach, NOT a sales pitch on the old listing's rating
 - If they ARE the same operator: offer to help them either consolidate the Trustpilot reputation under the new brand, or recover the old listing's score
 - If they're new owners: offer a free audit of where the inherited reputation stands and what to do about it
 - Keep the CTA low-commitment via EMAIL only (a quick reply, a short follow-up exchange) — never propose a phone call`
-    : manualMode
-      ? `- Open with a friendly introduction to OptiRate and why online reputation matters
+      : manualMode
+        ? `- Open with a friendly introduction to OptiRate and why online reputation matters
 - Mention how poor reviews cost businesses customers, trust, and revenue
 - Position OptiRate as a partner that helps businesses turn their reputation around
 - CTA must be email-only: invite a reply, offer a free written audit, suggest a short follow-up email exchange`
-      : `- Open with a specific observation about their Trustpilot situation (low rating)
+        : `- Open with a specific observation about their Trustpilot situation (low rating)
 - Mention the concrete impact (lost customers, lower trust, less revenue)
 - CTA must be email-only: invite a reply, offer a free written audit. NEVER propose a phone call.`;
 

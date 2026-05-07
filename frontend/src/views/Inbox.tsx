@@ -18,6 +18,9 @@ interface CampaignMessage {
   id: string;
   campaign_id: string;
   campaign_name: string;
+  /** 'outreach' (default) or 'discovery_followup' — set in migration 028.
+   *  Drives the campaign-type badge in the message list and the inbox filter. */
+  campaign_type?: string;
   lead_id: string;
   company_name: string;
   country: string;
@@ -80,11 +83,12 @@ function isGmailAccount(authType: SenderAuthType): boolean {
 }
 
 const STATUS_BADGE: Record<string, { label: string; classes: string }> = {
-  replied:  { label: 'Replied',  classes: 'bg-[#8ff9a8]/30 text-[#006630]' },
-  opened:   { label: 'Opened',   classes: 'bg-[#ffd9de]/60 text-[#b0004a]' },
-  sent:     { label: 'Sent',     classes: 'bg-blue-50 text-blue-700' },
-  bounced:  { label: 'Bounced',  classes: 'bg-red-50 text-error' },
-  pending:  { label: 'Pending',  classes: 'bg-surface-container text-secondary' },
+  replied:      { label: 'Replied',      classes: 'bg-[#8ff9a8]/30 text-[#006630]' },
+  auto_replied: { label: 'Auto-reply',   classes: 'bg-amber-50 text-amber-700' },
+  opened:       { label: 'Opened',       classes: 'bg-[#ffd9de]/60 text-[#b0004a]' },
+  sent:         { label: 'Sent',         classes: 'bg-blue-50 text-blue-700' },
+  bounced:      { label: 'Bounced',      classes: 'bg-red-50 text-error' },
+  pending:      { label: 'Pending',      classes: 'bg-surface-container text-secondary' },
 };
 
 // Muted variant for replied-AND-read rows: the status stays accurate but the
@@ -98,6 +102,14 @@ export default function Inbox() {
 
   const [folder, setFolder] = useState<Folder>('replies');
   const [messages, setMessages] = useState<CampaignMessage[]>([]);
+  // Campaign-type filter — splits the inbox between cold outreach and the
+  // discovery follow-up campaigns (added in migration 028). Persisted to
+  // localStorage so the filter sticks across page refreshes.
+  const [campaignTypeFilter, setCampaignTypeFilter] = useState<'all' | 'outreach' | 'discovery_followup'>(() => {
+    if (typeof window === 'undefined') return 'all';
+    const saved = localStorage.getItem('inbox_campaign_type_filter');
+    return saved === 'outreach' || saved === 'discovery_followup' ? saved : 'all';
+  });
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadData | null>(null);
@@ -323,14 +335,16 @@ export default function Inbox() {
     setSelectedId(null);
     setThread(null);
     setSelectedMsg(null);
-    api.get('/inbox/campaign-replies', { params: { folder } })
+    const params: Record<string, string> = { folder };
+    if (campaignTypeFilter !== 'all') params.campaignType = campaignTypeFilter;
+    api.get('/inbox/campaign-replies', { params })
       .then((res) => setMessages(res.data.data ?? []))
       .catch((err) => {
         setError(err?.response?.data?.error || err.message || 'Failed to load messages');
         setMessages([]);
       })
       .finally(() => setLoading(false));
-  }, [folder]);
+  }, [folder, campaignTypeFilter]);
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
 
@@ -488,6 +502,28 @@ export default function Inbox() {
           })}
         </nav>
 
+        {/* Campaign-type filter — splits inbox between cold outreach and the
+            discovery follow-up campaigns so the user can keep them visually
+            separate even though both share the same connected mailbox. */}
+        <div className="px-3 py-3 border-t border-slate-100">
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-secondary mb-1.5">Type</label>
+          <select
+            value={campaignTypeFilter}
+            onChange={(e) => {
+              const next = e.target.value as 'all' | 'outreach' | 'discovery_followup';
+              setCampaignTypeFilter(next);
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('inbox_campaign_type_filter', next);
+              }
+            }}
+            className="w-full text-xs bg-surface-container rounded-lg px-2 py-1.5 border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
+          >
+            <option value="all">All campaigns</option>
+            <option value="outreach">Outreach only</option>
+            <option value="discovery_followup">Discovery Follow-Up only</option>
+          </select>
+        </div>
+
         <div className="px-5 py-4 border-t border-slate-100">
           <p className="text-[10px] text-secondary leading-relaxed">
             Only showing emails related to your outreach campaigns.
@@ -584,7 +620,17 @@ export default function Inbox() {
                     </div>
                     <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.replied_at || msg.sent_at)}</span>
                   </div>
-                  <p className="text-xs text-secondary truncate mb-1.5">{msg.campaign_name}</p>
+                  <p className="text-xs text-secondary truncate mb-1.5 flex items-center gap-1.5">
+                    {msg.campaign_type === 'discovery_followup' && (
+                      <span
+                        title="Discovery Follow-Up Campaign"
+                        className="text-[9px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                      >
+                        D-FU
+                      </span>
+                    )}
+                    <span className="truncate">{msg.campaign_name}</span>
+                  </p>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] text-slate-400 truncate">{msg.email_used || '—'}</span>
                     <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
