@@ -9,6 +9,7 @@ export const COUNTRIES = [
   { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' },
   { code: 'FI', name: 'Finland' }, { code: 'IT', name: 'Italy' },
   { code: 'ES', name: 'Spain' }, { code: 'BR', name: 'Brazil' },
+  { code: 'AT', name: 'Austria' }, { code: 'AE', name: 'United Arab Emirates' },
 ];
 
 export const CATEGORIES = [

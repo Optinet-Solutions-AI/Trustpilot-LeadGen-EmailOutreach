@@ -40,6 +40,7 @@ const COUNTRIES = [
   { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' },
   { code: 'FI', name: 'Finland' }, { code: 'IT', name: 'Italy' },
   { code: 'ES', name: 'Spain' }, { code: 'BR', name: 'Brazil' },
+  { code: 'AT', name: 'Austria' }, { code: 'AE', name: 'United Arab Emirates' },
 ];
 
 // Pick the strongest discovery for a lead from its list of discovered_contacts.
