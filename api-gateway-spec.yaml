@@ -802,6 +802,75 @@ paths:
       responses:
         "200":
           description: OK
+  /api/inbox/promote-to-prospects:
+    post:
+      operationId: promoteRepliesToProspects
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/discovered-contacts:
+    get:
+      operationId: listDiscoveredContacts
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/discovered-contacts/count:
+    get:
+      operationId: countPendingDiscoveredContacts
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/discovered-contacts/{id}/accept:
+    post:
+      operationId: acceptDiscoveredContact
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/discovered-contacts/{id}/dismiss:
+    post:
+      operationId: dismissDiscoveredContact
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/discovered-contacts/{id}/spawn-lead:
+    post:
+      operationId: spawnLeadFromDiscovery
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/leads/{leadId}/discovered-contacts:
+    get:
+      operationId: listLeadDiscoveredContacts
+      security: []
+      parameters:
+        - in: path
+          name: leadId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/affiliates:
     get:
       operationId: listAffiliates
