@@ -43,16 +43,25 @@ const COUNTRIES = [
 ];
 
 // Pick the strongest discovery for a lead from its list of discovered_contacts.
-// Priority: accepted > pending(verified valid) > pending(verifying) > pending(other)
-// > spawned > dismissed. Within a tier, highest score wins.
+// Priority axes (in order):
+//   1. Lifecycle status — accepted > pending-valid > pending-verifying >
+//      pending-other > spawned > dismissed.
+//   2. Kind — emails always rank above URLs within the same tier. An email
+//      is directly actionable; a URL is just a path to an email. So
+//      affiliates@brand.com beats brand.com/partners every time, even when
+//      both score the same on role-relevance.
+//   3. Role/signal score from the extractor.
 function pickBestForLead(rows: DiscoveredContactWithLead[]): DiscoveredContactWithLead {
   const score = (r: DiscoveredContactWithLead): number => {
-    if (r.status === 'accepted') return 100 + r.score;
-    if (r.status === 'pending_review' && r.verification_status === 'valid') return 80 + r.score;
-    if (r.status === 'pending_review' && !r.verification_status)            return 60 + r.score;
-    if (r.status === 'pending_review')                                       return 40 + r.score;
-    if (r.status === 'spawned_lead')                                         return 20 + r.score;
-    return r.score;
+    let tier = 0;
+    if (r.status === 'accepted')                                     tier = 1000;
+    else if (r.status === 'pending_review' && r.verification_status === 'valid') tier = 800;
+    else if (r.status === 'pending_review' && r.verification_status === 'catch-all') tier = 600;
+    else if (r.status === 'pending_review' && !r.verification_status) tier = 500;  // verifying / scraping
+    else if (r.status === 'pending_review')                            tier = 400;  // unknown / invalid
+    else if (r.status === 'spawned_lead')                              tier = 200;
+    const kindBonus = r.kind === 'email' ? 50 : 0;
+    return tier + kindBonus + r.score;
   };
   return [...rows].sort((a, b) => score(b) - score(a))[0];
 }
@@ -223,22 +232,40 @@ export default function Prospects() {
               {r.role && (
                 <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">{r.role}</span>
               )}
-              {r.verification_status ? (
-                <span
-                  className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                    r.verification_status === 'valid' ? 'bg-green-50 text-green-700' :
-                    r.verification_status === 'invalid' ? 'bg-red-50 text-red-700' :
-                    r.verification_status === 'catch-all' ? 'bg-amber-50 text-amber-700' :
-                    'bg-slate-50 text-slate-500'
-                  }`}
-                >
-                  {r.verification_status}
-                </span>
-              ) : (
-                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-50 text-slate-500">
-                  {r.kind === 'url' && !r.scrape_result ? 'scraping…' : 'verifying…'}
-                </span>
-              )}
+              {r.kind === 'url'
+                // URLs aren't verified — they're scraped. The badge reflects
+                // scraper state, not email-validator state.
+                ? (() => {
+                    if (!r.scrape_result) {
+                      return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">scraping…</span>;
+                    }
+                    const sr = r.scrape_result as Record<string, unknown>;
+                    if (sr.error) {
+                      return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-700" title={String(sr.error)}>scrape failed</span>;
+                    }
+                    if (sr.website_email) {
+                      return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title={`Harvested ${sr.website_email}`}>email harvested</span>;
+                    }
+                    return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">no email found</span>;
+                  })()
+                // Emails go through the layered validator and get one of
+                // valid / invalid / catch-all / unknown — or null while
+                // verification is still in flight.
+                : r.verification_status ? (
+                    <span
+                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                        r.verification_status === 'valid' ? 'bg-green-50 text-green-700' :
+                        r.verification_status === 'invalid' ? 'bg-red-50 text-red-700' :
+                        r.verification_status === 'catch-all' ? 'bg-amber-50 text-amber-700' :
+                        'bg-slate-50 text-slate-500'
+                      }`}
+                    >
+                      {r.verification_status}
+                    </span>
+                  ) : (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">verifying…</span>
+                  )
+              }
               <span
                 className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
                   r.status === 'accepted' ? 'bg-green-100 text-green-800' :
