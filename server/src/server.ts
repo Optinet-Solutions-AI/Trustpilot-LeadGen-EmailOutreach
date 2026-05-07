@@ -185,32 +185,32 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
   }
 
-  // Reply tracking poll — runs every 10 minutes for BOTH Gmail OAuth accounts
-  // (via reply-tracker.ts) AND SMTP/IMAP accounts like Bluehost Titan
-  // (via reply-tracker.imap.ts). The IMAP path walks every active
-  // email_accounts row with auth_type='smtp' and valid IMAP creds.
-  if (config.emailMode === 'gmail') {
-    const REPLY_CHECK_INTERVAL = 10 * 60 * 1000;
-    setInterval(async () => {
-      try {
-        const { checkForReplies } = await import('./services/reply-tracker.js');
-        const { repliesFound } = await checkForReplies();
-        if (repliesFound > 0) console.log(`[ReplyTracker] Gmail: ${repliesFound} new replies`);
-      } catch (e) {
-        console.error('[ReplyTracker] Gmail poll error:', e instanceof Error ? e.message : e);
+  // Reply tracking poll — runs every 10 minutes for BOTH the legacy single
+  // Gmail OAuth path (reply-tracker.ts, self-gated on EMAIL_MODE=gmail) AND
+  // multi-provider SMTP/IMAP accounts like Bluehost Titan or DreamHost
+  // (reply-tracker.imap.ts walks every active email_accounts row with
+  // auth_type='smtp' and valid IMAP creds). Both trackers no-op cleanly when
+  // they have nothing to do, so we don't gate the interval on EMAIL_MODE.
+  const REPLY_CHECK_INTERVAL = 10 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      const { checkForReplies } = await import('./services/reply-tracker.js');
+      const { repliesFound } = await checkForReplies();
+      if (repliesFound > 0) console.log(`[ReplyTracker] Gmail: ${repliesFound} new replies`);
+    } catch (e) {
+      console.error('[ReplyTracker] Gmail poll error:', e instanceof Error ? e.message : e);
+    }
+    try {
+      const { checkAllImapReplies } = await import('./services/reply-tracker.imap.js');
+      const { accountsChecked, repliesFound } = await checkAllImapReplies();
+      if (accountsChecked > 0) {
+        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} new replies`);
       }
-      try {
-        const { checkAllImapReplies } = await import('./services/reply-tracker.imap.js');
-        const { accountsChecked, repliesFound } = await checkAllImapReplies();
-        if (accountsChecked > 0) {
-          console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} new replies`);
-        }
-      } catch (e) {
-        console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
-      }
-    }, REPLY_CHECK_INTERVAL);
-    console.log('Reply tracker: polling Gmail + IMAP every 10 minutes');
-  }
+    } catch (e) {
+      console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
+    }
+  }, REPLY_CHECK_INTERVAL);
+  console.log('Reply tracker: polling Gmail + IMAP every 10 minutes');
 });
 
 // Graceful shutdown — Cloud Run sends SIGTERM before killing the instance.
