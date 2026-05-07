@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import api from '../api/client';
 import { useNotifications } from '../context/NotificationsContext';
@@ -115,6 +115,20 @@ export default function Inbox() {
   const [selectedReplyIds, setSelectedReplyIds] = useState<Set<string>>(new Set());
   const [promoting, setPromoting] = useState(false);
   const [promoteResult, setPromoteResult] = useState<{ promoted: number; candidatesQueued: number; skipped: number } | null>(null);
+  // Per-campaign filter — narrows the message list to a single campaign. The
+  // dropdown is built from whatever campaigns have messages in the current
+  // fetch, so it always reflects what's actually visible.
+  const [campaignIdFilter, setCampaignIdFilter] = useState<string>('');
+  // Sort order for the message list. 'latest' (default) sorts by sent/replied
+  // timestamp desc; 'oldest' is the same axis ascending; 'alpha' sorts by
+  // company name. Persisted so the choice sticks across refreshes.
+  const [sortMode, setSortMode] = useState<'latest' | 'oldest' | 'alpha'>(() => {
+    if (typeof window === 'undefined') return 'latest';
+    const saved = localStorage.getItem('inbox_sort_mode');
+    return saved === 'oldest' || saved === 'alpha' ? saved : 'latest';
+  });
+  // Free-text filter on company / campaign name.
+  const [searchText, setSearchText] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadData | null>(null);
@@ -360,6 +374,65 @@ export default function Inbox() {
     });
   }, []);
 
+  // Visible messages — the result of (campaign filter ∩ search ∩ sort) over
+  // the raw `messages` returned by the API. Pulled out into a memo so the
+  // list, the campaign dropdown, and the select-all checkbox all agree on
+  // exactly which rows are currently in scope.
+  const visibleMessages = useMemo(() => {
+    let rows = messages;
+    if (campaignIdFilter) rows = rows.filter((m) => m.campaign_id === campaignIdFilter);
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
+      rows = rows.filter((m) =>
+        (m.company_name ?? '').toLowerCase().includes(q) ||
+        (m.campaign_name ?? '').toLowerCase().includes(q) ||
+        (m.email_used ?? '').toLowerCase().includes(q),
+      );
+    }
+    const sorted = [...rows];
+    if (sortMode === 'alpha') {
+      sorted.sort((a, b) => (a.company_name ?? '').localeCompare(b.company_name ?? ''));
+    } else {
+      const dir = sortMode === 'latest' ? -1 : 1;
+      sorted.sort((a, b) => {
+        const at = a.replied_at || a.sent_at || '';
+        const bt = b.replied_at || b.sent_at || '';
+        if (at === bt) return 0;
+        return at > bt ? dir : -dir;
+      });
+    }
+    return sorted;
+  }, [messages, campaignIdFilter, searchText, sortMode]);
+
+  // Campaign list for the filter dropdown — distinct campaign_id/name pairs
+  // appearing in the current fetch. Sorted by name so the dropdown is
+  // predictable regardless of message arrival order.
+  const campaignOptions = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; count: number; type: string }>();
+    for (const m of messages) {
+      const existing = map.get(m.campaign_id);
+      if (existing) existing.count++;
+      else map.set(m.campaign_id, { id: m.campaign_id, name: m.campaign_name, count: 1, type: m.campaign_type ?? 'outreach' });
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [messages]);
+
+  // Bulk-select toggle — adds/removes every currently-visible reply from the
+  // selection. We add to selection (rather than replace) so a campaign-by-
+  // campaign workflow accumulates picks across filters.
+  const allVisibleSelected = visibleMessages.length > 0 && visibleMessages.every((m) => selectedReplyIds.has(m.id));
+  const toggleSelectAllVisible = useCallback(() => {
+    setSelectedReplyIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const m of visibleMessages) next.delete(m.id);
+      } else {
+        for (const m of visibleMessages) next.add(m.id);
+      }
+      return next;
+    });
+  }, [allVisibleSelected, visibleMessages]);
+
   const promoteToProspects = useCallback(async () => {
     if (selectedReplyIds.size === 0 || promoting) return;
     setPromoting(true);
@@ -538,44 +611,25 @@ export default function Inbox() {
           })}
         </nav>
 
-        {/* Campaign-type filter — splits inbox between cold outreach and the
-            discovery follow-up campaigns so the user can keep them visually
-            separate even though both share the same connected mailbox. */}
-        <div className="px-3 py-3 border-t border-slate-100">
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-secondary mb-1.5">Type</label>
-          <select
-            value={campaignTypeFilter}
-            onChange={(e) => {
-              const next = e.target.value as 'all' | 'outreach' | 'discovery_followup';
-              setCampaignTypeFilter(next);
-              if (typeof window !== 'undefined') {
-                localStorage.setItem('inbox_campaign_type_filter', next);
-              }
-            }}
-            className="w-full text-xs bg-surface-container rounded-lg px-2 py-1.5 border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
-          >
-            <option value="all">All campaigns</option>
-            <option value="outreach">Outreach only</option>
-            <option value="discovery_followup">Discovery Follow-Up only</option>
-          </select>
-        </div>
-
-        <div className="px-5 py-4 border-t border-slate-100">
+        <div className="px-5 py-4 border-t border-slate-100 mt-auto">
           <p className="text-[10px] text-secondary leading-relaxed">
-            Only showing emails related to your outreach campaigns.
+            Only showing emails related to your outreach campaigns. Use the
+            filter bar above the list to narrow by campaign or sort.
           </p>
         </div>
       </div>
 
       {/* Center — message list */}
-      <div className="w-80 border-r border-slate-100 flex flex-col bg-[#f8f9fa] shrink-0 overflow-hidden">
+      <div className="w-96 border-r border-slate-100 flex flex-col bg-[#f8f9fa] shrink-0 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-100 bg-white flex items-center justify-between">
           <p className="text-xs font-extrabold uppercase tracking-wider text-secondary truncate">
             {loading
               ? 'Loading…'
               : checkStatus
                 ? checkStatus
-                : `${messages.length} message${messages.length !== 1 ? 's' : ''}`}
+                : visibleMessages.length === messages.length
+                  ? `${messages.length} message${messages.length !== 1 ? 's' : ''}`
+                  : `${visibleMessages.length} of ${messages.length} message${messages.length !== 1 ? 's' : ''}`}
           </p>
           <div className="flex items-center gap-1 flex-shrink-0">
             {folder === 'replies' && (
@@ -604,29 +658,111 @@ export default function Inbox() {
           </div>
         </div>
 
-        {/* Promote toolbar — appears in Replies folder when 1+ messages are
-            selected. Triggers /api/inbox/promote-to-prospects which scrapes
-            URLs in each reply, queues candidates on Prospects, and pauses the
-            lead's cold sequences. */}
+        {/* Filter bar — search, campaign, sort, type. Sits directly above
+            the list so the user can narrow what they see in one glance. */}
+        <div className="px-3 py-2.5 bg-white border-b border-slate-100 space-y-2">
+          <div className="relative">
+            <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[15px]">search</span>
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Search company, campaign, email..."
+              className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-surface-container rounded-lg border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              value={campaignIdFilter}
+              onChange={(e) => setCampaignIdFilter(e.target.value)}
+              title="Filter by specific campaign"
+              className="text-xs bg-surface-container rounded-lg px-2 py-1.5 border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
+            >
+              <option value="">All campaigns ({campaignOptions.length})</option>
+              {campaignOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}{c.type === 'discovery_followup' ? ' [D-FU]' : ''} ({c.count})
+                </option>
+              ))}
+            </select>
+            <select
+              value={sortMode}
+              onChange={(e) => {
+                const next = e.target.value as 'latest' | 'oldest' | 'alpha';
+                setSortMode(next);
+                if (typeof window !== 'undefined') localStorage.setItem('inbox_sort_mode', next);
+              }}
+              title="Sort the list"
+              className="text-xs bg-surface-container rounded-lg px-2 py-1.5 border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
+            >
+              <option value="latest">Latest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="alpha">Company A–Z</option>
+            </select>
+          </div>
+          <select
+            value={campaignTypeFilter}
+            onChange={(e) => {
+              const next = e.target.value as 'all' | 'outreach' | 'discovery_followup';
+              setCampaignTypeFilter(next);
+              if (typeof window !== 'undefined') localStorage.setItem('inbox_campaign_type_filter', next);
+            }}
+            title="Filter by campaign type"
+            className="w-full text-xs bg-surface-container rounded-lg px-2 py-1.5 border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
+          >
+            <option value="all">All types</option>
+            <option value="outreach">Outreach campaigns only</option>
+            <option value="discovery_followup">Discovery Follow-Up only</option>
+          </select>
+        </div>
+
+        {/* Select-all bar — only renders in the Replies folder. Toggling adds
+            or removes every currently-visible row from the selection set so
+            the user can bulk-promote the entire filtered view. */}
+        {folder === 'replies' && visibleMessages.length > 0 && (
+          <label
+            className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 bg-surface-container cursor-pointer hover:bg-surface-container-high transition-colors"
+            title="Select every reply currently visible (respects the filters above)"
+          >
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectAllVisible}
+              className="w-4 h-4 rounded border-slate-300 accent-[#006630] cursor-pointer"
+            />
+            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
+              {allVisibleSelected ? 'Deselect all visible' : 'Select all visible'}
+            </span>
+            {selectedReplyIds.size > 0 && (
+              <span className="ml-auto text-[10px] font-bold text-[#006630]">
+                {selectedReplyIds.size} marked
+              </span>
+            )}
+          </label>
+        )}
+
+        {/* Sticky promotion toolbar — stays at the top of the message list
+            while the user scrolls so the action is always reachable. */}
         {folder === 'replies' && selectedReplyIds.size > 0 && (
-          <div className="px-4 py-2.5 border-b border-slate-100 bg-[#8ff9a8]/10 flex items-center gap-2">
-            <span className="text-[11px] font-bold text-[#006630] flex-1">
-              {selectedReplyIds.size} selected
+          <div className="sticky top-0 z-10 px-4 py-3 border-b-2 border-[#006630]/30 bg-[#006630] text-white flex items-center gap-2 shadow-md">
+            <span className="material-symbols-outlined text-[16px]">check_circle</span>
+            <span className="text-xs font-bold flex-1">
+              {selectedReplyIds.size} reply{selectedReplyIds.size === 1 ? '' : 'ies'} selected
             </span>
             <button
               onClick={() => setSelectedReplyIds(new Set())}
               disabled={promoting}
-              className="text-[10px] font-bold uppercase tracking-wider text-secondary hover:text-on-surface disabled:opacity-40"
+              className="text-[10px] font-bold uppercase tracking-wider text-white/70 hover:text-white disabled:opacity-40"
             >
               Clear
             </button>
             <button
               onClick={promoteToProspects}
               disabled={promoting}
-              className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white bg-[#006630] hover:bg-[#005528] rounded-md px-2.5 py-1 transition-colors disabled:opacity-40"
+              className="flex items-center gap-1.5 text-xs font-bold text-[#006630] bg-white hover:bg-slate-50 rounded-lg px-3 py-1.5 transition-colors disabled:opacity-40"
               title="Scrape URL(s) in selected replies, surface candidates on Prospects, and pause cold sequences for these leads"
             >
-              <span className={`material-symbols-outlined text-[13px] ${promoting ? 'animate-spin' : ''}`}>
+              <span className={`material-symbols-outlined text-[15px] ${promoting ? 'animate-spin' : ''}`}>
                 {promoting ? 'progress_activity' : 'how_to_reg'}
               </span>
               {promoting ? 'Promoting…' : 'Promote to Prospects'}
@@ -676,7 +812,7 @@ export default function Inbox() {
               </p>
             </div>
           ) : (
-            messages.map((msg) => {
+            visibleMessages.map((msg) => {
               const isSelected = selectedId === msg.id;
               const isUnread = msg.status === 'replied' && !msg.reply_read_at;
               const badge = msg.status === 'replied' && !isUnread
@@ -691,22 +827,28 @@ export default function Inbox() {
                   tabIndex={0}
                   onClick={() => openMessage(msg)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMessage(msg); } }}
-                  className={`w-full text-left px-4 py-3.5 border-b border-slate-100 transition-colors hover:bg-white cursor-pointer ${
-                    isSelected ? 'bg-white border-l-2 border-l-[#b0004a]' : isUnread ? 'bg-[#8ff9a8]/5' : ''
-                  } ${isPromoteSelected ? 'ring-1 ring-[#006630]/30 ring-inset' : ''}`}
+                  className={`w-full text-left px-4 py-3.5 border-b border-slate-100 transition-colors hover:bg-white cursor-pointer border-l-4 ${
+                    isPromoteSelected
+                      ? 'bg-[#006630]/5 border-l-[#006630]'
+                      : isSelected
+                        ? 'bg-white border-l-[#b0004a]'
+                        : isUnread
+                          ? 'bg-[#8ff9a8]/5 border-l-transparent'
+                          : 'border-l-transparent'
+                  }`}
                 >
-                  <div className="flex items-start gap-2">
+                  <div className="flex items-start gap-2.5">
                     {showCheckbox && (
                       <label
                         onClick={(e) => e.stopPropagation()}
-                        className="flex items-center pt-0.5 flex-shrink-0 cursor-pointer"
+                        className="flex items-center pt-0.5 flex-shrink-0 cursor-pointer p-0.5 -m-0.5 rounded hover:bg-[#006630]/10"
                         title="Select to promote to Prospects"
                       >
                         <input
                           type="checkbox"
                           checked={isPromoteSelected}
                           onChange={() => toggleReplySelected(msg.id)}
-                          className="w-3.5 h-3.5 rounded border-slate-300 accent-[#006630]"
+                          className="w-4 h-4 rounded border-slate-300 accent-[#006630] cursor-pointer"
                         />
                       </label>
                     )}
