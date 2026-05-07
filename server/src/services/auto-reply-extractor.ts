@@ -57,12 +57,21 @@ const FREEMAIL_DOMAINS = new Set([
   'zoho.com', 'fastmail.com',
 ]);
 
-// Helpdesk / tracking / SaaS domains that auto-replies routinely include but
-// that are never the human contact we want. Most are click-tracking redirects
-// that ESPs inject into outbound mail — pursuing them just leads to a
-// redirect-to-redirect-to-1px-pixel chain. Anything appearing here gets
-// dropped from both the email and URL candidate lists.
-const TRACKING_DOMAIN_RX = /(?:^|\.)(zendesk\.com|freshdesk\.com|helpscout\.net|helpscout\.com|intercom(?:cdn)?\.com|intercom-mail\.com|intercom-mail\.eu|kayako\.com|gorgias\.help|frontapp\.com|frontapp\.io|mailgun\.org|mailgun\.com|mailtrack\.io|mandrillapp\.com|list-manage\.com|sentry\.io|sendgrid\.net|amazonses\.com|amazonaws\.com|cloudfront\.net|googleusercontent\.com|gstatic\.com|google-analytics\.com|doubleclick\.net|facebook\.com|fbcdn\.net|twimg\.com|cdn\.|s3\.amazonaws|herokuapp\.com|sendinblue\.com|mailchimp\.com|hubspot\.com|salesforce\.com|pardot\.com|hubspotemail\.net|emltrk\.com)$/i;
+// Truly never-useful domains. Pure asset CDNs, tracking pixels, error-
+// reporting backends — anywhere that even a 302 redirect would land on
+// content not relevant to a partner brand contact page. Anything appearing
+// here gets dropped from both the email and URL candidate lists.
+//
+// What's deliberately NOT filtered: ESP click-tracker domains like
+// `intercom-mail.*`, `*.list-manage.com`, `mandrillapp.com`,
+// `sendgrid.net`, `mailtrack.io`. These ARE 302 redirects, but the
+// destination is the URL the operator put in their auto-reply — which is
+// exactly what we want the scraper to land on. Letting the URL reach the
+// scraper is strictly better than dropping it; if the redirect target has
+// no email, the candidate sits with an empty scrape_result and the user
+// dismisses. False negatives (missed real partner sites) cost the user
+// more than false positives (a wasted scrape on a 1×1 pixel).
+const TRACKING_DOMAIN_RX = /(?:^|\.)(googleusercontent\.com|gstatic\.com|google-analytics\.com|doubleclick\.net|fbcdn\.net|twimg\.com|cloudfront\.net|sentry\.io|herokuapp\.com|intercomcdn\.com|amazonses\.com|s3\.amazonaws\.com|emltrk\.com)$/i;
 
 const NOREPLY_LOCAL_RX = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|notify|mailer-daemon|postmaster|bounce|bounces|automated|autoresponder)$/i;
 
