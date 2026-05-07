@@ -407,6 +407,87 @@ export async function fetchSmtpThread(
       }
     }
 
+    // JS-level In-Reply-To / References fallback. Fires when neither the
+    // header-scoped server search nor the FROM-based fallback found an
+    // inbound reply. Two real-world cases this catches:
+    //   (a) The IMAP server's HEADER index is lazy or quirky — Titan in
+    //       particular silently returns zero hits for SEARCH HEADER on
+    //       In-Reply-To even when the matching message exists in INBOX.
+    //   (b) The reply came from a routing address (Zendesk/Helpscout/
+    //       Freshdesk/custom helpdesks) whose From doesn't match the lead.
+    // Mirrors the JS-side envelope-filter strategy that reply-tracker.imap.ts
+    // already uses to successfully flip status='replied' for these threads.
+    // Two-phase fetch (envelope-only → source for matches) keeps bandwidth
+    // bounded on busy mailboxes.
+    {
+      const stillNoInbound = !collected.some((c) => /inbox/i.test(c.folder));
+      if (stillNoInbound) {
+        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const inboundPaths = scanPaths.filter((p) => !/sent/i.test(p));
+        for (const path of inboundPaths) {
+          try {
+            const lock = await client.getMailboxLock(path);
+            try {
+              const uids = (await client.search({ since })) || [];
+              const list = Array.isArray(uids) ? uids : [];
+              if (list.length === 0) continue;
+
+              const matchedUids: number[] = [];
+              for await (const env of client.fetch(list, {
+                envelope: true,
+                uid: true,
+                headers: ['references'],
+              })) {
+                const irt = normalizeId(env.envelope?.inReplyTo);
+                const refsRaw = env.headers?.toString('utf-8') ?? '';
+                const refs = (refsRaw.match(/<[^<>]+>/g) ?? []).map((s) => normalizeId(s));
+                const hits =
+                  (irt && threadIds.has(irt)) ||
+                  refs.some((r) => threadIds.has(r));
+                if (hits && env.uid !== undefined) matchedUids.push(env.uid);
+              }
+
+              if (matchedUids.length === 0) continue;
+
+              for await (const msg of client.fetch(matchedUids, {
+                envelope: true,
+                uid: true,
+                flags: true,
+                source: true,
+                headers: ['references'],
+              })) {
+                if (!msg.source) continue;
+                const messageId = preserveId(msg.envelope?.messageId);
+                const messageIdKey = normalizeId(msg.envelope?.messageId);
+                if (messageIdKey && seenMessageIds.has(messageIdKey)) continue;
+                if (messageIdKey) seenMessageIds.add(messageIdKey);
+                const refsRaw = msg.headers?.toString('utf-8') ?? '';
+                const refs = (refsRaw.match(/<[^<>]+>/g) ?? []).map((s) => normalizeId(s));
+                collected.push({
+                  uid: msg.uid!,
+                  folder: path,
+                  messageId,
+                  inReplyTo: normalizeId(msg.envelope?.inReplyTo),
+                  references: refs,
+                  envelopeSubject: msg.envelope?.subject ?? '',
+                  envelopeDate: msg.envelope?.date ?? null,
+                  unread: !msg.flags?.has('\\Seen'),
+                  raw: msg.source as Buffer,
+                });
+              }
+            } finally {
+              lock.release();
+            }
+          } catch (e) {
+            console.warn(
+              `[ImapThreadFetcher] InReplyTo JS fallback failed on ${path}:`,
+              e instanceof Error ? e.message : e,
+            );
+          }
+        }
+      }
+    }
+
     // TO-based Sent-folder fallback: mirror of the FROM-based inbound
     // fallback above. Older manual replies sent before the awaited-IMAP-
     // append fix landed may be in Sent without a findable headers chain
