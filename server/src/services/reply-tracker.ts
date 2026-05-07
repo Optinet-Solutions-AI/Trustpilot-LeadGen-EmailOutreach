@@ -263,6 +263,10 @@ async function handleAutoReply(args: {
   const { emails, urls } = extractContacts(body, {
     email_used: cl.email_used,
     lead_domain: leadDomain,
+    // Filter out our own outreach domain — auto-replies commonly quote the
+    // original message including the From: line, which would otherwise be
+    // extracted as a "discovered" candidate and verify as valid.
+    sender_emails: config.gmail.fromEmail ? [config.gmail.fromEmail] : [],
   });
 
   if (emails.length === 0 && urls.length === 0) {

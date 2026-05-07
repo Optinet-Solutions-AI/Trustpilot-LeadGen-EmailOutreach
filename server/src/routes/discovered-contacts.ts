@@ -16,9 +16,11 @@ import {
   acceptContact,
   dismissContact,
   spawnLeadFromUrl,
+  overrideVerificationStatus,
   countPending,
   type DiscoveredKind,
   type DiscoveredStatus,
+  type DiscoveredVerification,
 } from '../db/discovered-contacts.js';
 
 const router = Router();
@@ -100,6 +102,29 @@ router.post('/:id/spawn-lead', async (req: Request, res: Response) => {
   try {
     const id = param(req.params.id);
     const result = await spawnLeadFromUrl(id, { reviewedBy: pickReviewer(req) });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ success: false, error: message });
+  }
+});
+
+// POST /api/discovered-contacts/:id/override-status
+// Body: { verification_status: 'valid' | 'invalid' | 'catch-all' | 'unknown' }
+// User-initiated override of the layered validator's verdict, useful when
+// Hunter.io (last-resort fallback) returns a wrong `invalid`. If the contact
+// is already accepted, propagates the new status to leads.discovered_email_status
+// and rebuilds primary_email.
+router.post('/:id/override-status', async (req: Request, res: Response) => {
+  try {
+    const id = param(req.params.id);
+    const status = req.body?.verification_status as DiscoveredVerification;
+    const allowed = ['valid', 'invalid', 'catch-all', 'unknown', null];
+    if (!allowed.includes(status as never)) {
+      res.status(400).json({ success: false, error: 'verification_status must be one of valid|invalid|catch-all|unknown|null' });
+      return;
+    }
+    const result = await overrideVerificationStatus(id, status, { reviewedBy: pickReviewer(req) });
     res.json({ success: true, data: result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -104,7 +104,7 @@ export default function Prospects() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const { accept, dismiss, spawnLead } = useDiscoveryActions();
+  const { accept, dismiss, spawnLead, overrideStatus } = useDiscoveryActions();
 
   const toggleSort = (col: string) => {
     if (col === sortBy) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -199,8 +199,28 @@ export default function Prospects() {
   };
   const handleSpawn = async (id: string) => {
     setBusyId(id);
-    try { await spawnLead(id); setStatusMsg('New lead spawned from URL.'); await fetchData(); }
-    finally { setBusyId(null); setTimeout(() => setStatusMsg(null), 4000); }
+    try {
+      await spawnLead(id);
+      setStatusMsg('New lead spawned from URL.');
+      await fetchData();
+    } catch (err: unknown) {
+      // spawnLead can reject when the URL is a tracker / CDN / social
+      // domain — surface the backend's reason so the user understands why.
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      setStatusMsg(e?.response?.data?.error ?? e?.message ?? 'Spawn failed');
+    }
+    finally { setBusyId(null); setTimeout(() => setStatusMsg(null), 6000); }
+  };
+  const handleOverride = async (id: string, status: 'valid' | 'invalid' | 'catch-all' | 'unknown') => {
+    setBusyId(id);
+    try {
+      await overrideStatus(id, status);
+      setStatusMsg(`Verification overridden to '${status}'.`);
+      await fetchData();
+    } finally {
+      setBusyId(null);
+      setTimeout(() => setStatusMsg(null), 4000);
+    }
   };
 
   // Discovery follow-up campaign launcher — sends only leads that have an
@@ -355,6 +375,24 @@ export default function Prospects() {
         >
           <span className="material-symbols-outlined text-[16px]">check</span>
         </button>
+        {r.kind === 'email' && r.verification_status === 'invalid' && (
+          // Hunter.io (last-resort verifier) returns false-invalid often
+          // enough on lesser-indexed domains that the user needs an escape
+          // hatch. Click → confirm → force valid; the lead's primary_email
+          // rebuilds if the contact is already accepted.
+          <button
+            onClick={() => {
+              if (confirm(`Override verification for ${r.value} to 'valid'?\n\nUse this when you've confirmed the address works (e.g. via a manual test send) and the verifier returned a wrong invalid.`)) {
+                handleOverride(r.id, 'valid');
+              }
+            }}
+            disabled={busy}
+            title="Force valid — overrides the verifier's verdict"
+            className="p-1 rounded-lg text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[16px]">verified</span>
+          </button>
+        )}
         {r.kind === 'url' && (
           <button
             onClick={() => handleSpawn(r.id)}

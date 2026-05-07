@@ -224,6 +224,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             manualEmails={manualEmails}
             maxLeads={maxLeads}
             redirectMode={redirectMode}
+            discoveryMode={discoveryMode}
             onFilterCountryChange={handleFilterCountryChange}
             onFilterCategoryChange={setFilterCategory}
             onSelectionChange={setSelectedLeadIds}

@@ -118,7 +118,17 @@ export function useDiscoveryActions() {
     return res.data.data;
   }, []);
 
-  return { accept, dismiss, spawnLead };
+  /** Force a verification verdict on a discovered email. Use when the
+   *  layered validator (typically Hunter.io as last resort) returned a wrong
+   *  answer — usually `invalid` on a real but lesser-indexed mailbox the
+   *  user has separately confirmed works. If the row is already accepted,
+   *  the lead's discovered_email_status + primary_email get rebuilt too. */
+  const overrideStatus = useCallback(async (id: string, status: DiscoveredVerification) => {
+    const res = await api.post(`/discovered-contacts/${id}/override-status`, { verification_status: status });
+    return res.data.data;
+  }, []);
+
+  return { accept, dismiss, spawnLead, overrideStatus };
 }
 
 export function useDiscoveryCount() {

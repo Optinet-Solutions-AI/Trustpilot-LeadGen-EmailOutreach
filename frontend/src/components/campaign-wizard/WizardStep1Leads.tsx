@@ -50,6 +50,11 @@ interface Props {
    *  users can't accidentally mix them with the standard cold-outreach pool —
    *  they need different messaging and a different AI prompt. */
   redirectMode?: boolean;
+  /** Wizard launched from Prospects → Accepted with leadIds pre-supplied.
+   *  Pre-selected discovered-contact leads typically have outreach_status
+   *  = 'contacted', so we skip the "hide contacted" filter that the default
+   *  cold-outreach mode applies. */
+  discoveryMode?: boolean;
   onFilterCountryChange: (v: string) => void;
   onFilterCategoryChange: (v: string) => void;
   onSelectionChange: (ids: string[]) => void;
@@ -63,7 +68,7 @@ type SourceMode = 'matrix' | 'manual';
 
 export default function WizardStep1Leads({
   filterCountry, filterCategory, selectedLeadIds, manualEmails, maxLeads,
-  redirectMode,
+  redirectMode, discoveryMode,
   onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
 }: Props) {
   const [appMode, setAppMode] = useState<AppMode | null>(null);
@@ -119,6 +124,15 @@ export default function WizardStep1Leads({
       // Standard wizard hides redirected leads (different messaging needed);
       // redirect-aware wizard shows ONLY redirected leads.
       p.set('redirected', redirectMode ? 'only' : 'exclude');
+      // Default outreach mode hides already-contacted leads to prevent
+      // accidental double-emailing. Redirect and Discovery flows are scoped
+      // to their own populations (redirected leads / discovered prospects)
+      // and are exempt — those leads are typically already 'contacted' and
+      // are surfaced through dedicated entry points (Redirected Leads page,
+      // Prospects → Send Follow-Up Campaign).
+      if (!redirectMode && !discoveryMode) {
+        p.set('status', 'new');
+      }
       const res = await api.get(`/leads?${p}`);
       setLeads(res.data.data);
       setTotal(res.data.total);
@@ -128,7 +142,7 @@ export default function WizardStep1Leads({
     } finally {
       setLoading(false);
     }
-  }, [filterCountry, filterCategory, debSearch, page, sortBy, sortDir, redirectMode]);
+  }, [filterCountry, filterCategory, debSearch, page, sortBy, sortDir, redirectMode, discoveryMode]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 

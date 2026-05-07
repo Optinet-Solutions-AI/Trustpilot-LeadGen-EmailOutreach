@@ -21,6 +21,15 @@ export interface ExtractContext {
   /** The lead's brand domain (e.g. "brandcasino.com") if known — used so
    *  same-domain partner URLs aren't filtered out as "the lead's own site". */
   lead_domain?: string | null;
+  /** Our outreach sender addresses (e.g. james@optiratesolutions.net,
+   *  jordi@optiratesolutions.com). Auto-replies routinely quote the original
+   *  message including its From: header, so without this filter our own
+   *  email gets extracted as a "discovered" candidate, verified as valid
+   *  (because it really is a valid mailbox — ours), and surfaces in the
+   *  Prospects view as a contact to email — clearly wrong. Filtering both
+   *  the exact sender addresses AND any same-domain address protects against
+   *  multi-mailbox setups (jordi@, sarah@, etc on the same outreach domain). */
+  sender_emails?: string[];
 }
 
 export interface RankedEmail {
@@ -176,6 +185,18 @@ export function extractContacts(body: string, ctx: ExtractContext): ExtractResul
   const echoedEmail = normalizeEmail(ctx.email_used ?? '');
   const echoedDomain = echoedEmail ? domainOf(echoedEmail) : '';
   const leadDomain = (ctx.lead_domain ?? '').toLowerCase().replace(/^www\./, '');
+  // Build the sender-side denylist once. Both exact emails and domains so a
+  // multi-mailbox outreach setup (sarah@, jordi@, james@ on the same domain)
+  // is fully covered when only one of the addresses appears in the context.
+  const senderEmailSet = new Set<string>();
+  const senderDomainSet = new Set<string>();
+  for (const raw of ctx.sender_emails ?? []) {
+    const norm = normalizeEmail(raw);
+    if (!norm) continue;
+    senderEmailSet.add(norm);
+    const dom = domainOf(norm);
+    if (dom) senderDomainSet.add(dom);
+  }
 
   // ── Emails ───────────────────────────────────────────────────
   const seen = new Set<string>();
@@ -191,6 +212,15 @@ export function extractContacts(body: string, ctx: ExtractContext): ExtractResul
 
     // 1. Skip the original recipient — echoed back means nothing.
     if (echoedEmail && norm === echoedEmail) continue;
+
+    // 1b. Skip our own outreach sender addresses (and anything on the same
+    //     domain). Auto-replies frequently quote the original message back,
+    //     including its From: header, which would otherwise yield "discover
+    //     yourself" candidates that verify as valid and surface as fake
+    //     prospects.
+    if (senderEmailSet.has(norm)) continue;
+    const candidateDomain = domainOf(norm);
+    if (candidateDomain && senderDomainSet.has(candidateDomain)) continue;
 
     // 2. Skip no-reply / postmaster / mailer-daemon — never the human contact.
     if (NOREPLY_LOCAL_RX.test(local)) continue;

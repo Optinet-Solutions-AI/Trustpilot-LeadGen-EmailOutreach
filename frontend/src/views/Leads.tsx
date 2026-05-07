@@ -589,7 +589,10 @@ export default function Leads() {
             {total > 0 ? `${total} leads` : 'No leads yet'} — manage your outreach pipeline.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        {/* flex-wrap so the chip group + rate-limit + Enrich All + view toggle
+            fall onto a second row instead of overflowing the viewport at the
+            ~1100–1280px range where most laptop/external-monitor combos sit. */}
+        <div className="flex flex-wrap items-center gap-3 justify-end max-w-full">
           {selectedIds.length > 0 && (
             <div className="flex flex-wrap items-center gap-0.5 bg-white rounded-full ambient-shadow border border-slate-100 pl-3 pr-1 py-1">
               <span className="text-xs font-bold text-on-surface mr-1">

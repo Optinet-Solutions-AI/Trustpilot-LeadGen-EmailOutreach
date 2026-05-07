@@ -29,49 +29,29 @@ function resolveDisplayStatus(
   return null;
 }
 
-// Build a multi-line tooltip showing the stage-by-stage breakdown the
-// validator wrote. Lets the user see exactly *which* stage produced the
-// verdict ("SMTP RCPT-TO 250 from mail.bluehost.com" vs "ZeroBounce: catch-all").
+// Compact tooltip for the verify badge — single line so Chrome's native
+// title rendering stays small. The previous multi-line version produced an
+// oversized tooltip that obscured nearby rows on hover. Per-stage detail is
+// available in Lead Detail; a hovering chip should be a glance, not a wall.
 function buildStageTooltip(status: DisplayStatus, lead?: Lead): string {
   const headlines: Record<DisplayStatus, string> = {
-    'valid':        'Deliverable — safe to send',
+    'valid':        'Deliverable',
     'invalid':      'Will bounce — excluded from campaigns',
-    'catch-all':    'Domain accepts all mail — individual mailbox can\'t be proven',
-    'unknown':      'Inconclusive — couldn\'t prove either way',
-    'not_verified': 'Not verified yet — run Verify before adding to a campaign',
+    'catch-all':    'Domain accepts all mail — mailbox can\'t be proven',
+    'unknown':      'Inconclusive',
+    'not_verified': 'Not verified yet',
   };
   if (!lead) return headlines[status];
 
-  const lines: string[] = [headlines[status]];
-  const breakdown: string[] = [];
-  if (lead.verify_syntax_ok === false) breakdown.push('Syntax: failed');
-  else if (lead.verify_syntax_ok === true) breakdown.push('Syntax: ok');
-
-  if (lead.verify_mx_ok === false) breakdown.push('MX: not found');
-  else if (lead.verify_mx_ok === true) breakdown.push('MX: ok');
-
-  if (lead.verify_smtp_result) {
-    const labels: Record<string, string> = {
-      '250': 'SMTP probe: 250 (mailbox accepted)',
-      '550': 'SMTP probe: 550 (mailbox rejected)',
-      'unknown': 'SMTP probe: ambiguous',
-      'skipped_catchall': 'SMTP probe: skipped (catch-all domain)',
-      'skipped_giant': 'SMTP probe: skipped (Gmail/Outlook365 always 250)',
-      'skipped_no_mx': 'SMTP probe: skipped (no MX)',
-      'error': 'SMTP probe: connect error',
-    };
-    breakdown.push(labels[lead.verify_smtp_result] || `SMTP probe: ${lead.verify_smtp_result}`);
+  // Append the most-decisive stage's verdict on the same line — keeps the
+  // tooltip useful without expanding it vertically.
+  const tail: string[] = [];
+  if (lead.verify_smtp_result === '250') tail.push('SMTP 250');
+  else if (lead.verify_smtp_result === '550') tail.push('SMTP 550');
+  if (lead.verify_zerobounce_result && lead.verify_zerobounce_result !== 'unknown') {
+    tail.push(`ZB: ${lead.verify_zerobounce_result}`);
   }
-  if (lead.verify_zerobounce_result) breakdown.push(`ZeroBounce: ${lead.verify_zerobounce_result}`);
-
-  if (breakdown.length) {
-    lines.push('—');
-    lines.push(...breakdown);
-  }
-  if (lead.verified_at) {
-    lines.push(`Verified ${new Date(lead.verified_at).toLocaleDateString()}`);
-  }
-  return lines.join('\n');
+  return tail.length ? `${headlines[status]} (${tail.join(', ')})` : headlines[status];
 }
 
 function VerifyBadge({
@@ -408,7 +388,7 @@ export default function LeadsTable({
             ) : hasWebsiteUrl ? (
               <div className="flex flex-col gap-1">
                 <span className="text-xs text-slate-400 italic">no email found</span>
-                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full w-fit" title="Has website but no email found yet — run Enrich">
+                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full w-fit" title="Run Enrich">
                   <span className="material-symbols-outlined text-[9px]">hourglass_empty</span>not enriched
                 </span>
               </div>

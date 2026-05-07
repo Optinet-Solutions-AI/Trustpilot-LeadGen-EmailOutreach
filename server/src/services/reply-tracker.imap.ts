@@ -350,6 +350,9 @@ async function markAutoReplied(args: {
   const { emails, urls } = extractContacts(body, {
     email_used: lead.email_used,
     lead_domain: leadDomain,
+    // Filter out our own outreach domain — quoted From: lines in the
+    // auto-reply body would otherwise self-extract as discoveries.
+    sender_emails: account.email ? [account.email] : [],
   });
 
   if (emails.length === 0 && urls.length === 0) {

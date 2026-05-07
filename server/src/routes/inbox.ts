@@ -1491,9 +1491,11 @@ router.post('/promote-to-prospects', async (req: Request, res: Response) => {
         }
 
         const leadDomain = (cl.email_used ?? '').split('@')[1] ?? null;
+        const senderEmails = cl.sender_email ? [cl.sender_email] : [];
         const { emails, urls } = extractContacts(body.text, {
           email_used: cl.email_used,
           lead_domain: leadDomain,
+          sender_emails: senderEmails,
         });
 
         if (emails.length === 0 && urls.length === 0) {

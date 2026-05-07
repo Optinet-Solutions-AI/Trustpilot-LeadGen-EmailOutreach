@@ -324,6 +324,24 @@ export async function dismissContact(
   return updated as DiscoveredContact;
 }
 
+// Domains we never want to spawn a lead from — ESP click-trackers, asset
+// CDNs, social-media profile links. The URL extractor normally drops most
+// of these at intake, but click-tracker domains like intercom-mail.eu are
+// deliberately allowed through (they 302 to the real partner site for
+// scraping). They must NOT, however, ever become a "company" lead — the
+// subdomain is meaningless and the website_url would be a useless tracker
+// token. Spawning from any of these is a usability bug; reject up front.
+const SPAWN_BLOCK_DOMAIN_RX = /(?:^|\.)(intercom-mail\.com|intercom-mail\.eu|intercomcdn\.com|list-manage\.com|mandrillapp\.com|sendgrid\.net|mailtrack\.io|mailgun\.org|mailgun\.com|emltrk\.com|amazonses\.com|amazonaws\.com|cloudfront\.net|googleusercontent\.com|gstatic\.com|google-analytics\.com|doubleclick\.net|facebook\.com|fbcdn\.net|twitter\.com|x\.com|linkedin\.com|instagram\.com|youtube\.com|tiktok\.com|pinterest\.com|reddit\.com|t\.me|telegram\.me|herokuapp\.com|sentry\.io)$/i;
+
+function urlDomainOf(url: string): string {
+  try {
+    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return u.hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Spawn a new lead from a kind='url' discovery's scrape_result. Used when the
  * user decides the partner-brand URL is its own company, not just a routing
@@ -347,6 +365,17 @@ export async function spawnLeadFromUrl(
   }
   if (contact.status !== 'pending_review') {
     throw new Error(`Cannot spawn from a ${contact.status} contact`);
+  }
+
+  // Guard: never spawn a lead from a tracker / CDN / social-media URL. Those
+  // produce phantom leads whose company_name is just a subdomain like
+  // "casino-expert" and whose website is a useless tracker token. Force the
+  // user to dismiss instead.
+  const blockedDomain = urlDomainOf(contact.value);
+  if (blockedDomain && SPAWN_BLOCK_DOMAIN_RX.test(blockedDomain)) {
+    throw new Error(
+      `Cannot spawn a lead from ${blockedDomain} — this is a click-tracker / CDN / social-media domain, not a real partner brand site. Dismiss this candidate instead.`,
+    );
   }
 
   const scrape = (contact.scrape_result ?? {}) as Record<string, unknown>;
@@ -481,6 +510,94 @@ export async function setVerificationStatus(id: string, status: DiscoveredVerifi
     .update({ verification_status: status })
     .eq('id', id);
   if (error) console.warn('[discovered-contacts] setVerificationStatus failed:', error.message);
+}
+
+/**
+ * User-initiated override of a discovered email's verification verdict.
+ * Used when the layered validator (especially Hunter.io as the last-resort
+ * verifier) returns a wrong answer — typically `invalid` on real but
+ * lesser-indexed mailboxes — and the user has separately confirmed the
+ * address works (manual test send, prior knowledge, etc.).
+ *
+ * Critically, this also propagates the new status to leads.discovered_email_status
+ * and rebuilds primary_email when the contact has already been accepted —
+ * otherwise the resolver would keep treating the address as invalid and
+ * never promote it to primary.
+ */
+export async function overrideVerificationStatus(
+  id: string,
+  newStatus: DiscoveredVerification,
+  opts: { reviewedBy?: string } = {},
+): Promise<{ contact: DiscoveredContact; lead: Record<string, unknown> | null }> {
+  const supabase = getSupabase();
+
+  const { data: contact, error: fetchErr } = await supabase
+    .from('discovered_contacts')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (fetchErr) throw new Error(fetchErr.message);
+  if (!contact) throw new Error('Discovered contact not found');
+  if (contact.kind !== 'email') {
+    throw new Error('Only email candidates can have a verification status override');
+  }
+
+  const { data: updatedContact, error: updErr } = await supabase
+    .from('discovered_contacts')
+    .update({ verification_status: newStatus })
+    .eq('id', id)
+    .select()
+    .single();
+  if (updErr) throw new Error(updErr.message);
+
+  // If the user already accepted this contact, the lead row carries a stale
+  // discovered_email_status. Push the new verdict down so the resolver picks
+  // it up on next read.
+  let updatedLead: Record<string, unknown> | null = null;
+  if (contact.status === 'accepted') {
+    const { data: lead, error: leadErr } = await supabase
+      .from('leads')
+      .select('id, primary_email, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status')
+      .eq('id', contact.lead_id)
+      .single();
+    if (leadErr) throw new Error(leadErr.message);
+
+    if (lead.discovered_email && lead.discovered_email.toLowerCase() === String(contact.value).toLowerCase()) {
+      const nextLead = { ...lead, discovered_email_status: newStatus };
+      const { email: newPrimary } = resolvePrimaryEmailWithSource(nextLead);
+      const newPrimaryStatus = statusForPrimaryEmail(nextLead);
+      const { data: updated, error: leadUpdErr } = await supabase
+        .from('leads')
+        .update({
+          discovered_email_status: newStatus,
+          primary_email: newPrimary,
+          verification_status: newPrimaryStatus,
+          email_verified: newPrimaryStatus === 'valid',
+        })
+        .eq('id', contact.lead_id)
+        .select()
+        .single();
+      if (leadUpdErr) throw new Error(leadUpdErr.message);
+      updatedLead = updated;
+    }
+  }
+
+  try {
+    await createNote(contact.lead_id, {
+      type: 'verification',
+      content: `Verification overridden to '${newStatus}' for ${contact.value} (was: ${contact.verification_status ?? 'null'}).`,
+      metadata: {
+        discovered_contact_id: id,
+        old_status: contact.verification_status,
+        new_status: newStatus,
+        overridden_by: opts.reviewedBy ?? null,
+      },
+    });
+  } catch (e) {
+    console.warn('[discovered-contacts] override note-write failed:', e instanceof Error ? e.message : e);
+  }
+
+  return { contact: updatedContact as DiscoveredContact, lead: updatedLead };
 }
 
 export async function setScrapeResult(id: string, scrape: Record<string, unknown>): Promise<void> {
