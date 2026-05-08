@@ -90,6 +90,16 @@ export async function checkRepliesImap(
     auth: { user: account.imap_user, pass: account.imap_pass },
     logger: false,
     connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    // Bound idle-socket lifetime so a hung server can't dangle past the per-poll budget
+    socketTimeout: 60000,
+  });
+
+  // Swallow socket-level errors (e.g. mid-fetch TLS resets, post-logout
+  // teardown timeouts). These were surfacing as unprefixed "Error: Socket
+  // timeout" lines in Cloud Run logs every poll cycle.
+  client.on('error', (err: Error) => {
+    console.warn(`[ImapReplyTracker] ${account.email} socket: ${err.message}`);
   });
 
   let connected = false;
@@ -411,7 +421,26 @@ async function markAutoReplied(args: {
   return true;
 }
 
-/** Poll every active SMTP account that has IMAP credentials. */
+/**
+ * Poll every active SMTP account that has IMAP credentials.
+ *
+ * Accounts are polled concurrently with a per-account hard timeout. Sequential
+ * polling caused one stalled IMAP server (e.g. a Titan socket timeout) to
+ * starve every account after it in the loop, leaving recent replies stuck in
+ * 'sent' for hours. Promise.allSettled isolates failures.
+ */
+const PER_ACCOUNT_TIMEOUT_MS = 90_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const guard = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms: ${label}`)), ms);
+  });
+  return Promise.race([promise, guard]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 export async function checkAllImapReplies(): Promise<{ accountsChecked: number; repliesFound: number; autoRepliesFound: number }> {
   const supabase = getSupabase();
   const { data: accounts } = await supabase
@@ -425,19 +454,34 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
 
   if (!accounts?.length) return { accountsChecked: 0, repliesFound: 0, autoRepliesFound: 0 };
 
+  const results = await Promise.allSettled(
+    accounts.map((acc) =>
+      withTimeout(
+        checkRepliesImap({
+          id: acc.id,
+          email: acc.email,
+          imap_host: acc.imap_host,
+          imap_port: acc.imap_port ?? 993,
+          imap_user: acc.imap_user,
+          imap_pass: acc.imap_pass,
+        }),
+        PER_ACCOUNT_TIMEOUT_MS,
+        acc.email,
+      ),
+    ),
+  );
+
   let totalReplies = 0;
   let totalAuto = 0;
-  for (const acc of accounts) {
-    const result = await checkRepliesImap({
-      id: acc.id,
-      email: acc.email,
-      imap_host: acc.imap_host,
-      imap_port: acc.imap_port ?? 993,
-      imap_user: acc.imap_user,
-      imap_pass: acc.imap_pass,
-    });
-    totalReplies += result.repliesFound;
-    totalAuto += result.autoRepliesFound;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === 'fulfilled') {
+      totalReplies += r.value.repliesFound;
+      totalAuto += r.value.autoRepliesFound;
+    } else {
+      const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      console.error(`[ImapReplyTracker] ${accounts[i].email} skipped: ${reason}`);
+    }
   }
   return { accountsChecked: accounts.length, repliesFound: totalReplies, autoRepliesFound: totalAuto };
 }

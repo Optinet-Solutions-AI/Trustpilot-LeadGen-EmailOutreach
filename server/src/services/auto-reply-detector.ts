@@ -77,6 +77,16 @@ const SUBJECT_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\[\s*#\s*\d+\s*\]/, label: 'subject:hash-number' },
   { pattern: /\bticket\s+(id|number)[:#\s]/i, label: 'subject:ticket-id' },
   { pattern: /^\s*re:\s*\[\s*#\d+/i, label: 'subject:re-ticket' },
+  // "Ticket #27865" without surrounding brackets (Kickr-style helpdesk)
+  { pattern: /\bticket\s*#\s*\d+\b/i, label: 'subject:ticket-hash' },
+  // "Customer Support - Ticket", "Support Ticket"
+  { pattern: /\b(customer\s+support|support\s+team|helpdesk)\s*[-:]?\s*ticket\b/i, label: 'subject:support-ticket' },
+  // "[Request received]" / "[Case received]" / "[Ticket received]" without a number
+  { pattern: /^\s*\[\s*(request|case|ticket|inquiry)(\s+(received|created|opened|registered|submitted))?\s*\]/i, label: 'subject:bracket-request-received' },
+  // "[BrandName] Re: ..." — branded helpdesk prefix at start of subject.
+  // Excludes the warmup-pool tag "[ref:xxxx]" which appears at the END of the
+  // subject (these arrive at the START), so it can't false-positive on warmup.
+  { pattern: /^\s*\[\s*(?!ref:)[a-z][\w\s.\-]{0,40}\]\s*re:\s/i, label: 'subject:bracket-brand-re' },
 ];
 
 const BODY_AUTO_SIGNALS: Array<{ pattern: RegExp; weight: number; label: string }> = [
