@@ -91,8 +91,12 @@ export async function checkRepliesImap(
     logger: false,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
-    // Bound idle-socket lifetime so a hung server can't dangle past the per-poll budget
-    socketTimeout: 60000,
+    // Idle-socket lifetime. Set above the realistic worst case for a 7-day
+    // INBOX scan with secondary per-match body fetches (Titan is ~50s for 80
+    // messages with 6 matches), so the poll completes in one go instead of
+    // matching only 1 reply before the socket dies and waiting another 10
+    // minutes for the next tick.
+    socketTimeout: 180000,
   });
 
   // Swallow socket-level errors (e.g. mid-fetch TLS resets, post-logout
@@ -429,7 +433,7 @@ async function markAutoReplied(args: {
  * starve every account after it in the loop, leaving recent replies stuck in
  * 'sent' for hours. Promise.allSettled isolates failures.
  */
-const PER_ACCOUNT_TIMEOUT_MS = 90_000;
+const PER_ACCOUNT_TIMEOUT_MS = 240_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
