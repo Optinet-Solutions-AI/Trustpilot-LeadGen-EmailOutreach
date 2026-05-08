@@ -52,28 +52,6 @@ export default function WizardStep2Sequence({
   const firstEmailDomain = manualEmails?.[0]?.includes('@') ? manualEmails[0].split('@')[1] : undefined;
   const previewCompanyName = firstEmailDomain ? domainToCompanyName(firstEmailDomain) : 'Acme Corp';
 
-  const handleGenerateWithAI = async () => {
-    setGenerating(true);
-    setAiError('');
-    try {
-      const result = await generateEmailTemplate({
-        country: filterCountry || undefined,
-        category: filterCategory || undefined,
-        emailDomain: firstEmailDomain,
-        manualMode: !!(manualEmails && manualEmails.length > 0),
-        redirectMode: !!redirectMode,
-        discoveryMode: !!discoveryMode,
-        language: filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined,
-      });
-      onSubjectChange(result.subject);
-      onBodyChange(result.body);
-    } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'AI generation failed.');
-    } finally {
-      setGenerating(false);
-    }
-  };
-
   const addFollowUp = () => {
     const newStep: FollowUpStepInput = {
       delayDays: followUpSteps.length === 0 ? 3 : followUpSteps[followUpSteps.length - 1].delayDays + 3,
@@ -109,6 +87,32 @@ export default function WizardStep2Sequence({
   const setActiveBody = (v: string) => {
     if (activeStep === 'intro') onBodyChange(v);
     else updateFollowUp(activeStep as number, 'body', v);
+  };
+
+  const handleGenerateWithAI = async () => {
+    setGenerating(true);
+    setAiError('');
+    try {
+      const isFollowUp = activeStep !== 'intro';
+      const stepNumber = isFollowUp ? (activeStep as number) + 2 : 1;
+      const result = await generateEmailTemplate({
+        country: filterCountry || undefined,
+        category: filterCategory || undefined,
+        emailDomain: firstEmailDomain,
+        manualMode: !!(manualEmails && manualEmails.length > 0),
+        redirectMode: !!redirectMode,
+        discoveryMode: !!discoveryMode,
+        language: filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined,
+        followUpMode: isFollowUp,
+        followUpStepNumber: isFollowUp ? stepNumber : undefined,
+      });
+      setActiveSubject(result.subject);
+      setActiveBody(result.body);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'AI generation failed.');
+    } finally {
+      setGenerating(false);
+    }
   };
 
   // Apply preview tokens so the panel shows a realistic sample
@@ -216,6 +220,18 @@ export default function WizardStep2Sequence({
                 </button>
               ) : (
                 <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleGenerateWithAI}
+                    disabled={generating}
+                    title={filterCountry && COUNTRY_LANGUAGE[filterCountry]
+                      ? `Generate this follow-up in ${COUNTRY_LANGUAGE[filterCountry]}`
+                      : 'Generate this follow-up with AI'}
+                    className="flex items-center gap-1.5 bg-[#ffd9de] text-[#b0004a] px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#b0004a] hover:text-white transition-colors disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">auto_awesome</span>
+                    {generating ? 'Generating...' : 'Generate with AI'}
+                  </button>
                   <div className="flex items-center gap-2">
                     <label className="text-xs font-bold text-secondary">Delay (days)</label>
                     <input

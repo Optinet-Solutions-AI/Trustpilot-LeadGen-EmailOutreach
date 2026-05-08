@@ -32,6 +32,13 @@ export interface GenerateTemplateOptions {
    *  variants, greeting, and closing — is written in this language while
    *  {{tokens}} stay verbatim. Falls back to English when undefined. */
   language?: string;
+  /** When true, generate a follow-up email (shorter, references the previous
+   *  email in the sequence) instead of the initial cold-outreach pitch. */
+  followUpMode?: boolean;
+  /** The position of this follow-up in the sequence (2 = first follow-up,
+   *  3 = second, etc.). Only used when followUpMode is true. Higher numbers
+   *  produce slightly more apologetic / "last attempt" framing. */
+  followUpStepNumber?: number;
 }
 
 export interface GenerateTemplateResult {
@@ -87,7 +94,7 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
 
   const genAI = new GoogleGenAI({ apiKey: API_KEY });
 
-  const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, discoveryMode, language } = options;
+  const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, discoveryMode, language, followUpMode, followUpStepNumber } = options;
 
   const companyHint = emailDomain ? `a business with the domain "${emailDomain}"` : 'a business';
   const countryLabel = country ? `in ${country}` : '';
@@ -134,11 +141,15 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
     ? `\n=== LANGUAGE — NON-NEGOTIABLE ===\nWrite the ENTIRE email in ${language}. Every greeting, sentence, transition, CTA, closing, and EVERY spintax variant must be in ${language}. The subject line is also in ${language}. Tokens like {{company_name}}, {{star_rating}}, {{review_count}}, {{country}}, {{website}} stay EXACTLY as-is — do not translate token names. Use natural, professional ${language} as a native B2B copywriter would write it — not literal English-to-${language} translations. The "no phone call / email-only" rule below applies in ${language} too: do not propose any phone, voice, or video meeting in any phrasing.\n`
     : '';
 
+  const followUpDirective = followUpMode
+    ? `\n=== THIS IS A FOLLOW-UP — NOT A COLD OPENER ===\nThis email is follow-up #${(followUpStepNumber ?? 2) - 1} in an existing sequence. The first email already pitched OptiRate's reputation services to ${audienceDesc}. Your job here is the gentle nudge, not a fresh pitch.\n- Open by acknowledging the prior email ("just following up", "circling back", "wanted to make sure my last email didn't get lost")\n- Keep the body to 1-2 SHORT paragraphs total (3-5 sentences max — follow-ups must feel light, not pushy)\n- Add ONE fresh angle: a quick question, a soft reminder of the value, or a low-friction CTA — do NOT restate the original pitch\n- Subject line MUST signal a follow-up. Use spintax patterns like "{Re:|Follow-up:|Quick follow-up —|Checking in on} {{company_name}}" or similar\n- ${(followUpStepNumber ?? 2) >= 4 ? 'This is a LATE follow-up — adopt a softer "last note" tone, e.g. "{I won\'t keep emailing|I\'ll let this be my last note|Promise this is the last one}"' : 'Tone is friendly and patient — never accusatory or guilt-trippy'}\n- Email-only CTA still applies — never propose a phone, video, or voice call\n`
+    : '';
+
   const prompt = `
 You are a professional B2B email copywriter for OptiRate, a reputation management agency that helps businesses improve their online reputation and Trustpilot scores.
 
-Write a cold outreach email targeting ${audienceDesc}.
-${languageDirective}
+Write a ${followUpMode ? 'follow-up email in an outreach sequence' : 'cold outreach email'} targeting ${audienceDesc}.
+${languageDirective}${followUpDirective}
 
 Return your response in this EXACT format (no other text before or after):
 SUBJECT: [the subject line here — one line, no quotes]
@@ -162,7 +173,7 @@ This means:
 - Every descriptive phrase MUST have spintax
 - Every sentence MUST contain at least one spintax group, preferably multiple
 - Closing lines MUST have spintax on every element
-- Aim for 20–35 spintax groups across the full email
+- Aim for ${followUpMode ? '8–15' : '20–35'} spintax groups across the full email
 - Use nested spintax frequently: {I {noticed|spotted|came across}|{Our team|We} {found|discovered|identified}}
 - Vary sentence structure, synonyms, phrasing, and tone across options
 
@@ -179,7 +190,7 @@ ${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{bus
 
 === BODY REQUIREMENTS ===
 - Tone: professional, empathetic, consultative — NOT pushy or salesy
-- Length: 3-4 short paragraphs
+- Length: ${followUpMode ? '1-2 short paragraphs (3-5 sentences total — follow-ups stay LIGHT)' : '3-4 short paragraphs'}
 ${bodyGuidance}
 - HARD RULE — EMAIL-ONLY OUTREACH: OptiRate does not have phone support. NEVER propose a phone call, video call, Zoom, Meet, Teams, or any voice/video meeting. Forbidden phrases include: "give me a call", "hop on a call", "quick call", "phone call", "schedule a call", "jump on a call", "would love to chat", "15-minute call", "discuss over the phone", "call you back". Replace any urge to suggest a call with an email-only equivalent: "reply to this email", "send a quick reply", "email me back", "drop me a line", "a short email exchange", "reply with your thoughts".
 - The sender is ALWAYS "OptiRate" — never write "[Your Name]", "[Name]", "[Your Company]", "[Company]", "[Signature]", or any square-bracket placeholder. If you reference a sender, write "OptiRate" literally (or use it inside spintax, e.g. "{OptiRate|The OptiRate Team}").
