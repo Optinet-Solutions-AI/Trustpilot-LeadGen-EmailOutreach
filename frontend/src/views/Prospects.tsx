@@ -33,14 +33,14 @@ import type { Lead, LeadStatus } from '../types/lead';
 
 const COUNTRIES = [
   { code: '', name: 'All Countries' },
-  { code: 'US', name: 'United States' }, { code: 'GB', name: 'United Kingdom' },
-  { code: 'AU', name: 'Australia' }, { code: 'CA', name: 'Canada' },
-  { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' },
-  { code: 'NL', name: 'Netherlands' }, { code: 'DK', name: 'Denmark' },
-  { code: 'SE', name: 'Sweden' }, { code: 'NO', name: 'Norway' },
-  { code: 'FI', name: 'Finland' }, { code: 'IT', name: 'Italy' },
-  { code: 'ES', name: 'Spain' }, { code: 'BR', name: 'Brazil' },
-  { code: 'AT', name: 'Austria' }, { code: 'AE', name: 'United Arab Emirates' },
+  { code: 'AU', name: 'Australia' }, { code: 'AT', name: 'Austria' },
+  { code: 'BR', name: 'Brazil' }, { code: 'CA', name: 'Canada' },
+  { code: 'DK', name: 'Denmark' }, { code: 'FI', name: 'Finland' },
+  { code: 'FR', name: 'France' }, { code: 'DE', name: 'Germany' },
+  { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' },
+  { code: 'NO', name: 'Norway' }, { code: 'ES', name: 'Spain' },
+  { code: 'SE', name: 'Sweden' }, { code: 'AE', name: 'United Arab Emirates' },
+  { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
 ];
 
 // Pick the strongest discovery for a lead from its list of discovered_contacts.
