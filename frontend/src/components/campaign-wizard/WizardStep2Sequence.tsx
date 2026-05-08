@@ -52,14 +52,46 @@ export default function WizardStep2Sequence({
   const firstEmailDomain = manualEmails?.[0]?.includes('@') ? manualEmails[0].split('@')[1] : undefined;
   const previewCompanyName = firstEmailDomain ? domainToCompanyName(firstEmailDomain) : 'Acme Corp';
 
-  const addFollowUp = () => {
+  const addFollowUp = async () => {
+    const newIdx = followUpSteps.length;
     const newStep: FollowUpStepInput = {
-      delayDays: followUpSteps.length === 0 ? 3 : followUpSteps[followUpSteps.length - 1].delayDays + 3,
+      delayDays: newIdx === 0 ? 3 : followUpSteps[newIdx - 1].delayDays + 3,
       subject: `Follow-up: {Checking in|Quick follow-up|Just following up}`,
       body: `<p>{Hi|Hello|Hey},</p><p>I just wanted to {follow up|circle back} on my previous email regarding your Trustpilot rating.</p><p>{Best regards|Kind regards},<br>OptiRate Solutions</p>`,
     };
-    onFollowUpStepsChange([...followUpSteps, newStep]);
-    setActiveStep(followUpSteps.length);
+    const newSteps = [...followUpSteps, newStep];
+    onFollowUpStepsChange(newSteps);
+    setActiveStep(newIdx);
+
+    // Auto-translate the follow-up via AI when the campaign targets a
+    // non-English country, so the sequence stays in the recipient's language
+    // without requiring the user to click "Generate with AI" on every step.
+    const targetLanguage = filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined;
+    if (!targetLanguage) return;
+
+    setGenerating(true);
+    setAiError('');
+    try {
+      const result = await generateEmailTemplate({
+        country: filterCountry || undefined,
+        category: filterCategory || undefined,
+        emailDomain: firstEmailDomain,
+        manualMode: !!(manualEmails && manualEmails.length > 0),
+        redirectMode: !!redirectMode,
+        discoveryMode: !!discoveryMode,
+        language: targetLanguage,
+        followUpMode: true,
+        followUpStepNumber: newIdx + 2,
+      });
+      const updated = newSteps.map((s, i) =>
+        i === newIdx ? { ...s, subject: result.subject, body: result.body } : s
+      );
+      onFollowUpStepsChange(updated);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'AI generation failed.');
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const removeFollowUp = (idx: number) => {
