@@ -132,6 +132,31 @@ body {
   text-decoration: underline;
 }
 
+/* ─── Mobile input zoom guard ───────────────────────────────────────────────── */
+/* iOS Safari auto-zooms on focus when input font-size is < 16px. Force 16px
+   on touch viewports while keeping the visual sm:text-sm in our design. */
+@media (max-width: 639px) {
+  input[type="text"],
+  input[type="email"],
+  input[type="search"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* ─── Mobile-only utilities ─────────────────────────────────────────────────── */
+/* Sticky bottom action bar used by tables in selection mode and the wizard
+   footer. Rendered only on `< lg` via Tailwind classes; this just provides
+   the safe-area inset on iOS notch devices. */
+.mobile-action-bar {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
 /* ─── Selection ──────────────────────────────────────────────────────────────── */
 ::selection {
   background: #ffd9de;
