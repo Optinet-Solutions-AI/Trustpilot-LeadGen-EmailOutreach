@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useNotifications } from '../context/NotificationsContext';
+import { useUI } from '../context/UIContext';
 
 const HELP_ITEMS = [
   { icon: 'search',        label: 'Global Search',   desc: 'Type in the search bar → navigates to Lead Matrix with results' },
@@ -38,6 +39,7 @@ export default function TopBar() {
   const notifRef = useRef<HTMLDivElement>(null);
 
   const { unreadCount, items, loading, markRead, markAllRead } = useNotifications();
+  const { toggleDrawer } = useUI();
 
   // Close popovers on outside click
   useEffect(() => {
@@ -63,24 +65,35 @@ export default function TopBar() {
   };
 
   return (
-    <header className="fixed top-0 right-0 left-64 h-16 glass-panel border-b border-slate-100 z-40 flex justify-between items-center px-4 xl:px-8">
-      {/* Search */}
-      <div className="relative w-56 xl:w-80">
-        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
-          search
-        </span>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleSearch}
-          placeholder="Search leads… press Enter"
-          className="w-full bg-surface-container-low border-none rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 transition-all"
-        />
+    <header className="fixed top-0 right-0 left-0 lg:left-64 h-14 lg:h-16 glass-panel border-b border-slate-100 z-40 flex justify-between items-center px-3 sm:px-4 xl:px-8 gap-2">
+      {/* Left cluster: hamburger + search */}
+      <div className="flex items-center gap-2 flex-1 min-w-0">
+        <button
+          onClick={toggleDrawer}
+          aria-label="Open menu"
+          className="lg:hidden text-slate-600 hover:text-[#b0004a] p-2 -ml-2"
+        >
+          <span className="material-symbols-outlined">menu</span>
+        </button>
+
+        {/* Search — full width below `sm`, fixed-width above */}
+        <div className="relative flex-1 max-w-xs sm:max-w-none sm:w-56 xl:w-80">
+          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px] pointer-events-none">
+            search
+          </span>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleSearch}
+            placeholder="Search leads…"
+            className="w-full bg-surface-container-low border-none rounded-lg py-2 pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 transition-all"
+          />
+        </div>
       </div>
 
       {/* Right Controls */}
-      <div className="flex items-center gap-5">
+      <div className="flex items-center gap-3 sm:gap-5">
 
         {/* Notifications */}
         <div className="relative" ref={notifRef}>
@@ -202,8 +215,8 @@ export default function TopBar() {
           )}
         </div>
 
-        {/* Brand label only — no avatar */}
-        <div className="pl-4 border-l border-slate-200">
+        {/* Brand label — desktop only */}
+        <div className="hidden sm:block pl-4 border-l border-slate-200">
           <p className="text-xs font-bold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>OptiRate</p>
           <p className="text-[10px] text-slate-500">Test Phase</p>
         </div>
