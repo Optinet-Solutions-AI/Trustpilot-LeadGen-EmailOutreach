@@ -668,9 +668,34 @@ export default function LeadsTable({
       )}
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-surface-container">
-          <span className="text-xs font-semibold text-secondary">{total} leads total</span>
-          <div className="flex gap-1">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-3 sm:px-4 py-3 border-t border-slate-100 bg-surface-container">
+          <span className="text-xs font-semibold text-secondary">
+            {total} leads total <span className="sm:hidden">· page {page} of {totalPages}</span>
+          </span>
+          {/* Mobile: prev/next + current/total */}
+          <div className="flex sm:hidden items-center justify-between gap-2">
+            <button
+              onClick={() => onPageChange(Math.max(1, page - 1))}
+              disabled={page === 1}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg bg-white border border-slate-200 text-secondary disabled:opacity-40"
+            >
+              <span className="material-symbols-outlined text-[16px]">chevron_left</span>
+              Prev
+            </button>
+            <span className="text-xs font-bold text-on-surface">
+              {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+              disabled={page === totalPages}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg bg-white border border-slate-200 text-secondary disabled:opacity-40"
+            >
+              Next
+              <span className="material-symbols-outlined text-[16px]">chevron_right</span>
+            </button>
+          </div>
+          {/* Desktop: numbered pages */}
+          <div className="hidden sm:flex gap-1">
             {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => i + 1).map((p) => (
               <button
                 key={p}

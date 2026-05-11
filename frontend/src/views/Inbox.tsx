@@ -985,7 +985,7 @@ export default function Inbox() {
       </div>
 
       {/* Right — thread / detail pane */}
-      <div className={`${selectedId ? 'flex' : 'hidden lg:flex'} flex-1 overflow-hidden bg-[#f8f9fa] pt-12 lg:pt-0`}>
+      <div className={`${selectedId ? 'flex' : 'hidden lg:flex'} flex-col lg:flex-row flex-1 overflow-hidden lg:overflow-hidden bg-[#f8f9fa] pt-12 lg:pt-0`}>
 
         {!selectedMsg ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
@@ -1007,7 +1007,7 @@ export default function Inbox() {
           </div>
         ) : (
           <>
-            <div className="flex flex-col bg-white overflow-y-auto h-full flex-shrink-0 border-l border-slate-100" style={{ width: panelWidth }}>
+            <div className="flex flex-col bg-white overflow-y-auto w-full lg:h-full lg:flex-shrink-0 lg:border-l border-slate-100" style={!isMobile ? { width: panelWidth } : undefined}>
 
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
               <div className="flex items-center gap-2 min-w-0">
@@ -1223,7 +1223,7 @@ export default function Inbox() {
 
             <div
               onMouseDown={onDragStart}
-              className="w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"
+              className="hidden lg:block w-1.5 flex-shrink-0 self-stretch cursor-col-resize bg-slate-100 hover:bg-[#b0004a]/30 active:bg-[#b0004a]/50 transition-colors"
               title="Drag to resize panel"
             />
 

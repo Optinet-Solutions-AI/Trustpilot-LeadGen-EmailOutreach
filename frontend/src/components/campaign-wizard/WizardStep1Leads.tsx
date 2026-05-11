@@ -408,14 +408,14 @@ export default function WizardStep1Leads({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-6 p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6 p-4 lg:p-6">
           {/* Left: filters + controls */}
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             <div>
               <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
                 Select Target List
               </label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <select
                   value={filterCountry}
                   onChange={(e) => { onFilterCountryChange(e.target.value); setPage(1); }}
@@ -437,7 +437,7 @@ export default function WizardStep1Leads({
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <div>
                 <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
                   Max Leads to Import
