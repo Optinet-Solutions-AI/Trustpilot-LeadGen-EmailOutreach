@@ -18,7 +18,7 @@ import { getSettings, writeSchedulerTick, setPausedReason, updateSettings } from
 import { getSupabase } from '../lib/supabase.js';
 import { COUNTRIES, CATEGORIES } from './scrape-targets.js';
 import { createJob } from '../db/scrape-jobs.js';
-import { runScrapeJob } from './scrape-runner.js';
+import { runScrapeJob, cancelScrapeJob } from './scrape-runner.js';
 
 const POLL_INTERVAL_MS = 60_000;
 const LOG_PREFIX = '[NightlyScheduler]';
@@ -51,6 +51,7 @@ export function startNightlyScrapeScheduler(): void {
 async function tick(): Promise<void> {
   // Always heartbeat first so even no-op ticks update liveness.
   await writeSchedulerTick();
+  await cancelStuckNightlyJobs();
 
   const settings = await getSettings();
   const enabled = settings.nightly_scrape_enabled;
@@ -191,6 +192,43 @@ async function dequeueAndSpawn(parallelism: number, rescrapeDays: number,
       });
     } catch (err) {
       console.error(`${LOG_PREFIX} spawn error for ${combo.country}/${combo.category}:`,
+        err instanceof Error ? err.message : err);
+    }
+  }
+}
+
+const MAX_JOB_DURATION_MS = 30 * 60 * 1000;
+
+/**
+ * Cancel any source='nightly' job that has been in status='running' for
+ * over 30 minutes. The per-subprocess heartbeat already catches dead
+ * processes within ~60s; this is the wall-clock ceiling for live-but-stuck
+ * jobs (e.g., Playwright wedged on a captcha challenge that takes forever
+ * to time out). Frees parallelism slots so the night keeps moving.
+ */
+async function cancelStuckNightlyJobs(): Promise<void> {
+  const supabase = getSupabase();
+  const cutoff = new Date(Date.now() - MAX_JOB_DURATION_MS).toISOString();
+
+  const { data, error } = await supabase
+    .from('scrape_jobs')
+    .select('id, country, category, started_at')
+    .eq('source', 'nightly')
+    .eq('status', 'running')
+    .lt('started_at', cutoff);
+
+  if (error) {
+    console.error(`${LOG_PREFIX} stuck-job query error:`, error.message);
+    return;
+  }
+
+  for (const job of data ?? []) {
+    console.warn(`${LOG_PREFIX} wall-clock cap: cancelling stuck job ${job.id} ` +
+      `(${job.country}/${job.category}, started ${job.started_at})`);
+    try {
+      await cancelScrapeJob(job.id);
+    } catch (err) {
+      console.error(`${LOG_PREFIX} cancel error for ${job.id}:`,
         err instanceof Error ? err.message : err);
     }
   }
