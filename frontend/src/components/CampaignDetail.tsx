@@ -145,10 +145,10 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
   const firstMsg = thread?.messages[0] ?? null;
 
   return (
-    <div className={`flex w-full h-full ${activeLead ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+    <div className={`flex flex-col lg:flex-row w-full h-full ${activeLead ? 'lg:overflow-hidden' : 'overflow-y-auto'}`}>
 
       {/* ── Left: main campaign content ── */}
-      <div className={`${activeLead ? 'flex-1 min-w-0 overflow-y-auto' : 'w-full'} px-10 py-10 space-y-6`}>
+      <div className={`${activeLead ? 'flex-1 min-w-0 lg:overflow-y-auto' : 'w-full'} px-3 py-4 sm:px-6 sm:py-6 lg:px-10 lg:py-10 space-y-4 sm:space-y-6`}>
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-2">
@@ -193,7 +193,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
           </div>
 
           {/* Stats bar */}
-          <div className="grid grid-cols-5 divide-x divide-slate-100 border-b border-slate-100">
+          <div className="grid grid-cols-2 sm:grid-cols-5 sm:divide-x divide-slate-100 border-b border-slate-100">
             {[
               { label: 'Total Leads', value: leads.length,        sub: null,             color: 'text-on-surface' },
               { label: 'Sent',        value: totalSent,           sub: null,             color: 'text-blue-600'  },
@@ -486,7 +486,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
           {/* Metadata */}
           <div className="border-t border-slate-100 px-5 py-4">
             <p className="text-[10px] font-extrabold text-secondary uppercase tracking-wider mb-3">Metadata</p>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
               <div>
                 <p className="text-[10px] text-secondary">Time Sent</p>
                 <p className="text-xs font-semibold text-on-surface">

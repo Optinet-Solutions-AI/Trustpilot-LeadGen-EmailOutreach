@@ -47,7 +47,7 @@ export default function CampaignCard({
 
   return (
     <div
-      className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer"
+      className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer"
       onClick={() => onViewDetail(c)}
     >
 
@@ -95,7 +95,7 @@ export default function CampaignCard({
       )}
 
       {/* Metrics — always visible */}
-      <div className="flex items-center gap-5 my-3">
+      <div className="flex items-center gap-3 sm:gap-5 my-3 flex-wrap">
         <div className="text-center">
           <p className={`text-lg font-extrabold ${hasLeads ? 'text-on-surface' : 'text-error'}`} style={{ fontFamily: 'Manrope, sans-serif' }}>
             {c.lead_count ?? 0}
@@ -158,7 +158,7 @@ export default function CampaignCard({
       )}
 
       {/* Action bar */}
-      <div className="flex items-center gap-3 pt-4 border-t border-slate-50" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center gap-2 sm:gap-3 pt-4 border-t border-slate-50 flex-wrap" onClick={(e) => e.stopPropagation()}>
         {canLaunch && (
           <button
             onClick={() => onLaunch(c.id)}
