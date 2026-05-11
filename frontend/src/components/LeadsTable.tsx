@@ -140,6 +140,20 @@ const COL_LABELS: Record<ColKey, string> = {
   screenshot: 'Shot', status: 'Status',
 };
 
+// Fixed column widths in px — both the sticky header table and the body
+// table use `table-layout: fixed` plus a matching <colgroup>, so the two
+// tables stay column-aligned even though they live in separate scroll
+// containers. Changing a value here MUST happen in lockstep across both
+// tables (which both call renderColgroup, so just edit this map).
+const COL_WIDTHS: Record<ColKey, number> = {
+  company: 220, country: 72, category: 130,
+  trustpilot_email: 200, website_email: 200, affiliate_email: 200,
+  rating: 90, tags: 160, claimed: 100, scraped: 110,
+  screenshot: 64, status: 130,
+};
+const CHECKBOX_COL_WIDTH = 44;
+const ACTIONS_COL_WIDTH = 56;
+
 function buildScreenshotSrc(path: string): string {
   if (path.startsWith('http')) return path;
   const filename = path.split(/[/\\]/).pop() || '';
@@ -226,13 +240,32 @@ export default function LeadsTable({
     }
   }, [someOnPageSelected]);
 
-  // Excel-style scroll: the wrapper is a bounded scroll container so the
-  // thead can pin via `position: sticky` relative to it. Arrow keys scroll
-  // horizontally (60px per press, page width on PageUp/PageDown) when the
-  // wrapper has focus. Home/End jump to the leftmost/rightmost column.
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // Split scroll containers so the thead can truly pin to the page viewport:
+  //   headerScrollRef  → sticky-top div wrapping the header-only table
+  //   bodyScrollRef    → normal-flow div wrapping the body-only table
+  // The two tables share matching <colgroup> widths so columns stay aligned;
+  // the bodyDiv.onScroll handler mirrors scrollLeft into the header div, and
+  // vice versa. Because the header div's nearest Y scroll ancestor is the
+  // page (the wrapping outer div has no overflow), sticky-top-16 pins it to
+  // the viewport while the page itself scrolls naturally past the table.
+  const headerScrollRef = useRef<HTMLDivElement>(null);
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
+  const syncHeaderFromBody = (e: React.UIEvent<HTMLDivElement>) => {
+    const x = e.currentTarget.scrollLeft;
+    if (headerScrollRef.current && headerScrollRef.current.scrollLeft !== x) {
+      headerScrollRef.current.scrollLeft = x;
+    }
+  };
+  const syncBodyFromHeader = (e: React.UIEvent<HTMLDivElement>) => {
+    const x = e.currentTarget.scrollLeft;
+    if (bodyScrollRef.current && bodyScrollRef.current.scrollLeft !== x) {
+      bodyScrollRef.current.scrollLeft = x;
+    }
+  };
+  // Arrow keys scroll the body (60px per press, viewport width on
+  // PageUp/PageDown). Home/End jump to the leftmost/rightmost column.
   const handleScrollKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const el = scrollRef.current;
+    const el = bodyScrollRef.current;
     if (!el) return;
     const step = 60;
     switch (e.key) {
@@ -244,6 +277,26 @@ export default function LeadsTable({
       case 'End':        e.preventDefault(); el.scrollTo({ left: el.scrollWidth,   behavior: 'smooth' }); break;
     }
   };
+
+  // Both tables emit this so column widths stay in lockstep.
+  const renderColgroup = () => (
+    <colgroup>
+      <col style={{ width: CHECKBOX_COL_WIDTH }} />
+      {columns.map((col) => (
+        <col key={col} style={{ width: COL_WIDTHS[col] }} />
+      ))}
+      {extraColumns?.map((extra) => (
+        <col key={`extra-${extra.key}`} style={{ width: 130 }} />
+      ))}
+      <col style={{ width: ACTIONS_COL_WIDTH }} />
+    </colgroup>
+  );
+
+  const totalMinWidth =
+    CHECKBOX_COL_WIDTH +
+    columns.reduce((sum, c) => sum + COL_WIDTHS[c], 0) +
+    (extraColumns?.length ?? 0) * 130 +
+    ACTIONS_COL_WIDTH;
 
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
@@ -540,105 +593,121 @@ export default function LeadsTable({
 
   return (
     <div className="overflow-hidden">
-      {/* Desktop table — hidden on mobile.
-          overflow-x-auto + overflow-y-clip keeps this as a horizontal-only scroll
-          container — `clip` (unlike `visible`) is NOT coerced to `auto`, so the
-          wrapper does NOT become a Y scroll context. That lets `sticky top-16`
-          on the thead resolve against the page viewport (just below the topbar)
-          while the page itself still scrolls down to pagination. */}
-      <div
-        ref={scrollRef}
-        tabIndex={0}
-        onKeyDown={handleScrollKey}
-        role="region"
-        aria-label="Leads table — use arrow keys to scroll horizontally"
-        className="hidden lg:block overflow-x-auto overflow-y-clip rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]/30 scroll-smooth"
-      >
-        <table className="w-full text-sm">
-          <thead className="sticky top-16 z-20 bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
-            <tr>
-              <th className="w-10 px-4 py-3">
-                <input
-                  ref={headerCheckboxRef}
-                  type="checkbox"
-                  checked={allOnPageSelected}
-                  onChange={toggleAll}
-                  className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
-                />
-              </th>
-              {columns.map(renderHeader)}
-              {extraColumns?.map((extra) => {
-                const active = extra.sortKey && sortBy === extra.sortKey;
-                return (
-                  <th
-                    key={`extra-${extra.key}`}
-                    className="text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary whitespace-nowrap"
-                  >
-                    <span
-                      className={`inline-flex items-center gap-1 ${extra.sortKey ? 'cursor-pointer hover:text-on-surface' : ''}`}
-                      onClick={extra.sortKey ? () => onSortChange(extra.sortKey!) : undefined}
-                    >
-                      {extra.label}
-                      {extra.sortKey && (
-                        <span className={`material-symbols-outlined text-[14px] ${active ? 'text-[#b0004a]' : 'text-slate-300'}`}>
-                          {active ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
-                        </span>
-                      )}
-                    </span>
-                  </th>
-                );
-              })}
-              <th className="w-12 px-4 py-3" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {leads.map((lead) => (
-              <tr
-                key={lead.id}
-                className="hover:bg-surface-container-low cursor-pointer transition-colors"
-                onClick={() => onLeadClick(lead.id)}
-              >
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+      {/* Desktop: split into two synced tables so the header truly sticks.
+          The outer div has NO overflow, so the page (html/body) stays the
+          Y scroll container — the header div's `sticky top-16` pins it to
+          the viewport just below the topbar while the page scrolls down to
+          pagination. The header div has its own overflow-x-auto (scrollbar
+          hidden) and mirrors the body's scrollLeft via onScroll. */}
+      <div className="hidden lg:block">
+        {/* Sticky header table */}
+        <div
+          ref={headerScrollRef}
+          onScroll={syncBodyFromHeader}
+          className="sticky top-16 z-20 overflow-x-auto bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)] rounded-t-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          <table className="text-sm" style={{ tableLayout: 'fixed', width: totalMinWidth, minWidth: '100%' }}>
+            {renderColgroup()}
+            <thead>
+              <tr>
+                <th className="px-4 py-3">
                   <input
+                    ref={headerCheckboxRef}
                     type="checkbox"
-                    checked={selected.has(lead.id)}
-                    onChange={() => toggleSelect(lead.id)}
+                    checked={allOnPageSelected}
+                    onChange={toggleAll}
                     className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
                   />
-                </td>
-                {columns.map((col) => renderCell(col, lead))}
-                {extraColumns?.map((extra) => (
-                  <td
-                    key={`extra-${extra.key}`}
-                    className="px-4 py-3"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {extra.render(lead)}
-                  </td>
-                ))}
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1 justify-end">
-                    {extraRowActions?.(lead)}
-                    <button
-                      onClick={() => onDelete(lead.id)}
-                      className="text-slate-300 hover:text-error p-1 rounded-lg hover:bg-red-50 transition-colors"
+                </th>
+                {columns.map(renderHeader)}
+                {extraColumns?.map((extra) => {
+                  const active = extra.sortKey && sortBy === extra.sortKey;
+                  return (
+                    <th
+                      key={`extra-${extra.key}`}
+                      className="text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-secondary whitespace-nowrap"
                     >
-                      <span className="material-symbols-outlined text-[16px]">delete</span>
-                    </button>
-                  </div>
-                </td>
+                      <span
+                        className={`inline-flex items-center gap-1 ${extra.sortKey ? 'cursor-pointer hover:text-on-surface' : ''}`}
+                        onClick={extra.sortKey ? () => onSortChange(extra.sortKey!) : undefined}
+                      >
+                        {extra.label}
+                        {extra.sortKey && (
+                          <span className={`material-symbols-outlined text-[14px] ${active ? 'text-[#b0004a]' : 'text-slate-300'}`}>
+                            {active ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+                          </span>
+                        )}
+                      </span>
+                    </th>
+                  );
+                })}
+                <th className="px-4 py-3" />
               </tr>
-            ))}
-            {leads.length === 0 && (
-              <tr>
-                <td colSpan={columns.length + 2 + (extraColumns?.length ?? 0)} className="p-12 text-center text-secondary">
-                  <span className="material-symbols-outlined text-[32px] text-slate-200 block mb-2">search_off</span>
-                  No leads found
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+          </table>
+        </div>
+
+        {/* Body table — scrolls horizontally, syncs to header */}
+        <div
+          ref={bodyScrollRef}
+          tabIndex={0}
+          onKeyDown={handleScrollKey}
+          onScroll={syncHeaderFromBody}
+          role="region"
+          aria-label="Leads table — use arrow keys to scroll horizontally"
+          className="overflow-x-auto rounded-b-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]/30 scroll-smooth"
+        >
+          <table className="text-sm" style={{ tableLayout: 'fixed', width: totalMinWidth, minWidth: '100%' }}>
+            {renderColgroup()}
+            <tbody className="divide-y divide-slate-50">
+              {leads.map((lead) => (
+                <tr
+                  key={lead.id}
+                  className="hover:bg-surface-container-low cursor-pointer transition-colors"
+                  onClick={() => onLeadClick(lead.id)}
+                >
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(lead.id)}
+                      onChange={() => toggleSelect(lead.id)}
+                      className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                    />
+                  </td>
+                  {columns.map((col) => renderCell(col, lead))}
+                  {extraColumns?.map((extra) => (
+                    <td
+                      key={`extra-${extra.key}`}
+                      className="px-4 py-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {extra.render(lead)}
+                    </td>
+                  ))}
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1 justify-end">
+                      {extraRowActions?.(lead)}
+                      <button
+                        onClick={() => onDelete(lead.id)}
+                        className="text-slate-300 hover:text-error p-1 rounded-lg hover:bg-red-50 transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">delete</span>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {leads.length === 0 && (
+                <tr>
+                  <td colSpan={columns.length + 2 + (extraColumns?.length ?? 0)} className="p-12 text-center text-secondary">
+                    <span className="material-symbols-outlined text-[32px] text-slate-200 block mb-2">search_off</span>
+                    No leads found
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Mobile card list — hidden on desktop */}
