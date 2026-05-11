@@ -47,7 +47,7 @@ export default function CampaignCard({
 
   return (
     <div
-      className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer min-w-0 max-w-full overflow-hidden"
+      className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer min-w-0 max-w-full overflow-x-hidden"
       onClick={() => onViewDetail(c)}
     >
 
