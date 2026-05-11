@@ -610,6 +610,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/analytics/daily:
+    get:
+      operationId: getAnalyticsDaily
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/email-accounts:
     get:
       operationId: listEmailAccounts

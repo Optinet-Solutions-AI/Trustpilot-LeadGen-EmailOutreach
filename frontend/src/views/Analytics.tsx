@@ -6,6 +6,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
+import DailyActivityChart from '../components/DailyActivityChart';
 
 const STATUS_COLORS: Record<string, string> = {
   new: '#c8c6c6',
@@ -122,6 +123,9 @@ export default function Analytics() {
           </div>
         ))}
       </div>
+
+      {/* Daily Activity (per-day Sent + Replied for reporting) */}
+      <DailyActivityChart />
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
