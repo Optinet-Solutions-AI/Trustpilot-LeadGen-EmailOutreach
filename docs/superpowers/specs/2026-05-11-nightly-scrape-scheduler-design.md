@@ -84,6 +84,8 @@ One new in-process daemon, one new settings row, two new constants files, four n
 | `nightly_scrape_verify`         | bool        | `true`           | passes `verify=true` to runScrapeJob |
 | `nightly_scrape_min_rating`     | real        | `1.0`            |                                    |
 | `nightly_scrape_max_rating`     | real        | `3.5`            |                                    |
+| `nightly_scheduler_last_tick_at`| timestamptz | `null`           | written every tick; powers liveness UI |
+| `nightly_scheduler_paused_reason` | text      | `null`           | non-null = auto-paused; surfaced in UI banner |
 | `updated_at`                    | timestamptz | `now()`          |                                    |
 
 ### Modified: `scrape_jobs`
@@ -243,6 +245,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
   nightly_scrape_verify bool NOT NULL DEFAULT true,
   nightly_scrape_min_rating real NOT NULL DEFAULT 1.0,
   nightly_scrape_max_rating real NOT NULL DEFAULT 3.5,
+  nightly_scheduler_last_tick_at timestamptz,
+  nightly_scheduler_paused_reason text,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
@@ -260,13 +264,29 @@ CREATE INDEX IF NOT EXISTS idx_scrape_jobs_country_category_completed
 
 ---
 
-## Failure handling
+## Failure handling — one failure never kills the whole night
+
+The design is **isolation-first**: every defense below scopes failure to a single combo or a single tick. The daemon, the night, and other combos survive.
 
 - **Combo scrape fails.** Existing `scrape_failures` capture per-URL failures; `scrape_jobs.status='failed'` is written by `scrape-runner`. The combo becomes eligible again after `rescrape_days` and gets one more shot on the next cycle. No infinite retries inside a single night.
 - **Cloud Run instance restarts mid-night.** The existing orphan reaper (`scrape-orphan-reaper`, runs every 60s) marks abandoned `scrape_jobs.status='running'` rows as `failed`. The scheduler's next tick treats those combos as failed and either retries them (if they're still in window) or leaves them for next cycle.
 - **Cutoff hit while a combo is still running.** Scheduler stops dequeuing new combos. In-flight jobs run to completion — they update `scrape_jobs` normally. No wasted work.
 - **User clicks Stop in-flight.** Calls existing `cancelScrapeJob()` for each running nightly job. Sets `nightly_scrape_enabled=false`. Cancelled combos become eligible again after `rescrape_days` (or sooner if the user toggles back on and the `last_completed_at` was never updated).
-- **DNS / Trustpilot blocks the Cloud Run IP.** Out of scope. The existing scraper already has 2–5s randomized delays and Tier 5/5b ScrapingBee/Scrapfly fallbacks for enrichment. The nightly run uses no extra IP, so it's no worse than manual.
+- **DNS / Trustpilot blocks the Cloud Run IP.** Caught by the 3-consecutive-failure guard below.
+- **Tick throws.** Every tick is wrapped in `try/catch`. Errors log to stderr with `[NightlyScheduler]` prefix. The `setInterval` callback never propagates, so the daemon survives any one bad tick. Same pattern campaign-scheduler uses today.
+- **Settings out of range.** `getSettings()` clamps on read: `start_hour ∈ [0,23]`, `end_hour ∈ [0,23]`, `parallelism ∈ [1,5]`, `rescrape_days ∈ [1,90]`. Bad DB values can't induce infinite loops or zero-parallelism deadlocks.
+
+### Built-in reliability defenses
+
+These are part of the implementation, not optional polish:
+
+1. **Tick heartbeat.** `app_settings.nightly_scheduler_last_tick_at` is written on every tick (success or no-op). The frontend polls `GET /api/scrape/schedule` and renders "last tick: 23s ago" in the schedule card. Anything over 2 minutes is the user's signal to investigate.
+
+2. **Per-job 30-min wall-clock cap.** Before each tick's dequeue, the scheduler scans for `source='nightly'` jobs in `status='running'` with `started_at < now() - interval '30 minutes'`. Any match is force-cancelled via `cancelScrapeJob()`. Frees a parallelism slot so one wedged Playwright process can't lock up the night. The existing per-subprocess heartbeat already catches dead processes within 60s; this is a wall-clock ceiling for live-but-stuck ones.
+
+3. **3-consecutive-failure auto-pause.** The scheduler tracks the last 3 completed `source='nightly'` jobs. If all three are `status='failed'` AND lead_count=0, set `nightly_scheduler_paused_reason = 'auto: 3 consecutive failures'`, set `nightly_scrape_enabled=false`, and stop dequeuing. The frontend renders a red banner on the Scrape page. Manual re-enable required — the user must intentionally clear the pause. This is the IP-block / category-wide-outage tripwire: it prevents the scheduler from burning the whole night failing the same way.
+
+4. **Structured logging.** Every scheduler decision (spawn, skip-recent, skip-active, fail, cap-cancel, auto-pause) emits a one-line log with `[NightlyScheduler]` prefix and `country/category/reason` fields. `gcloud run logs read --filter="textPayload:NightlyScheduler"` gives a clean post-mortem feed.
 
 ## Operational notes
 
