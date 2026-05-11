@@ -32,29 +32,29 @@ export default function Scrape() {
   const handleSubmit = (params: ScrapeParams) => startScrape(params);
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
       {/* Header */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-2">
         <div>
           <h2
-            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             Lead Scraping <span className="text-[#b0004a]">Dashboard</span>
           </h2>
-          <p className="text-secondary mt-1 font-medium">
+          <p className="text-secondary mt-1 font-medium text-sm sm:text-base">
             Configure and execute high-performance lead extraction from Trustpilot.
           </p>
         </div>
-        <span className="px-3 py-1.5 bg-[#ffd9de] text-[#b0004a] text-[10px] font-black rounded-full uppercase tracking-wide">
+        <span className="self-start sm:self-auto px-3 py-1.5 bg-[#ffd9de] text-[#b0004a] text-[10px] font-black rounded-full uppercase tracking-wide flex-shrink-0">
           Powered by Cloud Run
         </span>
       </div>
 
       {/* Main Grid */}
-      <div className="grid grid-cols-12 gap-5 xl:gap-6">
+      <div className="grid grid-cols-12 gap-3 sm:gap-5 xl:gap-6">
         {/* Scrape Config */}
-        <div className="col-span-12 xl:col-span-8 bg-surface-container-lowest rounded-xl ambient-shadow p-6 xl:p-8">
+        <div className="col-span-12 xl:col-span-8 bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 xl:p-8">
           <div className="flex items-center justify-between mb-8">
             <h3
               className="text-xl font-extrabold text-on-surface"
