@@ -88,6 +88,14 @@ const IMAGE_ASSET_RX = /\.(png|jpe?g|gif|webp|svg|ico|css|js|woff2?|ttf|eot|pdf|
 
 const SOCIAL_DOMAIN_RX = /(?:^|\.)(twitter\.com|x\.com|linkedin\.com|facebook\.com|instagram\.com|youtube\.com|tiktok\.com|pinterest\.com|reddit\.com|t\.me|telegram\.me)$/i;
 
+// Helpdesk/ticketing-software footer URLs. Every helpdesk auto-reply embeds a
+// "Powered by <tool>" link in its footer template; scraping those lands on the
+// tool's own marketing site, not the operator's partner page, and the page is
+// guaranteed to leak junk emails because it contains thousands of strings the
+// loose email regex will misfire on (CSS rules, asset hashes, template
+// snippets). Drop these unconditionally — they are NEVER the partner URL.
+const HELPDESK_FOOTER_RX = /(?:^|\.)(helpdesk\.com|helpscout\.com|helpscout\.net|intercom\.com|intercom\.help|zendesk\.com|freshdesk\.com|freshworks\.com|gorgias\.com|kayako\.com|liveagent\.com|crisp\.chat|tawk\.to|drift\.com|tidio\.com|reamaze\.com|happyfox\.com|liveperson\.com|olark\.com|chatwoot\.com|frontapp\.com|gladly\.com|jitbit\.com|deskpro\.com|hesk\.com|usedesk\.com|jivosite\.com|jivochat\.com|userlike\.com|providesupport\.com|smartsupp\.com|comm100\.com|kustomer\.com|hubspot\.com|salesforce\.com|servicenow\.com)$/i;
+
 // Role-score table — captures the rough business value of each role. Tuned
 // against OptiRate's pitch (reputation-management for low-rated brands), so
 // affiliate/partnership routing tops the list because that's the team most
@@ -159,6 +167,10 @@ function isTrackingDomain(domain: string): boolean {
 
 function isSocialDomain(domain: string): boolean {
   return SOCIAL_DOMAIN_RX.test(domain);
+}
+
+function isHelpdeskFooter(domain: string): boolean {
+  return HELPDESK_FOOTER_RX.test(domain);
 }
 
 function normalizeEmail(raw: string): string {
@@ -248,6 +260,10 @@ export function extractContacts(body: string, ctx: ExtractContext): ExtractResul
 
   // ── URLs ─────────────────────────────────────────────────────
   const urlSeen = new Set<string>();
+  // Domain-level dedup so pass-2's bare-domain matches don't re-add a URL
+  // pass-1 already captured (e.g. `https://g.partners` in pass-1 + bare
+  // `g.partners` text elsewhere in pass-2).
+  const urlDomainSeen = new Set<string>();
   const urlCandidates: RankedUrl[] = [];
 
   // Pass 1 — explicit http(s) URLs
@@ -264,6 +280,7 @@ export function extractContacts(body: string, ctx: ExtractContext): ExtractResul
     if (!domain) continue;
     if (isTrackingDomain(domain)) continue;
     if (isSocialDomain(domain)) continue;
+    if (isHelpdeskFooter(domain)) continue;
 
     // Skip if this URL is just a redirect back to the lead's own primary
     // domain WITHOUT any partner/affiliate signal. We don't want to "discover"
@@ -280,42 +297,46 @@ export function extractContacts(body: string, ctx: ExtractContext): ExtractResul
     }
     if (leadDomain && domain.endsWith(leadDomain) && signal === null) continue;
 
+    urlDomainSeen.add(domain);
     urlCandidates.push({ value: url, score: baseScore, signal });
   }
 
-  // Pass 2 — bare-domain mentions (only used if pass 1 yielded nothing,
-  // since bare-domain regex has a higher false-positive rate)
-  if (urlCandidates.length === 0) {
-    for (const m of text.matchAll(BARE_DOMAIN_RX)) {
-      const raw = m[1];
-      if (!raw) continue;
-      const lower = raw.toLowerCase().replace(/^www\./, '');
-      if (urlSeen.has(lower)) continue;
-      urlSeen.add(lower);
+  // Pass 2 — bare-domain mentions. Runs UNCONDITIONALLY (formerly only when
+  // pass-1 was empty) because helpdesk-software auto-replies routinely embed
+  // a high-priority partner URL as bare text (e.g. "Hier ist unser Link:
+  // g.partners") while pass-1 picks up incidental hrefs from the surrounding
+  // template chrome. Domain-level dedup keeps the candidate list clean.
+  for (const m of text.matchAll(BARE_DOMAIN_RX)) {
+    const raw = m[1];
+    if (!raw) continue;
+    const lower = raw.toLowerCase().replace(/^www\./, '');
+    if (urlSeen.has(lower) || urlDomainSeen.has(lower)) continue;
+    urlSeen.add(lower);
 
-      // Reject things that look like email-domain fragments or sentence
-      // punctuation. Need at least one letter in TLD.
-      if (!/\.[a-z]{2,}$/i.test(lower)) continue;
-      if (lower.endsWith('.com.') || lower.endsWith('.net.')) continue;
-      if (isTrackingDomain(lower)) continue;
-      if (isSocialDomain(lower)) continue;
-      if (echoedDomain && lower === echoedDomain) continue;
-      if (leadDomain && lower === leadDomain) continue;
+    // Reject things that look like email-domain fragments or sentence
+    // punctuation. Need at least one letter in TLD.
+    if (!/\.[a-z]{2,}$/i.test(lower)) continue;
+    if (lower.endsWith('.com.') || lower.endsWith('.net.')) continue;
+    if (isTrackingDomain(lower)) continue;
+    if (isSocialDomain(lower)) continue;
+    if (isHelpdeskFooter(lower)) continue;
+    if (echoedDomain && lower === echoedDomain) continue;
+    if (leadDomain && lower === leadDomain) continue;
 
-      // Score based on signal words elsewhere in the line — we don't have
-      // line context here, so default score is low and only includes if the
-      // domain itself contains a signal.
-      let signal: string | null = null;
-      let score = 2;
-      for (const sig of URL_SIGNALS) {
-        if (sig.rx.test(lower)) {
-          signal = sig.signal;
-          score = sig.score;
-          break;
-        }
+    // Score based on signal words elsewhere in the line — we don't have
+    // line context here, so default score is low and only includes if the
+    // domain itself contains a signal.
+    let signal: string | null = null;
+    let score = 2;
+    for (const sig of URL_SIGNALS) {
+      if (sig.rx.test(lower)) {
+        signal = sig.signal;
+        score = sig.score;
+        break;
       }
-      urlCandidates.push({ value: ensureProtocol(lower), score, signal });
     }
+    urlDomainSeen.add(lower);
+    urlCandidates.push({ value: ensureProtocol(lower), score, signal });
   }
 
   urlCandidates.sort((a, b) => b.score - a.score);

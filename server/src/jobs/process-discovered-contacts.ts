@@ -105,8 +105,18 @@ async function scrapePendingUrls(): Promise<{ scraped: number; harvested: number
       // Harvest any contact email into its own kind='email' row so the user
       // can accept it like any other candidate. Inherits the parent's
       // metadata so the audit trail back to the original auto-reply is intact.
+      //
+      // Strict domain-match gate: scrape_website.py's email regex is loose
+      // (`[a-zA-Z]{2,}` TLD, no real-TLD whitelist, no domain pinning), so
+      // when we accidentally feed it an unrelated third-party page the
+      // returned "email" is often a regex misfire on CSS/asset/template text
+      // (e.g. `autom@ion.sign` lifted from a helpdesk landing page). Reject
+      // anything whose registrable domain doesn't match the URL we scraped —
+      // partner contact emails ALWAYS live on the partner brand's own domain.
       const email = scrape.website_email as string | undefined;
-      if (email) {
+      if (email && !shareRegistrableDomain(email, row.value)) {
+        console.log(`[discovered-contacts] dropping cross-domain harvest ${email} from ${row.value}`);
+      } else if (email) {
         await insertDiscoveredContact({
           lead_id: row.lead_id,
           source_campaign_lead_id: row.source_campaign_lead_id,
@@ -237,6 +247,36 @@ function extractCompanyFromUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+/**
+ * Does this email live on (or under) the same registrable domain as the URL?
+ *
+ * Uses a 2-label "last two parts" heuristic — sufficient to reject blatant
+ * cross-domain harvests like `autom@ion.sign` from a `helpdesk.com` page,
+ * while still accepting subdomain variants (`affiliates.brand.com` vs
+ * `support@brand.com`). Public-suffix-list precision isn't justified here
+ * because the upstream extractor already drops platform/helpdesk domains and
+ * only legitimate partner pages reach the scraper.
+ */
+function shareRegistrableDomain(email: string, url: string): boolean {
+  const emailDomain = (email.split('@')[1] ?? '').toLowerCase().replace(/^www\./, '');
+  if (!emailDomain) return false;
+
+  let urlHost = '';
+  try {
+    urlHost = new URL(url.startsWith('http') ? url : `https://${url}`).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return false;
+  }
+  if (!urlHost) return false;
+
+  if (emailDomain === urlHost) return true;
+  if (emailDomain.endsWith('.' + urlHost)) return true;
+  if (urlHost.endsWith('.' + emailDomain)) return true;
+
+  const lastTwo = (h: string) => h.split('.').slice(-2).join('.');
+  return lastTwo(emailDomain) === lastTwo(urlHost);
 }
 
 // Provide a no-op import-side effect for environments that try to read os —
