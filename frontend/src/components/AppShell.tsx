@@ -11,10 +11,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <ScrapeProvider>
       <NotificationsProvider>
         <UIProvider>
-          <div className="flex min-h-screen bg-background">
+          <div className="flex min-h-screen w-full max-w-full bg-background">
             <Sidebar />
             <TopBar />
-            <main className="flex-1 min-h-screen pt-14 lg:pt-16 lg:ml-64">
+            <main className="flex-1 min-w-0 max-w-full min-h-screen pt-14 lg:pt-16 lg:ml-64">
               {children}
             </main>
           </div>
