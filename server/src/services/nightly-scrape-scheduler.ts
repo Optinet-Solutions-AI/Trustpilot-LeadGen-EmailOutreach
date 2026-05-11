@@ -53,6 +53,8 @@ async function tick(): Promise<void> {
   await writeSchedulerTick();
   await cancelStuckNightlyJobs();
 
+  if (await autoPauseIfFailing()) return;
+
   const settings = await getSettings();
   const enabled = settings.nightly_scrape_enabled;
   const runNow = isRunNowActive();
@@ -232,4 +234,37 @@ async function cancelStuckNightlyJobs(): Promise<void> {
         err instanceof Error ? err.message : err);
     }
   }
+}
+
+/**
+ * If the 3 most recent COMPLETED (success or failed) nightly jobs are all
+ * status='failed', auto-pause the scheduler. Trips when Trustpilot blocks
+ * the Cloud Run IP, a category-wide outage occurs, or a deploy regression
+ * breaks the scrape pipeline. Manual re-enable is required so the operator
+ * must intentionally clear the pause.
+ */
+async function autoPauseIfFailing(): Promise<boolean> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('scrape_jobs')
+    .select('status')
+    .eq('source', 'nightly')
+    .in('status', ['completed', 'failed'])
+    .order('completed_at', { ascending: false })
+    .limit(3);
+
+  if (error) {
+    console.error(`${LOG_PREFIX} auto-pause query error:`, error.message);
+    return false;
+  }
+
+  if ((data?.length ?? 0) < 3) return false;
+  const allFailed = data!.every((j) => j.status === 'failed');
+  if (!allFailed) return false;
+
+  const reason = `auto: 3 consecutive failed nightly jobs (last at ${new Date().toISOString()})`;
+  console.error(`${LOG_PREFIX} AUTO-PAUSE: ${reason}`);
+  await setPausedReason(reason);
+  await updateSettings({ nightly_scrape_enabled: false });
+  return true;
 }
