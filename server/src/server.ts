@@ -6,6 +6,7 @@ import { authMiddleware } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 import scrapeRoutes from './routes/scrape.js';
+import scrapeScheduleRoutes from './routes/scrape-schedule.js';
 import leadsRoutes from './routes/leads.js';
 import campaignsRoutes from './routes/campaigns.js';
 import verifyRoutes from './routes/verify.js';
@@ -47,6 +48,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use(authMiddleware);
 
 // Routes
+app.use('/api/scrape/schedule', scrapeScheduleRoutes);
 app.use('/api/scrape', scrapeRoutes);
 app.use('/api/leads', leadsRoutes);
 app.use('/api/leads', notesRoutes);       // /api/leads/:leadId/notes
