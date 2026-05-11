@@ -58,6 +58,7 @@ async function tick(): Promise<void> {
   const settings = await getSettings();
   const enabled = settings.nightly_scrape_enabled;
   const runNow = isRunNowActive();
+  console.log(`${LOG_PREFIX} tick enabled=${enabled} runNow=${runNow} pausedReason=${settings.nightly_scheduler_paused_reason}`);
 
   if (!enabled && !runNow) return;
   if (settings.nightly_scheduler_paused_reason && !runNow) return;
@@ -67,6 +68,7 @@ async function tick(): Promise<void> {
     const hour = currentHourInTz(settings.nightly_scrape_timezone);
     const { nightly_scrape_start_hour: s, nightly_scrape_end_hour: e } = settings;
     const inWindow = s === e ? false : (s < e ? hour >= s && hour < e : hour >= s || hour < e);
+    console.log(`${LOG_PREFIX} window hour=${hour} start=${s} end=${e} inWindow=${inWindow}`);
     if (!inWindow) return;
   }
 
@@ -156,13 +158,16 @@ async function countInflightNightlyJobs(): Promise<number> {
 async function dequeueAndSpawn(parallelism: number, rescrapeDays: number,
   minRating: number, maxRating: number, verify: boolean,
 ): Promise<void> {
+  console.log(`${LOG_PREFIX} dequeue start (parallelism=${parallelism}, rescrapeDays=${rescrapeDays})`);
   const inflight = await countInflightNightlyJobs();
   const slots = Math.max(0, parallelism - inflight);
+  console.log(`${LOG_PREFIX} dequeue inflight=${inflight} slots=${slots}`);
   if (slots === 0) return;
 
   const chosenThisTick = new Set<string>();
   for (let i = 0; i < slots; i++) {
     const combo = await findNextEligibleCombo(rescrapeDays, chosenThisTick);
+    console.log(`${LOG_PREFIX} dequeue slot=${i} combo=${combo ? `${combo.country}/${combo.category}` : 'null'}`);
     if (!combo) break;
 
     chosenThisTick.add(`${combo.country}::${combo.category}`);
