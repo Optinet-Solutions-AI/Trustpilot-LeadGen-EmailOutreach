@@ -35,6 +35,10 @@ const CATEGORIES = [
   'bingo_hall',                    // Bingo Hall
   'video_game_store',              // Video Game Store
   'game_store',                    // Game Store
+  // ── Finance ──────────────────────────────────────────────────
+  'money_insurance',               // Money & Insurance (parent)
+  'investing_wealth',              // Investing & Wealth
+  'investment_service',            // Investment Service
 ];
 
 interface Props {
