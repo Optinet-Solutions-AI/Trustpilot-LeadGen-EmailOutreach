@@ -7,11 +7,12 @@ export async function createJob(params: {
   max_rating: number;
   enrich: boolean;
   verify: boolean;
+  source?: 'manual' | 'nightly';
 }) {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('scrape_jobs')
-    .insert(params)
+    .insert({ ...params, source: params.source ?? 'manual' })
     .select()
     .single();
   if (error) throw new Error(error.message);

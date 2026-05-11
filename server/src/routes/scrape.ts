@@ -41,6 +41,7 @@ router.post('/', async (req: Request, res: Response) => {
       max_rating: maxRating,
       enrich,
       verify,
+      source: 'manual',
     });
 
     // Resolve races where multiple POSTs all passed the pre-insert dedup check
@@ -211,6 +212,7 @@ router.post('/:id/retry-failed', async (req: Request, res: Response) => {
       max_rating: job.max_rating,
       enrich: job.enrich,
       verify: job.verify,
+      source: 'manual',
     });
 
     // Mark old failures as resolved

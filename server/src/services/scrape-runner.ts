@@ -226,6 +226,7 @@ interface ScrapeParams {
   enrich: boolean;
   verify: boolean;
   forceRescrape?: boolean;
+  source?: 'manual' | 'nightly';
 }
 
 function emitProgress(jobId: string, stage: string, detail: string) {
