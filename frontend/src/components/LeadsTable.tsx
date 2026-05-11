@@ -540,17 +540,22 @@ export default function LeadsTable({
 
   return (
     <div className="overflow-hidden">
-      {/* Desktop table — hidden on mobile */}
+      {/* Desktop table — hidden on mobile.
+          overflow-x-auto + overflow-y-clip keeps this as a horizontal-only scroll
+          container — `clip` (unlike `visible`) is NOT coerced to `auto`, so the
+          wrapper does NOT become a Y scroll context. That lets `sticky top-16`
+          on the thead resolve against the page viewport (just below the topbar)
+          while the page itself still scrolls down to pagination. */}
       <div
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={handleScrollKey}
         role="region"
         aria-label="Leads table — use arrow keys to scroll horizontally"
-        className="hidden lg:block overflow-auto max-h-[calc(100vh-12rem)] rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]/30 scroll-smooth"
+        className="hidden lg:block overflow-x-auto overflow-y-clip rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]/30 scroll-smooth"
       >
         <table className="w-full text-sm">
-          <thead className="sticky top-0 z-20 bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
+          <thead className="sticky top-16 z-20 bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
             <tr>
               <th className="w-10 px-4 py-3">
                 <input
