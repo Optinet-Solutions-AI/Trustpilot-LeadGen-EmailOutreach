@@ -74,10 +74,17 @@
 }
 
 /* ─── Base Styles ────────────────────────────────────────────────────────────── */
+html {
+  overflow-x: hidden;
+}
+
 body {
   font-family: "Inter", sans-serif;
   background-color: #f8f9fa;
   color: #191c1d;
+  /* Prevent any rogue wide element from forcing a horizontal scroll on
+     mobile, which makes Safari scale-to-fit and shrink the whole page. */
+  overflow-x: hidden;
 }
 
 /* ─── Material Symbols ───────────────────────────────────────────────────────── */

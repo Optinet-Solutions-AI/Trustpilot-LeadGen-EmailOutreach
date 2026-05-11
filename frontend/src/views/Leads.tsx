@@ -397,7 +397,7 @@ export default function Leads() {
   }, [enrichJob.status, enrichJob.summary, enrichJob.error, enrichJobId, loadLeads]);
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8 pb-24 lg:pb-8 overflow-x-hidden">
 
       {/* Live verification progress — inline log panel */}
       {verifyJobId && (
@@ -586,15 +586,15 @@ export default function Leads() {
       )}
 
       {/* Header */}
-      <div className="flex flex-wrap justify-between items-end gap-4">
+      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:justify-between lg:items-end gap-3 lg:gap-4">
         <div>
           <h2
-            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             Lead <span className="text-[#b0004a]">Matrix</span>
           </h2>
-          <p className="text-secondary font-medium mt-1">
+          <p className="text-secondary font-medium mt-1 text-sm sm:text-base">
             {total > 0 ? `${total} leads` : 'No leads yet'} — manage your outreach pipeline.
           </p>
         </div>
