@@ -59,21 +59,21 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
       {/* Header */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
         <div>
           <h2
-            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             Dashboard <span className="text-[#b0004a]">Overview</span>
           </h2>
-          <p className="text-secondary mt-1 font-medium">Your outreach pipeline at a glance.</p>
+          <p className="text-secondary mt-1 font-medium text-sm sm:text-base">Your outreach pipeline at a glance.</p>
         </div>
         <button
           onClick={() => router.push('/scrape')}
-          className="flex items-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
+          className="flex items-center justify-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform flex-shrink-0"
           style={{ fontFamily: 'Manrope, sans-serif' }}
         >
           <span className="material-symbols-outlined text-[18px]">search_check</span>
@@ -82,7 +82,7 @@ export default function Dashboard() {
       </div>
 
       {/* Stats Bento */}
-      <div className="grid grid-cols-2 xl:grid-cols-3 gap-4 xl:gap-5">
+      <div className="grid grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 xl:gap-5">
         {statCards.map(({ label, value, icon }) => (
           <div key={label} className="bg-surface-container-lowest p-6 rounded-xl ambient-shadow">
             <div className="flex items-center justify-between mb-4">
@@ -102,10 +102,10 @@ export default function Dashboard() {
       </div>
 
       {/* Lower Grid */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
         {/* Upcoming Follow-ups */}
         <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-7 py-5 border-b border-slate-50 flex items-center gap-3">
+          <div className="px-4 sm:px-7 py-4 sm:py-5 border-b border-slate-50 flex items-center gap-3">
             <span className="material-symbols-outlined text-[#b0004a]">schedule</span>
             <h3
               className="font-bold text-on-surface"
@@ -120,7 +120,7 @@ export default function Dashboard() {
               return (
                 <div
                   key={fu.id}
-                  className="flex items-center justify-between px-7 py-4 hover:bg-surface-container transition-colors cursor-pointer"
+                  className="flex items-center justify-between px-4 sm:px-7 py-4 hover:bg-surface-container transition-colors cursor-pointer"
                   onClick={() => router.push(`/leads/${fu.lead_id}`)}
                 >
                   <div>
@@ -142,7 +142,7 @@ export default function Dashboard() {
 
         {/* Recent Scrapes */}
         <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-7 py-5 border-b border-slate-50 flex items-center gap-3">
+          <div className="px-4 sm:px-7 py-4 sm:py-5 border-b border-slate-50 flex items-center gap-3">
             <span className="material-symbols-outlined text-[#b0004a]">search_check</span>
             <h3
               className="font-bold text-on-surface"
@@ -183,7 +183,7 @@ export default function Dashboard() {
       {/* Campaign Performance */}
       {data.campaigns.length > 0 && (
         <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-7 py-5 border-b border-slate-50 flex items-center justify-between">
+          <div className="px-4 sm:px-7 py-4 sm:py-5 border-b border-slate-50 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="material-symbols-outlined text-[#b0004a]">campaign</span>
               <h3
