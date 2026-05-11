@@ -89,8 +89,8 @@ export default function QuickSendModal({ leadIds, leads = [], onClose, onDone }:
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto mx-4">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40">
+      <div className="bg-white rounded-t-xl sm:rounded-xl shadow-xl w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto sm:mx-4">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b">
           <div>
