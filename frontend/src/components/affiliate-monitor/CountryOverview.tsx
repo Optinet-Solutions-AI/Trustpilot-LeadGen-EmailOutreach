@@ -22,14 +22,14 @@ export default function CountryOverview({ data, onFilterClick }: CountryOverview
     .map(([code, meta]) => ({ code, ...meta, count: counts[code] }));
 
   return (
-    <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+    <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-8">
       <h3
-        className="text-lg font-extrabold text-on-surface mb-5"
+        className="text-base sm:text-lg font-extrabold text-on-surface mb-3 sm:mb-5"
         style={{ fontFamily: 'Manrope, sans-serif' }}
       >
         Geographic Coverage
       </h3>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
         {countries.map((c) => (
           <button
             key={c.code}
