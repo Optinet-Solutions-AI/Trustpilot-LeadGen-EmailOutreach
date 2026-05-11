@@ -24,18 +24,21 @@ export default function Dashboard() {
   }
 
   if (error || !data) {
+    const isNetworkError = !!error && error.startsWith('Network Error');
     return (
       <div className="px-4 py-8 sm:px-10 sm:py-12">
         <div className="bg-surface-container-lowest rounded-xl p-6 sm:p-10 ambient-shadow text-center max-w-lg mx-auto">
           <span className="material-symbols-outlined text-4xl text-error mb-4 block">error_outline</span>
           <p className="font-bold text-on-surface mb-2">{error || 'Could not load dashboard data.'}</p>
-          <p className="text-sm text-secondary mb-6">
-            Make sure the API is reachable and{' '}
-            <code className="bg-surface-container px-1.5 py-0.5 rounded text-xs">NEXT_PUBLIC_API_BASE_URL</code>{' '}
-            is set in Vercel.
-          </p>
+          {isNetworkError && (
+            <p className="text-sm text-secondary mb-6">
+              If this keeps happening, confirm{' '}
+              <code className="bg-surface-container px-1.5 py-0.5 rounded text-xs">NEXT_PUBLIC_API_BASE_URL</code>{' '}
+              is set in Vercel.
+            </p>
+          )}
           <button
-            onClick={() => fetchAnalytics()}
+            onClick={() => { fetchAnalytics(); fetchFollowUps(); }}
             className="px-6 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm"
           >
             Retry
