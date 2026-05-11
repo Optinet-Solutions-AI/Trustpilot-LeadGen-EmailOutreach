@@ -592,7 +592,10 @@ export default function LeadsTable({
   };
 
   return (
-    <div className="overflow-hidden">
+    // `overflow-clip` instead of `overflow-hidden` so this wrapper does NOT
+    // become a scroll container — the sticky header below needs the page,
+    // not this div, as its Y scrollport ancestor.
+    <div className="overflow-clip">
       {/* Desktop: split into two synced tables so the header truly sticks.
           The outer div has NO overflow, so the page (html/body) stays the
           Y scroll container — the header div's `sticky top-16` pins it to

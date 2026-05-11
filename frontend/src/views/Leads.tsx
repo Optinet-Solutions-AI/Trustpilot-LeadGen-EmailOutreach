@@ -871,8 +871,11 @@ export default function Leads() {
         </div>
       </MobileBottomSheet>
 
-      {/* Content */}
-      <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
+      {/* Content. `overflow-clip` (not `overflow-hidden`) clips the rounded
+          corners without turning this wrapper into a scroll container — that
+          matters because the LeadsTable header is `position: sticky top-16`
+          and needs the page (not this div) as its Y scrollport ancestor. */}
+      <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-clip">
         {loading ? (
           <div className="flex items-center justify-center h-48 gap-2 text-secondary">
             <span className="material-symbols-outlined text-[#b0004a] text-[20px]" style={{ animation: 'spin 1s linear infinite' }}>progress_activity</span>
