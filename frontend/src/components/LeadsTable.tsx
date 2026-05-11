@@ -262,21 +262,30 @@ export default function LeadsTable({
       bodyScrollRef.current.scrollLeft = x;
     }
   };
-  // Arrow keys scroll the body (60px per press, viewport width on
-  // PageUp/PageDown). Home/End jump to the leftmost/rightmost column.
-  const handleScrollKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const el = bodyScrollRef.current;
-    if (!el) return;
-    const step = 60;
-    switch (e.key) {
-      case 'ArrowLeft':  e.preventDefault(); el.scrollBy({ left: -step, behavior: 'smooth' }); break;
-      case 'ArrowRight': e.preventDefault(); el.scrollBy({ left:  step, behavior: 'smooth' }); break;
-      case 'PageUp':     e.preventDefault(); el.scrollBy({ left: -el.clientWidth, behavior: 'smooth' }); break;
-      case 'PageDown':   e.preventDefault(); el.scrollBy({ left:  el.clientWidth, behavior: 'smooth' }); break;
-      case 'Home':       e.preventDefault(); el.scrollTo({ left: 0,                behavior: 'smooth' }); break;
-      case 'End':        e.preventDefault(); el.scrollTo({ left: el.scrollWidth,   behavior: 'smooth' }); break;
-    }
-  };
+  // Global ArrowLeft/Right scroll the body horizontally. We listen at the
+  // window because clicking a row moves focus off the wrapper, which would
+  // otherwise kill an onKeyDown-on-wrapper handler. Skipped while the user
+  // is typing in an input/textarea/select/contenteditable, or when the
+  // table isn't in the viewport. ArrowUp/Down are left alone so page scroll
+  // keeps working. PageUp/Down also untouched — they belong to page scroll.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const el = bodyScrollRef.current;
+      if (!el) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active) {
+        const tag = active.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active.isContentEditable) return;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) return;
+      e.preventDefault();
+      el.scrollBy({ left: e.key === 'ArrowLeft' ? -80 : 80, behavior: 'smooth' });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Both tables emit this so column widths stay in lockstep.
   const renderColgroup = () => (
@@ -650,15 +659,15 @@ export default function LeadsTable({
           </table>
         </div>
 
-        {/* Body table — scrolls horizontally, syncs to header */}
+        {/* Body table — scrolls horizontally, syncs to header. ArrowLeft/
+            Right scrolling is wired globally via the useEffect above, so
+            the user doesn't need to focus this div first. */}
         <div
           ref={bodyScrollRef}
-          tabIndex={0}
-          onKeyDown={handleScrollKey}
           onScroll={syncHeaderFromBody}
           role="region"
           aria-label="Leads table — use arrow keys to scroll horizontally"
-          className="overflow-x-auto rounded-b-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]/30 scroll-smooth"
+          className="overflow-x-auto rounded-b-xl scroll-smooth"
         >
           <table className="text-sm" style={{ tableLayout: 'fixed', width: totalMinWidth, minWidth: '100%' }}>
             {renderColgroup()}

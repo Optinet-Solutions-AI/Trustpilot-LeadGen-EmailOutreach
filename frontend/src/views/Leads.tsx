@@ -397,7 +397,7 @@ export default function Leads() {
   }, [enrichJob.status, enrichJob.summary, enrichJob.error, enrichJobId, loadLeads]);
 
   return (
-    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8 pb-24 lg:pb-8 overflow-x-hidden">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8 pb-24 lg:pb-8">
 
       {/* Live verification progress — inline log panel */}
       {verifyJobId && (
