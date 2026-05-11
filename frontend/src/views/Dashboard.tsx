@@ -25,8 +25,8 @@ export default function Dashboard() {
 
   if (error || !data) {
     return (
-      <div className="px-10 py-12">
-        <div className="bg-surface-container-lowest rounded-xl p-10 ambient-shadow text-center max-w-lg mx-auto">
+      <div className="px-4 py-8 sm:px-10 sm:py-12">
+        <div className="bg-surface-container-lowest rounded-xl p-6 sm:p-10 ambient-shadow text-center max-w-lg mx-auto">
           <span className="material-symbols-outlined text-4xl text-error mb-4 block">error_outline</span>
           <p className="font-bold text-on-surface mb-2">{error || 'Could not load dashboard data.'}</p>
           <p className="text-sm text-secondary mb-6">
