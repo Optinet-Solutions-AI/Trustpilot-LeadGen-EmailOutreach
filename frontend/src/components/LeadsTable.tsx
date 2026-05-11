@@ -524,7 +524,7 @@ export default function LeadsTable({
       {/* Desktop table — hidden on mobile */}
       <div className="hidden lg:block overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-surface-container border-b border-slate-100">
+          <thead className="sticky top-16 z-20 bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
             <tr>
               <th className="w-10 px-4 py-3">
                 <input

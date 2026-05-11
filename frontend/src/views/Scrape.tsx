@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useScrape } from '../hooks/useScrape';
 import ScrapeForm from '../components/ScrapeForm';
 import JobProgress from '../components/JobProgress';
@@ -12,8 +13,16 @@ export default function Scrape() {
     jobId, status, progress, error, jobs, failedCount,
     startScrape, cancelJob, retryFailed, fetchJobs, deleteJob, cleanupEmptyJobs,
   } = useScrape();
+  const router = useRouter();
   const [apiReady, setApiReady] = useState<boolean | null>(null);
   const [cleaning, setCleaning] = useState(false);
+
+  const openLeadsForJob = (job: typeof jobs[number]) => {
+    const params = new URLSearchParams();
+    if (job.country) params.set('country', job.country);
+    if (job.category) params.set('category', job.category);
+    router.push(`/leads${params.toString() ? `?${params.toString()}` : ''}`);
+  };
 
   const handleCleanup = async () => {
     if (!confirm('Delete all completed/failed scrape jobs whose country + category has zero leads in the Lead Matrix?')) return;
@@ -231,8 +240,8 @@ export default function Scrape() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50/50">
+              <thead className="sticky top-14 lg:top-16 z-10 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
+                <tr className="bg-slate-50/95 backdrop-blur-sm">
                   {['Category', 'Country', 'Rating', 'Status', 'Found', 'Scraped', 'Failed', 'Date', ''].map((h, i) => (
                     <th
                       key={h || `col-${i}`}
@@ -244,46 +253,65 @@ export default function Scrape() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {jobs.map((job) => (
-                  <tr key={job.id} className="hover:bg-surface-container/40 transition-colors">
-                    <td className="px-6 py-4 font-bold text-sm text-on-surface">{job.category}</td>
-                    <td className="px-6 py-4 text-sm text-secondary">{job.country}</td>
-                    <td className="px-6 py-4 text-sm text-secondary">{job.min_rating}–{job.max_rating}★</td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${
-                        job.status === 'completed' ? 'bg-[#8ff9a8]/30 text-[#006630]' :
-                        job.status === 'running'   ? 'bg-[#ffd9de] text-[#b0004a]' :
-                        job.status === 'failed'    ? 'bg-error-container text-error' :
-                        'bg-surface-container text-secondary'
-                      }`}>
-                        {job.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-sm font-medium">{job.total_found}</td>
-                    <td className="px-6 py-4 text-sm font-medium">{job.total_scraped}</td>
-                    <td className={`px-6 py-4 text-sm font-medium ${job.total_failed ? 'text-error' : 'text-secondary'}`}>
-                      {job.total_failed || 0}
-                    </td>
-                    <td className="px-6 py-4 text-xs text-secondary">
-                      {new Date(job.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      {job.status !== 'running' && (
-                        <button
-                          onClick={() => {
-                            if (confirm(`Delete this ${job.category} / ${job.country} scrape job from the list? Leads already saved are kept.`)) {
-                              deleteJob(job.id);
-                            }
-                          }}
-                          className="material-symbols-outlined text-[18px] text-slate-300 hover:text-[#b0004a] transition-colors"
-                          title="Delete job"
-                        >
-                          delete
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {jobs.map((job) => {
+                  const isCompleted = job.status === 'completed';
+                  return (
+                    <tr
+                      key={job.id}
+                      className={`transition-colors ${
+                        isCompleted
+                          ? 'cursor-pointer hover:bg-[#ffd9de]/40'
+                          : 'hover:bg-surface-container/40'
+                      }`}
+                      onClick={isCompleted ? () => openLeadsForJob(job) : undefined}
+                      title={isCompleted ? 'Open these leads in the Lead Matrix' : undefined}
+                    >
+                      <td className="px-6 py-4 font-bold text-sm text-on-surface">{job.category}</td>
+                      <td className="px-6 py-4 text-sm text-secondary">{job.country}</td>
+                      <td className="px-6 py-4 text-sm text-secondary">{job.min_rating}–{job.max_rating}★</td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${
+                          isCompleted                ? 'bg-[#8ff9a8]/30 text-[#006630]' :
+                          job.status === 'running'   ? 'bg-[#ffd9de] text-[#b0004a]' :
+                          job.status === 'failed'    ? 'bg-error-container text-error' :
+                          'bg-surface-container text-secondary'
+                        }`}>
+                          {job.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-medium">{job.total_found}</td>
+                      <td className="px-6 py-4 text-sm font-medium">{job.total_scraped}</td>
+                      <td className={`px-6 py-4 text-sm font-medium ${job.total_failed ? 'text-error' : 'text-secondary'}`}>
+                        {job.total_failed || 0}
+                      </td>
+                      <td className="px-6 py-4 text-xs text-secondary">
+                        <span className="inline-flex items-center gap-1.5">
+                          {new Date(job.created_at).toLocaleDateString()}
+                          {isCompleted && (
+                            <span className="material-symbols-outlined text-[14px] text-[#b0004a]" aria-hidden>
+                              arrow_forward
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        {job.status !== 'running' && (
+                          <button
+                            onClick={() => {
+                              if (confirm(`Delete this ${job.category} / ${job.country} scrape job from the list? Leads already saved are kept.`)) {
+                                deleteJob(job.id);
+                              }
+                            }}
+                            className="material-symbols-outlined text-[18px] text-slate-300 hover:text-[#b0004a] transition-colors"
+                            title="Delete job"
+                          >
+                            delete
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

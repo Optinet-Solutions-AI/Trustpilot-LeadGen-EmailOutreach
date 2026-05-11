@@ -34,7 +34,7 @@ export default function LeadPipeline({ leads, onStatusChange, onLeadClick }: Pro
             if (leadId) onStatusChange(leadId, col.key);
           }}
         >
-          <summary className="p-4 flex items-center justify-between cursor-pointer list-none">
+          <summary className="sticky top-14 lg:top-16 z-10 p-4 flex items-center justify-between cursor-pointer list-none bg-surface-container-low rounded-t-xl shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${col.dot}`} />
               <h3 className="font-bold text-sm text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>

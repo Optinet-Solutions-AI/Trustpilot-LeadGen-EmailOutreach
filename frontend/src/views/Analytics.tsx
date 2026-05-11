@@ -81,7 +81,7 @@ export default function Analytics() {
           </h2>
           <p className="text-secondary mt-1 font-medium text-sm sm:text-base">Visualizing campaign vitality and engagement metrics.</p>
         </div>
-        <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg overflow-x-auto">
+        <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg overflow-x-auto pb-2 -mb-1 self-start max-w-full">
           {PERIOD_OPTIONS.map(({ label, value }) => (
             <button
               key={value}

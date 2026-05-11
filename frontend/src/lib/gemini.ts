@@ -190,19 +190,36 @@ ${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{bus
 
 === BODY REQUIREMENTS ===
 - Tone: professional, empathetic, consultative — NOT pushy or salesy
-- Length: ${followUpMode ? '1-2 short paragraphs (3-5 sentences total — follow-ups stay LIGHT)' : '3-4 short paragraphs'}
+- Length: ${followUpMode ? '1-2 short paragraphs (3-5 sentences total — follow-ups stay LIGHT)' : 'EXACTLY 2 paragraphs of body copy, EXACTLY 2 sentences per paragraph (4 sentences total, before the signature paragraph). Do NOT exceed this. Brevity beats comprehensiveness — cut adjectives, drop hedges, kill any sentence that does not earn its place.'}
 ${bodyGuidance}
 - HARD RULE — EMAIL-ONLY OUTREACH: OptiRate does not have phone support. NEVER propose a phone call, video call, Zoom, Meet, Teams, or any voice/video meeting. Forbidden phrases include: "give me a call", "hop on a call", "quick call", "phone call", "schedule a call", "jump on a call", "would love to chat", "15-minute call", "discuss over the phone", "call you back". Replace any urge to suggest a call with an email-only equivalent: "reply to this email", "send a quick reply", "email me back", "drop me a line", "a short email exchange", "reply with your thoughts".
 - The sender is ALWAYS "OptiRate" — never write "[Your Name]", "[Name]", "[Your Company]", "[Company]", "[Signature]", or any square-bracket placeholder. If you reference a sender, write "OptiRate" literally (or use it inside spintax, e.g. "{OptiRate|The OptiRate Team}").
-- If the body introduces a person (e.g. "My name is …"), REWRITE to speak from the company voice instead ("I'm reaching out from OptiRate …"). Never leave a human-name placeholder.
+- If the body introduces a person (e.g. "My name is …"), REWRITE to speak from the company voice instead ("we're reaching out from OptiRate …"). Never leave a human-name placeholder.
+- VOICE — FIRST-PERSON PLURAL ("we", not "I"): OptiRate is a company, not an individual. Use "we / our / us" throughout the entire email. NEVER use "I / me / my / mine" anywhere in subject or body. Forbidden phrases include: "I noticed", "I came across", "I can help", "I'd like", "I wanted", "let me", "my name is", "I'm reaching out" (use "we're reaching out"). Rewrite every instance into the plural form: "we noticed", "we came across", "our team can help", "we'd like", "we wanted", "we're reaching out from OptiRate". This rule applies to every spintax variant too — every option inside every {a|b|c} group must also use "we / our / us", never "I / me / my".
 - Close with heavy spintax on every element, e.g.:
   "{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team|OptiRate Solutions}"
 - Output ONLY the HTML body content (no <html>, <head>, <body> tags)
 - Use only <p>, <strong>, <br> tags — keep it email-safe
 
-=== EXAMPLE OF ACCEPTABLE SPINTAX DENSITY ===
-"<p>{Hi|Hello|Hey there} {{company_name}},</p>
-<p>{I {recently|just} {came across|noticed|spotted}|{Our team|We} {recently|just} {reviewed|looked at}} your {Trustpilot {profile|page|listing}|reviews on Trustpilot} and {wanted to reach out|thought I'd get in touch|felt compelled to {write|connect}}. {With|Given} a {{star_rating}}-star {rating|score}, {I understand|I can imagine|it's clear} {how {challenging|frustrating|tough} that {can be|must be|is}|the {impact|effect} that {can have|has} on {your business|customer trust|growth}}.</p>"
+=== EXAMPLE OF A PERFECT OUTPUT — MATCH THIS LENGTH, VOICE, AND SPINTAX DENSITY ===
+
+The example below shows EVERY rule applied at once: exactly 2 body paragraphs of exactly 2 sentences each, "we / our" voice throughout (zero "I" / "me" / "my"), tokens woven naturally and NEVER inside spintax braces, heavy nested spintax on almost every phrase, email-only CTA, and the OptiRate signature. Match this structure exactly — do not add a third body paragraph, do not lengthen the sentences, do not slip back into "I" voice.
+
+SUBJECT: {Quick {thought|note}|{A|One} thing {we {noticed|spotted}|caught {our|the team's} eye}} about {{company_name}}'s {Trustpilot {profile|rating|score}|reviews}
+
+BODY:
+<p>{Hi|Hello|Hey} {{company_name}} team,</p>
+<p>{We {recently|just} {came across|spotted|noticed}|{Our team|We} {reviewed|looked at}} your {Trustpilot {profile|listing|page}} {while {researching|mapping} {operators|brands} in {{country}}|during a {scan|sweep} of {the {{country}} market|brands in your space}}, and {a {{star_rating}}-star {rating|score} is {almost certainly|likely} {costing you {signups|conversions|deposits}|sending {prospects|new customers} {to competitors|elsewhere}}|that {{star_rating}}-star {score|rating} {tends to|usually does} {quietly {push|drive}|cost} you {real revenue|paying customers} every {week|month}}. {At OptiRate|Our team at OptiRate} {helps|works with} {operators like you|teams in this space} {rebuild {review velocity|trust|the rating} without {buying fake reviews|gaming the system}|{turn that around|fix the underlying issues} {ethically|the right way} — no {fake reviews|review-buying|shortcuts}}.</p>
+<p>{Would you be open to|Happy to send over} a {short|quick} {written|email} audit — {we'll {map out|break down}|our team can {outline|put together}} {the top {3|three} things {pulling|dragging} your score down|what's {hurting|costing} you reviews} and {the fastest {wins|fixes}|where the {quickest|biggest} {wins|lift} sit}. {Just reply|Reply} to this email and {we'll {send something|get it over} within 24 hours|we'll have it in your inbox {by tomorrow|same day}}.</p>
+<p>{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team|OptiRate Solutions}</p>
+
+KEY STRUCTURAL RULES SHOWN ABOVE — REPEAT THEM:
+- 2 body paragraphs, 2 sentences each (4 sentences total before the signature)
+- "we / our" everywhere — zero "I" / "me" / "my" / "mine"
+- 25+ spintax groups across both paragraphs, with frequent nesting like {We {recently|just} {came across|spotted}|Our team {reviewed|looked at}}
+- Tokens ({{company_name}}, {{star_rating}}, {{country}}) are woven into sentences, NEVER placed inside spintax braces
+- Email-only CTA ("reply to this email") — no calls, no Zoom, no meetings
+- Signature paragraph is its own <p> with spintax on both the closing and the OptiRate name
 `.trim();
 
   const result = await genAI.models.generateContent({

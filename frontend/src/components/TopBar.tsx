@@ -80,7 +80,7 @@ export default function TopBar() {
         </button>
 
         {/* Search — full width below `sm`, fixed-width above */}
-        <div className="relative flex-1 max-w-xs sm:max-w-none sm:w-56 xl:w-80">
+        <div className="relative w-full sm:w-56 xl:w-80 max-w-[calc(100vw-7rem)]">
           <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px] pointer-events-none">
             search
           </span>
@@ -142,7 +142,7 @@ export default function TopBar() {
             </MobileBottomSheet>
           ) : (
             showNotif && (
-              <div className="absolute right-0 top-10 w-80 bg-white rounded-xl ambient-shadow border border-slate-100 overflow-hidden z-50">
+              <div className="absolute right-0 top-10 w-80 max-w-[calc(100vw-1rem)] bg-white rounded-xl ambient-shadow border border-slate-100 overflow-hidden z-50">
                 <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
                   <p className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
                     Notifications {unreadCount > 0 && <span className="text-[#b0004a]">· {unreadCount}</span>}
@@ -187,7 +187,7 @@ export default function TopBar() {
             </MobileBottomSheet>
           ) : (
             showHelp && (
-              <div className="absolute right-0 top-10 w-96 bg-white rounded-xl ambient-shadow border border-slate-100 overflow-hidden z-50">
+              <div className="absolute right-0 top-10 w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl ambient-shadow border border-slate-100 overflow-hidden z-50">
                 <div className="px-5 py-4 border-b border-slate-100 bg-[#ffd9de]/20">
                   <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>Quick Reference</p>
                   <p className="text-xs text-secondary mt-0.5">How key features work</p>

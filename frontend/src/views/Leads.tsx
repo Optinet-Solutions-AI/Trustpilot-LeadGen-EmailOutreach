@@ -68,8 +68,8 @@ export default function Leads() {
   });
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('');
-  const [countryFilter, setCountryFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
+  const [countryFilter, setCountryFilter] = useState(() => searchParams?.get('country') ?? '');
+  const [categoryFilter, setCategoryFilter] = useState(() => searchParams?.get('category') ?? '');
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
