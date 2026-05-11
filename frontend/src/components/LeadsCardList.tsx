@@ -1,0 +1,146 @@
+import type { Lead, LeadStatus } from '../types/lead';
+import { VerifyBadge, type ExtraColumn } from './LeadsTable';
+import StatusBadge from './StatusBadge';
+import LeadLinkWarning from './LeadLinkWarning';
+
+interface Props {
+  leads: Lead[];
+  selectedIds: string[];
+  onSelect: (ids: string[]) => void;
+  onLeadClick: (id: string) => void;
+  onStatusChange?: (id: string, status: LeadStatus) => void;
+  onDelete?: (id: string) => void;
+  onDismissLinkFlag?: (id: string) => Promise<void> | void;
+  onEditLinkUrl?: (id: string, url: string) => Promise<void> | void;
+  extraColumns?: ExtraColumn[];
+  extraRowActions?: (lead: Lead) => React.ReactNode;
+}
+
+/**
+ * Mobile card variant of LeadsTable. Renders one card per lead with the
+ * fields that matter most on a phone: company, rating, primary email +
+ * verify badge, outreach status. The desktop table (LeadsTable) handles
+ * column reordering, screenshot preview, drag/drop, and the wide column
+ * set — none of that fits on a 375px screen.
+ */
+export default function LeadsCardList({
+  leads,
+  selectedIds,
+  onSelect,
+  onLeadClick,
+  onDismissLinkFlag,
+  onEditLinkUrl,
+  extraColumns,
+  extraRowActions,
+}: Props) {
+  const selected = new Set(selectedIds);
+  const toggleSelect = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onSelect([...next]);
+  };
+
+  if (leads.length === 0) {
+    return (
+      <div className="text-center py-12 text-secondary text-sm">
+        No leads match these filters.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {leads.map((lead) => {
+        const isChecked = selected.has(lead.id);
+        const emailToShow =
+          lead.primary_email ?? lead.trustpilot_email ?? lead.website_email ?? lead.affiliate_email;
+        const emailStatus =
+          lead.primary_email
+            ? lead.verification_status
+            : lead.trustpilot_email
+              ? lead.trustpilot_email_status
+              : lead.website_email
+                ? lead.website_email_status
+                : lead.affiliate_email_status;
+        const linkFlagged =
+          lead.link_status === 'FLAGGED_DEAD' || lead.link_status === 'FLAGGED_REMOVED';
+
+        return (
+          <div
+            key={lead.id}
+            onClick={() => onLeadClick(lead.id)}
+            className="bg-white rounded-xl border border-slate-100 p-3 flex gap-3 active:bg-slate-50 cursor-pointer"
+          >
+            <label
+              className="flex items-start pt-1"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={isChecked}
+                onChange={() => toggleSelect(lead.id)}
+                className="w-5 h-5 accent-[#b0004a]"
+                aria-label={`Select ${lead.company_name}`}
+              />
+            </label>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <p className="font-bold text-sm text-on-surface truncate">
+                  {lead.company_name}
+                </p>
+                {lead.star_rating != null && (
+                  <span className="flex-shrink-0 text-xs text-amber-600 font-bold">
+                    ★ {lead.star_rating.toFixed(1)}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-secondary mb-1.5">
+                {lead.country && <span>{lead.country}</span>}
+                {lead.category && (
+                  <span className="truncate">· {lead.category.replace(/_/g, ' ')}</span>
+                )}
+              </div>
+              {emailToShow && (
+                <div className="flex items-center gap-2 mb-1.5 min-w-0">
+                  <p className="text-xs text-slate-700 truncate flex-1">{emailToShow}</p>
+                  <VerifyBadge status={emailStatus} sourceEmail={emailToShow} lead={lead} />
+                </div>
+              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                <StatusBadge status={lead.outreach_status} />
+                {linkFlagged && onDismissLinkFlag && onEditLinkUrl && (
+                  <LeadLinkWarning
+                    lead={lead}
+                    onDismiss={onDismissLinkFlag}
+                    onEditUrl={onEditLinkUrl}
+                  />
+                )}
+              </div>
+              {extraColumns && extraColumns.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-slate-100 grid grid-cols-2 gap-1 text-[11px]">
+                  {extraColumns.map((col) => (
+                    <div key={col.key} className="min-w-0">
+                      <p className="text-secondary uppercase tracking-wider text-[9px] font-bold">
+                        {col.label}
+                      </p>
+                      <div className="truncate">{col.render(lead)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {extraRowActions && (
+                <div
+                  className="mt-2 pt-2 border-t border-slate-100 flex gap-2"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {extraRowActions(lead)}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}

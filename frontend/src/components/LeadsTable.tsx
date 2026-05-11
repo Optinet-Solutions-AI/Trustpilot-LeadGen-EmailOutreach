@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
 import LeadLinkWarning from './LeadLinkWarning';
+import LeadsCardList from './LeadsCardList';
 
 function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
@@ -54,7 +55,7 @@ function buildStageTooltip(status: DisplayStatus, lead?: Lead): string {
   return tail.length ? `${headlines[status]} (${tail.join(', ')})` : headlines[status];
 }
 
-function VerifyBadge({
+export function VerifyBadge({
   status,
   sourceEmail,
   lead,
@@ -520,7 +521,8 @@ export default function LeadsTable({
 
   return (
     <div className="overflow-hidden">
-      <div className="overflow-x-auto">
+      {/* Desktop table — hidden on mobile */}
+      <div className="hidden lg:block overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-container border-b border-slate-100">
             <tr>
@@ -606,6 +608,22 @@ export default function LeadsTable({
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* Mobile card list — hidden on desktop */}
+      <div className="lg:hidden px-3 py-2">
+        <LeadsCardList
+          leads={leads}
+          selectedIds={selectedIds}
+          onSelect={onSelect}
+          onLeadClick={onLeadClick}
+          onStatusChange={onStatusChange}
+          onDelete={onDelete}
+          onDismissLinkFlag={onDismissLinkFlag}
+          onEditLinkUrl={onEditLinkUrl}
+          extraColumns={extraColumns}
+          extraRowActions={extraRowActions}
+        />
       </div>
 
       {previewSrc && (
