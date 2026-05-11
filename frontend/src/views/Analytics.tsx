@@ -68,24 +68,24 @@ export default function Analytics() {
   ];
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <div>
           <h2
-            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             Analytics &amp; <span className="text-[#b0004a]">Performance</span>
           </h2>
-          <p className="text-secondary mt-1 font-medium">Visualizing campaign vitality and engagement metrics.</p>
+          <p className="text-secondary mt-1 font-medium text-sm sm:text-base">Visualizing campaign vitality and engagement metrics.</p>
         </div>
-        <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg">
+        <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg overflow-x-auto">
           {PERIOD_OPTIONS.map(({ label, value }) => (
             <button
               key={value}
               onClick={() => setPeriod(value)}
-              className={`px-4 py-2 rounded-md text-xs font-bold transition-all ${
+              className={`px-3 sm:px-4 py-2 rounded-md text-xs font-bold transition-all flex-shrink-0 ${
                 period === value ? 'bg-white shadow-sm text-[#b0004a]' : 'text-secondary hover:bg-white/50'
               }`}
             >
@@ -96,7 +96,7 @@ export default function Analytics() {
       </div>
 
       {/* Metrics Bento */}
-      <div className="grid grid-cols-3 gap-5">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-5">
         {metricCards.map(({ label, value, icon, accent, big }) => (
           <div
             key={label}
@@ -124,7 +124,7 @@ export default function Analytics() {
       </div>
 
       {/* Charts Row */}
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
         {/* Performance Timeline (bar chart) */}
         <div className="col-span-2 bg-surface-container-lowest rounded-xl p-8 ambient-shadow">
           <div className="flex justify-between items-center mb-6">
@@ -201,7 +201,7 @@ export default function Analytics() {
       </div>
 
       {/* Lead Status + Country */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
         {/* Leads by Status */}
         <div className="bg-surface-container-lowest rounded-xl p-8 ambient-shadow">
           <h3
