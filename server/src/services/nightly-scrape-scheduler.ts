@@ -17,6 +17,8 @@
 import { getSettings, writeSchedulerTick, setPausedReason, updateSettings } from '../db/app-settings.js';
 import { getSupabase } from '../lib/supabase.js';
 import { COUNTRIES, CATEGORIES } from './scrape-targets.js';
+import { createJob } from '../db/scrape-jobs.js';
+import { runScrapeJob } from './scrape-runner.js';
 
 const POLL_INTERVAL_MS = 60_000;
 const LOG_PREFIX = '[NightlyScheduler]';
@@ -65,8 +67,13 @@ async function tick(): Promise<void> {
     if (!inWindow) return;
   }
 
-  // Logic for cap-cancel, auto-pause, and dequeue is added in later tasks.
-  console.log(`${LOG_PREFIX} tick OK (enabled=${enabled} runNow=${runNow})`);
+  await dequeueAndSpawn(
+    settings.nightly_scrape_parallelism,
+    settings.nightly_scrape_rescrape_days,
+    settings.nightly_scrape_min_rating,
+    settings.nightly_scrape_max_rating,
+    settings.nightly_scrape_verify,
+  );
 }
 
 function currentHourInTz(timezone: string): number {
@@ -127,4 +134,64 @@ export async function findNextEligibleCombo(
     }
   }
   return null;
+}
+
+async function countInflightNightlyJobs(): Promise<number> {
+  const supabase = getSupabase();
+  const { count, error } = await supabase
+    .from('scrape_jobs')
+    .select('id', { count: 'exact', head: true })
+    .eq('source', 'nightly')
+    .eq('status', 'running');
+  if (error) {
+    console.error(`${LOG_PREFIX} inflight count error:`, error.message);
+    return Number.POSITIVE_INFINITY;  // Fail closed: skip dequeue this tick
+  }
+  return count ?? 0;
+}
+
+async function dequeueAndSpawn(parallelism: number, rescrapeDays: number,
+  minRating: number, maxRating: number, verify: boolean,
+): Promise<void> {
+  const inflight = await countInflightNightlyJobs();
+  const slots = Math.max(0, parallelism - inflight);
+  if (slots === 0) return;
+
+  const chosenThisTick = new Set<string>();
+  for (let i = 0; i < slots; i++) {
+    const combo = await findNextEligibleCombo(rescrapeDays, chosenThisTick);
+    if (!combo) break;
+
+    chosenThisTick.add(`${combo.country}::${combo.category}`);
+
+    try {
+      const job = await createJob({
+        country: combo.country,
+        category: combo.category,
+        min_rating: minRating,
+        max_rating: maxRating,
+        enrich: false,
+        verify,
+        source: 'nightly',
+      });
+
+      console.log(`${LOG_PREFIX} spawn ${combo.country}/${combo.category} job=${job.id}`);
+
+      // Fire-and-forget — runScrapeJob writes status updates itself.
+      runScrapeJob({
+        jobId: job.id,
+        country: combo.country,
+        category: combo.category,
+        minRating,
+        maxRating,
+        enrich: false,
+        verify,
+        forceRescrape: false,
+        source: 'nightly',
+      });
+    } catch (err) {
+      console.error(`${LOG_PREFIX} spawn error for ${combo.country}/${combo.category}:`,
+        err instanceof Error ? err.message : err);
+    }
+  }
 }
