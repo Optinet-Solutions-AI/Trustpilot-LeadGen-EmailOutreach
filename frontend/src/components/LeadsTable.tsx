@@ -226,6 +226,25 @@ export default function LeadsTable({
     }
   }, [someOnPageSelected]);
 
+  // Excel-style scroll: the wrapper is a bounded scroll container so the
+  // thead can pin via `position: sticky` relative to it. Arrow keys scroll
+  // horizontally (60px per press, page width on PageUp/PageDown) when the
+  // wrapper has focus. Home/End jump to the leftmost/rightmost column.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const handleScrollKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const step = 60;
+    switch (e.key) {
+      case 'ArrowLeft':  e.preventDefault(); el.scrollBy({ left: -step, behavior: 'smooth' }); break;
+      case 'ArrowRight': e.preventDefault(); el.scrollBy({ left:  step, behavior: 'smooth' }); break;
+      case 'PageUp':     e.preventDefault(); el.scrollBy({ left: -el.clientWidth, behavior: 'smooth' }); break;
+      case 'PageDown':   e.preventDefault(); el.scrollBy({ left:  el.clientWidth, behavior: 'smooth' }); break;
+      case 'Home':       e.preventDefault(); el.scrollTo({ left: 0,                behavior: 'smooth' }); break;
+      case 'End':        e.preventDefault(); el.scrollTo({ left: el.scrollWidth,   behavior: 'smooth' }); break;
+    }
+  };
+
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -522,9 +541,16 @@ export default function LeadsTable({
   return (
     <div className="overflow-hidden">
       {/* Desktop table — hidden on mobile */}
-      <div className="hidden lg:block overflow-x-auto">
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        onKeyDown={handleScrollKey}
+        role="region"
+        aria-label="Leads table — use arrow keys to scroll horizontally"
+        className="hidden lg:block overflow-auto max-h-[calc(100vh-12rem)] rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]/30 scroll-smooth"
+      >
         <table className="w-full text-sm">
-          <thead className="sticky top-16 z-20 bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
+          <thead className="sticky top-0 z-20 bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
             <tr>
               <th className="w-10 px-4 py-3">
                 <input
