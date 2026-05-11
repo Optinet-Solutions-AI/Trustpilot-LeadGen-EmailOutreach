@@ -15,6 +15,8 @@
  */
 
 import { getSettings, writeSchedulerTick, setPausedReason, updateSettings } from '../db/app-settings.js';
+import { getSupabase } from '../lib/supabase.js';
+import { COUNTRIES, CATEGORIES } from './scrape-targets.js';
 
 const POLL_INTERVAL_MS = 60_000;
 const LOG_PREFIX = '[NightlyScheduler]';
@@ -79,4 +81,50 @@ function currentHourInTz(timezone: string): number {
     // Bad timezone string — fall back to UTC rather than crash the tick.
     return new Date().getUTCHours();
   }
+}
+
+interface Combo {
+  country: string;
+  category: string;
+}
+
+/**
+ * Walks CATEGORIES then COUNTRIES (category-major) and returns the first
+ * combo that is neither (a) currently running nor (b) successfully scraped
+ * within `rescrape_days`. Returns null when nothing is eligible.
+ *
+ * `excludeKeys` lets the caller skip combos already chosen earlier in
+ * the same tick (when filling multiple parallelism slots in one tick).
+ */
+export async function findNextEligibleCombo(
+  rescrapeDays: number,
+  excludeKeys: Set<string> = new Set(),
+): Promise<Combo | null> {
+  const supabase = getSupabase();
+  const cutoff = new Date(Date.now() - rescrapeDays * 86400_000).toISOString();
+
+  // One query: every running job + every recent successful job. Cheap.
+  const { data, error } = await supabase
+    .from('scrape_jobs')
+    .select('country, category, status, completed_at')
+    .or(`status.eq.running,and(status.eq.completed,completed_at.gte.${cutoff})`);
+  if (error) {
+    console.error(`${LOG_PREFIX} eligibility query error:`, error.message);
+    return null;
+  }
+
+  const ineligible = new Set<string>();
+  for (const row of data ?? []) {
+    ineligible.add(`${row.country}::${row.category}`);
+  }
+
+  for (const category of CATEGORIES) {
+    for (const country of COUNTRIES) {
+      const key = `${country}::${category}`;
+      if (ineligible.has(key)) continue;
+      if (excludeKeys.has(key)) continue;
+      return { country, category };
+    }
+  }
+  return null;
 }
