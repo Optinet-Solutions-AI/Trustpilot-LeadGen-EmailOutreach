@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import api from '../api/client';
 import { useNotifications } from '../context/NotificationsContext';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 type Folder = 'replies' | 'sent';
 
@@ -141,6 +142,8 @@ export default function Inbox() {
   // Free-text filter on company / campaign name.
   const [searchText, setSearchText] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const isMobile = useIsMobile();
+  const [folderNavOpen, setFolderNavOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadData | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -594,10 +597,50 @@ export default function Inbox() {
   const unreadInList = messages.filter(m => m.status === 'replied' && !m.reply_read_at).length;
 
   return (
-    <div className="flex h-full" style={{ height: 'calc(100vh - 4rem)' }}>
+    <div className="flex h-full relative" style={{ height: 'calc(100vh - 3.5rem)' }}>
+      {/* Mobile chrome: header with hamburger to open folder nav + back button when reading */}
+      <div className="lg:hidden absolute top-0 inset-x-0 z-20 bg-white border-b border-slate-100 px-3 py-2 flex items-center gap-2 h-12">
+        {selectedId ? (
+          <>
+            <button
+              onClick={() => setSelectedId(null)}
+              aria-label="Back to inbox"
+              className="p-1.5 -ml-1.5 text-slate-600"
+            >
+              <span className="material-symbols-outlined">arrow_back</span>
+            </button>
+            <p className="font-bold text-sm truncate flex-1">Message</p>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={() => setFolderNavOpen(true)}
+              aria-label="Open folders"
+              className="p-1.5 -ml-1.5 text-slate-600"
+            >
+              <span className="material-symbols-outlined">menu</span>
+            </button>
+            <p className="font-bold text-sm truncate flex-1">
+              {FOLDERS.find((f) => f.key === folder)?.label ?? 'Inbox'}
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* Mobile folder backdrop */}
+      {isMobile && folderNavOpen && (
+        <div
+          onClick={() => setFolderNavOpen(false)}
+          className="lg:hidden fixed inset-0 bg-black/40 z-30"
+          aria-hidden
+        />
+      )}
 
       {/* Left pane — folder nav */}
-      <div className="w-64 border-r border-slate-100 bg-surface-container-lowest flex flex-col shrink-0">
+      <div
+        data-open={folderNavOpen}
+        className="w-64 border-r border-slate-100 bg-surface-container-lowest flex flex-col shrink-0 fixed lg:static inset-y-0 left-0 z-40 transition-transform duration-200 -translate-x-full data-[open=true]:translate-x-0 lg:translate-x-0 lg:data-[open=false]:translate-x-0"
+      >
         <div className="px-5 py-6 border-b border-slate-100">
           <h2 className="text-lg font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>Outreach Inbox</h2>
           <p className="text-xs text-secondary mt-0.5">Campaign replies &amp; sent</p>
@@ -618,7 +661,7 @@ export default function Inbox() {
             return (
               <button
                 key={f.key}
-                onClick={() => { setFolder(f.key); setSelectionMode(false); setSelectedReplyIds(new Set()); }}
+                onClick={() => { setFolder(f.key); setSelectionMode(false); setSelectedReplyIds(new Set()); setFolderNavOpen(false); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                   f.key === folder
                     ? 'bg-[#ffd9de]/20 text-[#b0004a]'
@@ -704,7 +747,7 @@ export default function Inbox() {
       </div>
 
       {/* Center — message list */}
-      <div className="w-96 border-r border-slate-100 flex flex-col bg-[#f8f9fa] shrink-0 overflow-hidden">
+      <div className={`${selectedId ? 'hidden lg:flex' : 'flex'} flex-1 lg:flex-initial lg:w-96 border-r border-slate-100 flex-col bg-[#f8f9fa] shrink-0 overflow-hidden pt-12 lg:pt-0`}>
         <div className="px-4 py-3 border-b border-slate-100 bg-white flex items-center justify-between">
           <p className="text-xs font-extrabold uppercase tracking-wider text-secondary truncate">
             {loading
@@ -942,7 +985,7 @@ export default function Inbox() {
       </div>
 
       {/* Right — thread / detail pane */}
-      <div className="flex-1 flex overflow-hidden bg-[#f8f9fa]">
+      <div className={`${selectedId ? 'flex' : 'hidden lg:flex'} flex-1 overflow-hidden bg-[#f8f9fa] pt-12 lg:pt-0`}>
 
         {!selectedMsg ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
