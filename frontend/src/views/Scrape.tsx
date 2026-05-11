@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useScrape } from '../hooks/useScrape';
 import ScrapeForm from '../components/ScrapeForm';
 import JobProgress from '../components/JobProgress';
+import NightlyScheduleCard from '../components/NightlyScheduleCard';
 import type { ScrapeParams } from '../types/scrape';
 import api from '../api/client';
 
@@ -85,6 +86,11 @@ export default function Scrape() {
             </span>
           </div>
           <ScrapeForm onSubmit={handleSubmit} loading={status === 'running'} />
+        </div>
+
+        {/* Nightly Schedule */}
+        <div className="col-span-12 xl:col-span-8">
+          <NightlyScheduleCard />
         </div>
 
         {/* Stats Panel */}
