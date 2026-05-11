@@ -41,6 +41,22 @@ export default function LeadsCardList({
     onSelect([...next]);
   };
 
+  // Page-scoped select-all: matches LeadsTable's desktop header checkbox so
+  // mobile users have the same bulk-select affordance. Toggles only the
+  // current page's ids, preserving any selections on other pages.
+  const selectedOnPage = leads.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
+  const allOnPageSelected = leads.length > 0 && selectedOnPage === leads.length;
+  const toggleAllOnPage = () => {
+    const pageIds = new Set(leads.map((l) => l.id));
+    if (allOnPageSelected) {
+      onSelect(selectedIds.filter((id) => !pageIds.has(id)));
+    } else {
+      const next = new Set(selected);
+      pageIds.forEach((id) => next.add(id));
+      onSelect([...next]);
+    }
+  };
+
   if (leads.length === 0) {
     return (
       <div className="text-center py-12 text-secondary text-sm">
@@ -51,6 +67,25 @@ export default function LeadsCardList({
 
   return (
     <div className="space-y-2">
+      {/* Select-all bar — page-scoped, matches desktop header checkbox */}
+      <div className="flex items-center justify-between bg-white rounded-lg border border-slate-100 px-3 py-2">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={allOnPageSelected}
+            onChange={toggleAllOnPage}
+            className="w-5 h-5 accent-[#b0004a]"
+            aria-label={allOnPageSelected ? 'Deselect all on this page' : 'Select all on this page'}
+          />
+          <span className="text-xs font-bold text-on-surface">
+            {allOnPageSelected ? 'Deselect all' : 'Select all on page'}
+          </span>
+        </label>
+        <span className="text-[11px] font-semibold text-secondary">
+          {selectedOnPage} / {leads.length}
+        </span>
+      </div>
+
       {leads.map((lead) => {
         const isChecked = selected.has(lead.id);
         const emailToShow =
