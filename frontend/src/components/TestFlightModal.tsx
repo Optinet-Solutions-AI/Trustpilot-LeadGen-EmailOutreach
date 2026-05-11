@@ -66,8 +66,8 @@ export default function TestFlightModal({
   const handleRetry = () => { setPhase('preflight'); setErrorMsg(''); setResult(null); };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-surface-container-lowest rounded-2xl ambient-shadow w-full max-w-md overflow-hidden border border-slate-100">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 sm:p-4">
+      <div className="bg-surface-container-lowest rounded-t-2xl sm:rounded-2xl ambient-shadow w-full max-w-md overflow-hidden border-t sm:border border-slate-100 max-h-[90vh] overflow-y-auto">
 
         {/* Header */}
         <div className="primary-gradient px-6 py-5 text-on-primary">

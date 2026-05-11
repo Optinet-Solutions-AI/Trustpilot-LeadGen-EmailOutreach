@@ -20,8 +20,8 @@ export default function DashboardToolbar({
   onSortChange,
 }: DashboardToolbarProps) {
   return (
-    <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-5 flex flex-wrap items-center gap-3">
-      <div className="relative flex-1 min-w-[200px]">
+    <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-3 sm:p-5 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3">
+      <div className="relative flex-1 sm:min-w-[200px]">
         <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
           search
         </span>
@@ -34,12 +34,12 @@ export default function DashboardToolbar({
         />
       </div>
 
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-1.5 sm:gap-2 overflow-x-auto sm:flex-wrap -mx-1 sm:mx-0 px-1 sm:px-0 pb-1 sm:pb-0">
         {GEO_FILTERS.map((g) => (
           <button
             key={g}
             onClick={() => onGeoFilterChange(g)}
-            className={`rounded-lg px-4 py-2 text-sm font-bold transition-colors ${
+            className={`rounded-lg px-3 sm:px-4 py-2 text-xs sm:text-sm font-bold transition-colors flex-shrink-0 ${
               geoFilter === g
                 ? 'bg-[#b0004a] text-white'
                 : 'bg-surface-container text-secondary hover:bg-surface-container-high'
@@ -53,7 +53,7 @@ export default function DashboardToolbar({
       <select
         value={sortBy}
         onChange={(e) => onSortChange(e.target.value)}
-        className="bg-surface-container border border-outline-variant rounded-lg px-3 py-2.5 text-sm text-on-surface outline-none cursor-pointer"
+        className="w-full sm:w-auto bg-surface-container border border-outline-variant rounded-lg px-3 py-2.5 text-sm text-on-surface outline-none cursor-pointer"
       >
         {SORT_OPTIONS.map((opt) => (
           <option key={opt.value} value={opt.value}>

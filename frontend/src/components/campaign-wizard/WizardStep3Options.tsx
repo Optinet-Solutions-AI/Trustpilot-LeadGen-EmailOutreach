@@ -76,19 +76,19 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
     onScheduleChange({ ...schedule, startHour: '00:00', endHour: '23:59', days: [0, 1, 2, 3, 4, 5, 6] });
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-10">
+    <div className="max-w-4xl mx-auto px-3 sm:px-6 py-5 sm:py-10">
 
       {/* Headline */}
-      <div className="text-center mb-10">
-        <h1 className="text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
+      <div className="text-center mb-6 sm:mb-10">
+        <h1 className="text-xl sm:text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
           Campaign Options &amp; Schedule
         </h1>
-        <p className="text-secondary text-sm">
+        <p className="text-secondary text-xs sm:text-sm">
           Name your campaign and configure the sending window so emails arrive at the right time.
         </p>
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-4 sm:space-y-6">
 
         {/* Campaign Name */}
         <div className="bg-white rounded-2xl border border-slate-100 ambient-shadow overflow-hidden">
@@ -215,7 +215,7 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
             </div>
           </div>
 
-          <div className="p-6 grid grid-cols-2 gap-8">
+          <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
 
             {/* Left column */}
             <div className="space-y-5">

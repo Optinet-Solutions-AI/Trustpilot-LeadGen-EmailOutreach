@@ -9,6 +9,7 @@ import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
 import QuickSendModal from '../components/QuickSendModal';
 import JobProgress from '../components/JobProgress';
+import MobileBottomSheet from '../components/MobileBottomSheet';
 import { useEnrichJob } from '../hooks/useEnrichJob';
 import { useVerifyJob } from '../hooks/useVerifyJob';
 import { useCheckLinksJob } from '../hooks/useCheckLinksJob';
@@ -72,6 +73,13 @@ export default function Leads() {
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const activeFilterCount =
+    (countryFilter ? 1 : 0) +
+    (categoryFilter ? 1 : 0) +
+    (statusFilter ? 1 : 0) +
+    (hasEmailFilter ? 1 : 0) +
+    (search ? 1 : 0);
   const [sortBy, setSortBy] = useState('scraped_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -594,14 +602,14 @@ export default function Leads() {
             fall onto a second row instead of overflowing the viewport at the
             ~1100–1280px range where most laptop/external-monitor combos sit. */}
         <div className="flex flex-wrap items-center gap-3 justify-end max-w-full">
+          {/* Desktop chip group — header on `lg:` */}
           {selectedIds.length > 0 && (
-            <div className="flex flex-wrap items-center gap-0.5 bg-white rounded-full ambient-shadow border border-slate-100 pl-3 pr-1 py-1">
+            <div className="hidden lg:flex flex-wrap items-center gap-0.5 bg-white rounded-full ambient-shadow border border-slate-100 pl-3 pr-1 py-1">
               <span className="text-xs font-bold text-on-surface mr-1">
                 {selectedIds.length}<span className="text-secondary font-medium ml-1">selected</span>
               </span>
               <div className="w-px h-5 bg-slate-200 mx-1" />
 
-              {/* Enrich */}
               <button
                 onClick={handleBulkEnrich}
                 disabled={enriching || verifying || checkingLinks || checkingClaimed}
@@ -612,37 +620,31 @@ export default function Leads() {
                   {enriching ? 'progress_activity' : 'language'}
                 </span>
               </button>
-
-              {/* Validate Links — re-checks Trustpilot URLs for dead/removed pages */}
               <button
                 onClick={handleBulkCheckLinks}
                 disabled={checkingLinks || enriching || verifying || checkingClaimed}
-                title={checkingLinks ? 'Checking links...' : `Validate Links — re-checks each Trustpilot URL for dead/removed pages and flags broken ones`}
+                title={checkingLinks ? 'Checking links...' : `Validate Links`}
                 className="p-2 rounded-full text-amber-700 hover:bg-amber-50 disabled:opacity-50 transition-colors"
               >
                 <span className={`material-symbols-outlined text-[18px] ${checkingLinks ? 'animate-spin' : ''}`}>
                   {checkingLinks ? 'progress_activity' : 'link'}
                 </span>
               </button>
-
-              {/* Check Claimed — re-detects Trustpilot "Profile claimed" badge */}
               <button
                 onClick={handleBulkCheckClaimed}
                 disabled={checkingClaimed || checkingLinks || enriching || verifying}
-                title={checkingClaimed ? 'Checking claimed...' : `Check Claimed — visits each Trustpilot profile and updates whether the business has claimed it`}
+                title={checkingClaimed ? 'Checking claimed...' : `Check Claimed`}
                 className="p-2 rounded-full text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 transition-colors"
               >
                 <span className={`material-symbols-outlined text-[18px] ${checkingClaimed ? 'animate-spin' : ''}`}>
                   {checkingClaimed ? 'progress_activity' : 'shield_person'}
                 </span>
               </button>
-
-              {/* Verify + email-field selector */}
               <div className="flex items-center">
                 <button
                   onClick={handleBulkVerify}
                   disabled={verifying || enriching || checkingLinks || checkingClaimed}
-                  title={verifying ? 'Verifying...' : `Verify ${selectedIds.length} (${verifyEmailField}) — checks deliverability via ZeroBounce`}
+                  title={verifying ? 'Verifying...' : `Verify ${selectedIds.length} (${verifyEmailField})`}
                   className="p-2 rounded-l-full text-blue-700 hover:bg-blue-50 disabled:opacity-50 transition-colors"
                 >
                   <span className={`material-symbols-outlined text-[18px] ${verifying ? 'animate-spin' : ''}`}>
@@ -662,22 +664,18 @@ export default function Leads() {
                   <option value="all">All</option>
                 </select>
               </div>
-
-              {/* Send */}
               <button
                 onClick={() => setQuickSendOpen(true)}
                 disabled={verifying || enriching || checkingLinks || checkingClaimed}
-                title={`Send ${selectedIds.length} — quick one-off email without creating a full campaign`}
+                title={`Send ${selectedIds.length}`}
                 className="p-2 rounded-full text-[#b0004a] hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">send</span>
               </button>
-
-              {/* Delete */}
               <button
                 onClick={() => setConfirmDeleteOpen(true)}
                 disabled={verifying || enriching || checkingLinks || checkingClaimed || deleting}
-                title={deleting ? 'Deleting...' : `Delete ${selectedIds.length} — permanently removes the selected leads`}
+                title={deleting ? 'Deleting...' : `Delete ${selectedIds.length}`}
                 className="p-2 rounded-full text-error hover:bg-red-50 disabled:opacity-50 transition-colors"
               >
                 <span className={`material-symbols-outlined text-[18px] ${deleting ? 'animate-spin' : ''}`}>
@@ -728,9 +726,26 @@ export default function Leads() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-5">
-        <div className="flex gap-3 flex-wrap">
+      {/* Filters — bottom-sheet trigger below `sm`, full row above */}
+      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-3 sm:p-5">
+        {/* Mobile trigger */}
+        <button
+          onClick={() => setFilterSheetOpen(true)}
+          className="sm:hidden w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-surface-container rounded-lg text-sm font-bold text-on-surface"
+        >
+          <span className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[18px]">filter_list</span>
+            Filters
+          </span>
+          {activeFilterCount > 0 && (
+            <span className="text-[10px] font-black bg-[#b0004a] text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center leading-none">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+
+        {/* Desktop row */}
+        <div className="hidden sm:flex gap-3 flex-wrap">
           <div className="relative flex-1 min-w-[200px]">
             <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[18px]">search</span>
             <input
@@ -780,6 +795,81 @@ export default function Leads() {
           </button>
         </div>
       </div>
+
+      {/* Mobile filter sheet */}
+      <MobileBottomSheet
+        open={filterSheetOpen}
+        onClose={() => setFilterSheetOpen(false)}
+        title="Filter leads"
+      >
+        <div className="p-4 space-y-4">
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Search</label>
+            <div className="relative">
+              <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[18px]">search</span>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                placeholder="Company name..."
+                className="w-full pl-10 pr-3 py-2.5 bg-surface-container rounded-lg text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Country</label>
+            <select
+              value={countryFilter}
+              onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
+              className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+              {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Category</label>
+            <select
+              value={categoryFilter}
+              onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
+              className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+              {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Status</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+              className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+              <option value="">All statuses</option>
+              <option value="new">New</option>
+              <option value="contacted">Contacted</option>
+              <option value="replied">Replied</option>
+              <option value="converted">Converted</option>
+              <option value="lost">Lost</option>
+            </select>
+          </div>
+          <button
+            onClick={() => { setHasEmailFilter(v => !v); setPage(1); }}
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
+              hasEmailFilter
+                ? 'bg-[#006630] text-white border-[#006630]'
+                : 'bg-surface-container text-secondary border-transparent'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">mail</span>
+            {hasEmailFilter ? 'Has Email (on)' : 'Has Email'}
+          </button>
+          <button
+            onClick={() => setFilterSheetOpen(false)}
+            className="w-full py-3 primary-gradient text-white rounded-lg font-bold text-sm"
+          >
+            Apply Filters
+          </button>
+        </div>
+      </MobileBottomSheet>
 
       {/* Content */}
       <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
@@ -860,6 +950,82 @@ export default function Leads() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Mobile sticky bulk action bar */}
+      {selectedIds.length > 0 && (
+        <div className="lg:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 px-3 py-2 mobile-action-bar z-30 shadow-2xl flex items-center gap-1">
+          <span className="text-xs font-bold text-on-surface mr-1 flex-shrink-0">
+            {selectedIds.length}
+          </span>
+          <div className="flex items-center gap-0.5 flex-1 overflow-x-auto">
+            <button
+              onClick={handleBulkEnrich}
+              disabled={enriching || verifying || checkingLinks || checkingClaimed}
+              aria-label="Enrich"
+              className="p-2 rounded-full text-[#006630] disabled:opacity-50 flex-shrink-0"
+            >
+              <span className={`material-symbols-outlined text-[20px] ${enriching ? 'animate-spin' : ''}`}>
+                {enriching ? 'progress_activity' : 'language'}
+              </span>
+            </button>
+            <button
+              onClick={handleBulkCheckLinks}
+              disabled={checkingLinks || enriching || verifying || checkingClaimed}
+              aria-label="Validate links"
+              className="p-2 rounded-full text-amber-700 disabled:opacity-50 flex-shrink-0"
+            >
+              <span className={`material-symbols-outlined text-[20px] ${checkingLinks ? 'animate-spin' : ''}`}>
+                {checkingLinks ? 'progress_activity' : 'link'}
+              </span>
+            </button>
+            <button
+              onClick={handleBulkCheckClaimed}
+              disabled={checkingClaimed || checkingLinks || enriching || verifying}
+              aria-label="Check claimed"
+              className="p-2 rounded-full text-emerald-700 disabled:opacity-50 flex-shrink-0"
+            >
+              <span className={`material-symbols-outlined text-[20px] ${checkingClaimed ? 'animate-spin' : ''}`}>
+                {checkingClaimed ? 'progress_activity' : 'shield_person'}
+              </span>
+            </button>
+            <button
+              onClick={handleBulkVerify}
+              disabled={verifying || enriching || checkingLinks || checkingClaimed}
+              aria-label={`Verify (${verifyEmailField})`}
+              className="p-2 rounded-full text-blue-700 disabled:opacity-50 flex-shrink-0"
+            >
+              <span className={`material-symbols-outlined text-[20px] ${verifying ? 'animate-spin' : ''}`}>
+                {verifying ? 'progress_activity' : 'verified_user'}
+              </span>
+            </button>
+            <button
+              onClick={() => setQuickSendOpen(true)}
+              disabled={verifying || enriching || checkingLinks || checkingClaimed}
+              aria-label="Send"
+              className="p-2 rounded-full text-[#b0004a] disabled:opacity-50 flex-shrink-0"
+            >
+              <span className="material-symbols-outlined text-[20px]">send</span>
+            </button>
+            <button
+              onClick={() => setConfirmDeleteOpen(true)}
+              disabled={verifying || enriching || checkingLinks || checkingClaimed || deleting}
+              aria-label="Delete"
+              className="p-2 rounded-full text-error disabled:opacity-50 flex-shrink-0"
+            >
+              <span className={`material-symbols-outlined text-[20px] ${deleting ? 'animate-spin' : ''}`}>
+                {deleting ? 'progress_activity' : 'delete'}
+              </span>
+            </button>
+          </div>
+          <button
+            onClick={() => setSelectedIds([])}
+            aria-label="Clear selection"
+            className="p-2 text-secondary flex-shrink-0"
+          >
+            <span className="material-symbols-outlined text-[20px]">close</span>
+          </button>
         </div>
       )}
     </div>

@@ -160,20 +160,20 @@ export default function WizardStep2Sequence({
   const subjectPreview = applyPreviewTokens(activeSubject);
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-10">
+    <div className="max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-10">
 
       {/* Headline */}
-      <div className="text-center mb-10">
-        <h1 className="text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
+      <div className="text-center mb-6 sm:mb-10">
+        <h1 className="text-xl sm:text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
           Design Your Email Sequence
         </h1>
-        <p className="text-secondary text-sm">
+        <p className="text-secondary text-xs sm:text-sm">
           Write your initial outreach email and optionally add follow-up steps
           that send automatically when a lead doesn&apos;t reply.
         </p>
       </div>
 
-      <div className="grid grid-cols-[1fr_340px] gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 sm:gap-6">
 
         {/* ── Left: sequence builder ── */}
         <div className="space-y-4">

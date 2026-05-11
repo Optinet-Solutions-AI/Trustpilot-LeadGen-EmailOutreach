@@ -124,10 +124,10 @@ export default function WarmupPeers() {
   const activeCount = peers.filter(p => p.warmupEnabled && p.status === 'active').length;
 
   return (
-    <div className="p-8 space-y-6 max-w-7xl mx-auto">
-      <div className="flex items-start justify-between gap-4">
+    <div className="p-3 sm:p-8 space-y-4 sm:space-y-6 max-w-7xl mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-black tracking-tight" style={{ fontFamily: 'Manrope, sans-serif' }}>
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight" style={{ fontFamily: 'Manrope, sans-serif' }}>
             Warmup Peers
           </h1>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl leading-relaxed">
@@ -137,7 +137,7 @@ export default function WarmupPeers() {
         </div>
         <button
           onClick={() => { setShowAddModal(true); setPeerForm(EMPTY_PEER_FORM); setSaveError(''); }}
-          className="primary-gradient text-white px-4 py-2.5 rounded-lg font-bold text-sm flex items-center gap-2 hover:scale-[1.02] transition-transform ambient-shadow"
+          className="w-full sm:w-auto primary-gradient text-white px-4 py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 hover:scale-[1.02] transition-transform ambient-shadow flex-shrink-0"
           style={{ fontFamily: 'Manrope, sans-serif' }}
         >
           <span className="material-symbols-outlined text-[18px]">add</span>
@@ -182,7 +182,7 @@ export default function WarmupPeers() {
               Refresh
             </button>
           </div>
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
             {[
               { key: 'pending_open',  label: 'Sent → opening', icon: 'mark_email_unread', color: 'bg-blue-50 text-blue-700' },
               { key: 'pending_reply', label: 'Opened → replying', icon: 'drafts',          color: 'bg-indigo-50 text-indigo-700' },

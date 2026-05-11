@@ -22,29 +22,35 @@ export default function LeadPipeline({ leads, onStatusChange, onLeadClick }: Pro
   }));
 
   return (
-    <div className="flex gap-4 overflow-x-auto p-6">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:flex lg:overflow-x-auto gap-4 p-3 lg:p-6">
       {grouped.map((col) => (
-        <div
+        <details
           key={col.key}
-          className={`flex-shrink-0 w-64 bg-surface-container-low rounded-xl border-t-4 ${col.accent}`}
+          open
+          className={`group bg-surface-container-low rounded-xl border-t-4 ${col.accent} lg:flex-shrink-0 lg:w-64`}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             const leadId = e.dataTransfer.getData('leadId');
             if (leadId) onStatusChange(leadId, col.key);
           }}
         >
-          <div className="p-4 flex items-center justify-between">
+          <summary className="p-4 flex items-center justify-between cursor-pointer list-none">
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${col.dot}`} />
               <h3 className="font-bold text-sm text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
                 {col.label}
               </h3>
             </div>
-            <span className="text-xs font-bold bg-white ambient-shadow rounded-full px-2 py-0.5 text-secondary">
-              {col.leads.length}
-            </span>
-          </div>
-          <div className="px-3 pb-3 space-y-2 max-h-[calc(100vh-280px)] overflow-y-auto">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold bg-white ambient-shadow rounded-full px-2 py-0.5 text-secondary">
+                {col.leads.length}
+              </span>
+              <span className="material-symbols-outlined text-secondary text-[18px] lg:hidden transition-transform group-open:rotate-180">
+                expand_more
+              </span>
+            </div>
+          </summary>
+          <div className="px-3 pb-3 space-y-2 lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto">
             {col.leads.map((lead) => (
               <div
                 key={lead.id}
@@ -75,7 +81,7 @@ export default function LeadPipeline({ leads, onStatusChange, onLeadClick }: Pro
               </div>
             )}
           </div>
-        </div>
+        </details>
       ))}
     </div>
   );

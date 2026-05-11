@@ -226,14 +226,14 @@ export default function WizardStep1Leads({
     .filter(Boolean).join(' · ') || 'All Leads';
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-10">
+    <div className="max-w-4xl mx-auto px-3 sm:px-6 py-5 sm:py-10">
 
       {/* Headline */}
-      <div className="text-center mb-10">
-        <h1 className="text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
+      <div className="text-center mb-6 sm:mb-10">
+        <h1 className="text-xl sm:text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
           Where should we find your leads?
         </h1>
-        <p className="text-secondary text-sm">
+        <p className="text-secondary text-xs sm:text-sm">
           Build your outreach list by selecting from your existing Lead Matrix,
           uploading a file, or entering them manually.
         </p>
@@ -260,7 +260,7 @@ export default function WizardStep1Leads({
       )}
 
       {/* Source selection cards */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6 sm:mb-8">
         {/* Lead Matrix */}
         <div
           onClick={() => !appMode?.manualLeadsOnly && setSourceMode('matrix')}
@@ -549,7 +549,8 @@ export default function WizardStep1Leads({
             <Loader2 size={16} className="animate-spin text-[#b0004a]" /> Loading leads...
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[640px]">
             <thead>
               <tr className="border-b border-slate-100 text-left bg-surface-container">
                 <th className="w-10 px-4 py-3">
@@ -684,6 +685,7 @@ export default function WizardStep1Leads({
               )}
             </tbody>
           </table>
+          </div>
         )}
 
         {/* Pagination */}

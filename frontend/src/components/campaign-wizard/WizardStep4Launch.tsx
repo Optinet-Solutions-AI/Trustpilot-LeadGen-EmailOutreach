@@ -44,19 +44,19 @@ export default function WizardStep4Launch({
   const allGood = checks.every((c) => c.ok);
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-10">
+    <div className="max-w-4xl mx-auto px-3 sm:px-6 py-5 sm:py-10">
 
       {/* Headline */}
-      <div className="text-center mb-10">
-        <h1 className="text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
+      <div className="text-center mb-6 sm:mb-10">
+        <h1 className="text-xl sm:text-3xl font-extrabold text-on-surface mb-2" style={{ fontFamily: 'Manrope, sans-serif' }}>
           Review &amp; Launch
         </h1>
-        <p className="text-secondary text-sm">
+        <p className="text-secondary text-xs sm:text-sm">
           Everything looks good? Create the campaign as a draft — then send a test flight before going live.
         </p>
       </div>
 
-      <div className="grid grid-cols-[1fr_300px] gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 sm:gap-6">
 
         {/* ── Left: summary cards ── */}
         <div className="space-y-4">
@@ -146,7 +146,7 @@ export default function WizardStep4Launch({
                 Sending Schedule
               </p>
             </div>
-            <div className="px-6 py-4 grid grid-cols-2 gap-y-3 gap-x-6">
+            <div className="px-4 sm:px-6 py-4 grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-6">
               {[
                 { label: 'Timezone',     value: tzLabel },
                 { label: 'Window',       value: `${schedule.startHour} – ${schedule.endHour}` },

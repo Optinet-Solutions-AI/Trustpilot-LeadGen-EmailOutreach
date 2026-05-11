@@ -16,19 +16,19 @@ const TILES: { key: keyof SummaryStatsProps; label: string; format: (v: number |
 
 export default function SummaryStats(props: SummaryStatsProps) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
       {TILES.map((tile) => (
         <div
           key={tile.key}
-          className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 text-center"
+          className="bg-surface-container-lowest rounded-xl ambient-shadow p-3 sm:p-6 text-center"
         >
           <h4
-            className="text-3xl font-black text-[#b0004a]"
+            className="text-xl sm:text-3xl font-black text-[#b0004a]"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             {tile.format(props[tile.key])}
           </h4>
-          <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mt-2">
+          <p className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-slate-400 mt-1.5 sm:mt-2">
             {tile.label}
           </p>
         </div>

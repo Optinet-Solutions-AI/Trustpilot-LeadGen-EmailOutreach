@@ -134,12 +134,12 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
     <div className="flex flex-col bg-[#f8f9fa]" style={{ minHeight: 'calc(100vh - 4rem)' }}>
 
       {/* ── Top nav ── */}
-      <div className="bg-white border-b border-slate-100 px-8 py-0 flex items-center justify-between h-14 flex-shrink-0">
-        <div className="flex items-center gap-8">
-          <span className="text-lg font-extrabold text-[#b0004a]" style={{ fontFamily: 'Manrope, sans-serif' }}>
+      <div className="bg-white border-b border-slate-100 px-3 sm:px-8 py-0 flex items-center justify-between h-12 sm:h-14 flex-shrink-0 gap-3">
+        <div className="flex items-center gap-4 sm:gap-8 min-w-0 flex-1">
+          <span className="text-base sm:text-lg font-extrabold text-[#b0004a] truncate" style={{ fontFamily: 'Manrope, sans-serif' }}>
             Elite Outreach
           </span>
-          <nav className="flex items-center gap-6">
+          <nav className="hidden sm:flex items-center gap-6">
             <button onClick={onClose} className="text-sm font-semibold text-secondary hover:text-on-surface transition-colors py-4">
               Campaigns
             </button>
@@ -153,7 +153,14 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             </button>
           </nav>
         </div>
-        <div className="flex items-center gap-3">
+        <button
+          onClick={onClose}
+          aria-label="Close wizard"
+          className="sm:hidden text-slate-500 p-2 -mr-2"
+        >
+          <span className="material-symbols-outlined">close</span>
+        </button>
+        <div className="hidden sm:flex items-center gap-3">
           <button
             disabled
             title="Coming soon"
@@ -176,15 +183,29 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
 
       {/* ── Mode banner ── */}
       {discoveryMode && (
-        <div className="bg-amber-50 border-b border-amber-200 px-8 py-2 text-xs font-bold text-amber-800 flex items-center gap-2 flex-shrink-0">
-          <span className="material-symbols-outlined text-[14px]">forward_to_inbox</span>
-          Discovery Follow-Up Campaign — sends to each lead's accepted discovered_email rather than primary_email.
+        <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-8 py-2 text-[11px] sm:text-xs font-bold text-amber-800 flex items-start gap-2 flex-shrink-0">
+          <span className="material-symbols-outlined text-[14px] flex-shrink-0 mt-px">forward_to_inbox</span>
+          <span>Discovery Follow-Up Campaign — sends to each lead's accepted discovered_email rather than primary_email.</span>
         </div>
       )}
 
-      {/* ── Step indicator ── */}
-      <div className="bg-white border-b border-slate-100 px-8 py-4 flex items-center justify-center flex-shrink-0">
-        <div className="flex items-center gap-0">
+      {/* ── Step indicator — compact below sm ── */}
+      <div className="bg-white border-b border-slate-100 px-3 sm:px-8 py-3 sm:py-4 flex items-center justify-center flex-shrink-0">
+        {/* Mobile: compact label */}
+        <div className="sm:hidden text-center w-full">
+          <p className="text-[10px] uppercase font-bold tracking-wider text-secondary">
+            Step {step + 1} of {STEPS.length}
+          </p>
+          <p className="text-sm font-extrabold text-[#b0004a] mt-0.5">{STEPS[step].label}</p>
+          <div className="mt-2 h-1 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#b0004a] transition-all"
+              style={{ width: `${((step + 1) / STEPS.length) * 100}%` }}
+            />
+          </div>
+        </div>
+        {/* Desktop: full stepper */}
+        <div className="hidden sm:flex items-center gap-0">
           {STEPS.map((s, i) => {
             const isDone   = i < step;
             const isActive = i === step;
@@ -275,19 +296,20 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
       </div>
 
       {/* ── Bottom bar ── */}
-      <div className="bg-white border-t border-slate-100 px-8 py-4 flex items-center justify-between flex-shrink-0">
+      <div className="bg-white border-t border-slate-100 px-3 sm:px-8 py-3 sm:py-4 flex items-center justify-between gap-3 flex-shrink-0 mobile-action-bar sm:[padding-bottom:1rem]">
         <button
           onClick={() => step > 0 ? setStep(step - 1) : onClose()}
-          className="flex items-center gap-2 text-sm font-bold text-secondary hover:text-on-surface transition-colors"
+          className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold text-secondary hover:text-on-surface transition-colors flex-shrink-0"
         >
           <span className="material-symbols-outlined text-[18px]">arrow_back</span>
-          {step === 0 ? 'Back to Dashboard' : 'Previous Step'}
+          <span className="hidden sm:inline">{step === 0 ? 'Back to Dashboard' : 'Previous Step'}</span>
+          <span className="sm:hidden">{step === 0 ? 'Cancel' : 'Back'}</span>
         </button>
 
         <button
           onClick={() => isLast ? handleSubmit() : setStep(step + 1)}
           disabled={!canProceed() || saving}
-          className="flex items-center gap-2 px-8 py-3 primary-gradient text-on-primary text-sm font-bold rounded-full ambient-shadow hover:scale-[1.02] disabled:opacity-40 disabled:scale-100 transition-transform"
+          className="flex items-center justify-center gap-2 px-4 sm:px-8 py-2.5 sm:py-3 primary-gradient text-on-primary text-xs sm:text-sm font-bold rounded-full ambient-shadow hover:scale-[1.02] disabled:opacity-40 disabled:scale-100 transition-transform flex-1 sm:flex-initial"
         >
           {saving
             ? <><Loader2 size={15} className="animate-spin" /> Creating...</>

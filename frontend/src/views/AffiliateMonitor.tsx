@@ -354,17 +354,17 @@ export default function AffiliateMonitor() {
   }, [linkJob.status, linkJob.summary, linkJobId, fetchAffiliates]);
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
         <div>
           <h2
-            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             Affiliate <span className="text-[#b0004a]">Monitor</span>
           </h2>
-          <p className="text-slate-400 text-sm mt-2">
+          <p className="text-slate-400 text-sm mt-1 sm:mt-2">
             {affiliates.length} Trustpilot affiliate pages tracked
             {loading && <span className="ml-2 text-slate-300">· loading…</span>}
           </p>
@@ -372,7 +372,7 @@ export default function AffiliateMonitor() {
         </div>
         <button
           onClick={() => setShowAddModal(true)}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-[#b0004a] text-white hover:opacity-90 transition-opacity whitespace-nowrap shrink-0"
+          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-[#b0004a] text-white hover:opacity-90 transition-opacity whitespace-nowrap shrink-0"
         >
           <span className="material-symbols-outlined text-[18px]">add</span>
           Add Affiliate

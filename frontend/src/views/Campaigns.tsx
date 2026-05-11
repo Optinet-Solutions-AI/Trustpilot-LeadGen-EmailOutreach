@@ -231,22 +231,22 @@ export default function Campaigns() {
   }
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
 
       {/* Header */}
-      <div className="flex flex-wrap justify-between items-end gap-4">
+      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:justify-between lg:items-end gap-3 sm:gap-4">
         <div>
           <h2
-            className="text-4xl font-extrabold tracking-tight text-on-surface"
+            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
             style={{ fontFamily: 'Manrope, sans-serif' }}
           >
             Campaign <span className="text-[#b0004a]">Wizard</span>
           </h2>
-          <p className="text-secondary font-medium mt-1">
+          <p className="text-secondary font-medium mt-1 text-sm sm:text-base">
             Build, test, and launch personalized outreach campaigns.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {rateLimit && (
             <div className="text-xs font-semibold text-secondary bg-surface-container rounded-lg px-3 py-2 flex items-center gap-2">
               {warmupStatus && (

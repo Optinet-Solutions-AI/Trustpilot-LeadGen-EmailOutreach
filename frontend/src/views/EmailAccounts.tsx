@@ -425,33 +425,35 @@ export default function EmailAccounts() {
   const authInfo = AUTH_TYPES.find((a) => a.type === form.authType)!;
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-8">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-6 sm:space-y-8">
       {/* Header */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col lg:flex-row lg:justify-between lg:items-end gap-4">
         <div>
-          <h2 className="text-4xl font-extrabold tracking-tight text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
+          <h2 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
             Email <span className="text-[#b0004a]">Accounts</span>
           </h2>
-          <p className="text-secondary font-medium mt-1">Monitor sender health and manage your outreach email accounts.</p>
+          <p className="text-secondary font-medium mt-1 text-sm sm:text-base">Monitor sender health and manage your outreach email accounts.</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:flex lg:items-center gap-2 sm:gap-3">
           <button
             onClick={openDreamhostModal}
-            className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
+            className="flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
           >
             <span className="material-symbols-outlined text-[18px] text-[#b0004a]">dns</span>
-            Connect DreamHost Email
+            <span className="sm:hidden lg:inline">Connect DreamHost</span>
+            <span className="hidden sm:inline lg:hidden">DreamHost</span>
           </button>
           <button
             onClick={openBluehostModal}
-            className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
+            className="flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
           >
             <span className="material-symbols-outlined text-[18px] text-[#b0004a]">mail</span>
-            Connect Bluehost Email
+            <span className="sm:hidden lg:inline">Connect Bluehost</span>
+            <span className="hidden sm:inline lg:hidden">Bluehost</span>
           </button>
           <button
             onClick={openModal}
-            className="flex items-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
+            className="flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
           >
             <span className="material-symbols-outlined text-[18px]">add_circle</span>
             Add Account
@@ -460,14 +462,14 @@ export default function EmailAccounts() {
       </div>
 
       {/* Global Health Metrics */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 xl:gap-5">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4 xl:gap-5">
         {globalStats.map(({ label, value, icon, border }) => (
-          <div key={label} className={`bg-surface-container-lowest p-6 rounded-xl ambient-shadow border-l-4 ${border}`}>
-            <div className="flex justify-between items-start mb-4">
-              <p className="text-sm font-bold text-slate-500 uppercase tracking-wider">{label}</p>
-              <span className="material-symbols-outlined text-[#b0004a] text-[20px]">{icon}</span>
+          <div key={label} className={`bg-surface-container-lowest p-3 sm:p-6 rounded-xl ambient-shadow border-l-4 ${border}`}>
+            <div className="flex justify-between items-start mb-2 sm:mb-4">
+              <p className="text-[10px] sm:text-sm font-bold text-slate-500 uppercase tracking-wider truncate">{label}</p>
+              <span className="material-symbols-outlined text-[#b0004a] text-[16px] sm:text-[20px] flex-shrink-0">{icon}</span>
             </div>
-            <p className="text-3xl font-black text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>{value}</p>
+            <p className="text-xl sm:text-3xl font-black text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>{value}</p>
           </div>
         ))}
       </div>
