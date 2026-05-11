@@ -190,6 +190,15 @@ const server = app.listen(config.port, async () => {
     console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
   }
 
+  // Start nightly scrape scheduler — DB-driven poller that runs the full
+  // country x category matrix overnight inside the configured window.
+  try {
+    const { startNightlyScrapeScheduler } = await import('./services/nightly-scrape-scheduler.js');
+    startNightlyScrapeScheduler();
+  } catch (e) {
+    console.error('[Startup] Nightly scrape scheduler error:', e instanceof Error ? e.message : e);
+  }
+
   // Reply tracking poll — runs every 10 minutes for BOTH the legacy single
   // Gmail OAuth path (reply-tracker.ts, self-gated on EMAIL_MODE=gmail) AND
   // multi-provider SMTP/IMAP accounts like Bluehost Titan or DreamHost
