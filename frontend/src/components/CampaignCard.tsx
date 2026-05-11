@@ -1,5 +1,6 @@
 import { Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Campaign } from '../types/campaign';
 
 interface Props {
@@ -29,6 +30,26 @@ export default function CampaignCard({
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+  // Anchor + viewport position for the portal-rendered overflow menu. We have
+  // to render in a portal because the card sets overflow-hidden to keep
+  // long template bodies from blowing out the grid; an absolutely-positioned
+  // dropdown inside that ancestor gets clipped on the Y axis. Capturing the
+  // button's getBoundingClientRect on open and using position:fixed lets the
+  // dropdown escape every overflow context on the page.
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+
+  const toggleMenu = () => {
+    if (menuOpen) { setMenuOpen(false); return; }
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setMenuPos({
+        top:   rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+    setMenuOpen(true);
+  };
 
   const hasLeads      = (c.lead_count ?? 0) > 0;
   const canLaunch     = c.status === 'draft' && hasLeads && !isSending;
@@ -47,7 +68,7 @@ export default function CampaignCard({
 
   return (
     <div
-      className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer min-w-0 max-w-full overflow-x-hidden"
+      className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 hover:shadow-lg transition-all border border-slate-50 cursor-pointer min-w-0 max-w-full overflow-hidden"
       onClick={() => onViewDetail(c)}
     >
 
@@ -182,49 +203,61 @@ export default function CampaignCard({
           </span>
         )}
 
-        {/* Overflow menu */}
-        <div className="ml-auto relative">
+        {/* Overflow menu trigger — dropdown is rendered via portal below */}
+        <div className="ml-auto">
           <button
-            onClick={() => setMenuOpen(!menuOpen)}
+            ref={buttonRef}
+            onClick={toggleMenu}
             className="p-2 text-secondary hover:text-on-surface rounded-lg hover:bg-surface-container transition-colors"
           >
             <span className="material-symbols-outlined text-[18px]">more_horiz</span>
           </button>
-
-          {menuOpen && (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 top-full mt-1 z-20 bg-surface-container-lowest rounded-xl ambient-shadow border border-slate-100 py-1 w-44">
-                <button
-                  onClick={() => { onViewDetail(c); setMenuOpen(false); }}
-                  className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[16px] text-secondary">open_in_new</span>
-                  View Details
-                </button>
-                <button
-                  onClick={handleDuplicate}
-                  disabled={duplicating}
-                  className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 disabled:opacity-50 transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[16px] text-secondary">content_copy</span>
-                  {duplicating ? 'Duplicating…' : 'Duplicate'}
-                </button>
-                {!isThisSending && (
-                  <button
-                    onClick={() => { onDelete(c.id, c.name); setMenuOpen(false); }}
-                    disabled={deletingId === c.id}
-                    className="w-full text-left px-4 py-2 text-sm font-bold text-error hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">delete</span>
-                    {deletingId === c.id ? 'Deleting…' : 'Delete'}
-                  </button>
-                )}
-              </div>
-            </>
-          )}
         </div>
       </div>
+
+      {/* Portal-rendered overflow menu. Renders into document.body so the
+          card's overflow-hidden never clips it. Position is anchored to the
+          trigger button via getBoundingClientRect (captured on open). */}
+      {menuOpen && menuPos && typeof document !== 'undefined' && createPortal(
+        <>
+          <div
+            className="fixed inset-0 z-[100]"
+            onClick={(e) => { e.stopPropagation(); setMenuOpen(false); }}
+          />
+          <div
+            className="fixed z-[101] bg-surface-container-lowest rounded-xl ambient-shadow border border-slate-100 py-1 w-44"
+            style={{ top: menuPos.top, right: menuPos.right }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => { onViewDetail(c); setMenuOpen(false); }}
+              className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px] text-secondary">open_in_new</span>
+              View Details
+            </button>
+            <button
+              onClick={handleDuplicate}
+              disabled={duplicating}
+              className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 disabled:opacity-50 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px] text-secondary">content_copy</span>
+              {duplicating ? 'Duplicating…' : 'Duplicate'}
+            </button>
+            {!isThisSending && (
+              <button
+                onClick={() => { onDelete(c.id, c.name); setMenuOpen(false); }}
+                disabled={deletingId === c.id}
+                className="w-full text-left px-4 py-2 text-sm font-bold text-error hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">delete</span>
+                {deletingId === c.id ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
+          </div>
+        </>,
+        document.body
+      )}
     </div>
   );
 }
