@@ -7,7 +7,7 @@ import WizardStep2Sequence from './WizardStep2Sequence';
 import WizardStep3Options from './WizardStep3Options';
 import WizardStep4Launch from './WizardStep4Launch';
 import type { FollowUpStepInput } from '../../types/campaign';
-import { DEFAULT_SCHEDULE, COUNTRY_TIMEZONE, type SendingSchedule } from './scheduleConfig';
+import { DEFAULT_SCHEDULE, getCountryTimezone, type SendingSchedule } from './scheduleConfig';
 
 const DEFAULT_SUBJECT = '';
 const DEFAULT_BODY = '';
@@ -88,8 +88,8 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
   const handleFilterCountryChange = (code: string) => {
     setFilterCountry(code);
     if (timezoneTouched) return;
-    const tz = COUNTRY_TIMEZONE[code];
-    if (tz && tz !== schedule.timezone) {
+    const tz = getCountryTimezone(code);
+    if (tz !== schedule.timezone) {
       setSchedule((prev) => ({ ...prev, timezone: tz }));
     }
   };

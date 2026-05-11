@@ -75,23 +75,108 @@ export const DAY_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 // Auto-pick a sensible timezone when the user picks a country in Step 1.
 // Values MUST exist in TIMEZONES above so the dropdown stays consistent.
-// Countries not listed here keep whatever the user already selected.
+// Covers every ISO 3166-1 alpha-2 code Trustpilot ships in, so adding a new
+// entry to COUNTRIES doesn't require touching this file. Anything missing
+// falls back to UTC via getCountryTimezone() below.
 export const COUNTRY_TIMEZONE: Record<string, string> = {
+  // North America
   US: 'America/New_York',
   CA: 'America/New_York',
-  GB: 'Europe/London',
-  AU: 'Australia/Sydney',
-  DE: 'Europe/Paris',
-  FR: 'Europe/Paris',
-  NL: 'Europe/Paris',
-  IT: 'Europe/Paris',
-  ES: 'Europe/Paris',
-  DK: 'Europe/Paris',
-  SE: 'Europe/Paris',
-  NO: 'Europe/Paris',
-  FI: 'Europe/Athens',
+  MX: 'America/Chicago',
+  // Latin America (UTC-5 cluster)
+  CO: 'America/Bogota',
+  PE: 'America/Bogota',
+  EC: 'America/Bogota',
+  PA: 'America/Bogota',
+  CL: 'America/Bogota',
+  // Latin America (UTC-3 cluster)
   BR: 'America/Sao_Paulo',
+  AR: 'America/Sao_Paulo',
+  UY: 'America/Sao_Paulo',
+  PY: 'America/Sao_Paulo',
+  BO: 'America/Sao_Paulo',
+  // UK / Ireland / Iberia-west
+  GB: 'Europe/London',
+  IE: 'Europe/London',
+  PT: 'Europe/London',
+  IS: 'Europe/London',
+  // Central Europe (CET)
+  AT: 'Europe/Paris',
+  BE: 'Europe/Paris',
+  CH: 'Europe/Paris',
+  CZ: 'Europe/Paris',
+  DE: 'Europe/Paris',
+  DK: 'Europe/Paris',
+  ES: 'Europe/Paris',
+  FR: 'Europe/Paris',
+  HR: 'Europe/Paris',
+  HU: 'Europe/Paris',
+  IT: 'Europe/Paris',
+  LU: 'Europe/Paris',
+  NL: 'Europe/Paris',
+  NO: 'Europe/Paris',
+  PL: 'Europe/Paris',
+  RS: 'Europe/Paris',
+  SE: 'Europe/Paris',
+  SI: 'Europe/Paris',
+  SK: 'Europe/Paris',
+  // Eastern Europe (EET)
+  BG: 'Europe/Athens',
+  CY: 'Europe/Athens',
+  EE: 'Europe/Athens',
+  FI: 'Europe/Athens',
+  GR: 'Europe/Athens',
+  LT: 'Europe/Athens',
+  LV: 'Europe/Athens',
+  RO: 'Europe/Athens',
+  UA: 'Europe/Athens',
+  // Africa (UTC+2/+3)
+  EG: 'Africa/Cairo',
+  ZA: 'Africa/Cairo',
+  KE: 'Africa/Cairo',
+  NG: 'Africa/Cairo',
+  // Gulf
+  AE: 'Asia/Dubai',
+  SA: 'Asia/Dubai',
+  QA: 'Asia/Dubai',
+  KW: 'Asia/Dubai',
+  BH: 'Asia/Dubai',
+  OM: 'Asia/Dubai',
+  JO: 'Asia/Dubai',
+  IL: 'Asia/Dubai',
+  TR: 'Asia/Dubai',
+  // South Asia
+  IN: 'Asia/Kolkata',
+  PK: 'Asia/Kolkata',
+  BD: 'Asia/Kolkata',
+  LK: 'Asia/Kolkata',
+  // SE Asia
+  SG: 'Asia/Singapore',
+  MY: 'Asia/Singapore',
+  ID: 'Asia/Singapore',
+  TH: 'Asia/Singapore',
+  VN: 'Asia/Singapore',
+  PH: 'Asia/Manila',
+  // East Asia
+  HK: 'Asia/Hong_Kong',
+  CN: 'Asia/Hong_Kong',
+  TW: 'Asia/Hong_Kong',
+  JP: 'Asia/Tokyo',
+  KR: 'Asia/Tokyo',
+  // Oceania
+  AU: 'Australia/Sydney',
+  NZ: 'Pacific/Auckland',
 };
+
+/**
+ * Resolve a country code to a timezone in the TIMEZONES dropdown.
+ * Falls back to UTC for unmapped codes so the wizard still auto-shifts
+ * when a brand-new country is added to COUNTRIES.
+ */
+export function getCountryTimezone(code: string): string {
+  if (!code) return 'UTC';
+  return COUNTRY_TIMEZONE[code.toUpperCase()] ?? 'UTC';
+}
 
 // Auto-pick the AI generation language for non-English-speaking countries.
 // US/GB/AU/CA fall through to English (the default in the Gemini prompt).
