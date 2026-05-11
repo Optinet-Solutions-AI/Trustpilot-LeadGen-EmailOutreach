@@ -525,18 +525,18 @@ export default function EmailAccounts() {
             Loading account info…
           </div>
         ) : accounts.map((account, i) => (
-          <div key={account.id ?? i} className="bg-surface-container-lowest rounded-xl p-6 ambient-shadow hover:shadow-xl transition-all border border-slate-50">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-[#ffd9de] flex items-center justify-center">
+          <div key={account.id ?? i} className="bg-surface-container-lowest rounded-xl p-4 sm:p-6 ambient-shadow hover:shadow-xl transition-all border border-slate-50 min-w-0 max-w-full overflow-hidden">
+            <div className="flex items-center justify-between gap-2 mb-4 sm:mb-6">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="w-10 h-10 rounded-full bg-[#ffd9de] flex items-center justify-center flex-shrink-0">
                   <span className="material-symbols-outlined text-[#b0004a] text-[18px]">alternate_email</span>
                 </div>
-                <div>
-                  <h3 className="font-bold text-on-surface text-sm">{account.email}</h3>
-                  <p className="text-xs text-slate-400 font-medium">{account.from_name} · {account.provider}</p>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-bold text-on-surface text-sm truncate">{account.email}</h3>
+                  <p className="text-xs text-slate-400 font-medium truncate">{account.from_name} · {account.provider}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 <span className={`px-2 py-1 text-[10px] font-black uppercase rounded ${
                   account.status === 'active' ? 'bg-[#8ff9a8]/30 text-[#006630]' : 'bg-slate-100 text-slate-500'
                 }`}>{account.status}</span>
