@@ -417,15 +417,15 @@ export default function Prospects() {
   };
 
   return (
-    <div className="px-6 py-8 xl:px-10 xl:py-10 space-y-6">
+    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-6 pb-24 lg:pb-8">
       <div>
         <h2
-          className="text-4xl font-extrabold tracking-tight text-on-surface"
+          className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
           style={{ fontFamily: 'Manrope, sans-serif' }}
         >
           Prospect <span className="text-[#b0004a]">Leads</span>
         </h2>
-        <p className="text-secondary font-medium mt-1">
+        <p className="text-secondary font-medium mt-1 text-sm sm:text-base">
           Leads with a discovered contact email — auto-detected from auto-replies or
           manually promoted from the Inbox. Cold sequences for these leads are paused
           automatically; create a new campaign once you accept the prospect's email.
@@ -441,34 +441,54 @@ export default function Prospects() {
       )}
 
       {/* Filters + bulk action toolbar */}
-      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-4 flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[200px]">
+      <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-wrap">
+        <div className="relative flex-1 sm:min-w-[200px]">
           <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[18px]">search</span>
           <input
             type="text"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            placeholder="Search company or discovered email..."
+            placeholder="Search company or email..."
             className="w-full pl-10 pr-3 py-2.5 bg-surface-container rounded-lg text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           />
         </div>
         <select
           value={countryFilter}
           onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
-          className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          className="w-full sm:w-auto bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
         >
           {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
         </select>
         {selectedLeadIds.length > 0 && (
           <button
             onClick={launchFollowUp}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg primary-gradient text-on-primary text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform"
+            className="hidden sm:flex items-center gap-2 px-4 py-2.5 rounded-lg primary-gradient text-on-primary text-sm font-bold ambient-shadow hover:scale-[1.02] transition-transform"
           >
             <span className="material-symbols-outlined text-[16px]">forward_to_inbox</span>
             New Campaign for {selectedLeadIds.length} prospect{selectedLeadIds.length === 1 ? '' : 's'}
           </button>
         )}
       </div>
+
+      {/* Mobile sticky CTA */}
+      {selectedLeadIds.length > 0 && (
+        <div className="sm:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 px-3 py-3 mobile-action-bar z-30 shadow-2xl flex items-center gap-2">
+          <button
+            onClick={() => setSelectedLeadIds([])}
+            className="p-2 text-secondary"
+            aria-label="Clear selection"
+          >
+            <span className="material-symbols-outlined">close</span>
+          </button>
+          <button
+            onClick={launchFollowUp}
+            className="flex-1 px-4 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm flex items-center justify-center gap-2"
+          >
+            <span className="material-symbols-outlined text-[16px]">forward_to_inbox</span>
+            New Campaign ({selectedLeadIds.length})
+          </button>
+        </div>
+      )}
 
       {/* Single-page list */}
       <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
