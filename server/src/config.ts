@@ -67,4 +67,12 @@ export const config = {
    *  (status='pending') and leaves execution to a separate EC2 worker that
    *  polls Supabase. When false, runScrapeJob() fires inline as today. */
   useRemoteWorker: process.env.USE_REMOTE_WORKER === 'true',
+
+  /** Feature flag: when true, the reply tracker (Gmail + IMAP) automatically
+   *  queues every URL it finds in auto-reply bodies for the discovery worker
+   *  to scrape via Playwright. When false (default), URLs are NOT auto-queued
+   *  — they only get scraped when the user manually promotes a reply from
+   *  the Inbox UI. Email candidates are queued either way. Defaults to false
+   *  to keep Cloud Run free of unsolicited Chromium spawns. */
+  autoQueueUrlsFromReplies: process.env.AUTO_QUEUE_URLS_FROM_REPLIES === 'true',
 };

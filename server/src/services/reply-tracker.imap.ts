@@ -406,21 +406,26 @@ async function markAutoReplied(args: {
       auto_reply_metadata: auditMetadata,
     });
   }
-  for (const candidate of urls) {
-    await insertDiscoveredContact({
-      lead_id: lead.lead_id,
-      source_campaign_lead_id: lead.id,
-      kind: 'url',
-      value: candidate.value,
-      role: candidate.signal,
-      score: candidate.score,
-      auto_reply_message_id: messageId,
-      auto_reply_metadata: auditMetadata,
-    });
+  // URL candidates are gated — see reply-tracker.ts for rationale.
+  let queuedUrls = 0;
+  if (config.autoQueueUrlsFromReplies) {
+    for (const candidate of urls) {
+      await insertDiscoveredContact({
+        lead_id: lead.lead_id,
+        source_campaign_lead_id: lead.id,
+        kind: 'url',
+        value: candidate.value,
+        role: candidate.signal,
+        score: candidate.score,
+        auto_reply_message_id: messageId,
+        auto_reply_metadata: auditMetadata,
+      });
+    }
+    queuedUrls = urls.length;
   }
 
   console.log(
-    `[ImapReplyTracker] ${account.email}: auto-reply on lead ${lead.lead_id} → ${emails.length} email + ${urls.length} URL candidate(s) queued`,
+    `[ImapReplyTracker] ${account.email}: auto-reply on lead ${lead.lead_id} → ${emails.length} email + ${queuedUrls}/${urls.length} URL candidate(s) queued${config.autoQueueUrlsFromReplies ? '' : ' (URLs skipped — auto-queue disabled)'}`,
   );
   return true;
 }
