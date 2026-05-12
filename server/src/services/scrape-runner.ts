@@ -689,6 +689,39 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
     const totalProcessed = leadsToScrape.length;
     console.log(`[Scrape] Job ${jobId} complete — found: ${rawData.length}, skipped: ${skippedCount}, processed: ${totalProcessed}, saved: ${totalSaved}, dbFailed: ${totalDbFailed}, scraperFailed: ${failedCount}`);
 
+    // When the caller asked for verification (scheduler default), validate every
+    // unverified email this combo now owns. This used to be a separate manual
+    // button in the UI; the nightly scheduler relies on it firing automatically
+    // so leads land campaign-ready by morning instead of stuck as 'unknown'.
+    if (verify && totalSaved > 0) {
+      try {
+        emitProgress(jobId, 'verify_start', '');
+        const verifySupabase = getSupabase();
+        const { data: jobLeads, error: leadsErr } = await verifySupabase
+          .from('leads')
+          .select('id')
+          .eq('country', country)
+          .eq('category', category)
+          .eq('email_verified', false)
+          .not('primary_email', 'is', null);
+        if (leadsErr) {
+          console.warn(`[Scrape] Job ${jobId} verify: lead lookup error: ${leadsErr.message}`);
+        } else if (jobLeads && jobLeads.length > 0) {
+          const verifyUrl = `http://localhost:${config.port}/api/verify`;
+          const verifyRes = await fetch(verifyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ leadIds: jobLeads.map((l) => l.id), emailField: 'all' }),
+          });
+          const verifyBody = await verifyRes.json().catch(() => ({})) as { data?: { jobId?: string; total?: number } };
+          console.log(`[Scrape] Job ${jobId} verify launched: ${verifyBody?.data?.total ?? 0} emails (verifyJob=${verifyBody?.data?.jobId ?? 'n/a'})`);
+          emitProgress(jobId, 'verify_launched', String(verifyBody?.data?.total ?? 0));
+        }
+      } catch (err) {
+        console.warn(`[Scrape] Job ${jobId} verify trigger failed:`, err instanceof Error ? err.message : err);
+      }
+    }
+
     await updateJob(jobId, {
       status: 'completed',
       total_scraped: totalSaved,
