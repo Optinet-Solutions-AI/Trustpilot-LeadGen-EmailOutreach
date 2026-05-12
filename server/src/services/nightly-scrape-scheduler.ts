@@ -252,7 +252,7 @@ async function autoPauseIfFailing(): Promise<boolean> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('scrape_jobs')
-    .select('status')
+    .select('status, error')
     .eq('source', 'nightly')
     .in('status', ['completed', 'failed'])
     .order('completed_at', { ascending: false })
@@ -264,8 +264,15 @@ async function autoPauseIfFailing(): Promise<boolean> {
   }
 
   if ((data?.length ?? 0) < 3) return false;
-  const allFailed = data!.every((j) => j.status === 'failed');
-  if (!allFailed) return false;
+  // Only count "real" scrape failures. Orphan failures from Cloud Run
+  // instance cycling are an infrastructure signal, not a scraper signal —
+  // ignoring them keeps the scheduler resilient when one runtime (Cloud
+  // Run) churns while another (e.g. local dev or a different replica)
+  // is producing leads successfully.
+  const realFailures = data!.filter((j) =>
+    j.status === 'failed' && !String(j.error ?? '').startsWith('Orphaned:'),
+  );
+  if (realFailures.length < 3) return false;
 
   const reason = `auto: 3 consecutive failed nightly jobs (last at ${new Date().toISOString()})`;
   console.error(`${LOG_PREFIX} AUTO-PAUSE: ${reason}`);
