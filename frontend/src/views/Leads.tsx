@@ -7,7 +7,6 @@ import LeadsTable from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
 import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
-import QuickSendModal from '../components/QuickSendModal';
 import JobProgress from '../components/JobProgress';
 import MobileBottomSheet from '../components/MobileBottomSheet';
 import { useEnrichJob } from '../hooks/useEnrichJob';
@@ -139,7 +138,6 @@ export default function Leads() {
     return localStorage.getItem('active_enrich_started_at');
   });
   const [enrichResult, setEnrichResult] = useState<{ found: number; total: number; failed: number } | null>(null);
-  const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -665,9 +663,9 @@ export default function Leads() {
                 </select>
               </div>
               <button
-                onClick={() => setQuickSendOpen(true)}
-                disabled={verifying || enriching || checkingLinks || checkingClaimed}
-                title={`Send ${selectedIds.length}`}
+                onClick={() => router.push(`/campaigns?wizard=1&leadIds=${encodeURIComponent(selectedIds.join(','))}`)}
+                disabled={verifying || enriching || checkingLinks || checkingClaimed || selectedIds.length === 0}
+                title={`Open the Campaign Wizard with ${selectedIds.length} lead${selectedIds.length === 1 ? '' : 's'} pre-selected`}
                 className="p-2 rounded-full text-[#b0004a] hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">send</span>
@@ -908,14 +906,6 @@ export default function Leads() {
         )}
       </div>
 
-      {quickSendOpen && (
-        <QuickSendModal
-          leadIds={selectedIds}
-          leads={leads.filter((l) => selectedIds.includes(l.id))}
-          onClose={() => setQuickSendOpen(false)}
-          onDone={() => { setQuickSendOpen(false); loadLeads(); }}
-        />
-      )}
 
       {confirmDeleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -1004,9 +994,9 @@ export default function Leads() {
               </span>
             </button>
             <button
-              onClick={() => setQuickSendOpen(true)}
-              disabled={verifying || enriching || checkingLinks || checkingClaimed}
-              aria-label="Send"
+              onClick={() => router.push(`/campaigns?wizard=1&leadIds=${encodeURIComponent(selectedIds.join(','))}`)}
+              disabled={verifying || enriching || checkingLinks || checkingClaimed || selectedIds.length === 0}
+              aria-label={`Open Campaign Wizard with ${selectedIds.length} selected`}
               className="p-2 rounded-full text-[#b0004a] disabled:opacity-50 flex-shrink-0"
             >
               <span className="material-symbols-outlined text-[20px]">send</span>
