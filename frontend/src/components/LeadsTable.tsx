@@ -240,16 +240,56 @@ export default function LeadsTable({
     }
   }, [someOnPageSelected]);
 
-  // Split scroll containers so the thead can truly pin to the page viewport:
-  //   headerScrollRef  → sticky-top div wrapping the header-only table
-  //   bodyScrollRef    → normal-flow div wrapping the body-only table
-  // The two tables share matching <colgroup> widths so columns stay aligned;
-  // the bodyDiv.onScroll handler mirrors scrollLeft into the header div, and
-  // vice versa. Because the header div's nearest Y scroll ancestor is the
-  // page (the wrapping outer div has no overflow), sticky-top-16 pins it to
-  // the viewport while the page itself scrolls naturally past the table.
+  // Split scroll containers so the thead can be pinned to the page viewport.
+  // CSS `position: sticky` kept failing because *some* ancestor (between
+  // `overflow-x-hidden`, `overflow-hidden`, and Next.js's hydrated wrappers)
+  // ends up establishing a Y scroll container that traps the sticky element.
+  // We bypass that whole class of bugs by pinning the header with JS:
+  // `position: fixed; top: 64px; left/width = bodyRect.left/width` once the
+  // table top scrolls past the topbar, and unpinning it when the table is
+  // entirely above or below the topbar.
   const headerScrollRef = useRef<HTMLDivElement>(null);
   const bodyScrollRef = useRef<HTMLDivElement>(null);
+  const [pinStyle, setPinStyle] = useState<React.CSSProperties | null>(null);
+  const [pinHeight, setPinHeight] = useState(0);
+  useEffect(() => {
+    let rafId = 0;
+    const update = () => {
+      const headerEl = headerScrollRef.current;
+      const bodyEl = bodyScrollRef.current;
+      if (!headerEl || !bodyEl) return;
+      const bodyRect = bodyEl.getBoundingClientRect();
+      const TOPBAR = 64;
+      if (bodyRect.top < TOPBAR && bodyRect.bottom > TOPBAR + headerEl.offsetHeight) {
+        setPinHeight(headerEl.offsetHeight);
+        setPinStyle({
+          position: 'fixed',
+          top: TOPBAR,
+          left: bodyRect.left,
+          width: bodyRect.width,
+          zIndex: 30,
+        });
+      } else {
+        setPinStyle(null);
+        setPinHeight(0);
+      }
+    };
+    const schedule = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        update();
+      });
+    };
+    update();
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+    };
+  }, [columns.length, leads.length]);
   const syncHeaderFromBody = (e: React.UIEvent<HTMLDivElement>) => {
     const x = e.currentTarget.scrollLeft;
     if (headerScrollRef.current && headerScrollRef.current.scrollLeft !== x) {
@@ -612,11 +652,14 @@ export default function LeadsTable({
           pagination. The header div has its own overflow-x-auto (scrollbar
           hidden) and mirrors the body's scrollLeft via onScroll. */}
       <div className="hidden lg:block">
-        {/* Sticky header table */}
+        {/* Header table — pinned via JS (see `pinStyle` useEffect) once the
+            body has scrolled past the topbar. When `pinStyle` is null the
+            header sits in normal flow at the top of the table card. */}
         <div
           ref={headerScrollRef}
           onScroll={syncBodyFromHeader}
-          className="sticky top-16 z-20 overflow-x-auto bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)] rounded-t-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={pinStyle ?? undefined}
+          className={`overflow-x-auto bg-surface-container border-b border-slate-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)] ${pinStyle ? '' : 'rounded-t-xl'} [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}
         >
           <table className="text-sm" style={{ tableLayout: 'fixed', width: totalMinWidth, minWidth: '100%' }}>
             {renderColgroup()}
@@ -658,6 +701,10 @@ export default function LeadsTable({
             </thead>
           </table>
         </div>
+
+        {/* Spacer — preserves layout while the header is `position: fixed`,
+            otherwise the body table jumps up by the header's height. */}
+        {pinStyle && <div aria-hidden style={{ height: pinHeight }} />}
 
         {/* Body table — scrolls horizontally, syncs to header. ArrowLeft/
             Right scrolling is wired globally via the useEffect above, so
