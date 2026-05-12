@@ -17,8 +17,9 @@
 import { getSettings, writeSchedulerTick, setPausedReason, updateSettings } from '../db/app-settings.js';
 import { getSupabase } from '../lib/supabase.js';
 import { COUNTRIES, CATEGORIES } from './scrape-targets.js';
-import { createJob } from '../db/scrape-jobs.js';
+import { createJob, releaseStaleClaims } from '../db/scrape-jobs.js';
 import { runScrapeJob, cancelScrapeJob } from './scrape-runner.js';
+import { config } from '../config.js';
 
 const POLL_INTERVAL_MS = 60_000;
 const LOG_PREFIX = '[NightlyScheduler]';
@@ -52,6 +53,16 @@ async function tick(): Promise<void> {
   // Always heartbeat first so even no-op ticks update liveness.
   await writeSchedulerTick();
   await cancelStuckNightlyJobs();
+
+  // Re-queue any 'running' rows whose worker heartbeat has gone stale.
+  // Cheap (one RPC); only meaningful when useRemoteWorker is on, but harmless
+  // either way because inline runs keep last_heartbeat_at fresh themselves.
+  try {
+    const released = await releaseStaleClaims(10);
+    if (released > 0) console.log(`${LOG_PREFIX} released ${released} stale claim(s)`);
+  } catch (err) {
+    console.warn(`${LOG_PREFIX} stale-claim sweep error:`, err instanceof Error ? err.message : err);
+  }
 
   if (await autoPauseIfFailing()) return;
 
@@ -143,11 +154,17 @@ export async function findNextEligibleCombo(
 
 async function countInflightNightlyJobs(): Promise<number> {
   const supabase = getSupabase();
+  // In remote-worker mode the worker is the one running jobs, so we count
+  // pending+running together as the "queue depth". That way `parallelism`
+  // in app_settings means "max nightly jobs in flight or queued". In inline
+  // mode pending rows never sit around (the scheduler fires runScrapeJob
+  // immediately), so counting only 'running' is equivalent.
+  const statuses = config.useRemoteWorker ? ['pending', 'running'] : ['running'];
   const { count, error } = await supabase
     .from('scrape_jobs')
     .select('id', { count: 'exact', head: true })
     .eq('source', 'nightly')
-    .eq('status', 'running');
+    .in('status', statuses);
   if (error) {
     console.error(`${LOG_PREFIX} inflight count error:`, error.message);
     return Number.POSITIVE_INFINITY;  // Fail closed: skip dequeue this tick
@@ -183,20 +200,24 @@ async function dequeueAndSpawn(parallelism: number, rescrapeDays: number,
         source: 'nightly',
       });
 
-      console.log(`${LOG_PREFIX} spawn ${combo.country}/${combo.category} job=${job.id}`);
-
-      // Fire-and-forget — runScrapeJob writes status updates itself.
-      runScrapeJob({
-        jobId: job.id,
-        country: combo.country,
-        category: combo.category,
-        minRating,
-        maxRating,
-        enrich: false,
-        verify,
-        forceRescrape: false,
-        source: 'nightly',
-      });
+      if (config.useRemoteWorker) {
+        // Remote-worker mode: leave the row pending; EC2 worker claims it.
+        console.log(`${LOG_PREFIX} enqueued ${combo.country}/${combo.category} job=${job.id}`);
+      } else {
+        console.log(`${LOG_PREFIX} spawn ${combo.country}/${combo.category} job=${job.id}`);
+        // Fire-and-forget — runScrapeJob writes status updates itself.
+        runScrapeJob({
+          jobId: job.id,
+          country: combo.country,
+          category: combo.category,
+          minRating,
+          maxRating,
+          enrich: false,
+          verify,
+          forceRescrape: false,
+          source: 'nightly',
+        });
+      }
     } catch (err) {
       console.error(`${LOG_PREFIX} spawn error for ${combo.country}/${combo.category}:`,
         err instanceof Error ? err.message : err);

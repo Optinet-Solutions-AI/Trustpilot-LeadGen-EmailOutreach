@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "worker": "node dist/worker/scraper-worker.js",
+    "worker:dev": "tsx watch src/worker/scraper-worker.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -34,7 +38,9 @@
     "@types/node": "^25.5.2",
     "@types/nodemailer": "^8.0.0",
     "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.1.6",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.6"
   }
 }

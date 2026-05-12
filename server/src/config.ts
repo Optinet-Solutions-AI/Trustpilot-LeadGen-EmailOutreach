@@ -62,4 +62,9 @@ export const config = {
    *  entry tagged 'auto_reply_candidate' so we can score detector precision
    *  on real traffic before turning it on. Defaults to true. */
   autoReplyHandlingEnabled: process.env.AUTO_REPLY_HANDLING_ENABLED !== 'false',
+
+  /** Feature flag: when true, the Cloud Run API only enqueues scrape jobs
+   *  (status='pending') and leaves execution to a separate EC2 worker that
+   *  polls Supabase. When false, runScrapeJob() fires inline as today. */
+  useRemoteWorker: process.env.USE_REMOTE_WORKER === 'true',
 };

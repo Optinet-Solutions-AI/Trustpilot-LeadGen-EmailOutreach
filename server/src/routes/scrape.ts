@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { createJob, getJob, getJobs, findActiveJobForParams, resolveDuplicateActiveJob, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
+import { config } from '../config.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -59,17 +60,26 @@ router.post('/', async (req: Request, res: Response) => {
       }
     }
 
-    // Fire scraper asynchronously (don't await)
-    runScrapeJob({
-      jobId: job.id,
-      country,
-      category,
-      minRating,
-      maxRating,
-      enrich,
-      verify,
-      forceRescrape,
-    });
+    if (config.useRemoteWorker) {
+      // Remote-worker mode: the row stays status='pending' and the EC2 worker
+      // claims it within ~30s via claim_next_pending_scrape_job. Nothing else
+      // to do here. SSE progress for the manual scrape page will degrade to
+      // status polling until the worker can stream events back.
+      console.log(`[Scrape] enqueued ${country}/${category} job=${job.id} (remote worker will pick up)`);
+    } else {
+      // Inline mode (legacy): fire scraper asynchronously on this Cloud Run
+      // instance. Will be removed once cutover to the EC2 worker is complete.
+      runScrapeJob({
+        jobId: job.id,
+        country,
+        category,
+        minRating,
+        maxRating,
+        enrich,
+        verify,
+        forceRescrape,
+      });
+    }
 
     res.json({ success: true, data: { jobId: job.id } });
   } catch (err) {
