@@ -70,13 +70,26 @@ function parseDisplayName(address: string): { name: string; email: string } {
 function renderTemplate(text: string, lead: CampaignLead | null, campaign: Campaign): string {
   const company = lead?.leads?.company_name || 'your company';
   const domain  = lead?.email_used?.includes('@') ? lead.email_used.split('@')[1] : '';
-  return text
+  // 1. Tokens
+  let out = text
     .replace(/\{\{company_name\}\}/gi, company)
     .replace(/\{\{star_rating\}\}/gi,  String(lead?.leads?.star_rating ?? ''))
     .replace(/\{\{country\}\}/gi,      lead?.leads?.country || '')
     .replace(/\{\{category\}\}/gi,     lead?.leads?.category || campaign.filter_category || '')
-    .replace(/\{\{website_url\}\}/gi,  domain)
-    .replace(/\{([^{}]+)\}/g, (_, opts) => opts.split('|')[0]);
+    .replace(/\{\{website_url\}\}/gi,  domain);
+  // 2. Spintax — innermost-first, iterative (mirrors server/src/services/spintax.ts).
+  //    Picks the first option deterministically so the preview stays stable across
+  //    renders (the server picks randomly per-send; the actual sent variant is
+  //    only authoritative via the Gmail thread fetch path above).
+  let guard = 500;
+  while (guard-- > 0) {
+    const m = out.match(/\{([^{}]+)\}/);
+    if (!m) break;
+    const opts = m[1].split('|');
+    out = out.replace(m[0], opts[0]);
+  }
+  // 3. Strip any surviving stray braces from malformed templates
+  return out.replace(/[{}]/g, '');
 }
 
 export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSteps, onDuplicate, getEmailThread }: Props) {
@@ -135,10 +148,12 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
     failed:    'bg-[#ffd9de] text-[#b0004a]',
   };
 
-  // Rendered template for the active lead (used when no real thread)
+  // Rendered template for the active lead (used when no real thread).
+  // Keep paragraph HTML — the body lives in the wizard's rich editor as <p>
+  // tags, and stripping them collapses the message into an unreadable wall.
   const renderedSubject = activeLead ? renderTemplate(campaign.template_subject || '', activeLead, campaign) : '';
   const renderedBody    = activeLead
-    ? renderTemplate(campaign.template_body || '', activeLead, campaign).replace(/<[^>]+>/g, '').trim()
+    ? renderTemplate(campaign.template_body || '', activeLead, campaign).trim()
     : '';
 
   // First real thread message (if available)
