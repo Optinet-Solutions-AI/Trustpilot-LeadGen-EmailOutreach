@@ -13,6 +13,9 @@ import { useEnrichJob } from '../hooks/useEnrichJob';
 import { useVerifyJob } from '../hooks/useVerifyJob';
 import { useCheckLinksJob } from '../hooks/useCheckLinksJob';
 import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
+import Button from '../ui/Button';
+import LoadingState from '../ui/LoadingState';
+import SectionHeader from '../ui/SectionHeader';
 
 type View = 'table' | 'pipeline';
 
@@ -583,22 +586,16 @@ export default function Leads() {
         </div>
       )}
 
-      {/* Header */}
+      {/* Header — SectionHeader handles the title side; right-hand action area
+          stays inline because its responsive flex-wrap rules are non-trivial
+          (chip group + Enrich All + view toggle must reflow at ~1100–1280px). */}
       <div className="flex flex-col lg:flex-row lg:flex-wrap lg:justify-between lg:items-end gap-3 lg:gap-4">
-        <div>
-          <h2
-            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
-            style={{ fontFamily: 'Manrope, sans-serif' }}
-          >
-            Lead <span className="text-[#b0004a]">Matrix</span>
-          </h2>
-          <p className="text-secondary font-medium mt-1 text-sm sm:text-base">
-            {total > 0 ? `${total} leads` : 'No leads yet'} — manage your outreach pipeline.
-          </p>
-        </div>
-        {/* flex-wrap so the chip group + rate-limit + Enrich All + view toggle
-            fall onto a second row instead of overflowing the viewport at the
-            ~1100–1280px range where most laptop/external-monitor combos sit. */}
+        <SectionHeader
+          title="Lead"
+          accent="Matrix"
+          subtitle={total > 0 ? `${total} leads — manage your outreach pipeline.` : 'No leads yet — manage your outreach pipeline.'}
+          className="w-full lg:w-auto"
+        />
         <div className="flex flex-wrap items-center gap-3 justify-end max-w-full">
           {/* Desktop chip group — header on `lg:` */}
           {selectedIds.length > 0 && (
@@ -875,9 +872,8 @@ export default function Leads() {
           and needs the page (not this div) as its Y scrollport ancestor. */}
       <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-clip">
         {loading ? (
-          <div className="flex items-center justify-center h-48 gap-2 text-secondary">
-            <span className="material-symbols-outlined text-[#b0004a] text-[20px]" style={{ animation: 'spin 1s linear infinite' }}>progress_activity</span>
-            Loading leads...
+          <div className="flex items-center justify-center h-48">
+            <LoadingState label="Loading leads…" />
           </div>
         ) : view === 'table' ? (
           <LeadsTable
@@ -924,23 +920,21 @@ export default function Leads() {
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <Button
+                variant="ghost"
                 onClick={() => setConfirmDeleteOpen(false)}
                 disabled={deleting}
-                className="px-4 py-2 rounded-lg text-sm font-bold text-secondary hover:bg-surface-container transition-colors disabled:opacity-50"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={handleBulkDelete}
                 disabled={deleting}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#b0004a] text-white text-sm font-bold hover:bg-[#900040] transition-colors disabled:opacity-50"
+                loading={deleting}
+                leadingIcon={!deleting ? <span className="material-symbols-outlined text-[16px]">delete</span> : undefined}
               >
-                <span className="material-symbols-outlined text-[16px]">
-                  {deleting ? 'progress_activity' : 'delete'}
-                </span>
-                {deleting ? 'Deleting...' : 'Delete'}
-              </button>
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
             </div>
           </div>
         </div>

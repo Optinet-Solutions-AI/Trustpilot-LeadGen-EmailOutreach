@@ -7,6 +7,10 @@ import {
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import DailyActivityChart from '../components/DailyActivityChart';
+import Card from '../ui/Card';
+import LoadingState from '../ui/LoadingState';
+import Pill from '../ui/Pill';
+import SectionHeader from '../ui/SectionHeader';
 
 const STATUS_COLORS: Record<string, string> = {
   new: '#c8c6c6',
@@ -31,10 +35,7 @@ export default function Analytics() {
   if (loading || !data) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="flex items-center gap-3 text-secondary">
-          <span className="material-symbols-outlined animate-spin">progress_activity</span>
-          Loading analytics...
-        </div>
+        <LoadingState label="Loading analytics…" />
       </div>
     );
   }
@@ -68,35 +69,37 @@ export default function Analytics() {
     { label: 'Bounced',           value: totalBounced.toLocaleString(), icon: 'bounce',    accent: 'border-error',      big: false },
   ];
 
+  const statusPill = (status: string) => {
+    if (status === 'sending' || status === 'sent') return <Pill variant="success" size="sm">{status}</Pill>;
+    if (status === 'draft') return <Pill variant="info" size="sm">{status}</Pill>;
+    return <Pill variant="neutral" size="sm">{status}</Pill>;
+  };
+
   return (
     <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-        <div>
-          <h2
-            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
-            style={{ fontFamily: 'Manrope, sans-serif' }}
-          >
-            Analytics &amp; <span className="text-[#b0004a]">Performance</span>
-          </h2>
-          <p className="text-secondary mt-1 font-medium text-sm sm:text-base">Visualizing campaign vitality and engagement metrics.</p>
-        </div>
-        <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg overflow-x-auto pb-2 -mb-1 self-start max-w-full">
-          {PERIOD_OPTIONS.map(({ label, value }) => (
-            <button
-              key={value}
-              onClick={() => setPeriod(value)}
-              className={`px-3 sm:px-4 py-2 rounded-md text-xs font-bold transition-all flex-shrink-0 ${
-                period === value ? 'bg-white shadow-sm text-[#b0004a]' : 'text-secondary hover:bg-white/50'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <SectionHeader
+        title={<>Analytics &amp;</>}
+        accent="Performance"
+        subtitle="Visualizing campaign vitality and engagement metrics."
+        actions={
+          <div className="flex items-center gap-1 p-1 bg-surface-container-low rounded-lg overflow-x-auto pb-2 -mb-1 self-start max-w-full">
+            {PERIOD_OPTIONS.map(({ label, value }) => (
+              <button
+                key={value}
+                onClick={() => setPeriod(value)}
+                className={`px-3 sm:px-4 py-2 rounded-md text-xs font-bold transition-all flex-shrink-0 ${
+                  period === value ? 'bg-white shadow-sm text-[#b0004a]' : 'text-secondary hover:bg-white/50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
-      {/* Metrics Bento */}
+      {/* Metrics Bento — kept custom because the left-accent + giant background icon
+          are intentional design flourishes that the generic <Stat> doesn't carry. */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-5">
         {metricCards.map(({ label, value, icon, accent, big }) => (
           <div
@@ -130,43 +133,45 @@ export default function Analytics() {
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
         {/* Performance Timeline (bar chart) */}
-        <div className="col-span-2 bg-surface-container-lowest rounded-xl p-8 ambient-shadow">
-          <div className="flex justify-between items-center mb-6">
-            <h3
-              className="font-bold text-lg text-on-surface"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              Campaign Performance
-            </h3>
-            <div className="flex gap-4 text-xs font-medium">
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#b0004a] inline-block" /> Sent</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#006630] inline-block" /> Replied</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#ba1a1a] inline-block" /> Bounced</span>
+        <div className="col-span-2">
+          <Card>
+            <div className="flex justify-between items-center mb-6">
+              <h3
+                className="font-bold text-lg text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                Campaign Performance
+              </h3>
+              <div className="flex gap-4 text-xs font-medium">
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#b0004a] inline-block" /> Sent</span>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#006630] inline-block" /> Replied</span>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-[#ba1a1a] inline-block" /> Bounced</span>
+              </div>
             </div>
-          </div>
-          {campaignData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={campaignData} barGap={4}>
-                <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#5f5e5e' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#5f5e5e' }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{ background: '#fff', border: 'none', borderRadius: '0.5rem', boxShadow: '0 4px 24px rgba(25,28,29,.08)' }}
-                  labelStyle={{ fontWeight: 700, fontSize: 12 }}
-                />
-                <Bar dataKey="Sent"    fill="#b0004a" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="Replied" fill="#006630" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="Bounced" fill="#ba1a1a" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-[220px] flex items-center justify-center text-secondary text-sm">
-              No campaign data yet
-            </div>
-          )}
+            {campaignData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={campaignData} barGap={4}>
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#5f5e5e' }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: '#5f5e5e' }} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{ background: '#fff', border: 'none', borderRadius: '0.5rem', boxShadow: '0 4px 24px rgba(25,28,29,.08)' }}
+                    labelStyle={{ fontWeight: 700, fontSize: 12 }}
+                  />
+                  <Bar dataKey="Sent"    fill="#b0004a" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Replied" fill="#006630" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Bounced" fill="#ba1a1a" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[220px] flex items-center justify-center text-secondary text-sm">
+                No campaign data yet
+              </div>
+            )}
+          </Card>
         </div>
 
         {/* Delivery Health */}
-        <div className="bg-surface-container-lowest rounded-xl p-8 ambient-shadow flex flex-col">
+        <Card>
           <h3
             className="font-bold text-lg text-on-surface mb-6"
             style={{ fontFamily: 'Manrope, sans-serif' }}
@@ -201,13 +206,12 @@ export default function Analytics() {
                 : 'Tighten your subject lines and opening hook to improve reply rate.'}
             </p>
           </div>
-        </div>
+        </Card>
       </div>
 
       {/* Lead Status + Country */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
-        {/* Leads by Status */}
-        <div className="bg-surface-container-lowest rounded-xl p-8 ambient-shadow">
+        <Card>
           <h3
             className="font-bold text-lg text-on-surface mb-6"
             style={{ fontFamily: 'Manrope, sans-serif' }}
@@ -241,10 +245,9 @@ export default function Analytics() {
           ) : (
             <div className="h-[220px] flex items-center justify-center text-secondary text-sm">No data yet</div>
           )}
-        </div>
+        </Card>
 
-        {/* Leads by Country */}
-        <div className="bg-surface-container-lowest rounded-xl p-8 ambient-shadow">
+        <Card>
           <h3
             className="font-bold text-lg text-on-surface mb-6"
             style={{ fontFamily: 'Manrope, sans-serif' }}
@@ -267,13 +270,14 @@ export default function Analytics() {
           ) : (
             <div className="h-[220px] flex items-center justify-center text-secondary text-sm">No data yet</div>
           )}
-        </div>
+        </Card>
       </div>
 
       {/* Campaign Breakdown Table */}
       {data.campaigns.length > 0 && (
-        <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="p-8 border-b border-surface-container-low flex justify-between items-center">
+        <Card
+          variant="flush"
+          header={
             <div>
               <h3
                 className="font-bold text-xl text-on-surface"
@@ -283,7 +287,8 @@ export default function Analytics() {
               </h3>
               <p className="text-sm text-secondary mt-0.5">Performance split by active campaign flows.</p>
             </div>
-          </div>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -306,24 +311,14 @@ export default function Analytics() {
                       <td className="px-8 py-5 font-bold text-sm text-[#006630]">{c.total_replied}</td>
                       <td className="px-8 py-5 font-medium text-sm">{rr}%</td>
                       <td className="px-8 py-5 font-bold text-sm text-error">{c.total_bounced}</td>
-                      <td className="px-8 py-5">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
-                          c.status === 'sending' || c.status === 'sent'
-                            ? 'bg-[#8ff9a8]/30 text-[#006630]'
-                            : c.status === 'draft'
-                              ? 'bg-surface-container-highest text-secondary'
-                              : 'bg-surface-container text-secondary'
-                        }`}>
-                          {c.status}
-                        </span>
-                      </td>
+                      <td className="px-8 py-5">{statusPill(c.status)}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

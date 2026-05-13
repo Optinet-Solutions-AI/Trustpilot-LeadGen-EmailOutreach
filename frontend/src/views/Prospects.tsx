@@ -30,6 +30,42 @@ import {
   type DiscoveredContactWithLead,
 } from '../hooks/useDiscoveredContacts';
 import type { Lead, LeadStatus } from '../types/lead';
+import LoadingState from '../ui/LoadingState';
+import SectionHeader from '../ui/SectionHeader';
+
+/** A compact status indicator — a single material icon + a tooltip-friendly label.
+ *  Replaces the wider <Pill> approach that crushed the email/url text at laptop widths. */
+interface StatusIcon {
+  icon: string;
+  /** Tailwind class for icon color, e.g. 'text-[#006630]'. */
+  color: string;
+  /** Human-readable status; shown in the cell tooltip. */
+  label: string;
+  /** When true the icon spins (for verifying / scraping). */
+  spin?: boolean;
+}
+
+function emailStatusIcon(r: DiscoveredContactWithLead): StatusIcon {
+  if (r.status === 'accepted')     return { icon: 'check_circle', color: 'text-[#006630]', label: 'Accepted' };
+  if (r.status === 'spawned_lead') return { icon: 'arrow_outward', color: 'text-purple-600', label: 'Spawned to new lead' };
+  switch (r.verification_status) {
+    case 'valid':     return { icon: 'check_circle', color: 'text-[#006630]', label: 'Valid' };
+    case 'invalid':   return { icon: 'cancel',       color: 'text-error',     label: 'Invalid' };
+    case 'catch-all': return { icon: 'help',         color: 'text-amber-600', label: 'Catch-all domain' };
+    case 'unknown':   return { icon: 'help',         color: 'text-slate-400', label: 'Unknown' };
+  }
+  return { icon: 'progress_activity', color: 'text-blue-500', label: 'Verifying…', spin: true };
+}
+
+function urlStatusIcon(r: DiscoveredContactWithLead): StatusIcon {
+  if (r.status === 'accepted')     return { icon: 'check_circle', color: 'text-[#006630]', label: 'Accepted' };
+  if (r.status === 'spawned_lead') return { icon: 'arrow_outward', color: 'text-purple-600', label: 'Spawned to new lead' };
+  if (!r.scrape_result)            return { icon: 'progress_activity', color: 'text-blue-500', label: 'Scraping…', spin: true };
+  const sr = r.scrape_result as Record<string, unknown>;
+  if (sr.error)         return { icon: 'error',        color: 'text-error',     label: `Scrape failed: ${String(sr.error)}` };
+  if (sr.website_email) return { icon: 'check_circle', color: 'text-[#006630]', label: `Email harvested (${String(sr.website_email)})` };
+  return { icon: 'remove_circle', color: 'text-slate-400', label: 'Scrape ran but no email found' };
+}
 
 const COUNTRIES = [
   { code: '', name: 'All Countries' },
@@ -241,6 +277,12 @@ export default function Prospects() {
   };
 
   // ── LeadsTable extra columns / actions ────────────────────────────────
+  //
+  // Each cell renders ONE small status icon + the email/URL value. The icon
+  // color encodes the status (green=accepted/valid/harvested, red=invalid/
+  // failed, amber=catch-all, blue-spin=verifying/scraping, slate=unknown/none).
+  // Full status text lives in the cell tooltip so rows stay compact at laptop
+  // widths instead of getting crushed by a wide pill.
   const extraColumns: ExtraColumn[] = useMemo(() => [
     {
       key: 'discovered_email',
@@ -249,108 +291,70 @@ export default function Prospects() {
         const r = (lead as Lead & { _discovery?: DiscoveredContactWithLead })._discovery;
         if (!r) return <span className="text-slate-300 text-xs">—</span>;
         const isAccepted = r.status === 'accepted';
+        const isEmail = r.kind === 'email';
+        const status = isEmail ? emailStatusIcon(r) : urlStatusIcon(r);
+
+        const tooltip = [
+          r.value,
+          r.role ? `Role: ${r.role}` : null,
+          status.label,
+          `Status: ${r.status === 'pending_review' ? 'pending' : r.status}`,
+        ].filter(Boolean).join(' • ');
+
         return (
-          <div className="flex flex-col gap-1 max-w-[280px]">
-            <span className="inline-flex items-center gap-1 text-xs">
-              <span className={`material-symbols-outlined text-[14px] ${r.kind === 'email' ? 'text-blue-500' : 'text-purple-500'}`}>
-                {r.kind === 'email' ? 'alternate_email' : 'link'}
-              </span>
-              <span className={`font-medium truncate ${isAccepted ? 'text-on-surface' : 'text-secondary'}`} title={r.value}>
-                {r.value}
-              </span>
+          <div className="flex items-center gap-1.5 min-w-0" title={tooltip}>
+            <span className={`material-symbols-outlined text-[14px] shrink-0 ${isEmail ? 'text-blue-500' : 'text-purple-500'}`}>
+              {isEmail ? 'alternate_email' : 'link'}
             </span>
-            <div className="flex items-center gap-1 flex-wrap">
-              {r.role && (
-                <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">{r.role}</span>
-              )}
-              {r.kind === 'url'
-                ? (() => {
-                    if (!r.scrape_result) {
-                      return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">scraping…</span>;
-                    }
-                    const sr = r.scrape_result as Record<string, unknown>;
-                    if (sr.error) {
-                      return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-700" title={String(sr.error)}>scrape failed</span>;
-                    }
-                    if (sr.website_email) {
-                      return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title={`Harvested ${sr.website_email}`}>email harvested</span>;
-                    }
-                    return <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">no email found</span>;
-                  })()
-                : r.verification_status ? (
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                        r.verification_status === 'valid' ? 'bg-green-50 text-green-700' :
-                        r.verification_status === 'invalid' ? 'bg-red-50 text-red-700' :
-                        r.verification_status === 'catch-all' ? 'bg-amber-50 text-amber-700' :
-                        'bg-slate-50 text-slate-500'
-                      }`}
-                    >
-                      {r.verification_status}
-                    </span>
-                  ) : (
-                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">verifying…</span>
-                  )
-              }
-              <span
-                className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                  r.status === 'accepted' ? 'bg-green-100 text-green-800' :
-                  r.status === 'pending_review' ? 'bg-blue-50 text-blue-700' :
-                  r.status === 'spawned_lead' ? 'bg-purple-50 text-purple-700' :
-                  'bg-slate-50 text-slate-500'
-                }`}
-              >
-                {r.status === 'pending_review' ? 'pending' : r.status === 'spawned_lead' ? 'spawned' : r.status}
-              </span>
-            </div>
+            <span className={`text-xs font-medium truncate flex-1 min-w-0 ${isAccepted ? 'text-on-surface' : 'text-secondary'}`}>
+              {r.value}
+            </span>
+            <span
+              className={`material-symbols-outlined text-[13px] shrink-0 ${status.color} ${status.spin ? 'animate-spin' : ''}`}
+              aria-label={status.label}
+            >
+              {status.icon}
+            </span>
           </div>
         );
       },
     },
     {
       key: 'source_url',
-      label: 'Source URL',
+      label: 'Source',
       render: (lead) => {
         const row = lead as Lead & { _discovery?: DiscoveredContactWithLead; _allDiscoveries?: DiscoveredContactWithLead[] };
         if (!row._discovery || !row._allDiscoveries) return <span className="text-slate-300 text-xs">—</span>;
         const source = pickSourceUrl(row._allDiscoveries, row._discovery);
         if (!source) return <span className="text-slate-300 text-xs">—</span>;
 
-        // 'harvested_from_url' synthetic entry vs a real DiscoveredContact row
         const isHarvestedRef = !('id' in source);
         const url = source.value;
-        const display = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        const status: StatusIcon = isHarvestedRef
+          ? { icon: 'check_circle', color: 'text-[#006630]', label: 'Scrape produced the email shown' }
+          : urlStatusIcon(source as DiscoveredContactWithLead);
 
-        let badge: React.ReactNode = null;
-        if (isHarvestedRef) {
-          badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title="Scrape produced the email shown on the left">harvested ✓</span>;
-        } else {
-          const r = source as DiscoveredContactWithLead;
-          if (!r.scrape_result) {
-            badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700">scraping…</span>;
-          } else {
-            const sr = r.scrape_result as Record<string, unknown>;
-            if (sr.error)              badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-700" title={String(sr.error)}>scrape failed</span>;
-            else if (sr.website_email) badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title={`Harvested ${sr.website_email}`}>email harvested</span>;
-            else                       badge = <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700" title="Scrape ran but found no email — open the URL manually to investigate">no email found</span>;
-          }
-        }
-
+        // Icon-only cell — text URL was eating ~180px on laptop widths for
+        // little value (the URL itself rarely tells the user anything new).
+        // The link is still clickable; hover or click-through shows the URL.
         return (
-          <div className="flex flex-col gap-1 max-w-[260px]">
+          <div className="flex items-center gap-1.5" title={`${url} — ${status.label}`}>
             <a
               href={url}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center gap-1 text-xs text-[#b0004a] hover:underline"
-              title={url}
+              aria-label={`Open source URL: ${url}`}
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md text-purple-500 hover:bg-purple-50 transition-colors"
             >
-              <span className="material-symbols-outlined text-[12px] text-purple-500">link</span>
-              <span className="truncate">{display}</span>
-              <span className="material-symbols-outlined text-[10px] shrink-0">open_in_new</span>
+              <span className="material-symbols-outlined text-[16px]">link</span>
             </a>
-            {badge}
+            <span
+              className={`material-symbols-outlined text-[13px] shrink-0 ${status.color} ${status.spin ? 'animate-spin' : ''}`}
+              aria-label={status.label}
+            >
+              {status.icon}
+            </span>
           </div>
         );
       },
@@ -361,11 +365,10 @@ export default function Prospects() {
     const r = (lead as Lead & { _discovery?: DiscoveredContactWithLead })._discovery;
     if (!r) return null;
     const busy = busyId === r.id;
-    if (r.status === 'accepted') {
-      return (
-        <span className="text-[10px] font-bold text-green-700 px-1.5">accepted</span>
-      );
-    }
+    // Accepted state is already shown via the green check_circle in the
+    // Discovered Email column — no need for a redundant text chip in the
+    // Actions column that just gets truncated to "epted" on narrow tables.
+    if (r.status === 'accepted') return null;
     return (
       <>
         <button
@@ -418,19 +421,11 @@ export default function Prospects() {
 
   return (
     <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-6 pb-24 lg:pb-8">
-      <div>
-        <h2
-          className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
-          style={{ fontFamily: 'Manrope, sans-serif' }}
-        >
-          Prospect <span className="text-[#b0004a]">Leads</span>
-        </h2>
-        <p className="text-secondary font-medium mt-1 text-sm sm:text-base">
-          Leads with a discovered contact email — auto-detected from auto-replies or
-          manually promoted from the Inbox. Cold sequences for these leads are paused
-          automatically; create a new campaign once you accept the prospect's email.
-        </p>
-      </div>
+      <SectionHeader
+        title="Prospect"
+        accent="Leads"
+        subtitle="Leads with a discovered contact email — auto-detected from auto-replies or manually promoted from the Inbox. Cold sequences for these leads are paused automatically; create a new campaign once you accept the prospect's email."
+      />
 
       {/* Status toast */}
       {statusMsg && (
@@ -493,9 +488,8 @@ export default function Prospects() {
       {/* Single-page list */}
       <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
         {loading && rawDiscoveries.length === 0 ? (
-          <div className="flex items-center justify-center h-48 gap-2 text-secondary">
-            <span className="material-symbols-outlined text-[#b0004a] text-[20px] animate-spin">progress_activity</span>
-            Loading prospects...
+          <div className="flex items-center justify-center h-48">
+            <LoadingState label="Loading prospects…" />
           </div>
         ) : (
           <LeadsTable

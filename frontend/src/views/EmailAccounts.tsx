@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
+import Button from '../ui/Button';
+import LoadingState from '../ui/LoadingState';
+import Pill from '../ui/Pill';
+import SectionHeader from '../ui/SectionHeader';
 
 interface DnsStatus {
   mx: boolean;
@@ -426,40 +430,37 @@ export default function EmailAccounts() {
 
   return (
     <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-6 sm:space-y-8">
-      {/* Header */}
-      <div className="flex flex-col lg:flex-row lg:justify-between lg:items-end gap-4">
-        <div>
-          <h2 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
-            Email <span className="text-[#b0004a]">Accounts</span>
-          </h2>
-          <p className="text-secondary font-medium mt-1 text-sm sm:text-base">Monitor sender health and manage your outreach email accounts.</p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 lg:flex lg:items-center gap-2 sm:gap-3">
-          <button
-            onClick={openDreamhostModal}
-            className="flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
-          >
-            <span className="material-symbols-outlined text-[18px] text-[#b0004a]">dns</span>
-            <span className="sm:hidden lg:inline">Connect DreamHost</span>
-            <span className="hidden sm:inline lg:hidden">DreamHost</span>
-          </button>
-          <button
-            onClick={openBluehostModal}
-            className="flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 bg-white border border-slate-200 text-on-surface rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] hover:border-[#b0004a]/40 transition-transform"
-          >
-            <span className="material-symbols-outlined text-[18px] text-[#b0004a]">mail</span>
-            <span className="sm:hidden lg:inline">Connect Bluehost</span>
-            <span className="hidden sm:inline lg:hidden">Bluehost</span>
-          </button>
-          <button
-            onClick={openModal}
-            className="flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
-          >
-            <span className="material-symbols-outlined text-[18px]">add_circle</span>
-            Add Account
-          </button>
-        </div>
-      </div>
+      <SectionHeader
+        title="Email"
+        accent="Accounts"
+        subtitle="Monitor sender health and manage your outreach email accounts."
+        actions={
+          <div className="grid grid-cols-1 sm:grid-cols-3 lg:flex lg:items-center gap-2 sm:gap-3">
+            <Button
+              variant="secondary"
+              onClick={openDreamhostModal}
+              leadingIcon={<span className="material-symbols-outlined text-[18px] text-[#b0004a]">dns</span>}
+            >
+              <span className="sm:hidden lg:inline">Connect DreamHost</span>
+              <span className="hidden sm:inline lg:hidden">DreamHost</span>
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={openBluehostModal}
+              leadingIcon={<span className="material-symbols-outlined text-[18px] text-[#b0004a]">mail</span>}
+            >
+              <span className="sm:hidden lg:inline">Connect Bluehost</span>
+              <span className="hidden sm:inline lg:hidden">Bluehost</span>
+            </Button>
+            <Button
+              onClick={openModal}
+              leadingIcon={<span className="material-symbols-outlined text-[18px]">add_circle</span>}
+            >
+              Add Account
+            </Button>
+          </div>
+        }
+      />
 
       {/* Global Health Metrics */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4 xl:gap-5">
@@ -521,8 +522,8 @@ export default function EmailAccounts() {
       {/* Account Cards */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5 xl:gap-6">
         {loading ? (
-          <div className="col-span-1 lg:col-span-2 xl:col-span-3 flex items-center justify-center py-16 text-secondary text-sm">
-            Loading account info…
+          <div className="col-span-1 lg:col-span-2 xl:col-span-3 flex items-center justify-center py-16">
+            <LoadingState label="Loading account info…" />
           </div>
         ) : accounts.map((account, i) => (
           <div key={account.id ?? i} className="bg-surface-container-lowest rounded-xl p-4 sm:p-6 ambient-shadow hover:shadow-xl transition-all border border-slate-50 min-w-0 max-w-full overflow-hidden">
@@ -537,9 +538,9 @@ export default function EmailAccounts() {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <span className={`px-2 py-1 text-[10px] font-black uppercase rounded ${
-                  account.status === 'active' ? 'bg-[#8ff9a8]/30 text-[#006630]' : 'bg-slate-100 text-slate-500'
-                }`}>{account.status}</span>
+                <Pill variant={account.status === 'active' ? 'success' : 'neutral'} size="sm">
+                  {account.status}
+                </Pill>
                 {account.source === 'db' && (
                   <button
                     onClick={() => handleDelete(account.id)}

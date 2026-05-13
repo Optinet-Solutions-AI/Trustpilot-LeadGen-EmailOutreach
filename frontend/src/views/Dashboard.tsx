@@ -4,6 +4,13 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAnalytics } from '../hooks/useAnalytics';
 import { useFollowUps } from '../hooks/useFollowUps';
+import Button from '../ui/Button';
+import Card from '../ui/Card';
+import EmptyState from '../ui/EmptyState';
+import LoadingState from '../ui/LoadingState';
+import Pill from '../ui/Pill';
+import SectionHeader from '../ui/SectionHeader';
+import Stat from '../ui/Stat';
 
 export default function Dashboard() {
   const { data, loading, error, fetchAnalytics } = useAnalytics();
@@ -15,10 +22,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="flex items-center gap-3 text-secondary">
-          <span className="material-symbols-outlined animate-spin">progress_activity</span>
-          Loading dashboard...
-        </div>
+        <LoadingState label="Loading dashboard…" />
       </div>
     );
   }
@@ -27,22 +31,27 @@ export default function Dashboard() {
     const isNetworkError = !!error && error.startsWith('Network Error');
     return (
       <div className="px-4 py-8 sm:px-10 sm:py-12">
-        <div className="bg-surface-container-lowest rounded-xl p-6 sm:p-10 ambient-shadow text-center max-w-lg mx-auto">
-          <span className="material-symbols-outlined text-4xl text-error mb-4 block">error_outline</span>
-          <p className="font-bold text-on-surface mb-2">{error || 'Could not load dashboard data.'}</p>
-          {isNetworkError && (
-            <p className="text-sm text-secondary mb-6">
-              If this keeps happening, confirm{' '}
-              <code className="bg-surface-container px-1.5 py-0.5 rounded text-xs">NEXT_PUBLIC_API_BASE_URL</code>{' '}
-              is set in Vercel.
-            </p>
-          )}
-          <button
-            onClick={() => { fetchAnalytics(); fetchFollowUps(); }}
-            className="px-6 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm"
-          >
-            Retry
-          </button>
+        <div className="max-w-lg mx-auto">
+          <Card>
+            <EmptyState
+              icon="error_outline"
+              title={error || 'Could not load dashboard data.'}
+              description={
+                isNetworkError ? (
+                  <>
+                    If this keeps happening, confirm{' '}
+                    <code className="bg-surface-container px-1.5 py-0.5 rounded text-xs">
+                      NEXT_PUBLIC_API_BASE_URL
+                    </code>{' '}
+                    is set in Vercel.
+                  </>
+                ) : undefined
+              }
+              action={
+                <Button onClick={() => { fetchAnalytics(); fetchFollowUps(); }}>Retry</Button>
+              }
+            />
+          </Card>
         </div>
       </div>
     );
@@ -52,71 +61,60 @@ export default function Dashboard() {
   const totalReplied = data.campaigns.reduce((s, c) => s + c.total_replied, 0);
   const replyRate = totalSent > 0 ? ((totalReplied / totalSent) * 100).toFixed(1) : '0.0';
 
-  const statCards = [
-    { label: 'Total Leads',  value: data.totalLeads,                  icon: 'group',       trend: null },
-    { label: 'New',          value: data.leadsByStatus.new || 0,       icon: 'fiber_new',   trend: null },
-    { label: 'Contacted',    value: data.leadsByStatus.contacted || 0, icon: 'send',        trend: null },
-    { label: 'Replied',      value: data.leadsByStatus.replied || 0,   icon: 'reply',       trend: null },
-    { label: 'Converted',    value: data.leadsByStatus.converted || 0, icon: 'check_circle',trend: null },
-    { label: 'Reply Rate',   value: `${replyRate}%`,                   icon: 'trending_up', trend: null },
+  const statCards: { label: string; value: number | string; icon: string }[] = [
+    { label: 'Total Leads',  value: data.totalLeads,                   icon: 'group' },
+    { label: 'New',          value: data.leadsByStatus.new || 0,       icon: 'fiber_new' },
+    { label: 'Contacted',    value: data.leadsByStatus.contacted || 0, icon: 'send' },
+    { label: 'Replied',      value: data.leadsByStatus.replied || 0,   icon: 'reply' },
+    { label: 'Converted',    value: data.leadsByStatus.converted || 0, icon: 'check_circle' },
+    { label: 'Reply Rate',   value: `${replyRate}%`,                   icon: 'trending_up' },
   ];
 
   return (
     <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
-        <div>
-          <h2
-            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
-            style={{ fontFamily: 'Manrope, sans-serif' }}
+      <SectionHeader
+        title="Dashboard"
+        accent="Overview"
+        subtitle="Your outreach pipeline at a glance."
+        actions={
+          <Button
+            onClick={() => router.push('/scrape')}
+            leadingIcon={<span className="material-symbols-outlined text-[18px]">search_check</span>}
           >
-            Dashboard <span className="text-[#b0004a]">Overview</span>
-          </h2>
-          <p className="text-secondary mt-1 font-medium text-sm sm:text-base">Your outreach pipeline at a glance.</p>
-        </div>
-        <button
-          onClick={() => router.push('/scrape')}
-          className="flex items-center justify-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform flex-shrink-0"
-          style={{ fontFamily: 'Manrope, sans-serif' }}
-        >
-          <span className="material-symbols-outlined text-[18px]">search_check</span>
-          New Scrape
-        </button>
-      </div>
+            New Scrape
+          </Button>
+        }
+      />
 
       {/* Stats Bento */}
       <div className="grid grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 xl:gap-5">
         {statCards.map(({ label, value, icon }) => (
-          <div key={label} className="bg-surface-container-lowest p-6 rounded-xl ambient-shadow">
-            <div className="flex items-center justify-between mb-4">
-              <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
-                {icon}
-              </span>
-            </div>
-            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">{label}</p>
-            <h4
-              className="text-2xl font-black text-on-surface mt-1"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              {typeof value === 'number' ? value.toLocaleString() : value}
-            </h4>
-          </div>
+          <Stat
+            key={label}
+            icon={icon}
+            label={label}
+            value={typeof value === 'number' ? value.toLocaleString() : value}
+          />
         ))}
       </div>
 
       {/* Lower Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
         {/* Upcoming Follow-ups */}
-        <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-4 sm:px-7 py-4 sm:py-5 border-b border-slate-50 flex items-center gap-3">
-            <span className="material-symbols-outlined text-[#b0004a]">schedule</span>
-            <h3
-              className="font-bold text-on-surface"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              Upcoming Follow-ups
-            </h3>
-          </div>
+        <Card
+          variant="flush"
+          header={
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-[#b0004a]">schedule</span>
+              <h3
+                className="font-bold text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                Upcoming Follow-ups
+              </h3>
+            </div>
+          }
+        >
           <div className="divide-y divide-slate-50">
             {followUps.slice(0, 5).map((fu) => {
               const isOverdue = new Date(fu.due_date) < new Date();
@@ -141,19 +139,23 @@ export default function Dashboard() {
               <p className="text-sm text-secondary text-center py-10">No upcoming follow-ups</p>
             )}
           </div>
-        </div>
+        </Card>
 
         {/* Recent Scrapes */}
-        <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-4 sm:px-7 py-4 sm:py-5 border-b border-slate-50 flex items-center gap-3">
-            <span className="material-symbols-outlined text-[#b0004a]">search_check</span>
-            <h3
-              className="font-bold text-on-surface"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              Recent Scrapes
-            </h3>
-          </div>
+        <Card
+          variant="flush"
+          header={
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-[#b0004a]">search_check</span>
+              <h3
+                className="font-bold text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                Recent Scrapes
+              </h3>
+            </div>
+          }
+        >
           <div className="divide-y divide-slate-50">
             {data.recentScrapeJobs.map((job) => (
               <div key={job.id} className="flex items-center justify-between px-7 py-4">
@@ -163,16 +165,9 @@ export default function Dashboard() {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-bold text-on-surface">{job.total_found} found</span>
-                  {job.status === 'completed' && (
-                    <span className="px-2 py-0.5 bg-[#8ff9a8]/30 text-[#006630] text-[10px] font-black rounded-full uppercase">
-                      Done
-                    </span>
-                  )}
-                  {job.status === 'running' && (
-                    <span className="px-2 py-0.5 bg-[#ffd9de] text-[#b0004a] text-[10px] font-black rounded-full uppercase">
-                      Running
-                    </span>
-                  )}
+                  {job.status === 'completed' && <Pill variant="success" size="sm">Done</Pill>}
+                  {job.status === 'running' && <Pill variant="running" size="sm">Running</Pill>}
+                  {job.status === 'failed' && <Pill variant="error" size="sm">Failed</Pill>}
                 </div>
               </div>
             ))}
@@ -180,13 +175,14 @@ export default function Dashboard() {
               <p className="text-sm text-secondary text-center py-10">No scrape jobs yet</p>
             )}
           </div>
-        </div>
+        </Card>
       </div>
 
       {/* Campaign Performance */}
       {data.campaigns.length > 0 && (
-        <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-4 sm:px-7 py-4 sm:py-5 border-b border-slate-50 flex items-center justify-between">
+        <Card
+          variant="flush"
+          header={
             <div className="flex items-center gap-3">
               <span className="material-symbols-outlined text-[#b0004a]">campaign</span>
               <h3
@@ -196,6 +192,8 @@ export default function Dashboard() {
                 Campaign Performance
               </h3>
             </div>
+          }
+          actions={
             <button
               onClick={() => router.push('/campaigns')}
               className="text-xs font-bold text-[#b0004a] hover:underline flex items-center gap-1"
@@ -203,7 +201,8 @@ export default function Dashboard() {
               View All
               <span className="material-symbols-outlined text-[14px]">chevron_right</span>
             </button>
-          </div>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -226,7 +225,7 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

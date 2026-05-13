@@ -10,6 +10,9 @@ import CampaignWizard from '../components/campaign-wizard/CampaignWizard';
 import TestFlightModal from '../components/TestFlightModal';
 import { Loader2 } from 'lucide-react';
 import type { Campaign } from '../types/campaign';
+import Button from '../ui/Button';
+import EmptyState from '../ui/EmptyState';
+import SectionHeader from '../ui/SectionHeader';
 
 export default function Campaigns() {
   const {
@@ -233,55 +236,47 @@ export default function Campaigns() {
   return (
     <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
 
-      {/* Header */}
-      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:justify-between lg:items-end gap-3 sm:gap-4">
-        <div>
-          <h2
-            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
-            style={{ fontFamily: 'Manrope, sans-serif' }}
-          >
-            Campaign <span className="text-[#b0004a]">Wizard</span>
-          </h2>
-          <p className="text-secondary font-medium mt-1 text-sm sm:text-base">
-            Build, test, and launch personalized outreach campaigns.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-          {rateLimit && (
-            <div className="text-xs font-semibold text-secondary bg-surface-container rounded-lg px-3 py-2 flex items-center gap-2">
-              {warmupStatus && (
-                <span className="text-[#b0004a] font-bold">Day {warmupStatus.day} ·</span>
-              )}
-              {rateLimit.hourlyRemaining}/hr · {rateLimit.dailyRemaining}/{rateLimit.dailyCap} left
-            </div>
-          )}
-          {platformInfo?.enabled && (
-            <button
-              onClick={handleSyncStats}
-              disabled={syncing}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container disabled:opacity-50 transition-colors"
+      <SectionHeader
+        title="Campaign"
+        accent="Wizard"
+        subtitle="Build, test, and launch personalized outreach campaigns."
+        actions={
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {rateLimit && (
+              <div className="text-xs font-semibold text-secondary bg-surface-container rounded-lg px-3 py-2 flex items-center gap-2">
+                {warmupStatus && (
+                  <span className="text-[#b0004a] font-bold">Day {warmupStatus.day} ·</span>
+                )}
+                {rateLimit.hourlyRemaining}/hr · {rateLimit.dailyRemaining}/{rateLimit.dailyCap} left
+              </div>
+            )}
+            {platformInfo?.enabled && (
+              <Button
+                variant="secondary"
+                onClick={handleSyncStats}
+                disabled={syncing}
+                leadingIcon={<span className={`material-symbols-outlined text-[16px] ${syncing ? 'animate-spin' : ''}`}>sync</span>}
+              >
+                Sync Stats
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              onClick={handleCheckReplies}
+              disabled={checkingReplies}
+              leadingIcon={<span className={`material-symbols-outlined text-[16px] ${checkingReplies ? 'animate-spin' : ''}`}>refresh</span>}
             >
-              <span className={`material-symbols-outlined text-[16px] ${syncing ? 'animate-spin' : ''}`}>sync</span>
-              Sync Stats
-            </button>
-          )}
-          <button
-            onClick={handleCheckReplies}
-            disabled={checkingReplies}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 text-secondary text-sm font-bold hover:bg-surface-container disabled:opacity-50 transition-colors"
-          >
-            <span className={`material-symbols-outlined text-[16px] ${checkingReplies ? 'animate-spin' : ''}`}>refresh</span>
-            Check Replies
-          </button>
-          <button
-            onClick={() => setShowWizard(true)}
-            className="flex items-center gap-2 px-5 py-2.5 primary-gradient text-on-primary rounded-lg font-bold text-sm ambient-shadow hover:scale-[1.02] transition-transform"
-          >
-            <span className="material-symbols-outlined text-[18px]">add_circle</span>
-            New Campaign
-          </button>
-        </div>
-      </div>
+              Check Replies
+            </Button>
+            <Button
+              onClick={() => setShowWizard(true)}
+              leadingIcon={<span className="material-symbols-outlined text-[18px]">add_circle</span>}
+            >
+              New Campaign
+            </Button>
+          </div>
+        }
+      />
 
       {/* Notifications */}
       {notification && (
@@ -363,24 +358,20 @@ export default function Campaigns() {
         </div>
 
         {campaigns.length === 0 && !loading ? (
-          <div className="bg-surface-container-lowest rounded-xl ambient-shadow py-16 text-center">
-            <div className="w-16 h-16 rounded-full bg-[#ffd9de] flex items-center justify-center mx-auto mb-4">
-              <span className="material-symbols-outlined text-[#b0004a] text-[28px]">magic_button</span>
-            </div>
-            <p
-              className="text-on-surface font-bold mb-1"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              No campaigns yet
-            </p>
-            <p className="text-secondary text-sm mb-4">Create your first campaign to start outreach.</p>
-            <button
-              onClick={() => setShowWizard(true)}
-              className="inline-flex items-center gap-2 text-sm font-bold primary-gradient text-on-primary px-5 py-2.5 rounded-lg ambient-shadow hover:scale-[1.02] transition-transform"
-            >
-              <span className="material-symbols-outlined text-[16px]">add_circle</span>
-              Create your first campaign
-            </button>
+          <div className="bg-surface-container-lowest rounded-xl ambient-shadow">
+            <EmptyState
+              icon="magic_button"
+              title="No campaigns yet"
+              description="Create your first campaign to start outreach."
+              action={
+                <Button
+                  onClick={() => setShowWizard(true)}
+                  leadingIcon={<span className="material-symbols-outlined text-[16px]">add_circle</span>}
+                >
+                  Create your first campaign
+                </Button>
+              }
+            />
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4">
