@@ -21,6 +21,7 @@ import { renderAndSpin } from './template-engine.js';
 import { sendEmail } from './email-sender.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
+import { getSenderAccountByEmail } from './sender-loader.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
 
@@ -142,12 +143,26 @@ async function sendFollowUp(cl: Record<string, unknown>) {
     isTestMode
   );
 
+  // Reuse the same sender that handled the initial send so the recipient
+  // sees a coherent thread (same From, matching Reply-To, and per-account
+  // caps continue to track this lead's volume). Falls back to env default
+  // when campaign_leads.sender_email is empty (pre-feature rows) or the
+  // account is no longer active — keeps old leads working unchanged.
+  const recordedSenderEmail = (cl.sender_email as string | null | undefined) ?? null;
+  const senderAccount = recordedSenderEmail ? await getSenderAccountByEmail(recordedSenderEmail) : null;
+  if (recordedSenderEmail && !senderAccount) {
+    console.warn(`[SequenceScheduler] sender_email=${recordedSenderEmail} not loadable — falling back to env default for follow-up to ${cl.email_used}`);
+  } else if (senderAccount) {
+    console.log(`[SequenceScheduler] Reusing initial sender ${senderAccount.email} for follow-up step ${nextStepNumber} → ${cl.email_used}`);
+  }
+
   // Send the email
   const result = await sendEmail(
     transformed.to,
     transformed.subject,
     transformed.html,
-    { screenshotPath }
+    { screenshotPath },
+    senderAccount ?? undefined,
   );
 
   if (result.success) {
@@ -159,15 +174,23 @@ async function sendFollowUp(cl: Record<string, unknown>) {
       ? new Date(Date.now() + nextNextStep.delay_days * 24 * 60 * 60 * 1000).toISOString()
       : null;
 
-    // Update campaign_lead: advance step, set next due date
+    // Update campaign_lead: advance step, set next due date.
+    // Also persist the sender we used (or env default) so future follow-ups
+    // can keep using the same account — covers leads whose original
+    // sender_email column was empty before this feature shipped.
+    const sentBySenderEmail = senderAccount?.email ?? config.gmail.fromEmail ?? null;
+    const updatePayload: Record<string, unknown> = {
+      current_step: nextStepNumber,
+      next_step_at: nextStepAt,
+      sequence_completed: !nextNextStep,
+      sent_at: new Date().toISOString(),
+    };
+    if (sentBySenderEmail && !recordedSenderEmail) {
+      updatePayload.sender_email = sentBySenderEmail;
+    }
     await supabase
       .from('campaign_leads')
-      .update({
-        current_step: nextStepNumber,
-        next_step_at: nextStepAt,
-        sequence_completed: !nextNextStep,
-        sent_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', cl.id);
 
     // Update campaign totals
