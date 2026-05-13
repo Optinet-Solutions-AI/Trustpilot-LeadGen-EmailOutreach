@@ -1,5 +1,14 @@
 import { getSupabase } from '../lib/supabase.js';
 
+// Migration 032 generalized the taxonomy tables from Trustpilot-only
+// to a multi-platform schema:
+//   trustpilot_categories → platform_categories (PK now (platform, slug))
+//   trustpilot_countries  → platform_countries  (PK now (platform, code))
+// All existing rows were migrated with platform='trustpilot'. This module
+// continues to serve Trustpilot data only; once we add a second platform,
+// the API will need a `platform` query param to filter accordingly.
+const PLATFORM = 'trustpilot';
+
 export interface TaxonomyCategoryRow {
   slug: string;
   parent_slug: string | null;
@@ -8,6 +17,7 @@ export interface TaxonomyCategoryRow {
   business_count: number | null;
   last_seen_at: string;
   created_at: string;
+  platform?: string;
 }
 
 export interface TaxonomyCountryRow {
@@ -15,6 +25,7 @@ export interface TaxonomyCountryRow {
   name: string;
   last_seen_at: string;
   created_at: string;
+  platform?: string;
 }
 
 export async function listCategories(): Promise<TaxonomyCategoryRow[]> {
@@ -26,8 +37,9 @@ export async function listCategories(): Promise<TaxonomyCategoryRow[]> {
   const all: TaxonomyCategoryRow[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
-      .from('trustpilot_categories')
+      .from('platform_categories')
       .select('*')
+      .eq('platform', PLATFORM)
       .order('parent_slug', { ascending: true, nullsFirst: true })
       .order('sort_order', { ascending: true })
       .range(from, from + PAGE - 1);
@@ -42,8 +54,9 @@ export async function listCategories(): Promise<TaxonomyCategoryRow[]> {
 export async function listCountries(): Promise<TaxonomyCountryRow[]> {
   const supabase = getSupabase();
   const { data, error } = await supabase
-    .from('trustpilot_countries')
+    .from('platform_countries')
     .select('*')
+    .eq('platform', PLATFORM)
     .order('name', { ascending: true });
   if (error) throw new Error(error.message);
   return (data ?? []) as TaxonomyCountryRow[];
@@ -53,14 +66,16 @@ export async function getMaxLastSeen(): Promise<string | null> {
   const supabase = getSupabase();
   const [{ data: cat }, { data: cty }] = await Promise.all([
     supabase
-      .from('trustpilot_categories')
+      .from('platform_categories')
       .select('last_seen_at')
+      .eq('platform', PLATFORM)
       .order('last_seen_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
     supabase
-      .from('trustpilot_countries')
+      .from('platform_countries')
       .select('last_seen_at')
+      .eq('platform', PLATFORM)
       .order('last_seen_at', { ascending: false })
       .limit(1)
       .maybeSingle(),

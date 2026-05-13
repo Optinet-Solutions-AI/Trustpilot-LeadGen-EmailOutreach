@@ -2,8 +2,10 @@
 Trustpilot Taxonomy Discovery — scrapes /categories and the country selector
 to enumerate every category + country Trustpilot exposes.
 
-Idempotent. Upserts into trustpilot_categories and trustpilot_countries.
-Stale slugs are NOT deleted — their last_seen_at just stops advancing.
+Idempotent. Upserts into platform_categories and platform_countries with
+platform='trustpilot' (migration 032 generalized these tables from the
+original trustpilot-only schema). Stale slugs are NOT deleted — their
+last_seen_at just stops advancing.
 
 Usage:
   python tools/scraper/discover_taxonomy.py            # full refresh + DB write
@@ -221,6 +223,7 @@ def _upsert_supabase(categories: list[dict], countries: list[dict]) -> None:
         _progress("saving_categories", str(len(categories)))
         rows = [
             {
+                'platform': 'trustpilot',
                 'slug': c['slug'],
                 'parent_slug': c['parent_slug'],
                 'display_name': c['display_name'],
@@ -229,13 +232,14 @@ def _upsert_supabase(categories: list[dict], countries: list[dict]) -> None:
             }
             for i, c in enumerate(categories)
         ]
-        client.from_('trustpilot_categories').upsert(rows, on_conflict='slug').execute()
+        # Composite PK after migration 032 is (platform, slug)
+        client.from_('platform_categories').upsert(rows, on_conflict='platform,slug').execute()
 
     if countries:
         _progress("saving_countries", str(len(countries)))
-        client.from_('trustpilot_countries').upsert(
-            [{'code': c['code'], 'name': c['name'], 'last_seen_at': now_iso} for c in countries],
-            on_conflict='code',
+        client.from_('platform_countries').upsert(
+            [{'platform': 'trustpilot', 'code': c['code'], 'name': c['name'], 'last_seen_at': now_iso} for c in countries],
+            on_conflict='platform,code',
         ).execute()
 
 
