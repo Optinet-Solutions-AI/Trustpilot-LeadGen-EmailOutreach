@@ -22,6 +22,9 @@ interface Props {
 
 const MAX_PROGRESS_ENTRIES = 200;
 const POLL_INTERVAL_MS = 5000;
+// Auto-dismiss finished cards so the page doesn't pile up old results. The
+// job still lives in the Recent Jobs table below — only the live card goes.
+const AUTO_DISMISS_MS = 60_000;
 
 export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props) {
   const [status, setStatus] = useState<ScrapeJob['status']>(initialJob?.status ?? 'running');
@@ -126,6 +129,26 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
 
   const isTerminal = status === 'completed' || status === 'failed';
 
+  // Auto-dismiss countdown — starts the instant a job hits a terminal status.
+  // Counter is the seconds remaining; null means no timer is active.
+  const [dismissIn, setDismissIn] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isTerminal) {
+      setDismissIn(null);
+      return;
+    }
+    setDismissIn(Math.floor(AUTO_DISMISS_MS / 1000));
+    const tick = setInterval(() => {
+      setDismissIn((s) => (s == null ? null : Math.max(0, s - 1)));
+    }, 1000);
+    const dismissTimer = setTimeout(onDismiss, AUTO_DISMISS_MS);
+    return () => {
+      clearInterval(tick);
+      clearTimeout(dismissTimer);
+    };
+  }, [isTerminal, onDismiss]);
+
   return (
     <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 sm:p-8 relative">
       <div className="flex items-start justify-between mb-4 gap-4">
@@ -146,14 +169,24 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
           </p>
         </div>
         {isTerminal && (
-          <button
-            onClick={onDismiss}
-            className="flex items-center justify-center w-8 h-8 rounded-lg text-secondary hover:bg-surface-container hover:text-on-surface transition-colors flex-shrink-0"
-            aria-label="Dismiss this scrape"
-            title="Dismiss"
-          >
-            <span className="material-symbols-outlined text-[18px]">close</span>
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {dismissIn != null && dismissIn > 0 && (
+              <span
+                className="text-[10px] font-bold uppercase tracking-wider text-secondary"
+                title="This card will dismiss itself; click ✕ to remove now"
+              >
+                Auto-dismiss in {dismissIn}s
+              </span>
+            )}
+            <button
+              onClick={onDismiss}
+              className="flex items-center justify-center w-8 h-8 rounded-lg text-secondary hover:bg-surface-container hover:text-on-surface transition-colors"
+              aria-label="Dismiss this scrape"
+              title="Dismiss"
+            >
+              <span className="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
         )}
       </div>
       <JobProgress

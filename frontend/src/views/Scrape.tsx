@@ -1,18 +1,40 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useScrape } from '../hooks/useScrape';
+import { useTaxonomy } from '../hooks/useTaxonomy';
 import ScrapeForm from '../components/ScrapeForm';
 import ActiveScrapeCard from '../components/ActiveScrapeCard';
 import type { ScrapeParams } from '../types/scrape';
 import api from '../api/client';
+import Button from '../ui/Button';
+import Card from '../ui/Card';
+import IconButton from '../ui/IconButton';
+import Pill from '../ui/Pill';
+import SectionHeader from '../ui/SectionHeader';
+import Stat from '../ui/Stat';
+
+function relativeFromNow(iso: string | null): string {
+  if (!iso) return 'Never refreshed';
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return 'Never refreshed';
+  const diffMs = Date.now() - then;
+  if (diffMs < 60_000) return 'Refreshed just now';
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) return `Refreshed ${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `Refreshed ${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `Refreshed ${days}d ago`;
+}
 
 export default function Scrape() {
   const {
     activeScrapes, jobs, error,
     startScrape, dismissScrape, fetchJobs, deleteJob, cleanupEmptyJobs,
   } = useScrape();
+  const taxonomy = useTaxonomy();
   const router = useRouter();
   const [apiReady, setApiReady] = useState<boolean | null>(null);
   const [cleaning, setCleaning] = useState(false);
@@ -43,127 +65,149 @@ export default function Scrape() {
   const runningCount = jobs.filter((j) => j.status === 'running').length;
   const lastDone = jobs.find((j) => j.status !== 'running');
 
+  // Surface in-flight work above finished work so the user never scrolls past
+  // history to see what is happening RIGHT NOW. Within each group, newest-first.
+  const STATUS_RANK: Record<string, number> = { running: 0, pending: 1, failed: 2, completed: 3 };
+  const orderedJobs = [...jobs].sort((a, b) => {
+    const ar = STATUS_RANK[a.status] ?? 99;
+    const br = STATUS_RANK[b.status] ?? 99;
+    if (ar !== br) return ar - br;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  const taxonomyHelper = useMemo(() => {
+    if (taxonomy.refreshing) {
+      const stage = taxonomy.refreshProgress?.stage ?? 'starting';
+      const pretty: Record<string, string> = {
+        starting: 'Refreshing…',
+        loading_index: 'Loading Trustpilot index…',
+        top_level_done: 'Indexing categories…',
+        expand_start: 'Harvesting subcategories…',
+        expand_progress: `Harvesting subcategories ${taxonomy.refreshProgress?.detail ?? ''}`,
+        expand_done: 'Subcategories collected',
+        countries_done: 'Listing markets…',
+        saving_categories: 'Saving categories…',
+        saving_countries: 'Saving countries…',
+      };
+      return pretty[stage] ?? `Refreshing… (${stage})`;
+    }
+    return relativeFromNow(taxonomy.lastSeenAt);
+  }, [taxonomy.refreshing, taxonomy.refreshProgress, taxonomy.lastSeenAt]);
+
   return (
     <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-4 sm:space-y-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-2">
-        <div>
-          <h2
-            className="text-2xl sm:text-4xl font-extrabold tracking-tight text-on-surface"
-            style={{ fontFamily: 'Manrope, sans-serif' }}
-          >
-            Lead Scraping <span className="text-[#b0004a]">Dashboard</span>
-          </h2>
-          <p className="text-secondary mt-1 font-medium text-sm sm:text-base">
-            Configure and execute high-performance lead extraction from Trustpilot.
-          </p>
-        </div>
-        <span className="self-start sm:self-auto px-3 py-1.5 bg-[#ffd9de] text-[#b0004a] text-[10px] font-black rounded-full uppercase tracking-wide flex-shrink-0">
-          Powered by EC2 Worker (Singapore)
-        </span>
-      </div>
+      <SectionHeader
+        title="Lead Scraping"
+        accent="Dashboard"
+        subtitle="Configure and execute high-performance lead extraction from Trustpilot."
+        actions={
+          <Pill variant="brand" size="md" className="!text-[10px]">
+            Powered by EC2 Worker (Singapore)
+          </Pill>
+        }
+      />
 
       {/* Main Grid */}
       <div className="grid grid-cols-12 gap-3 sm:gap-5 xl:gap-6">
         {/* Scrape Config */}
-        <div className="col-span-12 xl:col-span-8 bg-surface-container-lowest rounded-xl ambient-shadow p-4 sm:p-6 xl:p-8">
-          <div className="flex items-center justify-between mb-8">
-            <h3
-              className="text-xl font-extrabold text-on-surface"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              Scrape Trustpilot
-            </h3>
-            <span className={`flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full ${
-              runningCount > 0
-                ? 'bg-[#ffd9de] text-[#b0004a]'
-                : 'bg-surface-container text-secondary'
-            }`}>
-              {runningCount > 0 && (
-                <span className="w-1.5 h-1.5 rounded-full bg-[#b0004a] animate-pulse inline-block" />
-              )}
-              {runningCount > 0
-                ? `${runningCount} running`
-                : 'Ready'}
-            </span>
-          </div>
-          {/* No loading lock — backend supports up to 3 concurrent on EC2.
-              The form's own submittingRef in ScrapeForm prevents double-click
-              double-POSTs but doesn't gate on running jobs. */}
-          <ScrapeForm onSubmit={handleSubmit} loading={false} />
-          {error && (
-            <div className="mt-4 px-4 py-3 rounded-lg bg-error-container text-error text-sm font-medium">
-              {error}
-            </div>
-          )}
+        <div className="col-span-12 xl:col-span-8">
+          <Card
+            header={
+              <h3
+                className="text-xl font-extrabold text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                Scrape Trustpilot
+              </h3>
+            }
+            actions={
+              runningCount > 0 ? (
+                <Pill variant="running" pulse>{runningCount} running</Pill>
+              ) : (
+                <Pill variant="neutral">Ready</Pill>
+              )
+            }
+          >
+            {/* No loading lock — backend supports up to MAX_CONCURRENT_JOBS=3 concurrent.
+                ScrapeForm's submittingRef prevents double-click double-POSTs. */}
+            <ScrapeForm onSubmit={handleSubmit} loading={false} />
+            {error && (
+              <div className="mt-4 px-4 py-3 rounded-lg bg-error-container text-error text-sm font-medium">
+                {error}
+              </div>
+            )}
+          </Card>
         </div>
 
         {/* Stats Panel */}
         <div className="col-span-12 xl:col-span-4 space-y-4">
-          {/* Total scraped */}
-          <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
-            <div className="flex items-center justify-between mb-4">
-              <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
-                group
-              </span>
-            </div>
-            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Total Jobs Run</p>
-            <h4
-              className="text-2xl font-black text-on-surface mt-1"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              {jobs.length}
-            </h4>
-          </div>
+          <Stat icon="group" label="Total Jobs Run" value={jobs.length} />
 
-          {/* Last completed job */}
           {lastDone && (
-            <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <span className="p-2 bg-[#ffd9de] text-[#b0004a] rounded-lg material-symbols-outlined text-[20px]">
-                  history
+            <Stat
+              icon="history"
+              label="Last Scrape"
+              value={
+                <span className="text-base">
+                  {lastDone.category} <span className="text-secondary">—</span> {lastDone.country}
                 </span>
-              </div>
-              <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">Last Scrape</p>
-              <h4
-                className="text-base font-black text-on-surface mt-1"
-                style={{ fontFamily: 'Manrope, sans-serif' }}
-              >
-                {lastDone.category} — {lastDone.country}
-              </h4>
-              <p className="text-xs text-secondary mt-1">
-                {lastDone.total_scraped ?? lastDone.total_found ?? 0} leads found
-                {lastDone.status === 'failed' && (
-                  <span className="ml-2 text-[#b0004a] font-bold">· failed</span>
-                )}
-              </p>
-            </div>
+              }
+              helper={
+                <>
+                  {lastDone.total_scraped ?? lastDone.total_found ?? 0} leads found
+                  {lastDone.status === 'failed' && (
+                    <span className="ml-2 text-[#b0004a] font-bold">· failed</span>
+                  )}
+                </>
+              }
+            />
           )}
 
-          {/* Cloud status */}
-          <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <span className={`w-2 h-2 rounded-full inline-block ${
-                apiReady === null ? 'bg-slate-300 animate-pulse' :
-                apiReady ? 'bg-[#006630]' : 'bg-[#b0004a]'
-              }`} />
-              <span className={`text-xs font-bold uppercase tracking-wide ${
-                apiReady === null ? 'text-secondary' :
-                apiReady ? 'text-[#006630]' : 'text-[#b0004a]'
-              }`}>
-                Infrastructure {apiReady === null ? 'Checking…' : apiReady ? 'Online' : 'Offline'}
-              </span>
-            </div>
-            <p className="text-xs text-secondary">
-              {apiReady === false
-                ? 'Cannot reach the API server. Check your connection.'
-                : 'EC2 worker (Singapore) ready to claim queued jobs.'}
-            </p>
-          </div>
+          <Stat
+            icon="category"
+            label="Taxonomy"
+            tone={taxonomy.error ? 'neutral' : 'brand'}
+            value={
+              taxonomy.loading && taxonomy.categories.length === 0
+                ? 'Loading…'
+                : (
+                  <span className="text-base">
+                    {taxonomy.categories.length} cats <span className="text-secondary">·</span>{' '}
+                    {taxonomy.countries.length} countries
+                  </span>
+                )
+            }
+            helper={taxonomy.error ?? taxonomyHelper}
+            action={
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => taxonomy.refresh()}
+                disabled={taxonomy.refreshing}
+                loading={taxonomy.refreshing}
+              >
+                {taxonomy.refreshing ? 'Refreshing' : 'Refresh'}
+              </Button>
+            }
+          />
+
+          {apiReady !== null && !apiReady && (
+            <Card variant="compact">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-[#b0004a] inline-block" />
+                <span className="text-xs font-bold uppercase tracking-wide text-[#b0004a]">
+                  Infrastructure Offline
+                </span>
+              </div>
+              <p className="text-xs text-secondary mt-1">
+                Cannot reach the API server. Check your connection.
+              </p>
+            </Card>
+          )}
         </div>
       </div>
 
-      {/* Active scrape cards — stacked, one per in-flight job */}
+      {/* Active scrape cards — one per in-flight job */}
       {activeScrapes.length > 0 && (
         <div className="space-y-4">
           {activeScrapes.map((id) => {
@@ -182,15 +226,18 @@ export default function Scrape() {
 
       {/* Recent Jobs Table */}
       {jobs.length > 0 && (
-        <div className="bg-surface-container-lowest rounded-xl ambient-shadow overflow-hidden">
-          <div className="px-8 py-6 border-b border-slate-50 flex justify-between items-center">
+        <Card
+          variant="flush"
+          header={
             <h3
               className="font-bold text-on-surface"
               style={{ fontFamily: 'Manrope, sans-serif' }}
             >
               Recent Scrape Jobs
             </h3>
-            <div className="flex items-center gap-4">
+          }
+          actions={
+            <>
               <button
                 onClick={handleCleanup}
                 disabled={cleaning}
@@ -203,8 +250,9 @@ export default function Scrape() {
               <span className="text-xs text-secondary font-medium">
                 Showing {jobs.length} job{jobs.length !== 1 ? 's' : ''}
               </span>
-            </div>
-          </div>
+            </>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="sticky top-14 lg:top-16 z-10 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
@@ -220,8 +268,13 @@ export default function Scrape() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {jobs.map((job) => {
+                {orderedJobs.map((job) => {
                   const isCompleted = job.status === 'completed';
+                  const statusVariant =
+                    isCompleted ? 'success'
+                    : job.status === 'running' ? 'running'
+                    : job.status === 'failed' ? 'error'
+                    : 'neutral';
                   return (
                     <tr
                       key={job.id}
@@ -237,14 +290,7 @@ export default function Scrape() {
                       <td className="px-6 py-4 text-sm text-secondary">{job.country}</td>
                       <td className="px-6 py-4 text-sm text-secondary">{job.min_rating}–{job.max_rating}★</td>
                       <td className="px-6 py-4">
-                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${
-                          isCompleted                ? 'bg-[#8ff9a8]/30 text-[#006630]' :
-                          job.status === 'running'   ? 'bg-[#ffd9de] text-[#b0004a]' :
-                          job.status === 'failed'    ? 'bg-error-container text-error' :
-                          'bg-surface-container text-secondary'
-                        }`}>
-                          {job.status}
-                        </span>
+                        <Pill variant={statusVariant} size="sm">{job.status}</Pill>
                       </td>
                       <td className="px-6 py-4 text-sm font-medium">{job.total_found}</td>
                       <td className="px-6 py-4 text-sm font-medium">{job.total_scraped}</td>
@@ -263,17 +309,17 @@ export default function Scrape() {
                       </td>
                       <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                         {job.status !== 'running' && (
-                          <button
+                          <IconButton
+                            icon={<span className="material-symbols-outlined text-[18px]">delete</span>}
+                            label="Delete job"
+                            tone="danger"
+                            size="sm"
                             onClick={() => {
                               if (confirm(`Delete this ${job.category} / ${job.country} scrape job from the list? Leads already saved are kept.`)) {
                                 deleteJob(job.id);
                               }
                             }}
-                            className="material-symbols-outlined text-[18px] text-slate-300 hover:text-[#b0004a] transition-colors"
-                            title="Delete job"
-                          >
-                            delete
-                          </button>
+                          />
                         )}
                       </td>
                     </tr>
@@ -282,7 +328,7 @@ export default function Scrape() {
               </tbody>
             </table>
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

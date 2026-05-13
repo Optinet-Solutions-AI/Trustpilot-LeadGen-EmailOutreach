@@ -1,45 +1,13 @@
+'use client';
+
 import { useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import type { ScrapeParams } from '../types/scrape';
-
-const COUNTRIES = [
-  { code: 'AU', name: 'Australia' }, { code: 'AT', name: 'Austria' },
-  { code: 'BR', name: 'Brazil' }, { code: 'CA', name: 'Canada' },
-  { code: 'DK', name: 'Denmark' }, { code: 'FI', name: 'Finland' },
-  { code: 'FR', name: 'France' }, { code: 'DE', name: 'Germany' },
-  { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' },
-  { code: 'NO', name: 'Norway' }, { code: 'ES', name: 'Spain' },
-  { code: 'SE', name: 'Sweden' }, { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
-];
-
-const CATEGORIES = [
-  // ── Gambling ─────────────────────────────────────────────────
-  'gambling',                      // Gambling (parent — broadest)
-  'casino',                        // Casino
-  'online_casino_or_bookmaker',    // Online Casino or Bookmaker
-  'online_sports_betting',         // Online Sports Betting Vendor
-  'betting_agency',                // Betting Agency
-  'bookmaker',                     // Bookmaker
-  'gambling_service',              // Gambling Service
-  'gambling_house',                // Gambling House
-  'off_track_betting_shop',        // Off-Track Betting Shop
-  'lottery_vendor',                // Lottery Vendor
-  'online_lottery_ticket_vendor',  // Online Lottery Ticket Vendor
-  'lottery_retailer',              // Lottery Retailer
-  'lottery_shop',                  // Lottery Shop
-  'gambling_instructor',           // Gambling Instructor
-  // ── Gaming ───────────────────────────────────────────────────
-  'gaming',                        // Gaming (parent)
-  'gaming_service_provider',       // Gaming Service Provider
-  'bingo_hall',                    // Bingo Hall
-  'video_game_store',              // Video Game Store
-  'game_store',                    // Game Store
-  // ── Finance ──────────────────────────────────────────────────
-  'money_insurance',               // Money & Insurance (parent)
-  'investing_wealth',              // Investing & Wealth
-  'investment_service',            // Investment Service
-];
+import CountryPicker from './CountryPicker';
+import CategoryPicker from './CategoryPicker';
+import Button from '../ui/Button';
+import Toggle from '../ui/Toggle';
+import RangeInput from '../ui/RangeInput';
 
 interface Props {
   onSubmit: (params: ScrapeParams) => void;
@@ -54,8 +22,8 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [enrich, setEnrich] = useState(false);
   const [verify, setVerify] = useState(false);
   const [forceRescrape, setForceRescrape] = useState(false);
-  // Synchronous click-lock so a burst of clicks can't queue up multiple POSTs
-  // before the parent `loading` prop has propagated from status='running'.
+  // Synchronous click-lock so a burst of clicks can't queue multiple POSTs
+  // before the parent's loading state has propagated.
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -67,8 +35,6 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
     try {
       onSubmit({ country, category, minRating, maxRating, enrich, verify, forceRescrape });
     } finally {
-      // Release after one tick so quick double-clicks are absorbed but the button
-      // re-enables as soon as the POST is in flight and `loading` takes over.
       setTimeout(() => {
         submittingRef.current = false;
         setIsSubmitting(false);
@@ -76,63 +42,73 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
     }
   };
 
+  const busy = !!(loading || isSubmitting);
+
   return (
-    <form onSubmit={handleSubmit} className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-      <h2 className="text-lg font-semibold mb-4">Scrape Trustpilot</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+    <form onSubmit={handleSubmit} className="space-y-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
-          <select value={country} onChange={(e) => setCountry(e.target.value)}
-            className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm">
-            {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-          <select value={category} onChange={(e) => setCategory(e.target.value)}
-            className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm">
-            {CATEGORIES.map((c) => <option key={c} value={c}>{c.replace(/_/g, ' ')}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Star Rating: {minRating} - {maxRating}
+          <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="scrape-country">
+            Country
           </label>
-          <div className="flex gap-2 items-center">
-            <input type="number" min={1} max={5} step={0.5} value={minRating}
-              onChange={(e) => setMinRating(parseFloat(e.target.value))}
-              className="w-20 border border-gray-300 rounded-md px-2 py-2 text-sm" />
-            <span className="text-gray-400">to</span>
-            <input type="number" min={1} max={5} step={0.5} value={maxRating}
-              onChange={(e) => setMaxRating(parseFloat(e.target.value))}
-              className="w-20 border border-gray-300 rounded-md px-2 py-2 text-sm" />
-          </div>
+          <CountryPicker id="scrape-country" value={country} onChange={setCountry} disabled={busy} />
         </div>
+        <div>
+          <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="scrape-category">
+            Category
+          </label>
+          <CategoryPicker id="scrape-category" value={category} onChange={setCategory} disabled={busy} />
+        </div>
+        <RangeInput
+          label="Star rating"
+          suffix="★"
+          value={[minRating, maxRating]}
+          onChange={([lo, hi]) => {
+            setMinRating(lo);
+            setMaxRating(hi);
+          }}
+          min={1}
+          max={5}
+          step={0.5}
+          disabled={busy}
+        />
       </div>
 
-      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 sm:gap-6 mt-4">
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={enrich} onChange={(e) => setEnrich(e.target.checked)}
-            className="rounded border-gray-300" />
-          Enrich from websites
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)}
-            className="rounded border-gray-300" />
-          Verify emails
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={forceRescrape} onChange={(e) => setForceRescrape(e.target.checked)}
-            className="rounded border-gray-300" />
-          Force re-scrape
-        </label>
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 sm:gap-6">
+        <Toggle
+          checked={enrich}
+          onChange={(e) => setEnrich(e.target.checked)}
+          disabled={busy}
+          label="Enrich from websites"
+          description="Visit each company's site to find a primary email"
+        />
+        <Toggle
+          checked={verify}
+          onChange={(e) => setVerify(e.target.checked)}
+          disabled={busy}
+          label="Verify emails"
+          description="Run ZeroBounce on each discovered email"
+        />
+        <Toggle
+          checked={forceRescrape}
+          onChange={(e) => setForceRescrape(e.target.checked)}
+          disabled={busy}
+          label="Force re-scrape"
+          description="Bypass the duplicate-job guard"
+        />
       </div>
 
-      <button type="submit" disabled={loading || isSubmitting}
-        className="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
-        <Search size={16} />
-        {loading || isSubmitting ? 'Scraping...' : 'Start Scrape'}
-      </button>
+      <div className="pt-1">
+        <Button
+          type="submit"
+          variant="primary"
+          size="md"
+          loading={busy}
+          leadingIcon={<Search size={16} />}
+        >
+          {busy ? 'Scraping…' : 'Start scrape'}
+        </Button>
+      </div>
     </form>
   );
 }
