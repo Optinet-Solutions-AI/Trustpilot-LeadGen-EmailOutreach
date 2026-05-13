@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import api from '../api/client';
 import { useNotifications } from '../context/NotificationsContext';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { translateText } from '../lib/translate';
 
 type Folder = 'replies' | 'sent';
 
@@ -153,6 +154,52 @@ export default function Inbox() {
   const [checkingMailbox, setCheckingMailbox] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+
+  // Per-message Gemini translation cache. Keyed by ThreadMessage.id.
+  //  `visible` toggles the body between original and translated; the cached
+  //  text isn't refetched on toggle.
+  interface TranslationEntry {
+    status: 'loading' | 'done' | 'error';
+    text?: string;
+    sourceLanguage?: string;
+    error?: string;
+    visible: boolean;
+  }
+  const [translations, setTranslations] = useState<Record<string, TranslationEntry>>({});
+
+  const handleTranslate = useCallback(async (msgId: string, body: string, bodyType: 'html' | 'plain') => {
+    setTranslations((prev) => ({ ...prev, [msgId]: { status: 'loading', visible: true } }));
+    try {
+      const source = bodyType === 'plain' ? body.replace(/\n/g, '<br>') : body;
+      const result = await translateText(source, 'English');
+      setTranslations((prev) => ({
+        ...prev,
+        [msgId]: {
+          status: 'done',
+          text: result.text,
+          sourceLanguage: result.sourceLanguage,
+          visible: true,
+        },
+      }));
+    } catch (e) {
+      setTranslations((prev) => ({
+        ...prev,
+        [msgId]: {
+          status: 'error',
+          error: e instanceof Error ? e.message : 'Translation failed',
+          visible: false,
+        },
+      }));
+    }
+  }, []);
+
+  const toggleTranslationVisibility = useCallback((msgId: string) => {
+    setTranslations((prev) => {
+      const entry = prev[msgId];
+      if (!entry || entry.status !== 'done') return prev;
+      return { ...prev, [msgId]: { ...entry, visible: !entry.visible } };
+    });
+  }, []);
   // Which message in the thread the reply will thread under. Defaults to the
   // latest inbound message (matches the server's fallback), but the user can
   // click a different message to retarget. Null means "use server default".
@@ -1108,11 +1155,73 @@ export default function Inbox() {
                         {isExpanded && (
                           <div className="px-5 pb-4 bg-white">
                             {msg.body ? (
-                              <div
-                                className="email-body text-secondary text-xs overflow-auto"
-                                style={{ maxHeight: '400px' }}
-                                dangerouslySetInnerHTML={{ __html: msg.bodyType === 'html' ? msg.body : msg.body.replace(/\n/g, '<br>') }}
-                              />
+                              <>
+                                {(() => {
+                                  const t = translations[msg.id];
+                                  const showTranslated = t?.status === 'done' && t.visible && t.text;
+                                  const bodyHtml = showTranslated
+                                    ? (t!.text as string)
+                                    : msg.bodyType === 'html'
+                                      ? msg.body
+                                      : msg.body.replace(/\n/g, '<br>');
+                                  return (
+                                    <>
+                                      <div
+                                        className="email-body text-secondary text-xs overflow-auto"
+                                        style={{ maxHeight: '400px' }}
+                                        dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                                      />
+                                      <div className="mt-2 flex items-center gap-2 text-[11px]">
+                                        {t?.status === 'loading' && (
+                                          <span className="inline-flex items-center gap-1 text-secondary">
+                                            <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                                            Translating…
+                                          </span>
+                                        )}
+                                        {t?.status === 'done' && (
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() => toggleTranslationVisibility(msg.id)}
+                                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 text-secondary hover:bg-surface-container transition-colors font-semibold"
+                                            >
+                                              <span className="material-symbols-outlined text-[13px]">translate</span>
+                                              {t.visible ? 'Show original' : 'Show translation'}
+                                            </button>
+                                            {t.sourceLanguage && t.sourceLanguage !== 'unknown' && (
+                                              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+                                                {t.sourceLanguage} → en
+                                              </span>
+                                            )}
+                                          </>
+                                        )}
+                                        {t?.status === 'error' && (
+                                          <>
+                                            <span className="text-error">{t.error || 'Translation failed'}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleTranslate(msg.id, msg.body, msg.bodyType)}
+                                              className="ml-1 underline text-secondary hover:text-on-surface"
+                                            >
+                                              Retry
+                                            </button>
+                                          </>
+                                        )}
+                                        {!t && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTranslate(msg.id, msg.body, msg.bodyType)}
+                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 text-secondary hover:bg-surface-container transition-colors font-semibold"
+                                          >
+                                            <span className="material-symbols-outlined text-[13px]">translate</span>
+                                            Translate to English
+                                          </button>
+                                        )}
+                                      </div>
+                                    </>
+                                  );
+                                })()}
+                              </>
                             ) : (
                               <p className="text-xs text-secondary italic">{msg.snippet}</p>
                             )}
