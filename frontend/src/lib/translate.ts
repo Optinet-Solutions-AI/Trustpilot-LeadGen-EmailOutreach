@@ -65,11 +65,18 @@ ${input}
   });
 
   const raw = (result.text ?? '').trim();
-  const sourceMatch = raw.match(/^SOURCE_LANG:\s*(\S+)$/m);
-  const transMatch = raw.match(/^TRANSLATED:\s*\n([\s\S]+?)$/m);
+  const sourceMatch = raw.match(/^SOURCE_LANG:\s*(\S+)/m);
+  // Use indexOf split rather than a multiline regex — `m` mode `$` anchors at
+  // the first newline, which truncated multi-paragraph translations to just
+  // the first line. Everything after "TRANSLATED:" is the body.
+  const transTag = 'TRANSLATED:';
+  const transIdx = raw.indexOf(transTag);
+  const translated = transIdx >= 0
+    ? raw.slice(transIdx + transTag.length).replace(/^\s*\n?/, '').trimEnd()
+    : raw;
 
   return {
-    text: (transMatch ? transMatch[1] : raw).trim(),
+    text: translated,
     sourceLanguage: sourceMatch ? sourceMatch[1].toLowerCase().trim() : 'unknown',
   };
 }
