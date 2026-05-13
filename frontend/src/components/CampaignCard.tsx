@@ -52,7 +52,12 @@ export default function CampaignCard({
   };
 
   const hasLeads      = (c.lead_count ?? 0) > 0;
-  const canLaunch     = c.status === 'draft' && hasLeads && !isSending;
+  // Launch this draft regardless of whether SOME OTHER campaign is mid-send —
+  // the server-side scheduler runs multiple campaigns concurrently, and the
+  // SSE progress channel re-subscribes onto whichever campaign the user
+  // launches. The old `!isSending` gate hid the button across every card
+  // whenever any campaign was stuck in 'sending' state.
+  const canLaunch     = c.status === 'draft' && hasLeads;
   const isThisSending = c.status === 'sending';
   const sc            = STATUS_CONFIG[c.status] ?? STATUS_CONFIG.draft;
 
