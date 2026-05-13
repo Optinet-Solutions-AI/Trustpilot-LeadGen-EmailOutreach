@@ -2,10 +2,95 @@ import { Router, Request, Response } from 'express';
 import { createJob, getJob, getJobs, findActiveJobForParams, resolveDuplicateActiveJob, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
+import { listCategories, listCountries, getMaxLastSeen } from '../db/taxonomy.js';
+import {
+  startOrAttachDiscovery,
+  getActiveDiscovery,
+  type TaxonomyProgressEvent,
+} from '../services/taxonomy-discovery.js';
 import { config } from '../config.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
+
+// GET /api/scrape/taxonomy — full Trustpilot taxonomy for the Scrape form pickers
+router.get('/taxonomy', async (_req: Request, res: Response) => {
+  try {
+    const [categories, countries, lastSeenAt] = await Promise.all([
+      listCategories(),
+      listCountries(),
+      getMaxLastSeen(),
+    ]);
+    // Always serve fresh. The previous max-age=300 cached stale data across
+    // the Refresh roundtrip — users saw "No results" for newly-discovered
+    // slugs even after a refresh because the browser still held the old body.
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, data: { categories, countries, lastSeenAt } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET|POST /api/scrape/taxonomy/refresh — SSE stream that re-runs
+// discover_taxonomy.py. GET so EventSource can attach; the underlying
+// discovery is single-flight so re-hitting it never double-fires.
+const taxonomyRefreshHandler = async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const { run, isNew } = startOrAttachDiscovery();
+
+  // Replay any progress already buffered so a late-joining client doesn't miss
+  // events emitted before its EventSource was attached.
+  for (const event of run.events) {
+    res.write(`data: ${JSON.stringify({ ...event, replay: true })}\n\n`);
+  }
+  if (!isNew) {
+    res.write(`data: ${JSON.stringify({ stage: 'attached', detail: 'already-in-flight' })}\n\n`);
+  }
+
+  const onProgress = (event: TaxonomyProgressEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+  const onDone = (result: { categories: number; countries: number }) => {
+    res.write(
+      `data: ${JSON.stringify({ stage: 'done', detail: `${result.categories}|${result.countries}` })}\n\n`,
+    );
+    setTimeout(() => { try { res.end(); } catch { /* ignore */ } }, 500);
+  };
+  const onError = (err: Error) => {
+    res.write(`data: ${JSON.stringify({ stage: 'error', detail: err.message })}\n\n`);
+    setTimeout(() => { try { res.end(); } catch { /* ignore */ } }, 500);
+  };
+
+  run.on('progress', onProgress);
+  run.once('done', onDone);
+  run.once('error', onError);
+
+  req.on('close', () => {
+    run.off('progress', onProgress);
+    run.off('done', onDone);
+    run.off('error', onError);
+  });
+};
+router.get('/taxonomy/refresh', taxonomyRefreshHandler);
+router.post('/taxonomy/refresh', taxonomyRefreshHandler);
+
+// GET /api/scrape/taxonomy/status — lightweight peek at in-flight discovery
+router.get('/taxonomy/status', async (_req: Request, res: Response) => {
+  const active = getActiveDiscovery();
+  res.json({
+    success: true,
+    data: {
+      running: !!active,
+      startedAt: active?.startedAt ?? null,
+      lastEvent: active?.events[active.events.length - 1] ?? null,
+    },
+  });
+});
 
 // POST /api/scrape — start a new scrape job
 router.post('/', async (req: Request, res: Response) => {
