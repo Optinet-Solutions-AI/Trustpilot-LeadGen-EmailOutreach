@@ -124,14 +124,16 @@ ALTER TABLE IF EXISTS trustpilot_categories
 ALTER TABLE IF EXISTS platform_categories
   ADD COLUMN IF NOT EXISTS platform text NOT NULL DEFAULT 'trustpilot';
 
-ALTER TABLE IF EXISTS platform_categories
-  DROP CONSTRAINT IF EXISTS trustpilot_categories_pkey;
-
--- Idempotent: drop our own PK / FK if a prior partial run already added them.
-ALTER TABLE IF EXISTS platform_categories
-  DROP CONSTRAINT IF EXISTS platform_categories_pkey;
+-- Idempotent + dependency-safe: the self-FK we may have created on a
+-- previous partial run references the composite PK. Drop the FK FIRST so
+-- the PK is droppable, then drop both PK variants, then re-add fresh.
 ALTER TABLE IF EXISTS platform_categories
   DROP CONSTRAINT IF EXISTS platform_categories_parent_fkey;
+
+ALTER TABLE IF EXISTS platform_categories
+  DROP CONSTRAINT IF EXISTS trustpilot_categories_pkey;
+ALTER TABLE IF EXISTS platform_categories
+  DROP CONSTRAINT IF EXISTS platform_categories_pkey;
 
 ALTER TABLE IF EXISTS platform_categories
   ADD CONSTRAINT platform_categories_pkey PRIMARY KEY (platform, slug);
