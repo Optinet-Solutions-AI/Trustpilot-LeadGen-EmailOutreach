@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS lead_platform_presences (
 CREATE INDEX IF NOT EXISTS idx_lpp_lead     ON lead_platform_presences (lead_id);
 CREATE INDEX IF NOT EXISTS idx_lpp_platform ON lead_platform_presences (platform);
 
+-- Idempotent trigger (re-run safe — Postgres doesn't have CREATE TRIGGER IF NOT EXISTS).
+DROP TRIGGER IF EXISTS lead_platform_presences_updated_at ON lead_platform_presences;
 CREATE TRIGGER lead_platform_presences_updated_at
   BEFORE UPDATE ON lead_platform_presences
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
@@ -125,6 +127,12 @@ ALTER TABLE IF EXISTS platform_categories
 ALTER TABLE IF EXISTS platform_categories
   DROP CONSTRAINT IF EXISTS trustpilot_categories_pkey;
 
+-- Idempotent: drop our own PK / FK if a prior partial run already added them.
+ALTER TABLE IF EXISTS platform_categories
+  DROP CONSTRAINT IF EXISTS platform_categories_pkey;
+ALTER TABLE IF EXISTS platform_categories
+  DROP CONSTRAINT IF EXISTS platform_categories_parent_fkey;
+
 ALTER TABLE IF EXISTS platform_categories
   ADD CONSTRAINT platform_categories_pkey PRIMARY KEY (platform, slug);
 
@@ -153,6 +161,10 @@ ALTER TABLE IF EXISTS platform_countries
 
 ALTER TABLE IF EXISTS platform_countries
   DROP CONSTRAINT IF EXISTS trustpilot_countries_pkey;
+
+-- Idempotent: drop our own PK if a prior partial run already added it.
+ALTER TABLE IF EXISTS platform_countries
+  DROP CONSTRAINT IF EXISTS platform_countries_pkey;
 
 ALTER TABLE IF EXISTS platform_countries
   ADD CONSTRAINT platform_countries_pkey PRIMARY KEY (platform, code);
