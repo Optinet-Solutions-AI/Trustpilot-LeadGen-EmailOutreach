@@ -13,6 +13,7 @@ import { config } from '../config.js';
 import { isPlatformEnabled, getEmailPlatform } from '../services/email-platform/index.js';
 import { pushCampaignToPlatform } from '../services/platform-campaign-sender.js';
 import { syncSingleCampaign } from '../services/platform-sync.js';
+import { gateSendersByDns, formatGateError } from '../services/sender-dns-gate.js';
 import fs from 'fs';
 
 const router = Router();
@@ -235,6 +236,20 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
     if (!firstPendingLead) {
       res.status(400).json({ success: false, error: 'No pending leads with a valid email found in this campaign.' });
       return;
+    }
+
+    // ─── DNS gate: refuse if any pinned SMTP sender's domain is failing ──
+    {
+      const schedule = campaign.sending_schedule as Record<string, unknown> | null;
+      const pinnedIds = (schedule?.senderAccountIds as string[] | undefined)
+        ?? (schedule?.senderAccountId ? [schedule.senderAccountId as string] : []);
+      if (pinnedIds.length > 0) {
+        const gate = await gateSendersByDns(pinnedIds);
+        if (!gate.ok) {
+          res.status(400).json({ success: false, error: formatGateError(gate), dnsGate: gate });
+          return;
+        }
+      }
     }
 
     const lead = firstPendingLead.leads as Record<string, unknown>;
@@ -544,6 +559,20 @@ router.post('/:id/send', async (req: Request, res: Response) => {
         error: `Send blocked: ${invalidLeads.length} lead${invalidLeads.length === 1 ? ' has' : 's have'} verification_status='invalid' (proven undeliverable). Examples: ${sample}. Remove these from the campaign or re-verify before sending.`,
       });
       return;
+    }
+
+    // ─── DNS gate: refuse if any pinned SMTP sender's domain is failing ──
+    {
+      const schedule = campaign.sending_schedule as Record<string, unknown> | null;
+      const pinnedIds = (schedule?.senderAccountIds as string[] | undefined)
+        ?? (schedule?.senderAccountId ? [schedule.senderAccountId as string] : []);
+      if (pinnedIds.length > 0) {
+        const gate = await gateSendersByDns(pinnedIds);
+        if (!gate.ok) {
+          res.status(400).json({ success: false, error: formatGateError(gate), dnsGate: gate });
+          return;
+        }
+      }
     }
 
     // ─── Platform mode: push to Instantly/Smartlead ───────────────
