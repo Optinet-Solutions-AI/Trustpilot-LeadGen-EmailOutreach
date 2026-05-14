@@ -761,6 +761,18 @@ paths:
       responses:
         "200":
           description: OK
+  /api/dns-health/{domain}:
+    get:
+      operationId: getDnsHealth
+      security: []
+      parameters:
+        - in: path
+          name: domain
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/inbox/accounts:
     get:
       operationId: listInboxAccounts
