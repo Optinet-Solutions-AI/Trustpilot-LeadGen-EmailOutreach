@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { ScrapeProvider } from '../context/ScrapeContext';
 import { TaxonomyProvider } from '../context/TaxonomyContext';
 import { NotificationsProvider } from '../context/NotificationsContext';
@@ -14,7 +15,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <NotificationsProvider>
           <UIProvider>
             <div className="flex min-h-screen w-full max-w-full bg-background">
-              <Sidebar />
+              {/* Suspense boundary: Sidebar calls useSearchParams() to drive the
+                  per-platform Leads active-state highlight. Next.js 15's
+                  static prerender bails out of any tree that reads search
+                  params unless that tree is suspended, so we wrap the Sidebar
+                  rather than CSR-bail every page. */}
+              <Suspense fallback={null}>
+                <Sidebar />
+              </Suspense>
               <TopBar />
               <main className="flex-1 min-w-0 max-w-full min-h-screen pt-14 lg:pt-16 lg:ml-64">
                 {children}
