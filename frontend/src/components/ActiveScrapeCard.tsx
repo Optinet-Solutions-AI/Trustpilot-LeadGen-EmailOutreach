@@ -129,8 +129,15 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
 
   const isTerminal = status === 'completed' || status === 'failed';
 
-  // Auto-dismiss countdown — starts the instant a job hits a terminal status.
-  // Counter is the seconds remaining; null means no timer is active.
+  // Auto-dismiss countdown — anchored to the job's persistent completed_at
+  // timestamp, not to component mount. If we anchored on mount, then every
+  // page navigation or refresh would unmount this card, the cleanup would
+  // clear the timer, and a fresh 60s would start on re-mount — so a card
+  // would never actually dismiss when the user is moving around the app.
+  // By computing remaining = (completed_at + 60s) - now() on every effect
+  // run, navigating away just pauses the visible countdown; coming back
+  // shows the real remaining time, and re-entering after the deadline
+  // dismisses immediately.
   const [dismissIn, setDismissIn] = useState<number | null>(null);
 
   useEffect(() => {
@@ -138,16 +145,33 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
       setDismissIn(null);
       return;
     }
-    setDismissIn(Math.floor(AUTO_DISMISS_MS / 1000));
+    // If the server hasn't told us completed_at yet (SSE delivers status
+    // a beat before the DB row carries the timestamp), fall back to "60s
+    // from now" so we don't sit forever showing no countdown. The effect
+    // re-runs when completedAt arrives and rebases on the real anchor.
+    const completedMs = completedAt ? new Date(completedAt).getTime() : Date.now();
+    const dismissAtMs = completedMs + AUTO_DISMISS_MS;
+    const remainingMs = dismissAtMs - Date.now();
+
+    if (remainingMs <= 0) {
+      // Already past the deadline (e.g. user returned to the page well
+      // after the job finished). Schedule the dismiss for next tick so
+      // we don't run a parent setState during this component's render.
+      const t = setTimeout(onDismiss, 0);
+      return () => clearTimeout(t);
+    }
+
+    setDismissIn(Math.ceil(remainingMs / 1000));
     const tick = setInterval(() => {
-      setDismissIn((s) => (s == null ? null : Math.max(0, s - 1)));
+      const left = dismissAtMs - Date.now();
+      setDismissIn(left <= 0 ? 0 : Math.ceil(left / 1000));
     }, 1000);
-    const dismissTimer = setTimeout(onDismiss, AUTO_DISMISS_MS);
+    const dismissTimer = setTimeout(onDismiss, remainingMs);
     return () => {
       clearInterval(tick);
       clearTimeout(dismissTimer);
     };
-  }, [isTerminal, onDismiss]);
+  }, [isTerminal, completedAt, onDismiss]);
 
   return (
     <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-6 sm:p-8 relative">
