@@ -4,10 +4,9 @@ import { getSupabase } from '../lib/supabase.js';
 // to a multi-platform schema:
 //   trustpilot_categories → platform_categories (PK now (platform, slug))
 //   trustpilot_countries  → platform_countries  (PK now (platform, code))
-// All existing rows were migrated with platform='trustpilot'. This module
-// continues to serve Trustpilot data only; once we add a second platform,
-// the API will need a `platform` query param to filter accordingly.
-const PLATFORM = 'trustpilot';
+// All existing rows were migrated with platform='trustpilot'. Callers
+// that omit the platform arg get Trustpilot for backwards compatibility.
+const DEFAULT_PLATFORM = 'trustpilot';
 
 export interface TaxonomyCategoryRow {
   slug: string;
@@ -28,7 +27,7 @@ export interface TaxonomyCountryRow {
   platform?: string;
 }
 
-export async function listCategories(): Promise<TaxonomyCategoryRow[]> {
+export async function listCategories(platform: string = DEFAULT_PLATFORM): Promise<TaxonomyCategoryRow[]> {
   const supabase = getSupabase();
   // PostgREST enforces a server-side max-rows cap (1000 on Supabase by
   // default) — a single `.range()` past that limit is silently clamped.
@@ -39,7 +38,7 @@ export async function listCategories(): Promise<TaxonomyCategoryRow[]> {
     const { data, error } = await supabase
       .from('platform_categories')
       .select('*')
-      .eq('platform', PLATFORM)
+      .eq('platform', platform)
       .order('parent_slug', { ascending: true, nullsFirst: true })
       .order('sort_order', { ascending: true })
       .range(from, from + PAGE - 1);
@@ -51,31 +50,31 @@ export async function listCategories(): Promise<TaxonomyCategoryRow[]> {
   return all;
 }
 
-export async function listCountries(): Promise<TaxonomyCountryRow[]> {
+export async function listCountries(platform: string = DEFAULT_PLATFORM): Promise<TaxonomyCountryRow[]> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from('platform_countries')
     .select('*')
-    .eq('platform', PLATFORM)
+    .eq('platform', platform)
     .order('name', { ascending: true });
   if (error) throw new Error(error.message);
   return (data ?? []) as TaxonomyCountryRow[];
 }
 
-export async function getMaxLastSeen(): Promise<string | null> {
+export async function getMaxLastSeen(platform: string = DEFAULT_PLATFORM): Promise<string | null> {
   const supabase = getSupabase();
   const [{ data: cat }, { data: cty }] = await Promise.all([
     supabase
       .from('platform_categories')
       .select('last_seen_at')
-      .eq('platform', PLATFORM)
+      .eq('platform', platform)
       .order('last_seen_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
     supabase
       .from('platform_countries')
       .select('last_seen_at')
-      .eq('platform', PLATFORM)
+      .eq('platform', platform)
       .order('last_seen_at', { ascending: false })
       .limit(1)
       .maybeSingle(),

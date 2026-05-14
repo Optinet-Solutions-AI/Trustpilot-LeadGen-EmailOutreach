@@ -7,6 +7,10 @@ interface LeadFilters {
   country?: string;
   category?: string;
   search?: string;
+  // Per-platform Leads pages (migration 032). When set, the API JOINs
+  // through lead_platform_presences and returns only leads with a
+  // presence on the named platform.
+  platform?: string;
   page?: number;
   limit?: number;
   sortBy?: string;
@@ -31,6 +35,7 @@ export function useLeads() {
       if (filters.country) params.set('country', filters.country);
       if (filters.category) params.set('category', filters.category);
       if (filters.search) params.set('search', filters.search);
+      if (filters.platform) params.set('platform', filters.platform);
       if (filters.page) params.set('page', String(filters.page));
       if (filters.limit) params.set('limit', String(filters.limit));
       if (filters.sortBy) params.set('sortBy', filters.sortBy);

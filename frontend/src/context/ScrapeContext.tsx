@@ -139,7 +139,28 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     submittingRef.current = true;
     setError(null);
     try {
-      const res = await api.post('/scrape', params);
+      // Translate the discriminated union to the API body shape.
+      // Trustpilot keeps the legacy flat shape (country/category/min/max);
+      // TripAdvisor uses the new {platform, filters} envelope because its
+      // filters don't fit the legacy shape. Backend accepts both — see
+      // POST /api/scrape in server/src/routes/scrape.ts.
+      const body =
+        params.platform === 'tripadvisor'
+          ? {
+              platform: 'tripadvisor',
+              filters: {
+                location_id: params.location_id,
+                location_slug: params.location_slug,
+                listing_type: params.listing_type,
+                min_rating: params.min_rating,
+                max_rating: params.max_rating,
+                enrich: params.enrich,
+                verify: params.verify,
+              },
+              forceRescrape: params.forceRescrape,
+            }
+          : params; // Trustpilot legacy shape — backend treats unset platform as trustpilot
+      const res = await api.post('/scrape', body);
       const id = res.data.data.jobId as string;
       setActiveScrapes((prev) => (prev.includes(id) ? prev : [...prev, id]));
       // Refresh the jobs list so the new pending row shows up immediately

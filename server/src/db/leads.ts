@@ -8,6 +8,10 @@ export interface LeadFilters {
   minRating?: number;
   maxRating?: number;
   hasEmail?: boolean;
+  // Per-platform filter — when set, restricts the result to leads that have
+  // a row in lead_platform_presences for the given platform name. Used by
+  // the per-platform "Trustpilot Leads" / "TripAdvisor Leads" pages.
+  platform?: string;
   // Redirect filtering: 'only' returns leads where redirects_to IS NOT NULL
   // (the dedicated Redirected Leads page); 'exclude' filters them out so
   // standard outreach views never include them. 'all' (default) ignores it.
@@ -24,9 +28,18 @@ export async function getLeads(filters: LeadFilters = {}) {
   const limit = filters.limit || 25;
   const offset = (page - 1) * limit;
 
-  let query = supabase
-    .from('leads')
-    .select('*', { count: 'exact' });
+  // Platform filter — use PostgREST's embedded-resource JOIN so the filter
+  // resolves server-side instead of materializing the full ID list in the
+  // client query URL. The `!inner` modifier turns the embed into an INNER
+  // JOIN, and filtering on `lead_platform_presences.platform` constrains
+  // the parent rows. This scales: Trustpilot today is 6k+ rows, which
+  // would blow the URL length limit if we used `.in('id', […])`.
+  let query = filters.platform
+    ? supabase
+        .from('leads')
+        .select('*, lead_platform_presences!inner(platform)', { count: 'exact' })
+        .eq('lead_platform_presences.platform', filters.platform)
+    : supabase.from('leads').select('*', { count: 'exact' });
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
   if (filters.country) query = query.eq('country', filters.country);

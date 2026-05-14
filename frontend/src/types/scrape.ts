@@ -1,4 +1,16 @@
-export interface ScrapeParams {
+/**
+ * Scrape body shape per platform.
+ *
+ * Trustpilot keeps its legacy flat shape (country/category/minRating/maxRating)
+ * for backwards compatibility with the existing form, hooks, and any callers
+ * that pre-date multi-platform support. TripAdvisor uses the new {platform,
+ * filters} envelope because its filters don't map onto the Trustpilot shape.
+ *
+ * ScrapeContext.startScrape inspects `platform` and translates each variant
+ * to the right POST /api/scrape body shape. The backend accepts both.
+ */
+export interface TrustpilotScrapeParams {
+  platform?: 'trustpilot';   // optional — undefined treated as 'trustpilot'
   country: string;
   category: string;
   minRating: number;
@@ -8,8 +20,23 @@ export interface ScrapeParams {
   forceRescrape: boolean;
 }
 
+export interface TripAdvisorScrapeParams {
+  platform: 'tripadvisor';
+  location_id: string;
+  location_slug: string;
+  listing_type: 'hotels' | 'restaurants' | 'attractions';
+  min_rating: number;
+  max_rating: number;
+  enrich: boolean;
+  verify: boolean;
+  forceRescrape: boolean;
+}
+
+export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams;
+
 export interface ScrapeJob {
   id: string;
+  platform?: string;
   country: string;
   category: string;
   min_rating: number;

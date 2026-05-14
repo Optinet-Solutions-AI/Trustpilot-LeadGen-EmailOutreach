@@ -73,10 +73,246 @@ def normalize_screenshot_path(raw_path: str | None) -> str | None:
     return raw_path or None
 
 
+def _build_presence_rows(
+    leads: list[dict],
+    url_to_lead_id: dict[str, str],
+    now_iso: str,
+) -> list[dict]:
+    """
+    Build lead_platform_presences rows from the source `leads` input
+    after the parent `leads` upsert has resolved their IDs.
+
+    Each lead can declare its platform (added by the platform plugin in
+    run.py — Phase 2). Pre-Phase-2 callers won't set this, so we default
+    to 'trustpilot' which is the only platform that wrote into this
+    pipeline before migration 032.
+
+    The presence row mirrors the legacy denormalized columns on `leads`
+    one-to-one so the cleanup migration can drop those columns later
+    without losing data.
+    """
+    presence_rows: list[dict] = []
+    for lead in leads:
+        cleaned_url = sanitize_trustpilot_url(lead.get('trustpilot_url'))
+        if not cleaned_url:
+            continue
+        lead_id = url_to_lead_id.get(cleaned_url)
+        if not lead_id:
+            # Leads row failed to upsert (probably an earlier batch error).
+            # Skip the presence write rather than insert an orphan.
+            continue
+        platform = (lead.get('platform') or 'trustpilot').lower()
+        presence_rows.append({
+            'lead_id': lead_id,
+            'platform': platform,
+            # `profile_url` is the platform-agnostic column on presences.
+            # For Trustpilot it equals the cleaned trustpilot_url; future
+            # platforms set it from their own profile URL.
+            'profile_url': lead.get('profile_url') or cleaned_url,
+            'rating': lead.get('star_rating') or lead.get('rating'),
+            'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
+            'platform_email': lead.get('platform_email') or lead.get('trustpilot_email'),
+            'scraped_at': now_iso,
+        })
+    # Strip None values so we don't blow away existing presence columns
+    # with nulls on a re-scrape (same rule as the leads upsert above).
+    return [{k: v for k, v in row.items() if v is not None} for row in presence_rows]
+
+
+def _upsert_presences(presence_rows: list[dict]) -> int:
+    """Bulk-upsert lead_platform_presences with on_conflict=(platform, profile_url)."""
+    if not presence_rows:
+        return 0
+    # Same key-signature grouping logic as the leads upsert — PostgREST
+    # rejects bulk arrays whose objects have different key sets.
+    from collections import defaultdict
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for row in presence_rows:
+        groups[tuple(sorted(row.keys()))].append(row)
+
+    batch_size = 50
+    upserted = 0
+    for group_rows in groups.values():
+        for i in range(0, len(group_rows), batch_size):
+            batch = group_rows[i:i + batch_size]
+            for attempt in range(3):
+                try:
+                    result = (
+                        table('lead_platform_presences')
+                        .upsert(batch, on_conflict='platform,profile_url')
+                        .execute()
+                    )
+                    upserted += len(result.data) if result.data else 0
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        import time
+                        time.sleep(2)
+                    else:
+                        error_msg = str(e).replace('\n', ' ')[:200]
+                        print(f"FAILED:upsert_presence:{error_msg}")
+    return upserted
+
+
+def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bool]:
+    """
+    Upsert one non-Trustpilot lead via the presence-first path.
+
+    Returns (lead_id, is_new) where is_new=True when we created a new row,
+    False when we updated an existing one. lead_id is None when the input
+    was unusable (no platform, no profile_url) or the DB write failed.
+
+    Flow:
+      1. Look up the (platform, profile_url) tuple in lead_platform_presences.
+         If found, we know which existing `leads` row to update.
+      2. Build the leads row WITHOUT `trustpilot_url` (it's now nullable per
+         migration 033). For TripAdvisor we carry website_url + phone +
+         company_name; country/category stay null because the TA filter
+         shape doesn't map onto them.
+      3. INSERT or UPDATE the leads row.
+      4. UPSERT the presence row with on_conflict=(platform, profile_url).
+
+    Each non-trustpilot lead therefore costs 2-3 round-trips. Acceptable at
+    typical TripAdvisor batch sizes (30-100 leads); future optimization
+    is a bulk RPC.
+    """
+    platform = (lead.get('platform') or '').lower()
+    profile_url = lead.get('profile_url') or lead.get('trustpilot_url')
+    if not platform or platform == 'trustpilot' or not profile_url:
+        # Trustpilot leads or shape-invalid rows shouldn't reach this path.
+        return None, False
+
+    # 1. Look up existing presence
+    existing_lead_id: str | None = None
+    try:
+        result = (
+            table('lead_platform_presences')
+            .select('lead_id')
+            .eq('platform', platform)
+            .eq('profile_url', profile_url)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            existing_lead_id = result.data[0]['lead_id']
+    except Exception as e:
+        print(f"FAILED:presence_lookup|{profile_url}|{str(e)[:100]}")
+        return None, False
+
+    # 2. Build the leads row. None values are stripped so we never blow
+    #    away existing data with nulls on re-scrape (same convention as
+    #    the trustpilot path below).
+    leads_row = {
+        'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
+        'website_url': lead.get('website_url'),
+        'phone': lead.get('phone'),
+        'primary_email': lead.get('primary_email') or lead.get('website_email'),
+        'website_email': lead.get('website_email'),
+        'scraped_at': now_iso,
+    }
+    leads_row = {k: v for k, v in leads_row.items() if v is not None}
+
+    # 3. INSERT new or UPDATE existing leads row
+    lead_id: str | None
+    is_new = False
+    try:
+        if existing_lead_id:
+            (
+                table('leads')
+                .update(leads_row)
+                .eq('id', existing_lead_id)
+                .execute()
+            )
+            lead_id = existing_lead_id
+        else:
+            ins = table('leads').insert(leads_row).execute()
+            if not ins.data:
+                print(f"FAILED:insert_lead|{profile_url}|empty response")
+                return None, False
+            lead_id = ins.data[0]['id']
+            is_new = True
+    except Exception as e:
+        print(f"FAILED:upsert_lead|{profile_url}|{str(e)[:200]}")
+        return None, False
+
+    # 4. UPSERT presence row (platform, profile_url) — idempotent on re-scrape
+    presence_row = {
+        'lead_id': lead_id,
+        'platform': platform,
+        'profile_url': profile_url,
+        'rating': lead.get('rating') or lead.get('star_rating'),
+        'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
+        'platform_email': lead.get('platform_email'),
+        'scraped_at': now_iso,
+    }
+    presence_row = {k: v for k, v in presence_row.items() if v is not None}
+    try:
+        (
+            table('lead_platform_presences')
+            .upsert(presence_row, on_conflict='platform,profile_url')
+            .execute()
+        )
+    except Exception as e:
+        # Leads row already wrote — partial success. Log and move on; the
+        # next scrape will repair the missing presence.
+        print(f"FAILED:upsert_presence|{profile_url}|{str(e)[:200]}")
+
+    return lead_id, is_new
+
+
+def _split_by_platform(leads: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Partition `leads` into (trustpilot, others) based on `platform` key."""
+    tp: list[dict] = []
+    others: list[dict] = []
+    for lead in leads:
+        platform = (lead.get('platform') or 'trustpilot').lower()
+        if platform == 'trustpilot':
+            tp.append(lead)
+        else:
+            others.append(lead)
+    return tp, others
+
+
 def upsert_leads(leads: list[dict]) -> int:
-    """Upsert leads into Supabase. Returns count of upserted rows."""
+    """
+    Upsert leads into Supabase. Returns count of upserted rows.
+
+    Dispatches by platform:
+      * Trustpilot (legacy default) — runs the original sanitize + validate
+        + ON CONFLICT (trustpilot_url) pipeline below. Untouched from
+        pre-multi-platform behavior.
+      * Other (tripadvisor and any future plugin) — routes through
+        `_upsert_nontrustpilot_lead`, which writes the lead row WITHOUT
+        a trustpilot_url and upserts the lead_platform_presences row with
+        on_conflict (platform, profile_url).
+    """
+    trustpilot_leads, other_leads = _split_by_platform(leads)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # ── Non-Trustpilot platforms (tripadvisor and beyond) ─────────────
+    other_count = 0
+    other_failed = 0
+    for lead in other_leads:
+        lead_id, _is_new = _upsert_nontrustpilot_lead(lead, now_iso)
+        if lead_id:
+            other_count += 1
+        else:
+            other_failed += 1
+    if other_leads:
+        print(f"Multi-platform upsert: {other_count}/{len(other_leads)} succeeded.")
+        print(f"PROGRESS:upsert_multiplatform:{other_count}/{len(other_leads)}")
+
+    # If there are no Trustpilot leads in this batch, skip the original
+    # heavyweight pipeline entirely (avoids a no-op pass + the requests
+    # Session creation).
+    if not trustpilot_leads:
+        print(f"PROGRESS:upsert_done:{other_count}/{other_count + other_failed}")
+        return other_count
+
+    # ── Trustpilot pipeline (original logic below, unchanged) ─────────
+    leads = trustpilot_leads  # re-bind so the existing loop iterates only TP rows
     rows = []
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso
 
     # One pooled session for all validation HTTP calls — connection reuse
     # cuts per-URL latency dramatically on a 100-lead batch.
@@ -166,10 +402,13 @@ def upsert_leads(leads: list[dict]) -> int:
         for i in range(0, len(group_rows), batch_size):
             batches.append(group_rows[i:i + batch_size])
 
-    # Upsert each batch with retry
+    # Upsert each batch with retry. We also collect (trustpilot_url -> id)
+    # from each batch response so we can write lead_platform_presences
+    # rows after all leads have landed (Phase 4 of migration 032).
     count = 0
     failed_count = 0
     total_batches = len(batches)
+    url_to_lead_id: dict[str, str] = {}
     for batch_num, batch in enumerate(batches, start=1):
         for attempt in range(3):
             try:
@@ -180,6 +419,12 @@ def upsert_leads(leads: list[dict]) -> int:
                 )
                 batch_count = len(result.data) if result.data else 0
                 count += batch_count
+                # Capture the upserted IDs for the presence upsert below.
+                for r in (result.data or []):
+                    url = r.get('trustpilot_url')
+                    lead_id = r.get('id')
+                    if url and lead_id:
+                        url_to_lead_id[url] = lead_id
                 print(f"  Batch {batch_num}: upserted {batch_count} leads")
                 break
             except Exception as e:
@@ -195,8 +440,24 @@ def upsert_leads(leads: list[dict]) -> int:
         print(f"PROGRESS:upsert_progress:{batch_num}/{total_batches}")
 
     print(f"Upserted {count} leads into Supabase. Failed: {failed_count}")
-    print(f"PROGRESS:upsert_done:{count}/{count + failed_count}")
-    return count
+
+    # Mirror each lead into lead_platform_presences so the new normalized
+    # shape stays in sync with the legacy denormalized columns on `leads`.
+    # `leads` is built from the original input (carries `platform`) — we
+    # only need the resolved lead_ids from the upsert above.
+    presence_rows = _build_presence_rows(leads, url_to_lead_id, now)
+    if presence_rows:
+        presence_count = _upsert_presences(presence_rows)
+        print(f"Upserted {presence_count} platform-presence rows.")
+        print(f"PROGRESS:upsert_presences:{presence_count}/{len(presence_rows)}")
+
+    # Aggregate counts across the trustpilot pipeline + the non-trustpilot
+    # path that ran above. The DONE event drives the API progress bar so the
+    # operator sees one combined total.
+    total_saved = count + other_count
+    total_failed = failed_count + other_failed
+    print(f"PROGRESS:upsert_done:{total_saved}/{total_saved + total_failed}")
+    return total_saved
 
 
 def main():

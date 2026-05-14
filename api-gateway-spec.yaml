@@ -32,6 +32,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/scrape/platforms:
+    get:
+      operationId: listScrapePlatforms
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/scrape/taxonomy:
     get:
       operationId: getScrapeTaxonomy
@@ -1018,6 +1025,13 @@ paths:
           name: email
           required: true
           type: string
+      responses:
+        "200":
+          description: OK
+  /api/admin/cleanup-screenshots:
+    post:
+      operationId: cleanupScreenshots
+      security: []
       responses:
         "200":
           description: OK

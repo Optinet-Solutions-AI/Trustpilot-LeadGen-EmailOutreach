@@ -13,29 +13,104 @@ import { config } from '../config.js';
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
 
-// GET /api/scrape/taxonomy — full Trustpilot taxonomy for the Scrape form pickers
-router.get('/taxonomy', async (_req: Request, res: Response) => {
+// Source-of-truth registry of supported platforms. Mirrors
+// tools/scraper/platforms/__init__.py — if you add a Python plugin,
+// add its manifest here too. We mirror in TS rather than shelling out
+// to Python at every /platforms call to keep the endpoint cheap.
+interface PlatformManifest {
+  name: string;
+  label: string;
+  base_url: string;
+  filter_schema: Array<Record<string, unknown>>;
+  requires_proxy: boolean;
+}
+const PLATFORM_MANIFESTS: PlatformManifest[] = [
+  {
+    name: 'trustpilot',
+    label: 'Trustpilot',
+    base_url: 'https://www.trustpilot.com',
+    requires_proxy: false,
+    filter_schema: [
+      { name: 'country',    type: 'select', label: 'Country',    required: true,  options_source: 'taxonomy:countries' },
+      { name: 'category',   type: 'select', label: 'Category',   required: true,  options_source: 'taxonomy:categories' },
+      { name: 'min_rating', type: 'number', label: 'Min rating', required: false, default: 1.0, min: 1.0, max: 5.0, step: 0.1 },
+      { name: 'max_rating', type: 'number', label: 'Max rating', required: false, default: 3.5, min: 1.0, max: 5.0, step: 0.1 },
+    ],
+  },
+  {
+    name: 'tripadvisor',
+    label: 'TripAdvisor',
+    base_url: 'https://www.tripadvisor.com',
+    // CF + fingerprinting blocks Cloud Run / EC2 source IPs reliably.
+    // The frontend uses this flag to nudge the operator toward local-mode.
+    requires_proxy: true,
+    filter_schema: [
+      { name: 'location_id',   type: 'text',   label: 'TripAdvisor geo ID', required: true },
+      { name: 'location_slug', type: 'text',   label: 'Location slug',      required: true },
+      { name: 'listing_type',  type: 'select', label: 'Listing type',       required: true,
+        options: [
+          { value: 'hotels',      label: 'Hotels' },
+          { value: 'restaurants', label: 'Restaurants' },
+          { value: 'attractions', label: 'Attractions' },
+        ] },
+      { name: 'min_rating',    type: 'number', label: 'Min rating',         required: false, default: 1.0, min: 1.0, max: 5.0, step: 0.5 },
+      { name: 'max_rating',    type: 'number', label: 'Max rating',         required: false, default: 3.0, min: 1.0, max: 5.0, step: 0.5 },
+    ],
+  },
+];
+const KNOWN_PLATFORMS = new Set(PLATFORM_MANIFESTS.map(p => p.name));
+
+// GET /api/scrape/platforms — registry of supported platforms.
+// Drives the frontend platform picker; static at deploy time.
+router.get('/platforms', (_req: Request, res: Response) => {
+  res.json({ success: true, data: PLATFORM_MANIFESTS });
+});
+
+// GET /api/scrape/taxonomy[?platform=...] — categories + countries for the form pickers
+router.get('/taxonomy', async (req: Request, res: Response) => {
   try {
+    const platform = param((req.query.platform as string | string[] | undefined) ?? 'trustpilot');
+    if (!KNOWN_PLATFORMS.has(platform)) {
+      res.status(400).json({ success: false, error: `Unknown platform '${platform}'` });
+      return;
+    }
     const [categories, countries, lastSeenAt] = await Promise.all([
-      listCategories(),
-      listCountries(),
-      getMaxLastSeen(),
+      listCategories(platform),
+      listCountries(platform),
+      getMaxLastSeen(platform),
     ]);
     // Always serve fresh. The previous max-age=300 cached stale data across
     // the Refresh roundtrip — users saw "No results" for newly-discovered
     // slugs even after a refresh because the browser still held the old body.
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ success: true, data: { categories, countries, lastSeenAt } });
+    res.json({ success: true, data: { platform, categories, countries, lastSeenAt } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
 });
 
-// GET|POST /api/scrape/taxonomy/refresh — SSE stream that re-runs
+// GET|POST /api/scrape/taxonomy/refresh[?platform=...] — SSE stream that re-runs
 // discover_taxonomy.py. GET so EventSource can attach; the underlying
 // discovery is single-flight so re-hitting it never double-fires.
+//
+// Platform support: Trustpilot only today — the Python spawn target is
+// hardcoded in taxonomy-discovery.ts. Phase 5 will add a platform-aware
+// spawn branch (run.py --platform <p> --action discover-taxonomy).
 const taxonomyRefreshHandler = async (req: Request, res: Response) => {
+  const platform = param((req.query.platform as string | string[] | undefined) ?? 'trustpilot');
+  if (!KNOWN_PLATFORMS.has(platform)) {
+    res.status(400).json({ success: false, error: `Unknown platform '${platform}'` });
+    return;
+  }
+  if (platform !== 'trustpilot') {
+    res.status(501).json({
+      success: false,
+      error: `Taxonomy refresh for platform '${platform}' is not yet implemented.`,
+    });
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -92,24 +167,80 @@ router.get('/taxonomy/status', async (_req: Request, res: Response) => {
   });
 });
 
-// POST /api/scrape — start a new scrape job
+// POST /api/scrape — start a new scrape job.
+//
+// Accepts two body shapes:
+//
+//   NEW  (multi-platform):
+//     { platform: 'trustpilot', filters: { country, category, min_rating, max_rating, enrich?, verify? }, forceRescrape? }
+//
+//   LEGACY (Trustpilot-only, pre-migration-032 callers):
+//     { country, category, minRating?, maxRating?, enrich?, verify?, forceRescrape? }
+//
+// The legacy shape is normalized to the new shape with platform='trustpilot'.
+// Non-Trustpilot platforms currently return 501 — scrape-runner needs the
+// platform-aware spawn branch added in Phase 5 before they can actually execute.
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const {
-      country, category,
-      minRating = 1.0, maxRating = 3.5,
-      enrich = false, verify = false,
-      forceRescrape = false,
-    } = req.body;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const platform = (body.platform as string | undefined)?.toLowerCase() ?? 'trustpilot';
 
-    if (!country || !category) {
-      res.status(400).json({ success: false, error: 'country and category are required' });
+    // Pull filters either from the new envelope or from the legacy top-level
+    // fields. camelCase-or-snake-case both accepted on the way in; we
+    // normalize to snake_case internally because that matches the DB columns
+    // and the Python plugin's filter_schema.
+    const rawFilters = (body.filters as Record<string, unknown> | undefined) ?? {};
+    const country   = (rawFilters.country   ?? body.country)   as string | undefined;
+    const category  = (rawFilters.category  ?? body.category)  as string | undefined;
+    const minRating = Number(rawFilters.min_rating ?? body.minRating ?? 1.0);
+    const maxRating = Number(rawFilters.max_rating ?? body.maxRating ?? 3.5);
+    const enrich    = Boolean(rawFilters.enrich ?? body.enrich ?? false);
+    const verify    = Boolean(rawFilters.verify ?? body.verify ?? false);
+    const forceRescrape = Boolean(body.forceRescrape);
+
+    if (!KNOWN_PLATFORMS.has(platform)) {
+      res.status(400).json({ success: false, error: `Unknown platform '${platform}'` });
       return;
     }
 
-    // Block duplicate scrape unless forceRescrape is explicitly set
-    if (!forceRescrape) {
-      const existing = await findActiveJobForParams(country, category);
+    // Per-platform required-filter validation. Trustpilot wants country +
+    // category; TripAdvisor wants location_id + location_slug + listing_type.
+    // The plugin manifest declares the same requirements — we mirror them
+    // here so the API rejects bad inputs before queueing a doomed job.
+    if (platform === 'trustpilot') {
+      if (!country || !category) {
+        res.status(400).json({ success: false, error: 'country and category are required for trustpilot' });
+        return;
+      }
+    } else if (platform === 'tripadvisor') {
+      const locId = (rawFilters.location_id ?? body.location_id) as string | undefined;
+      const locSlug = (rawFilters.location_slug ?? body.location_slug) as string | undefined;
+      const listingType = (rawFilters.listing_type ?? body.listing_type) as string | undefined;
+      if (!locId || !locSlug || !listingType) {
+        res.status(400).json({
+          success: false,
+          error: 'tripadvisor requires location_id, location_slug, and listing_type',
+        });
+        return;
+      }
+      if (!['hotels', 'restaurants', 'attractions'].includes(listingType)) {
+        res.status(400).json({
+          success: false,
+          error: `listing_type must be one of: hotels, restaurants, attractions`,
+        });
+        return;
+      }
+    }
+
+    // Block duplicate scrape unless forceRescrape is explicitly set.
+    // Dedup is scoped by platform so a Trustpilot run and a TripAdvisor
+    // run on the same country+category don't collide. Non-Trustpilot
+    // platforms don't have a (country, category) tuple in scrape_jobs,
+    // so we skip the job-level dedup for them — lead-level dedup at the
+    // (platform, profile_url) presence still prevents row duplication on
+    // re-scrape.
+    if (!forceRescrape && platform === 'trustpilot' && country && category) {
+      const existing = await findActiveJobForParams(country, category, platform);
       if (existing) {
         res.status(409).json({
           success: false,
@@ -120,21 +251,47 @@ router.post('/', async (req: Request, res: Response) => {
       }
     }
 
+    // Build the filters envelope per platform. Trustpilot still mirrors
+    // country/category/min/max to top-level columns so the legacy schema
+    // and the existing UI both keep working. Non-Trustpilot platforms
+    // store everything inside `filters` and leave the legacy columns null.
+    const platformFilters: Record<string, unknown> = platform === 'trustpilot'
+      ? {
+          country,
+          category,
+          min_rating: minRating,
+          max_rating: maxRating,
+          enrich,
+          verify,
+        }
+      : {
+          ...(rawFilters as Record<string, unknown>),
+          enrich,
+          verify,
+        };
+
     const job = await createJob({
-      country,
-      category,
+      // country/category are NOT NULL on scrape_jobs (migration 001). For
+      // non-trustpilot platforms we stash placeholder values so the row
+      // inserts cleanly; the canonical filter shape lives in `filters` jsonb.
+      country: platform === 'trustpilot' ? (country as string) : `_${platform}_`,
+      category: platform === 'trustpilot' ? (category as string) : (rawFilters.listing_type as string ?? 'all'),
       min_rating: minRating,
       max_rating: maxRating,
       enrich,
       verify,
       source: 'manual',
+      platform,
+      filters: platformFilters,
     });
 
     // Resolve races where multiple POSTs all passed the pre-insert dedup check
     // (common when a user clicks Start Scrape several times while the page is
-    // still loading). The oldest job wins; our row gets deleted if it lost.
-    if (!forceRescrape) {
-      const winnerId = await resolveDuplicateActiveJob(job.id, country, category);
+    // still loading). Only applies to Trustpilot today — non-Trustpilot
+    // platforms don't have (country, category) dedup; the lead-level
+    // (platform, profile_url) presence is the real dedup key.
+    if (!forceRescrape && platform === 'trustpilot' && country && category) {
+      const winnerId = await resolveDuplicateActiveJob(job.id, country, category, platform);
       if (winnerId !== job.id) {
         res.status(409).json({
           success: false,
@@ -150,23 +307,26 @@ router.post('/', async (req: Request, res: Response) => {
       // claims it within ~30s via claim_next_pending_scrape_job. Nothing else
       // to do here. SSE progress for the manual scrape page will degrade to
       // status polling until the worker can stream events back.
-      console.log(`[Scrape] enqueued ${country}/${category} job=${job.id} (remote worker will pick up)`);
+      console.log(`[Scrape] enqueued ${platform} job=${job.id} (remote worker will pick up)`);
     } else {
       // Inline mode (legacy): fire scraper asynchronously on this Cloud Run
-      // instance. Will be removed once cutover to the EC2 worker is complete.
+      // instance. runScrapeJob branches on `platform`: trustpilot uses the
+      // 3-script pipeline, everything else routes through run.py.
       runScrapeJob({
         jobId: job.id,
-        country,
-        category,
+        country: country ?? '',
+        category: category ?? '',
         minRating,
         maxRating,
         enrich,
         verify,
         forceRescrape,
+        platform,
+        filters: platformFilters,
       });
     }
 
-    res.json({ success: true, data: { jobId: job.id } });
+    res.json({ success: true, data: { jobId: job.id, platform } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

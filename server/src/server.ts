@@ -22,6 +22,7 @@ import inboxRoutes from './routes/inbox.js';
 import affiliatesRoutes from './routes/affiliates.js';
 import settingsRoutes from './routes/settings.js';
 import discoveredContactsRoutes, { leadDiscoveredContactsRouter } from './routes/discovered-contacts.js';
+import adminRoutes from './routes/admin.js';
 
 const app = express();
 
@@ -66,6 +67,7 @@ app.use('/api/inbox', inboxRoutes);
 app.use('/api/affiliates', affiliatesRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/discovered-contacts', discoveredContactsRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Serve screenshots as static files. Aggressive caching is safe here —
 // scrape-runner overwrites by filename when re-uploading, but the modal

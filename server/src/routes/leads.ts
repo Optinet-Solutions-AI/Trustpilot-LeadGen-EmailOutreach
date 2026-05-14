@@ -47,6 +47,11 @@ router.get('/', async (req: Request, res: Response) => {
       search: req.query.search as string,
       minRating: req.query.minRating ? parseFloat(req.query.minRating as string) : undefined,
       maxRating: req.query.maxRating ? parseFloat(req.query.maxRating as string) : undefined,
+      // Per-platform Leads pages pass ?platform=trustpilot|tripadvisor.
+      // Empty / omitted = no platform filter (returns leads across all platforms).
+      platform: typeof req.query.platform === 'string' && req.query.platform.trim()
+        ? (req.query.platform as string).toLowerCase()
+        : undefined,
       page: req.query.page ? parseInt(req.query.page as string) : 1,
       limit: req.query.limit ? parseInt(req.query.limit as string) : 25,
       sortBy: req.query.sortBy as string | undefined,

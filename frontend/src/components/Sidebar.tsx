@@ -1,34 +1,48 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useScrape } from '../hooks/useScrape';
 import { useNotifications } from '../context/NotificationsContext';
 import { useDiscoveryCount } from '../hooks/useDiscoveredContacts';
 import { useUI } from '../context/UIContext';
 
-const NAV_ITEMS = [
-  { href: '/scrape',          icon: 'search_check',     label: 'Lead Scraping' },
-  { href: '/leads',           icon: 'grid_view',        label: 'Lead Matrix' },
-  { href: '/redirected-leads', icon: 'compare_arrows',  label: 'Redirected Leads' },
-  { href: '/prospects',       icon: 'how_to_reg',       label: 'Prospects' },
-  { href: '/inbox',           icon: 'inbox',            label: 'Inbox' },
-  { href: '/analytics',       icon: 'bar_chart',        label: 'Analytics' },
-  { href: '/campaigns',       icon: 'magic_button',     label: 'Campaign Wizard' },
-  { href: '/email-accounts',  icon: 'alternate_email',  label: 'Email Accounts' },
-  { href: '/warmup-peers',    icon: 'groups',           label: 'Warmup Peers' },
-  { href: '/affiliate-monitor', icon: 'monitoring',      label: 'Affiliate Monitor' },
+// `platform` is the optional ?platform= query value an entry matches against.
+// Used by the per-platform Lead Matrix entries — three /leads-prefixed
+// entries can coexist without all lighting up at once.
+interface NavItem {
+  href: string;
+  icon: string;
+  label: string;
+  platform?: string;   // undefined = match only when no ?platform= on /leads
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { href: '/scrape',                                icon: 'search_check',     label: 'Lead Scraping' },
+  { href: '/leads',                                 icon: 'grid_view',        label: 'Lead Matrix' },
+  { href: '/leads?platform=trustpilot',             icon: 'workspace_premium',label: 'Trustpilot Leads',  platform: 'trustpilot' },
+  { href: '/leads?platform=tripadvisor',            icon: 'travel_explore',   label: 'TripAdvisor Leads', platform: 'tripadvisor' },
+  { href: '/redirected-leads',                      icon: 'compare_arrows',   label: 'Redirected Leads' },
+  { href: '/prospects',                             icon: 'how_to_reg',       label: 'Prospects' },
+  { href: '/inbox',                                 icon: 'inbox',            label: 'Inbox' },
+  { href: '/analytics',                             icon: 'bar_chart',        label: 'Analytics' },
+  { href: '/campaigns',                             icon: 'magic_button',     label: 'Campaign Wizard' },
+  { href: '/email-accounts',                        icon: 'alternate_email',  label: 'Email Accounts' },
+  { href: '/warmup-peers',                          icon: 'groups',           label: 'Warmup Peers' },
+  { href: '/affiliate-monitor',                     icon: 'monitoring',       label: 'Affiliate Monitor' },
 ];
 
 const isTestMode = process.env.NEXT_PUBLIC_EMAIL_TEST_MODE === 'true';
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const { status } = useScrape();
   const { unreadCount } = useNotifications();
   const pendingDiscoveries = useDiscoveryCount();
   const { drawerOpen, closeDrawer } = useUI();
+  const currentPlatformParam = searchParams?.get('platform') ?? null;
 
   return (
     <>
@@ -98,8 +112,23 @@ export default function Sidebar() {
 
         {/* Navigation */}
         <nav className="flex-1 space-y-1 overflow-y-auto">
-          {NAV_ITEMS.map(({ href, icon, label }) => {
-            const isActive = href === '/' ? pathname === '/' : (pathname ?? '').startsWith(href);
+          {NAV_ITEMS.map(({ href, icon, label, platform }) => {
+            // The /leads tree has three entries that share a pathname; we
+            // disambiguate by ?platform=. Other entries fall back to the
+            // legacy "pathname starts with href" rule.
+            const path = (pathname ?? '');
+            const onLeads = path.startsWith('/leads') && !path.startsWith('/leads/');
+            let isActive: boolean;
+            if (onLeads && href.startsWith('/leads')) {
+              if (platform) {
+                isActive = currentPlatformParam === platform;
+              } else {
+                // Base /leads entry — active only when no ?platform= is set
+                isActive = path === '/leads' && currentPlatformParam === null;
+              }
+            } else {
+              isActive = href === '/' ? path === '/' : path.startsWith(href.split('?')[0]);
+            }
             const isScrapeRunning = href === '/scrape' && status === 'running';
             const showInboxBadge = href === '/inbox' && unreadCount > 0;
             const showProspectsBadge = href === '/prospects' && pendingDiscoveries > 0;

@@ -74,6 +74,10 @@ export default function Leads() {
   const [categoryFilter, setCategoryFilter] = useState(() => searchParams?.get('category') ?? '');
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
+  // ?platform=trustpilot|tripadvisor — drives the per-platform Lead Matrix pages.
+  // Re-read on each render so navigation between sidebar entries refilters
+  // without remounting the view.
+  const platformFilter = searchParams?.get('platform') ?? '';
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const activeFilterCount =
@@ -102,6 +106,7 @@ export default function Leads() {
     if (categoryFilter) filters.category = categoryFilter;
     if (hasEmailFilter) (filters as any).hasEmail = 'true';
     if (search) filters.search = search;
+    if (platformFilter) filters.platform = platformFilter;
     filters.sortBy = sortBy;
     filters.sortDir = sortDir;
     // Hide leads whose websites redirect off-domain — those have their own
@@ -109,7 +114,7 @@ export default function Leads() {
     // never accidentally pulls in misattributed leads.
     (filters as any).redirected = 'exclude';
     fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
-  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, view, sortBy, sortDir, fetchLeads]);
+  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, platformFilter, view, sortBy, sortDir, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 

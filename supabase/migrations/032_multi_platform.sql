@@ -19,11 +19,11 @@
 --   • platform_countries             (renamed from trustpilot_countries)
 --   • cleanup_runs                   (audit log for storage cleanup cron)
 --
--- Drops:
---   • UNIQUE constraint on leads.trustpilot_url
---     (uniqueness now lives on lead_platform_presences(platform, profile_url))
---
--- Preserves (for backwards-compat reads):
+-- Preserves (for backwards-compat reads + active ingest paths):
+--   • UNIQUE on leads.trustpilot_url — three upsert paths still use
+--     ON CONFLICT (trustpilot_url). The drop is deferred to a follow-up
+--     migration after upsert_leads.py / leads.ts / discovered-contacts.ts
+--     are refactored to target lead_platform_presences. See section 3.
 --   • leads.trustpilot_url / trustpilot_email / star_rating / screenshot_path
 --     — kept as denormalized mirrors of the Trustpilot presence
 --   • scrape_jobs.country / category / min_rating / max_rating

@@ -227,6 +227,11 @@ interface ScrapeParams {
   verify: boolean;
   forceRescrape?: boolean;
   source?: 'manual' | 'nightly';
+  // Multi-platform support (migration 032). Defaults to 'trustpilot'.
+  // When set to anything else, runScrapeJob branches into the unified
+  // run.py pipeline instead of the legacy three-script spawn chain.
+  platform?: string;
+  filters?: Record<string, unknown>;
 }
 
 function emitProgress(jobId: string, stage: string, detail: string) {
@@ -395,14 +400,25 @@ async function uploadScreenshotsToStorage(screenshotsDir: string, enrichedOutput
 
       const matchingLead = leads.find((l) =>
         l.screenshot_path && basename(l.screenshot_path) === filename,
-      );
+      ) as { trustpilot_url?: string; profile_url?: string; platform?: string; screenshot_path?: string } | undefined;
       if (matchingLead?.trustpilot_url) {
+        // Trustpilot path — `leads.trustpilot_url` is the dedup key.
         await supabase
           .from('leads')
           .update({ screenshot_path: publicUrl })
           .eq('trustpilot_url', matchingLead.trustpilot_url);
-        // Rewrite in-memory so the final upsert (which re-reads enrichedOutput)
-        // doesn't overwrite the public URL with the local path.
+        matchingLead.screenshot_path = publicUrl;
+        rewroteAny = true;
+      } else if (matchingLead?.platform && matchingLead.platform !== 'trustpilot' && matchingLead.profile_url) {
+        // Non-Trustpilot path — write the public URL onto the matching
+        // lead_platform_presences row keyed by (platform, profile_url).
+        // The legacy leads.screenshot_path column stays null for these
+        // rows because there's no canonical "trustpilot URL" to link by.
+        await supabase
+          .from('lead_platform_presences')
+          .update({ screenshot_path: publicUrl })
+          .eq('platform', matchingLead.platform)
+          .eq('profile_url', matchingLead.profile_url);
         matchingLead.screenshot_path = publicUrl;
         rewroteAny = true;
       }
@@ -521,7 +537,155 @@ async function deduplicateLeads(
   return { filtered, skippedCount: leads.length - filtered.length };
 }
 
+/**
+ * Multi-platform scrape entry point.
+ *
+ * Trustpilot retains its legacy 3-script pipeline (proven, untouched).
+ * Every other platform routes through `runScrapeJobViaRunPy`, which spawns
+ * the unified `tools/scraper/run.py` CLI per phase (list, enrich) and
+ * relies on `upsert_leads.py`'s multi-platform path to write rows without
+ * a `trustpilot_url`.
+ *
+ * The two paths share `uploadScreenshotsToStorage` (already
+ * platform-aware) and the verify pass at the end of the job.
+ */
+async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string }): Promise<void> {
+  const { jobId, platform, filters, enrich, verify } = params;
+  const tmpDir = path.resolve(config.projectRoot, '.tmp');
+  let totalSaved = 0;
+  let totalEnriched = 0;
+  let failedCount = 0;
+
+  try {
+    await updateJob(jobId, {
+      status: 'running',
+      started_at: new Date().toISOString(),
+      last_heartbeat_at: new Date().toISOString(),
+      platform,
+    });
+    startHeartbeat(jobId);
+    emitProgress(jobId, 'started', `platform=${platform}`);
+
+    // ── Phase 1: listing scrape ──────────────────────────────────
+    const rawOutput = path.join(tmpDir, `${jobId}_raw.json`);
+    const filtersJson = JSON.stringify(filters ?? {});
+    const { promise: listPromise } = runPython(jobId, 'tools/scraper/run.py', [
+      '--platform', platform,
+      '--action', 'list',
+      '--filters', filtersJson,
+      '--output', rawOutput,
+    ]);
+    await listPromise;
+
+    let rawData: Array<Record<string, unknown>> = [];
+    try {
+      rawData = JSON.parse(fs.readFileSync(rawOutput, 'utf-8'));
+      await updateJob(jobId, { total_found: rawData.length });
+      emitProgress(jobId, 'category_done', String(rawData.length));
+    } catch (err) {
+      console.error(`[${platform}] Failed to read listing output for job ${jobId}:`, err);
+      emitProgress(jobId, 'category_done', '0');
+    }
+
+    if (rawData.length === 0) {
+      await updateJob(jobId, {
+        status: 'completed',
+        total_scraped: 0,
+        completed_at: new Date().toISOString(),
+      });
+      emitProgress(jobId, 'completed', 'No listings matched the filter.');
+      return;
+    }
+
+    // ── Phase 2: profile enrichment ──────────────────────────────
+    const enrichedOutput = path.join(tmpDir, `${jobId}_enriched.json`);
+    const screenshotsDir = path.join(tmpDir, 'screenshots');
+    const { promise: enrichPromise } = runPython(jobId, 'tools/scraper/run.py', [
+      '--platform', platform,
+      '--action', 'enrich',
+      '--input', rawOutput,
+      '--output', enrichedOutput,
+      '--screenshots-dir', screenshotsDir,
+      '--parallel', '3',
+    ]);
+    await enrichPromise;
+
+    // ── Phase 3: checkpoint upsert via the multi-platform path ───
+    emitProgress(jobId, 'checkpoint_save', 'Saving profile data...');
+    const { promise: upsertPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
+      '--input', enrichedOutput,
+    ]);
+    const upsertStdout = await upsertPromise;
+    const upsertResult = parseUpsertResult(upsertStdout);
+    totalSaved = upsertResult.saved;
+    emitProgress(jobId, 'checkpoint_done', `Saved ${totalSaved} leads`);
+
+    // ── Phase 4: upload local screenshots → Supabase Storage ─────
+    await uploadScreenshotsToStorage(screenshotsDir, enrichedOutput);
+
+    // ── Phase 5: optional website enrichment + final upsert ──────
+    if (enrich) {
+      emitProgress(jobId, 'enrich_start', '');
+      totalEnriched = await runTsEnricher(jobId, enrichedOutput);
+      emitProgress(jobId, 'enrich_done', String(totalEnriched));
+
+      emitProgress(jobId, 'final_save', 'Saving enriched data...');
+      const { promise: finalPromise } = runPython(jobId, 'tools/db/upsert_leads.py', [
+        '--input', enrichedOutput,
+      ]);
+      const finalStdout = await finalPromise;
+      const finalResult = parseUpsertResult(finalStdout);
+      totalSaved = finalResult.saved;
+    }
+
+    // ── Phase 6: count scraper-level failures from DB ────────────
+    try {
+      const supabase = getSupabase();
+      const { count } = await supabase
+        .from('scrape_failures')
+        .select('*', { count: 'exact', head: true })
+        .eq('job_id', jobId)
+        .eq('resolved', false);
+      failedCount = count || 0;
+    } catch (err) {
+      console.error(`[${platform}] Failed to count failures for job ${jobId}:`, err);
+    }
+
+    console.log(`[${platform}] Job ${jobId} complete — saved=${totalSaved} enriched=${totalEnriched} failed=${failedCount}`);
+
+    await updateJob(jobId, {
+      status: 'completed',
+      total_scraped: totalSaved,
+      total_enriched: totalEnriched,
+      completed_at: new Date().toISOString(),
+    });
+    emitProgress(jobId, 'completed', `${totalSaved} leads saved`);
+    // verify pass is intentionally skipped for non-Trustpilot in v1 — the
+    // Trustpilot pipeline below filters by country+category which doesn't
+    // map onto multi-platform shape. Adding it back means querying
+    // lead_platform_presences for this job's lead_ids first.
+    void verify;
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error(`[${platform}] Job ${jobId} failed:`, errorMessage);
+    await updateJob(jobId, {
+      status: 'failed',
+      error: errorMessage.slice(0, 2000),
+      completed_at: new Date().toISOString(),
+    }).catch(() => {});
+    emitProgress(jobId, 'failed', errorMessage.slice(0, 200));
+  } finally {
+    stopHeartbeat(jobId);
+  }
+}
+
 export async function runScrapeJob(params: ScrapeParams): Promise<void> {
+  const platform = (params.platform ?? 'trustpilot').toLowerCase();
+  if (platform !== 'trustpilot') {
+    // Route to the unified run.py path. Trustpilot's existing pipeline
+    // below stays the source of truth for trustpilot scrapes.
+    return runScrapeJobViaRunPy({ ...params, platform });
+  }
   const { jobId, country, category, minRating, maxRating, enrich, verify, forceRescrape } = params;
   const tmpDir = path.resolve(config.projectRoot, '.tmp');
   let failedCount = 0;

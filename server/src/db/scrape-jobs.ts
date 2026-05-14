@@ -2,6 +2,12 @@ import { getSupabase } from '../lib/supabase.js';
 
 export interface ScrapeJob {
   id: string;
+  // Multi-platform (migration 032). `country`/`category`/`min_rating`/`max_rating`
+  // stay populated for Trustpilot jobs so the legacy scrape-runner path keeps
+  // working unchanged; `platform` + `filters` are the platform-agnostic shape
+  // that future platforms (TripAdvisor etc.) will use exclusively.
+  platform: string;
+  filters: Record<string, unknown> | null;
   country: string;
   category: string;
   min_rating: number;
@@ -35,11 +41,38 @@ export async function createJob(params: {
   enrich: boolean;
   verify: boolean;
   source?: 'manual' | 'nightly';
+  // Multi-platform (migration 032). Default 'trustpilot' for backwards
+  // compatibility with all pre-multi-platform call sites.
+  platform?: string;
+  filters?: Record<string, unknown>;
 }) {
   const supabase = getSupabase();
+  const platform = params.platform ?? 'trustpilot';
+  // For Trustpilot we still write the legacy columns so the existing
+  // scrape-runner spawn path keeps working unchanged. We also write
+  // `filters` so the new platform-agnostic shape is always present.
+  const filters =
+    params.filters ?? {
+      country: params.country,
+      category: params.category,
+      min_rating: params.min_rating,
+      max_rating: params.max_rating,
+      enrich: params.enrich,
+      verify: params.verify,
+    };
   const { data, error } = await supabase
     .from('scrape_jobs')
-    .insert({ ...params, source: params.source ?? 'manual' })
+    .insert({
+      country: params.country,
+      category: params.category,
+      min_rating: params.min_rating,
+      max_rating: params.max_rating,
+      enrich: params.enrich,
+      verify: params.verify,
+      source: params.source ?? 'manual',
+      platform,
+      filters,
+    })
     .select()
     .single();
   if (error) throw new Error(error.message);
@@ -63,8 +96,20 @@ export async function enqueueJob(params: {
   source?: 'manual' | 'nightly';
   priority?: number;
   max_attempts?: number;
+  platform?: string;
+  filters?: Record<string, unknown>;
 }): Promise<ScrapeJob> {
   const supabase = getSupabase();
+  const platform = params.platform ?? 'trustpilot';
+  const filters =
+    params.filters ?? {
+      country: params.country,
+      category: params.category,
+      min_rating: params.min_rating,
+      max_rating: params.max_rating,
+      enrich: params.enrich,
+      verify: params.verify,
+    };
   const { data, error } = await supabase
     .from('scrape_jobs')
     .insert({
@@ -78,6 +123,8 @@ export async function enqueueJob(params: {
       status: 'pending',
       priority: params.priority ?? (params.source === 'nightly' ? 100 : 10),
       max_attempts: params.max_attempts ?? 3,
+      platform,
+      filters,
     })
     .select()
     .single();
@@ -203,12 +250,13 @@ export async function getJob(id: string) {
   return data;
 }
 
-/** Returns a currently running job for the same country+category, or null. */
-export async function findActiveJobForParams(country: string, category: string) {
+/** Returns a currently running job for the same platform+country+category, or null. */
+export async function findActiveJobForParams(country: string, category: string, platform: string = 'trustpilot') {
   const supabase = getSupabase();
   const { data } = await supabase
     .from('scrape_jobs')
     .select('id, status, created_at, total_found')
+    .eq('platform', platform)
     .eq('country', country)
     .eq('category', category)
     .eq('status', 'running')
@@ -229,11 +277,13 @@ export async function resolveDuplicateActiveJob(
   selfJobId: string,
   country: string,
   category: string,
+  platform: string = 'trustpilot',
 ): Promise<string> {
   const supabase = getSupabase();
   const { data } = await supabase
     .from('scrape_jobs')
     .select('id, created_at')
+    .eq('platform', platform)
     .eq('country', country)
     .eq('category', category)
     .eq('status', 'running')
@@ -243,7 +293,7 @@ export async function resolveDuplicateActiveJob(
   const winner = all[0].id;
   if (winner === selfJobId) return selfJobId;
   // We lost the race — delete our just-inserted row so the UI doesn't show
-  // two simultaneous "running" rows for the same country+category.
+  // two simultaneous "running" rows for the same platform+country+category.
   await supabase.from('scrape_jobs').delete().eq('id', selfJobId);
   return winner;
 }
