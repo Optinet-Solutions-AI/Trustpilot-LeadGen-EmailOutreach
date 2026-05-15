@@ -108,9 +108,9 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
         : `companies ${countryLabel} ${categoryLabel} with a Trustpilot rating between ${minRating} and ${maxRating} stars`.trim();
 
   const ratingTokens = discoveryMode
-    ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{star_rating}} — their Trustpilot star rating\n  - {{country}} — their country`
+    ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{star_rating}} — their Trustpilot star rating`
     : redirectMode
-      ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{website}} — the redirect target / current website\n  - {{star_rating}} — their Trustpilot star rating (still relevant context)\n  - {{country}} — their country`
+      ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{website}} — the redirect target / current website\n  - {{star_rating}} — their Trustpilot star rating (still relevant context)`
       : manualMode
         ? `  - {{company_name}} — company name (use this token, not the actual domain name)\n  - {{website}} — their website`
         : `  - {{company_name}} — company name\n  - {{star_rating}} — their current Trustpilot star rating\n  - {{review_count}} — number of reviews`;
@@ -179,7 +179,8 @@ This means:
 
 TOKENS — include these organically woven into sentences (never isolated, never inside spintax braces):
 ${ratingTokens}
-${!manualMode ? `- {{country}} — their country (weave in naturally, e.g. "{businesses in {{country}}|{{country}}-based companies}")\n` : ''}- DO NOT put {{token}} placeholders inside spintax braces — always outside
+- DO NOT put {{token}} placeholders inside spintax braces — always outside
+- DO NOT mention the recipient's country anywhere in the subject or body. They live there — saying "in {country}" or "{country}-based companies" sounds robotic. Use {{country}} ONLY if the user manually adds it to the template later; do NOT introduce it yourself.
 
 === SUBJECT REQUIREMENTS ===
 - Concise and compelling (6-10 words)
@@ -215,7 +216,7 @@ SUBJECT: {Quick {thought|note}|A {thought|note}} about {{company_name}}'s Trustp
 
 BODY:
 <p>{Hi|Hello} {{company_name}} team,</p>
-<p>{We spotted|Our team noticed} your Trustpilot profile while {reviewing|scanning} brands in {{country}}, and a {{star_rating}}-star rating {costs operators new customers|sends prospects to competitors}. {At OptiRate, we help|Our team at OptiRate helps} brands rebuild their score {without buying fake reviews|without gaming the system}.</p>
+<p>{We spotted|Our team noticed} your Trustpilot profile while {reviewing|scanning} brands in the space, and a {{star_rating}}-star rating {costs operators new customers|sends prospects to competitors}. {At OptiRate, we help|Our team at OptiRate helps} brands rebuild their score {without buying fake reviews|without gaming the system}.</p>
 <p>{Would you be open to|Happy to send} a short written audit — {we'll outline|we can break down} {what's pulling your score down|where reviews are dropping off} and the fastest fixes. {Reply to this email|Drop us a quick reply} and {we'll send it within 24 hours|we'll have it in your inbox tomorrow}.</p>
 <p>{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team}</p>
 
@@ -227,7 +228,7 @@ KEY STRUCTURAL RULES SHOWN ABOVE — REPEAT THEM:
 - "we / our" everywhere — zero "I" / "me" / "my" / "mine"
 - 10–18 spintax groups across the email (heavy but not so dense it breaks grammar)
 - Every spintax option works when picked alone — same part of speech across siblings inside one {a|b|c}
-- Tokens ({{company_name}}, {{star_rating}}, {{country}}) are woven into sentences, NEVER placed inside spintax braces
+- Tokens ({{company_name}}, {{star_rating}}) are woven into sentences, NEVER placed inside spintax braces. {{country}} is intentionally NOT used — recipients know what country they're in.
 - Email-only CTA ("reply to this email") — no calls, no Zoom, no meetings
 - Signature paragraph is its own <p>
 `.trim();
