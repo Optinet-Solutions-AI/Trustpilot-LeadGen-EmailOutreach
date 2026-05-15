@@ -11,6 +11,7 @@ interface DnsStatus {
   mx: boolean;
   spf: boolean;
   dmarc: boolean;
+  dkim: boolean;
   checkedAt: string;
 }
 
@@ -649,8 +650,8 @@ export default function EmailAccounts() {
                   </div>
                   {account.dns ? (
                     <>
-                      <div className="grid grid-cols-3 gap-1">
-                        {(['mx', 'spf', 'dmarc'] as const).map((k) => {
+                      <div className="grid grid-cols-4 gap-1">
+                        {(['mx', 'spf', 'dmarc', 'dkim'] as const).map((k) => {
                           const ok = account.dns?.[k];
                           return (
                             <div key={k} className={`rounded px-1 py-1 flex items-center justify-center gap-1 ${ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
@@ -753,7 +754,7 @@ export default function EmailAccounts() {
         const hasSmtpAccount = smtpAccounts.length > 0;
         const smtpDomains = Array.from(new Set(smtpAccounts.map((a) => a.email.split('@')[1]).filter(Boolean)));
         const dnsChecked = smtpAccounts.filter((a) => a.dns);
-        const dnsPassing = smtpAccounts.filter((a) => a.dns?.spf && a.dns?.dmarc && a.dns?.mx);
+        const dnsPassing = smtpAccounts.filter((a) => a.dns?.spf && a.dns?.dmarc && a.dns?.mx && a.dns?.dkim);
         const dnsReady = hasSmtpAccount && dnsPassing.length === smtpAccounts.length;
         const warmupActive = !!(warmupData?.accounts.some((a) => a.warmupEnabled));
 

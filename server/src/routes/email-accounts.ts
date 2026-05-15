@@ -89,7 +89,7 @@ router.get('/', async (req: Request, res: Response) => {
       warmupStatus: config.testMode.enabled
         ? `Day ${warmup.day} — Test Phase`
         : `Day ${warmup.day} — ${warmup.phase}`,
-      dns: null as null | { mx: boolean; spf: boolean; dmarc: boolean; checkedAt: string },
+      dns: null as null | { mx: boolean; spf: boolean; dmarc: boolean; dkim: boolean; checkedAt: string },
       source: 'env',
     } : null;
 
@@ -105,15 +105,28 @@ router.get('/', async (req: Request, res: Response) => {
       dnsTasks.push((async () => {
         try {
           const result = await verifyDomainDNS(domain);
-          await supabase.from('email_accounts').update({
+          // Try with dkim column first; if migration 035 hasn't run, fall back without it.
+          const fullPatch = {
             dns_mx: result.mx,
             dns_spf: result.spf,
             dns_dmarc: result.dmarc,
+            dns_dkim: result.dkim,
             dns_checked_at: nowIso,
-          }).eq('id', a.id as string);
+          };
+          const { error: updErr } = await supabase
+            .from('email_accounts').update(fullPatch).eq('id', a.id as string);
+          if (updErr && /dns_dkim/.test(updErr.message)) {
+            await supabase.from('email_accounts').update({
+              dns_mx: result.mx,
+              dns_spf: result.spf,
+              dns_dmarc: result.dmarc,
+              dns_checked_at: nowIso,
+            }).eq('id', a.id as string);
+          }
           a.dns_mx = result.mx;
           a.dns_spf = result.spf;
           a.dns_dmarc = result.dmarc;
+          a.dns_dkim = result.dkim;
           a.dns_checked_at = nowIso;
         } catch {
           // Column missing (pre-migration) or DNS failure — ignore
@@ -156,6 +169,7 @@ router.get('/', async (req: Request, res: Response) => {
         mx:        !!a.dns_mx,
         spf:       !!a.dns_spf,
         dmarc:     !!a.dns_dmarc,
+        dkim:      !!a.dns_dkim,
         checkedAt: String(a.dns_checked_at),
       } : null;
 
@@ -648,20 +662,31 @@ router.post('/:id/dns-refresh', async (req: Request, res: Response) => {
     }
     const result = await verifyDomainDNS(domain);
     const nowIso = new Date().toISOString();
-    const { error: updErr } = await supabase
-      .from('email_accounts')
-      .update({
-        dns_mx: result.mx,
-        dns_spf: result.spf,
-        dns_dmarc: result.dmarc,
-        dns_checked_at: nowIso,
-      })
-      .eq('id', id);
+    const fullPatch = {
+      dns_mx: result.mx,
+      dns_spf: result.spf,
+      dns_dmarc: result.dmarc,
+      dns_dkim: result.dkim,
+      dns_checked_at: nowIso,
+    };
+    let { error: updErr } = await supabase.from('email_accounts').update(fullPatch).eq('id', id);
+    if (updErr && /dns_dkim/.test(updErr.message)) {
+      // Migration 035 hasn't been applied yet — write without the dkim column.
+      ({ error: updErr } = await supabase
+        .from('email_accounts')
+        .update({
+          dns_mx: result.mx,
+          dns_spf: result.spf,
+          dns_dmarc: result.dmarc,
+          dns_checked_at: nowIso,
+        })
+        .eq('id', id));
+    }
     if (updErr) throw new Error(updErr.message);
 
     res.json({
       success: true,
-      data: { domain, mx: result.mx, spf: result.spf, dmarc: result.dmarc, checkedAt: nowIso },
+      data: { domain, mx: result.mx, spf: result.spf, dmarc: result.dmarc, dkim: result.dkim, checkedAt: nowIso },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

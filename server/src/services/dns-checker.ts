@@ -1,5 +1,5 @@
 /**
- * DNS readiness checker — verifies MX, SPF, and DMARC records for a domain.
+ * DNS readiness checker — verifies MX, SPF, DMARC, and DKIM records for a domain.
  * Uses Node's built-in dns/promises module — no external dependency.
  */
 
@@ -12,6 +12,7 @@ export interface DnsCheckResult {
   mx: boolean;
   spf: boolean;
   dmarc: boolean;
+  dkim: boolean;
 }
 
 export type MxProvider =
@@ -53,12 +54,21 @@ export interface DmarcCheck {
   error?: string;
 }
 
+export interface DkimCheck {
+  ok: boolean;
+  selector: string | null;
+  record: string | null;
+  triedSelectors: string[];
+  error?: string;
+}
+
 export interface DomainHealth {
   domain: string;
   healthy: boolean;
   mx: MxCheck;
   spf: SpfCheck;
   dmarc: DmarcCheck;
+  dkim: DkimCheck;
   checkedAt: string;
 }
 
@@ -158,6 +168,87 @@ async function checkDmarcRecord(domain: string): Promise<DmarcCheck> {
   }
 }
 
+// ─── DKIM selector discovery ─────────────────────────────────────────────────
+
+/**
+ * Common DKIM selectors keyed by MX provider. We probe these in parallel —
+ * any one that returns a TXT record matching DKIM syntax (v=DKIM1 or p=…) is
+ * a pass. The "generic" list is also tried as a fallback so self-hosted /
+ * unknown setups with a standard selector (default, mail, email) are still
+ * detected.
+ *
+ * Adding more providers? Drop a selector list in here, keyed by the MxProvider
+ * string. Order matters only for the `triedSelectors` array in the response.
+ */
+const DKIM_SELECTORS_BY_PROVIDER: Partial<Record<MxProvider, string[]>> = {
+  'Google Workspace':           ['google'],
+  'Microsoft 365 / Outlook':    ['selector1', 'selector2'],
+  'Zoho Mail':                  ['zoho', 'zmail', 's1'],
+  'ProtonMail':                 ['protonmail', 'protonmail2', 'protonmail3'],
+  'iCloud Mail':                ['sig1'],
+  'Fastmail':                   ['fm1', 'fm2', 'fm3', 'mesmtp'],
+  'Yahoo Mail':                 ['s2048', 's1024'],
+  'Titan (Bluehost)':           ['titan1', 'titan2'],
+  'Amazon SES':                 [],                            // customer-specific tokens; nothing to probe
+  'SendGrid':                   ['s1', 's2'],
+  'Mailgun':                    ['mailo', 'k1', 'mg'],
+  'Postmark':                   ['pm', 'postmark'],
+  'MXroute':                    ['x'],
+  'DreamHost (MailChannels)':   ['dreamhost', 'mailchannels'],
+  'cPanel / Shared Host':       ['default'],
+};
+
+const GENERIC_DKIM_SELECTORS = ['default', 'mail', 'email', 'selector1', 'k1', 's1'];
+
+const DKIM_RE = /^(v=dkim1\b|.*\bk=rsa\b|.*\bp=)/i;
+
+async function probeSelector(selector: string, domain: string): Promise<{ selector: string; record: string } | null> {
+  try {
+    const records = await dns.resolveTxt(`${selector}._domainkey.${domain}`);
+    const flat = records.map((r) => r.join('')).join(' ');
+    if (DKIM_RE.test(flat)) return { selector, record: flat };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function checkDkimRecord(domain: string, provider: MxProvider): Promise<DkimCheck> {
+  const providerSelectors = DKIM_SELECTORS_BY_PROVIDER[provider] ?? [];
+  // De-duplicate while preserving order. Provider-specific selectors first.
+  const seen = new Set<string>();
+  const triedSelectors: string[] = [];
+  for (const s of [...providerSelectors, ...GENERIC_DKIM_SELECTORS]) {
+    if (!seen.has(s)) { seen.add(s); triedSelectors.push(s); }
+  }
+
+  if (triedSelectors.length === 0) {
+    return {
+      ok: false, selector: null, record: null, triedSelectors,
+      error: `No known DKIM selectors for provider "${provider}". Look up the DKIM record in your provider's admin panel and confirm it's published.`,
+    };
+  }
+
+  const results = await Promise.all(triedSelectors.map((s) => probeSelector(s, domain)));
+  const hit = results.find((r) => r !== null);
+
+  if (hit) return { ok: true, selector: hit.selector, record: hit.record, triedSelectors };
+
+  const providerHint =
+    provider === 'Titan (Bluehost)'         ? 'In Bluehost → Email Accounts → DKIM, copy the TXT record (host: titan1._domainkey).' :
+    provider === 'Google Workspace'         ? 'In Google Admin → Apps → Gmail → Authenticate email, generate a DKIM key and publish the TXT (host: google._domainkey).' :
+    provider === 'Microsoft 365 / Outlook'  ? 'In Microsoft 365 Defender → Email & Collaboration → Email Authentication → DKIM, enable signing and publish selector1/selector2 CNAMEs.' :
+    provider === 'Zoho Mail'                ? 'In Zoho Mail Admin → Domains → DKIM, copy the zoho._domainkey TXT and publish it.' :
+    provider === 'DreamHost (MailChannels)' ? 'In DreamHost panel → Mail → DKIM, enable signing and publish the dreamhost._domainkey TXT.' :
+    provider === 'cPanel / Shared Host'     ? 'In cPanel → Email Deliverability, install the default._domainkey record.' :
+    'Look up the DKIM record in your email provider\'s admin panel and publish it as a TXT record.';
+
+  return {
+    ok: false, selector: null, record: null, triedSelectors,
+    error: `No DKIM record found on any known selector (${triedSelectors.map(s => `${s}._domainkey.${domain}`).join(', ')}). ${providerHint}`,
+  };
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Rich health report — used by GET /api/dns-health/:domain and pre-send gates. */
@@ -168,12 +259,15 @@ export async function checkDomainHealth(domain: string): Promise<DomainHealth> {
     checkSpfRecord(normalized),
     checkDmarcRecord(normalized),
   ]);
+  // DKIM probing depends on the MX provider classification.
+  const dkim = await checkDkimRecord(normalized, mx.provider);
   return {
     domain: normalized,
-    healthy: mx.ok && spf.ok && dmarc.ok,
+    healthy: mx.ok && spf.ok && dmarc.ok && dkim.ok,
     mx,
     spf,
     dmarc,
+    dkim,
     checkedAt: new Date().toISOString(),
   };
 }
@@ -181,5 +275,5 @@ export async function checkDomainHealth(domain: string): Promise<DomainHealth> {
 /** Boolean-only shape kept for email-accounts.ts and the per-account DNS badge. */
 export async function verifyDomainDNS(domain: string): Promise<DnsCheckResult> {
   const health = await checkDomainHealth(domain);
-  return { mx: health.mx.ok, spf: health.spf.ok, dmarc: health.dmarc.ok };
+  return { mx: health.mx.ok, spf: health.spf.ok, dmarc: health.dmarc.ok, dkim: health.dkim.ok };
 }
