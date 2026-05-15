@@ -8,6 +8,7 @@ export interface LeadFilters {
   minRating?: number;
   maxRating?: number;
   hasEmail?: boolean;
+  verificationStatus?: 'valid' | 'invalid' | 'catch-all' | 'unknown';
   // Per-platform filter — when set, restricts the result to leads that have
   // a row in lead_platform_presences for the given platform name. Used by
   // the per-platform "Trustpilot Leads" / "TripAdvisor Leads" pages.
@@ -52,6 +53,9 @@ export async function getLeads(filters: LeadFilters = {}) {
   if (filters.hasEmail) {
     query = query.not('primary_email', 'is', null);
   }
+  if (filters.verificationStatus) {
+    query = query.eq('verification_status', filters.verificationStatus);
+  }
   if (filters.redirected === 'only') {
     query = query.not('redirects_to', 'is', null);
   } else if (filters.redirected === 'exclude') {
@@ -87,6 +91,42 @@ export async function getLeads(filters: LeadFilters = {}) {
     page,
     totalPages: Math.ceil((count || 0) / limit),
   };
+}
+
+/**
+ * Returns lead IDs matching filters — no pagination, no row data.
+ * Used by the campaign wizard's "Select all valid" button to grab every
+ * matching lead across all pages in one round-trip. Hard-capped at 5000
+ * to keep the response size sane; the wizard refuses to bulk-select
+ * beyond that for sender-reputation reasons anyway.
+ */
+export async function getLeadIds(filters: LeadFilters = {}): Promise<string[]> {
+  const supabase = getSupabase();
+  const MAX_IDS = 5000;
+
+  let query = filters.platform
+    ? supabase
+        .from('leads')
+        .select('id, lead_platform_presences!inner(platform)')
+        .eq('lead_platform_presences.platform', filters.platform)
+    : supabase.from('leads').select('id');
+
+  if (filters.status) query = query.eq('outreach_status', filters.status);
+  if (filters.country) query = query.eq('country', filters.country);
+  if (filters.category) query = query.eq('category', filters.category);
+  if (filters.minRating) query = query.gte('star_rating', filters.minRating);
+  if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
+  if (filters.search) {
+    query = query.or(`company_name.ilike.%${filters.search}%,website_url.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%`);
+  }
+  if (filters.hasEmail) query = query.not('primary_email', 'is', null);
+  if (filters.verificationStatus) query = query.eq('verification_status', filters.verificationStatus);
+  if (filters.redirected === 'only') query = query.not('redirects_to', 'is', null);
+  else if (filters.redirected === 'exclude') query = query.is('redirects_to', null);
+
+  const { data, error } = await query.range(0, MAX_IDS - 1);
+  if (error) throw new Error(error.message);
+  return (data || []).map((r: { id: string }) => r.id);
 }
 
 export async function getLeadById(id: string) {

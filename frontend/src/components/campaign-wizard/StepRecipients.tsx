@@ -121,6 +121,31 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
     else onSelectionChange([...selectedLeadIds, ...pageIds.filter((id) => !selectedLeadIds.includes(id))]);
   };
 
+  // "Select all valid" — pulls every valid-status lead across all pages
+  // matching the current country/category/search filters via the dedicated
+  // /api/leads/ids endpoint. Capped at 5000 server-side. Catch-all/invalid/
+  // unknown are excluded for the same sender-reputation reasons as
+  // "Select page" above.
+  const [selectingAll, setSelectingAll] = useState(false);
+  const selectAllValid = async () => {
+    setSelectingAll(true);
+    try {
+      const params = new URLSearchParams();
+      if (filterCountry) params.set('country', filterCountry);
+      if (filterCategory) params.set('category', filterCategory);
+      if (debouncedSearch) params.set('search', debouncedSearch);
+      params.set('verificationStatus', 'valid');
+      const res = await api.get(`/leads/ids?${params}`);
+      const ids: string[] = res.data?.data || [];
+      const merged = Array.from(new Set([...selectedLeadIds, ...ids]));
+      onSelectionChange(merged);
+    } catch {
+      // Swallow — selection unchanged on error
+    } finally {
+      setSelectingAll(false);
+    }
+  };
+
   const SortIcon = ({ col }: { col: string }) => (
     <span className={`material-symbols-outlined text-[13px] ml-0.5 ${sortBy === col ? 'text-[#b0004a]' : 'text-slate-300'}`}>
       {sortBy === col ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
@@ -170,6 +195,22 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
               className="text-xs font-bold text-[#b0004a] hover:text-[#7a0033] whitespace-nowrap bg-[#ffd9de] px-3 py-2 rounded-lg transition-colors"
             >
               {allPageSelected ? 'Deselect page' : 'Select page'}
+            </button>
+          )}
+          {leads.length > 0 && total > LIMIT && (
+            <button
+              onClick={selectAllValid}
+              disabled={selectingAll}
+              className="text-xs font-bold text-white whitespace-nowrap bg-[#b0004a] hover:bg-[#7a0033] disabled:opacity-60 px-3 py-2 rounded-lg transition-colors inline-flex items-center gap-1.5"
+              title="Select every valid-verified lead across all pages matching the current filters"
+            >
+              {selectingAll ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" /> Selecting…
+                </>
+              ) : (
+                'Select all valid (all pages)'
+              )}
             </button>
           )}
           {selectedLeadIds.length > 0 && (

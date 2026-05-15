@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads } from '../db/leads.js';
+import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads, getLeadIds } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sanitizeTrustpilotUrl, validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from '../services/url-validator.js';
@@ -57,9 +57,40 @@ router.get('/', async (req: Request, res: Response) => {
       sortBy: req.query.sortBy as string | undefined,
       sortDir: req.query.sortDir === 'asc' ? 'asc' : 'desc',
       hasEmail: req.query.hasEmail === 'true',
+      verificationStatus: ['valid', 'invalid', 'catch-all', 'unknown'].includes(req.query.verificationStatus as string)
+        ? (req.query.verificationStatus as 'valid' | 'invalid' | 'catch-all' | 'unknown')
+        : undefined,
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
     });
     res.json({ success: true, ...result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/leads/ids — return ID array for all leads matching filters.
+// Used by the campaign wizard's "Select all valid" button to grab every
+// matching lead across all pages in one round-trip.
+router.get('/ids', async (req: Request, res: Response) => {
+  try {
+    const ids = await getLeadIds({
+      status: req.query.status as string,
+      country: req.query.country as string,
+      category: req.query.category as string,
+      search: req.query.search as string,
+      minRating: req.query.minRating ? parseFloat(req.query.minRating as string) : undefined,
+      maxRating: req.query.maxRating ? parseFloat(req.query.maxRating as string) : undefined,
+      platform: typeof req.query.platform === 'string' && req.query.platform.trim()
+        ? (req.query.platform as string).toLowerCase()
+        : undefined,
+      hasEmail: req.query.hasEmail === 'true',
+      verificationStatus: ['valid', 'invalid', 'catch-all', 'unknown'].includes(req.query.verificationStatus as string)
+        ? (req.query.verificationStatus as 'valid' | 'invalid' | 'catch-all' | 'unknown')
+        : undefined,
+      redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
+    });
+    res.json({ success: true, data: ids, total: ids.length });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
