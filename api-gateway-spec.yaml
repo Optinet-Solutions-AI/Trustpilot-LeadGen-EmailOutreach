@@ -2,7 +2,7 @@ swagger: "2.0"
 info:
   title: trustpilot-api
   description: Trustpilot LeadGen API Gateway proxy to Cloud Run
-  version: "1.11.0"
+  version: "1.12.0"
 schemes:
   - https
 produces:
@@ -1043,6 +1043,13 @@ paths:
   /api/admin/cleanup-screenshots:
     post:
       operationId: cleanupScreenshots
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/tripadvisor/cities:
+    get:
+      operationId: getTripadvisorCities
       security: []
       responses:
         "200":
