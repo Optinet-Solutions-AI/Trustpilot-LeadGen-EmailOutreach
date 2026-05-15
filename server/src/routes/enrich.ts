@@ -99,7 +99,11 @@ router.get('/:id/stream', async (req: Request, res: Response) => {
 // ── POST /api/enrich — start enrichment job using in-process TS enricher ─────
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { leadIds } = req.body;
+    const { leadIds, concurrency: rawConcurrency } = req.body;
+    // Clamp to [1, 5] so the laptop doesn't get overwhelmed when called
+    // from a local owner-run enrich. Default stays 3 to preserve the
+    // existing cloud behavior for callers that don't pass it.
+    const concurrency = Math.max(1, Math.min(Number(rawConcurrency) || 3, 5));
     const supabase = getSupabase();
 
     // Fetch leads that need enrichment
@@ -199,7 +203,7 @@ router.post('/', async (req: Request, res: Response) => {
         let dbFailed = 0;
 
         const results = await enrichLeads(leads as EnrichableLead[], {
-          concurrency: 3,
+          concurrency,
           onProgress: (done, totalItems) => {
             scrapeEvents.emit('progress', {
               jobId,

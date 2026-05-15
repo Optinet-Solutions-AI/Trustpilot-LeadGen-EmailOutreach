@@ -70,7 +70,12 @@ export async function getLeads(filters: LeadFilters = {}) {
   // For any email column: always put nulls last so leads with emails surface at the top
   const nullsFirst = EMAIL_SORT_COLUMNS.has(sortCol) ? false : undefined;
 
+  // Always prioritize email-verification quality FIRST: valid > catch-all >
+  // invalid > unknown > null. The user's chosen sort column becomes the
+  // tiebreaker within each rank bucket. Backed by `verification_rank`
+  // generated column (migration 034) with an index on it, so this is cheap.
   const { data, error, count } = await query
+    .order('verification_rank', { ascending: true, nullsFirst: false })
     .order(sortCol, { ascending: sortAsc, nullsFirst })
     .range(offset, offset + limit - 1);
 
