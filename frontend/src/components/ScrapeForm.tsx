@@ -10,6 +10,7 @@ import Button from '../ui/Button';
 import Toggle from '../ui/Toggle';
 import RangeInput from '../ui/RangeInput';
 import Combobox from '../ui/Combobox';
+import ScrapeCostAdvisory from './ScrapeCostAdvisory';
 
 interface Props {
   onSubmit: (params: ScrapeParams) => void;
@@ -47,8 +48,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   // before the parent's loading state has propagated.
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Async guard for the TripAdvisor cost-confirmation dialog. The advisory
+  // component populates this whenever the country changes.
+  const guardRef = useRef<(() => Promise<boolean>) | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submittingRef.current || loading) return;
 
@@ -74,6 +78,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         verify,
         forceRescrape,
       } satisfies TrustpilotScrapeParams;
+    }
+
+    if (platform === 'tripadvisor' && guardRef.current) {
+      const ok = await guardRef.current();
+      if (!ok) return;
     }
 
     submittingRef.current = true;
@@ -182,6 +191,12 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               step={0.5}
               disabled={busy}
             />
+            <div className="sm:col-span-2 lg:col-span-3">
+              <ScrapeCostAdvisory
+                country={taCountry}
+                onGuardReady={(g) => { guardRef.current = g; }}
+              />
+            </div>
           </>
         )}
       </div>
