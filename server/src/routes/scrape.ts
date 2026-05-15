@@ -45,16 +45,15 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
     // The frontend uses this flag to nudge the operator toward local-mode.
     requires_proxy: true,
     filter_schema: [
-      { name: 'location_id',   type: 'text',   label: 'TripAdvisor geo ID', required: true },
-      { name: 'location_slug', type: 'text',   label: 'Location slug',      required: true },
-      { name: 'listing_type',  type: 'select', label: 'Listing type',       required: true,
+      { name: 'country',    type: 'select', label: 'Country',    required: true,  options_source: 'taxonomy:countries' },
+      { name: 'category',   type: 'select', label: 'Category',   required: true,
         options: [
           { value: 'hotels',      label: 'Hotels' },
           { value: 'restaurants', label: 'Restaurants' },
           { value: 'attractions', label: 'Attractions' },
         ] },
-      { name: 'min_rating',    type: 'number', label: 'Min rating',         required: false, default: 1.0, min: 1.0, max: 5.0, step: 0.5 },
-      { name: 'max_rating',    type: 'number', label: 'Max rating',         required: false, default: 3.0, min: 1.0, max: 5.0, step: 0.5 },
+      { name: 'min_rating', type: 'number', label: 'Min rating', required: false, default: 1.0, min: 1.0, max: 5.0, step: 0.5 },
+      { name: 'max_rating', type: 'number', label: 'Max rating', required: false, default: 3.0, min: 1.0, max: 5.0, step: 0.5 },
     ],
   },
 ];
@@ -213,20 +212,31 @@ router.post('/', async (req: Request, res: Response) => {
         return;
       }
     } else if (platform === 'tripadvisor') {
-      const locId = (rawFilters.location_id ?? body.location_id) as string | undefined;
-      const locSlug = (rawFilters.location_slug ?? body.location_slug) as string | undefined;
-      const listingType = (rawFilters.listing_type ?? body.listing_type) as string | undefined;
-      if (!locId || !locSlug || !listingType) {
+      const taCountry = (rawFilters.country ?? body.country) as string | undefined;
+      const taCategory = (rawFilters.category ?? body.category) as string | undefined;
+      if (!taCountry || !taCategory) {
         res.status(400).json({
           success: false,
-          error: 'tripadvisor requires location_id, location_slug, and listing_type',
+          error: 'tripadvisor requires country and category',
         });
         return;
       }
-      if (!['hotels', 'restaurants', 'attractions'].includes(listingType)) {
+      if (!['hotels', 'restaurants', 'attractions'].includes(taCategory)) {
         res.status(400).json({
           success: false,
-          error: `listing_type must be one of: hotels, restaurants, attractions`,
+          error: `category must be one of: hotels, restaurants, attractions`,
+        });
+        return;
+      }
+      // Reject if there are no seeded cities for this country — without them
+      // the fan-out would produce zero leads. The operator must run
+      // tools/scraper/seed_tripadvisor_cities.py --country XX first.
+      const { countActiveCitiesForCountry } = await import('../db/tripadvisor-cities.js');
+      const cityCount = await countActiveCitiesForCountry(taCountry.toUpperCase());
+      if (cityCount === 0) {
+        res.status(400).json({
+          success: false,
+          error: `No seeded cities for country ${taCountry}. Run tools/scraper/seed_tripadvisor_cities.py --country ${taCountry} first.`,
         });
         return;
       }
@@ -264,6 +274,15 @@ router.post('/', async (req: Request, res: Response) => {
           enrich,
           verify,
         }
+      : platform === 'tripadvisor'
+      ? {
+          country:    String((rawFilters.country  ?? body.country)  ?? '').toUpperCase(),
+          category:   String((rawFilters.category ?? body.category) ?? ''),
+          min_rating: minRating,
+          max_rating: maxRating,
+          enrich,
+          verify,
+        }
       : {
           ...(rawFilters as Record<string, unknown>),
           enrich,
@@ -271,11 +290,18 @@ router.post('/', async (req: Request, res: Response) => {
         };
 
     const job = await createJob({
-      // country/category are NOT NULL on scrape_jobs (migration 001). For
-      // non-trustpilot platforms we stash placeholder values so the row
-      // inserts cleanly; the canonical filter shape lives in `filters` jsonb.
-      country: platform === 'trustpilot' ? (country as string) : `_${platform}_`,
-      category: platform === 'trustpilot' ? (category as string) : (rawFilters.listing_type as string ?? 'all'),
+      // For TripAdvisor we mirror country + category to the top-level columns
+      // so the Recent Jobs UI shows "US — hotels" the same way Trustpilot does.
+      country: platform === 'trustpilot'
+        ? (country as string)
+        : platform === 'tripadvisor'
+          ? String(platformFilters.country)
+          : `_${platform}_`,
+      category: platform === 'trustpilot'
+        ? (category as string)
+        : platform === 'tripadvisor'
+          ? String(platformFilters.category)
+          : (rawFilters.listing_type as string ?? 'all'),
       min_rating: minRating,
       max_rating: maxRating,
       enrich,
