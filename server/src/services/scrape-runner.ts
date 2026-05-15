@@ -19,6 +19,7 @@ import { updateJob } from '../db/scrape-jobs.js';
 import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
+import { listActiveCitiesForCountry, type TripAdvisorCity } from '../db/tripadvisor-cities.js';
 
 export const scrapeEvents = new EventEmitter();
 
@@ -569,22 +570,125 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
     // ── Phase 1: listing scrape ──────────────────────────────────
     const rawOutput = path.join(tmpDir, `${jobId}_raw.json`);
     const filtersJson = JSON.stringify(filters ?? {});
-    const { promise: listPromise } = runPython(jobId, 'tools/scraper/run.py', [
-      '--platform', platform,
-      '--action', 'list',
-      '--filters', filtersJson,
-      '--output', rawOutput,
-    ]);
-    await listPromise;
 
     let rawData: Array<Record<string, unknown>> = [];
-    try {
-      rawData = JSON.parse(fs.readFileSync(rawOutput, 'utf-8'));
+
+    if (platform === 'tripadvisor') {
+      // Fan out across every seeded city for the country, dedup'ing by
+      // profile_url. Each city is a separate run.py spawn so cancellation
+      // and watchdog logic stay per-process.
+      const f = (filters ?? {}) as Record<string, unknown>;
+      const taCountry = String(f.country ?? '').toUpperCase();
+      const taCategory = String(f.category ?? 'hotels');
+      const minR = Number(f.min_rating ?? 1.0);
+      const maxR = Number(f.max_rating ?? 3.0);
+
+      const cities: TripAdvisorCity[] = await listActiveCitiesForCountry(taCountry);
+      if (cities.length === 0) {
+        // Defensive — POST /api/scrape already rejects this case, but a race
+        // could empty the table between submit and run. Treat as 0-lead success.
+        await updateJob(jobId, {
+          status: 'completed',
+          total_found: 0,
+          total_scraped: 0,
+          completed_at: new Date().toISOString(),
+        });
+        emitProgress(jobId, 'completed', `No seeded cities for ${taCountry}`);
+        return;
+      }
+
+      emitProgress(jobId, 'city_total', String(cities.length));
+
+      const dedup = new Map<string, Record<string, unknown>>();
+      const CONCURRENCY = 2;
+      let cityIdx = 0;
+      let cancelled = false;
+
+      const runOneCity = async (city: TripAdvisorCity): Promise<void> => {
+        if (cancelled) return;
+
+        // Cooperative cancel check between cities.
+        try {
+          const { data: jobRow } = await getSupabase()
+            .from('scrape_jobs').select('status').eq('id', jobId).single();
+          if (jobRow && (jobRow.status === 'cancelled' || jobRow.status === 'failed')) {
+            cancelled = true;
+            return;
+          }
+        } catch {
+          // Lookup failure is transient — keep going.
+        }
+
+        const cityOutput = path.join(tmpDir, `${jobId}_city_${city.geo_id}.json`);
+        const cityFilters = {
+          location_id:   city.geo_id,
+          location_slug: city.slug,
+          listing_type:  taCategory,
+          min_rating:    minR,
+          max_rating:    maxR,
+        };
+        emitProgress(jobId, 'city_start', `${city.geo_id}|${city.name}`);
+        try {
+          const { promise } = runPython(jobId, 'tools/scraper/run.py', [
+            '--platform', 'tripadvisor',
+            '--action', 'list',
+            '--filters', JSON.stringify(cityFilters),
+            '--output', cityOutput,
+          ]);
+          await promise;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[tripadvisor] city ${city.geo_id} (${city.name}) failed:`, msg);
+          emitProgress(jobId, 'city_failed', `${city.geo_id}|${city.name}|${msg.slice(0, 200)}`);
+          return;
+        }
+
+        try {
+          const cityRows: Array<Record<string, unknown>> =
+            JSON.parse(fs.readFileSync(cityOutput, 'utf-8'));
+          for (const row of cityRows) {
+            const key = String(row.profile_url ?? '');
+            if (key && !dedup.has(key)) {
+              dedup.set(key, { ...row, country: taCountry, city: city.name, city_geo_id: city.geo_id });
+            }
+          }
+          emitProgress(jobId, 'city_done', `${city.geo_id}|${city.name}|${cityRows.length}`);
+        } catch (err) {
+          console.warn(`[tripadvisor] failed reading ${cityOutput}:`, err);
+        } finally {
+          try { fs.unlinkSync(cityOutput); } catch { /* ignore */ }
+        }
+      };
+
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        while (cityIdx < cities.length && !cancelled) {
+          const myIdx = cityIdx++;
+          await runOneCity(cities[myIdx]);
+        }
+      });
+      await Promise.all(workers);
+
+      rawData = Array.from(dedup.values());
+      fs.writeFileSync(rawOutput, JSON.stringify(rawData, null, 2), 'utf-8');
       await updateJob(jobId, { total_found: rawData.length });
       emitProgress(jobId, 'category_done', String(rawData.length));
-    } catch (err) {
-      console.error(`[${platform}] Failed to read listing output for job ${jobId}:`, err);
-      emitProgress(jobId, 'category_done', '0');
+    } else {
+      const { promise: listPromise } = runPython(jobId, 'tools/scraper/run.py', [
+        '--platform', platform,
+        '--action', 'list',
+        '--filters', filtersJson,
+        '--output', rawOutput,
+      ]);
+      await listPromise;
+
+      try {
+        rawData = JSON.parse(fs.readFileSync(rawOutput, 'utf-8'));
+        await updateJob(jobId, { total_found: rawData.length });
+        emitProgress(jobId, 'category_done', String(rawData.length));
+      } catch (err) {
+        console.error(`[${platform}] Failed to read listing output for job ${jobId}:`, err);
+        emitProgress(jobId, 'category_done', '0');
+      }
     }
 
     if (rawData.length === 0) {
