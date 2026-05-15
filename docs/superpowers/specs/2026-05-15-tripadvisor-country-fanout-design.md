@@ -265,6 +265,31 @@ User picks `Country=US`, `Category=Hotels`, `min=1`, `max=3`.
 
 ---
 
+## Known coverage limitation (v1)
+
+The seed scraper walks each country's Tourism page plus one level of
+recursion into the linked "Popular destinations". This catches the most
+common cities (~80 for the US — NYC, LA, Chicago, Vegas, SF, Boston, etc.
+and their satellites) but **misses small-market cities** that don't
+appear on TA's Popular panel.
+
+For the US specifically: TA's geographic hierarchy is `Country → State →
+City`, but the country Tourism page links directly to popular cities and
+skips the State level. To reach every city in every state would require
+either (a) a hardcoded geo-ID map of US states, French régions, etc.
+(~200 entries across the major-market countries) feeding a state-aware
+recursion, or (b) an entirely different scrape architecture (e.g.
+per-state Hotels pagination).
+
+**v1 ships with the Popular-destination set.** The operator can extend
+coverage manually by inserting rows into `tripadvisor_cities` via the
+Supabase SQL editor — the scrape-runner reads every active row, so newly
+added cities take effect on the next scrape with no code change.
+
+Phase 2 work item: implement state-aware seeding for the top ~10 markets.
+
+---
+
 ## What is **not** in scope (v1)
 
 - **Subcategories** (Italian Restaurants, Casinos, Spas, etc.) — TA exposes
