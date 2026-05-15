@@ -32,10 +32,9 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [minRating, setMinRating] = useState(1.0);
   const [maxRating, setMaxRating] = useState(3.5);
 
-  // TripAdvisor fields
-  const [locationId, setLocationId] = useState('');
-  const [locationSlug, setLocationSlug] = useState('');
-  const [listingType, setListingType] = useState<'hotels' | 'restaurants' | 'attractions'>('hotels');
+  // TripAdvisor fields — mirrors Trustpilot's shape on purpose
+  const [taCountry, setTaCountry] = useState('US');
+  const [taCategory, setTaCategory] = useState<'hotels' | 'restaurants' | 'attractions'>('hotels');
   const [taMinRating, setTaMinRating] = useState(1.0);
   const [taMaxRating, setTaMaxRating] = useState(3.0);
 
@@ -55,16 +54,10 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
 
     let params: ScrapeParams;
     if (platform === 'tripadvisor') {
-      if (!locationId.trim() || !locationSlug.trim()) {
-        // Surface as a native form error rather than failing on POST
-        alert('TripAdvisor requires both a geo ID and a location slug.');
-        return;
-      }
       params = {
         platform: 'tripadvisor',
-        location_id: locationId.trim(),
-        location_slug: locationSlug.trim(),
-        listing_type: listingType,
+        country: taCountry,
+        category: taCategory,
         min_rating: taMinRating,
         max_rating: taMaxRating,
         enrich,
@@ -158,47 +151,21 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         {platform === 'tripadvisor' && (
           <>
             <div>
-              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-geo">
-                Geo ID
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-country">
+                Country
               </label>
-              <input
-                id="ta-geo"
-                value={locationId}
-                onChange={(e) => setLocationId(e.target.value)}
-                disabled={busy}
-                placeholder="e.g. 60745"
-                className="w-full rounded-md border border-divider bg-surface px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-brand-500"
-              />
-              <p className="mt-1 text-[11px] text-on-surface-muted">
-                From a TripAdvisor URL like Hotels-g<strong>60745</strong>-Boston…
-              </p>
+              <CountryPicker id="ta-country" value={taCountry} onChange={setTaCountry} disabled={busy} />
             </div>
             <div>
-              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-slug">
-                Location slug
-              </label>
-              <input
-                id="ta-slug"
-                value={locationSlug}
-                onChange={(e) => setLocationSlug(e.target.value)}
-                disabled={busy}
-                placeholder="e.g. Boston_Massachusetts"
-                className="w-full rounded-md border border-divider bg-surface px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-muted focus:outline-none focus:ring-2 focus:ring-brand-500"
-              />
-              <p className="mt-1 text-[11px] text-on-surface-muted">
-                The URL-safe location name from the same URL.
-              </p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-type">
-                Listing type
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-category">
+                Category
               </label>
               <Combobox
-                id="ta-type"
-                value={listingType}
-                onChange={(v) => setListingType(v as 'hotels' | 'restaurants' | 'attractions')}
+                id="ta-category"
+                value={taCategory}
+                onChange={(v) => setTaCategory(v as 'hotels' | 'restaurants' | 'attractions')}
                 options={LISTING_TYPE_OPTIONS}
-                placeholder="Pick a listing type"
+                placeholder="Pick a category"
                 disabled={busy}
               />
             </div>

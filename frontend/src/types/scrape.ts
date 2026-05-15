@@ -22,9 +22,8 @@ export interface TrustpilotScrapeParams {
 
 export interface TripAdvisorScrapeParams {
   platform: 'tripadvisor';
-  location_id: string;
-  location_slug: string;
-  listing_type: 'hotels' | 'restaurants' | 'attractions';
+  country: string;
+  category: 'hotels' | 'restaurants' | 'attractions';
   min_rating: number;
   max_rating: number;
   enrich: boolean;

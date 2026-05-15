@@ -149,9 +149,8 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
           ? {
               platform: 'tripadvisor',
               filters: {
-                location_id: params.location_id,
-                location_slug: params.location_slug,
-                listing_type: params.listing_type,
+                country: params.country,
+                category: params.category,
                 min_rating: params.min_rating,
                 max_rating: params.max_rating,
                 enrich: params.enrich,
