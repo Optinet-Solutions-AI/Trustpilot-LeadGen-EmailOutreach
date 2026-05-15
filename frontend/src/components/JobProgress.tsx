@@ -320,6 +320,14 @@ export default function JobProgress({
           </>
         ) : kind === 'scrape' ? (
           <>
+            {summary.citiesTotal > 0 && (
+              <Card
+                label="Cities"
+                value={`${summary.citiesDone} / ${summary.citiesTotal}`}
+                accent="#004b7f"
+                hint="TripAdvisor city fan-out"
+              />
+            )}
             <Card
               label="Companies found"
               value={summary.companiesFound || (liveJob?.total_found ?? 0)}

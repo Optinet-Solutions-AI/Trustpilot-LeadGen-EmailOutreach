@@ -323,6 +323,9 @@ export interface JobSummary {
   claimedYes: number;
   claimedNo: number;
   claimedUnknown: number;
+  // tripadvisor city fan-out — populated only on TA scrapes
+  citiesTotal: number;
+  citiesDone: number;
   currentPhase: 'idle' | 'category' | 'dedup' | 'profile' | 'checkpoint' | 'enrich' | 'verify' | 'check' | 'final' | 'done' | 'failed';
 }
 
@@ -350,6 +353,8 @@ const EMPTY_SUMMARY: JobSummary = {
   claimedYes: 0,
   claimedNo: 0,
   claimedUnknown: 0,
+  citiesTotal: 0,
+  citiesDone: 0,
   currentPhase: 'idle',
 };
 
@@ -370,6 +375,20 @@ export function summarize(events: ScrapeProgress[]): JobSummary {
         if (Number.isFinite(n)) s.companiesFound = n;
         break;
       }
+      case 'city_total': {
+        const n = parseInt(e.detail, 10);
+        if (Number.isFinite(n)) s.citiesTotal = n;
+        s.currentPhase = 'category';
+        break;
+      }
+      case 'city_done':
+        s.citiesDone++;
+        s.currentPhase = 'category';
+        break;
+      case 'city_failed':
+        s.citiesDone++;
+        s.failures++;
+        break;
       case 'dedup_start':
         s.currentPhase = 'dedup';
         break;

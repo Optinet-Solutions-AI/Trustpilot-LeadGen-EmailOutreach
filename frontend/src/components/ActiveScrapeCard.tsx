@@ -79,6 +79,12 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
         setStatus('failed');
         setError(data.detail || 'Scrape failed');
         es.close();
+      } else if (data.stage === 'error') {
+        // SSE backend says the job row no longer exists. Stop the spinner
+        // and surface the message instead of spinning forever.
+        setStatus('failed');
+        setError(data.detail || 'Job not found');
+        es.close();
       }
     };
 
