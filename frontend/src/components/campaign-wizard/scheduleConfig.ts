@@ -179,18 +179,78 @@ export function getCountryTimezone(code: string): string {
 }
 
 // Auto-pick the AI generation language for non-English-speaking countries.
-// US/GB/AU/CA fall through to English (the default in the Gemini prompt).
+// English-default markets (US, GB, AU, CA, NZ, IE, IN, MY, SG, PH, HK, ZA,
+// KE, NG) are intentionally omitted so they fall through to the English
+// prompt. For multilingual countries (CH, BE, LU) we pick the language most
+// common for B2B outreach — switch by hand in the wizard if the lead skews
+// the other way.
 export const COUNTRY_LANGUAGE: Record<string, string> = {
+  // Western & Central Europe
+  AT: 'German',
+  BE: 'French',
+  CH: 'German',
   DE: 'German',
-  FR: 'French',
-  NL: 'Dutch',
-  IT: 'Italian',
   ES: 'Spanish',
+  FR: 'French',
+  IT: 'Italian',
+  LU: 'French',
+  NL: 'Dutch',
+  PT: 'European Portuguese',
+  // Nordics
   DK: 'Danish',
-  SE: 'Swedish',
-  NO: 'Norwegian',
   FI: 'Finnish',
+  IS: 'Icelandic',
+  NO: 'Norwegian',
+  SE: 'Swedish',
+  // Eastern Europe
+  BG: 'Bulgarian',
+  CZ: 'Czech',
+  EE: 'Estonian',
+  GR: 'Greek',
+  HR: 'Croatian',
+  HU: 'Hungarian',
+  LT: 'Lithuanian',
+  LV: 'Latvian',
+  PL: 'Polish',
+  RO: 'Romanian',
+  RS: 'Serbian',
+  RU: 'Russian',
+  SI: 'Slovenian',
+  SK: 'Slovak',
+  UA: 'Ukrainian',
+  // Middle East & Arabic-speaking
+  AE: 'Arabic',
+  BH: 'Arabic',
+  EG: 'Arabic',
+  IL: 'Hebrew',
+  JO: 'Arabic',
+  KW: 'Arabic',
+  OM: 'Arabic',
+  QA: 'Arabic',
+  SA: 'Arabic',
+  TR: 'Turkish',
+  // Latin America
+  AR: 'Spanish',
+  BO: 'Spanish',
   BR: 'Brazilian Portuguese',
+  CL: 'Spanish',
+  CO: 'Spanish',
+  EC: 'Spanish',
+  MX: 'Spanish',
+  PE: 'Spanish',
+  PY: 'Spanish',
+  UY: 'Spanish',
+  // Asia
+  CN: 'Simplified Chinese',
+  ID: 'Indonesian',
+  JP: 'Japanese',
+  KR: 'Korean',
+  TH: 'Thai',
+  TW: 'Traditional Chinese',
+  VN: 'Vietnamese',
+  // South Asia
+  BD: 'Bengali',
+  PK: 'Urdu',
 };
 
 export interface SendingSchedule {
