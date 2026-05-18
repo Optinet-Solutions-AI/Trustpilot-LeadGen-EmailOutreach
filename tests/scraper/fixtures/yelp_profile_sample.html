@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!--
+  Minimal synthetic Yelp /biz/<slug> page used by tests/scraper/test_yelp_parser.py.
+  The real captured profile pages are ~1.8MB SSR HTML; this stub exercises the
+  three parser code paths we care about:
+
+    1. Business website URL wrapped in /biz_redir?url=... (must unwrap + URL-decode)
+    2. <a href="tel:..."> for phone (profile-authoritative over Fusion)
+    3. "Claim this business" CTA → profile_claimed = False
+    4. JSON-LD <script type="application/ld+json"> with name + telephone (fallback)
+
+  Update this file (and the test expectations) if the parsing logic in
+  tools/scraper/platforms/yelp.py:_extract_profile_detail changes.
+-->
+<html lang="en">
+<head>
+  <title>Acme Plumbing — Yelp</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "LocalBusiness",
+    "name": "Acme Plumbing",
+    "telephone": "+1-555-867-5309",
+    "address": {
+      "@type": "PostalAddress",
+      "addressLocality": "Austin",
+      "addressRegion": "TX"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>Acme Plumbing</h1>
+
+  <!-- Yelp wraps every external link in /biz_redir. The url= param holds the URL-encoded target. -->
+  <a href="https://www.yelp.com/biz_redir?url=https%3A%2F%2Facmeplumbing.example.com%2F&amp;cachebuster=1700000000&amp;referrer=biz_details">
+    Business website
+  </a>
+
+  <!-- The "Get Directions" link is ALSO a biz_redir, but points back at yelp.com/map.
+       The parser must NOT pick this one as the website. -->
+  <a href="https://www.yelp.com/biz_redir?url=https%3A%2F%2Fwww.yelp.com%2Fmap%2Facme-plumbing&amp;cachebuster=1700000001&amp;referrer=map">
+    Get Directions
+  </a>
+
+  <!-- Phone link — profile-authoritative -->
+  <a href="tel:+15558675309">(555) 867-5309</a>
+
+  <!-- Claim CTA: present means the business has NOT been claimed (high-converting target) -->
+  <button>Claim this business</button>
+</body>
+</html>

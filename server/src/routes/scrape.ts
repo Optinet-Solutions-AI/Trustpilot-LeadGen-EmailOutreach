@@ -5,7 +5,7 @@ import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-
 import { listCategories, listCountries, getMaxLastSeen } from '../db/taxonomy.js';
 import {
   startOrAttachDiscovery,
-  getActiveDiscovery,
+  getAnyActiveDiscovery,
   type TaxonomyProgressEvent,
 } from '../services/taxonomy-discovery.js';
 import { config } from '../config.js';
@@ -56,6 +56,23 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
       { name: 'max_rating', type: 'number', label: 'Max rating', required: false, default: 3.0, min: 1.0, max: 5.0, step: 0.5 },
     ],
   },
+  {
+    name: 'yelp',
+    label: 'Yelp',
+    base_url: 'https://www.yelp.com',
+    // PerimeterX blocks Cloud Run / EC2 IPs on /, /search, and /biz pages.
+    // Listing routes through the free Fusion API (YELP_API_KEY) but profile
+    // enrichment still needs ScrapingBee stealth_proxy from any IP, so we
+    // surface the local-mode hint to operators.
+    requires_proxy: true,
+    filter_schema: [
+      { name: 'country',          type: 'select', label: 'Country',         required: true,  options_source: 'taxonomy:countries' },
+      { name: 'category',         type: 'select', label: 'Category',        required: true,  options_source: 'taxonomy:categories' },
+      { name: 'max_rating',       type: 'number', label: 'Max rating',      required: false, default: 3.5, min: 1.0, max: 5.0, step: 0.5 },
+      { name: 'min_rating',       type: 'number', label: 'Min rating',      required: false, default: 1.0, min: 1.0, max: 5.0, step: 0.5 },
+      { name: 'min_review_count', type: 'number', label: 'Min review count',required: false, default: 5,   min: 1,   max: 1000, step: 1 },
+    ],
+  },
 ];
 const KNOWN_PLATFORMS = new Set(PLATFORM_MANIFESTS.map(p => p.name));
 
@@ -89,24 +106,18 @@ router.get('/taxonomy', async (req: Request, res: Response) => {
   }
 });
 
-// GET|POST /api/scrape/taxonomy/refresh[?platform=...] — SSE stream that re-runs
-// discover_taxonomy.py. GET so EventSource can attach; the underlying
-// discovery is single-flight so re-hitting it never double-fires.
+// GET|POST /api/scrape/taxonomy/refresh[?platform=...] — SSE stream that
+// re-runs discovery. GET so EventSource can attach; the underlying
+// discovery is single-flight per-platform so re-hitting it never
+// double-fires for the same target.
 //
-// Platform support: Trustpilot only today — the Python spawn target is
-// hardcoded in taxonomy-discovery.ts. Phase 5 will add a platform-aware
-// spawn branch (run.py --platform <p> --action discover-taxonomy).
+// Trustpilot uses the legacy discover_taxonomy.py script directly;
+// every other platform routes through run.py --action discover-taxonomy
+// (see taxonomy-discovery.ts).
 const taxonomyRefreshHandler = async (req: Request, res: Response) => {
   const platform = param((req.query.platform as string | string[] | undefined) ?? 'trustpilot');
   if (!KNOWN_PLATFORMS.has(platform)) {
     res.status(400).json({ success: false, error: `Unknown platform '${platform}'` });
-    return;
-  }
-  if (platform !== 'trustpilot') {
-    res.status(501).json({
-      success: false,
-      error: `Taxonomy refresh for platform '${platform}' is not yet implemented.`,
-    });
     return;
   }
 
@@ -115,7 +126,7 @@ const taxonomyRefreshHandler = async (req: Request, res: Response) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  const { run, isNew } = startOrAttachDiscovery();
+  const { run, isNew } = startOrAttachDiscovery(platform);
 
   // Replay any progress already buffered so a late-joining client doesn't miss
   // events emitted before its EventSource was attached.
@@ -153,13 +164,16 @@ const taxonomyRefreshHandler = async (req: Request, res: Response) => {
 router.get('/taxonomy/refresh', taxonomyRefreshHandler);
 router.post('/taxonomy/refresh', taxonomyRefreshHandler);
 
-// GET /api/scrape/taxonomy/status — lightweight peek at in-flight discovery
+// GET /api/scrape/taxonomy/status — lightweight peek at in-flight discovery.
+// Reports the first active platform run; multi-platform parallel runs can
+// be observed by hitting /taxonomy/refresh?platform=... directly.
 router.get('/taxonomy/status', async (_req: Request, res: Response) => {
-  const active = getActiveDiscovery();
+  const active = getAnyActiveDiscovery();
   res.json({
     success: true,
     data: {
       running: !!active,
+      platform: active?.platform ?? null,
       startedAt: active?.startedAt ?? null,
       lastEvent: active?.events[active.events.length - 1] ?? null,
     },

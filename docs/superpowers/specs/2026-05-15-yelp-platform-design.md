@@ -1,8 +1,53 @@
 # Yelp Platform Plugin — Design Spec
 
-**Date:** 2026-05-15
-**Status:** Draft — pending implementation plan
+**Date:** 2026-05-15 (original) · **Amended:** 2026-05-18 (Fusion-to-ScrapingBee pivot)
+**Status:** SHIPPED — see implementation in `tools/scraper/platforms/yelp.py`
 **Goal:** Add Yelp as a third scrape platform alongside Trustpilot and TripAdvisor, targeting low-rated businesses for reputation-management cold email outreach. Same end-to-end pipeline as the existing platforms (scrape → enrich → upsert → campaign).
+
+---
+
+> ## 🔄 2026-05-18 ADDENDUM — Fusion API dropped, ScrapingBee end-to-end
+>
+> The shipped implementation **does not use the Yelp Fusion API**. Listing
+> now fetches `https://www.yelp.com/search?find_desc=…&find_loc=…&start=N`
+> directly via ScrapingBee `stealth_proxy` (75 credits/page), same path
+> as profile enrichment.
+>
+> **Why the pivot:**
+> - Fusion's free tier (5,000/day) was unworkable in practice once the
+>   operator looked at paid tier pricing.
+> - "Since we're already paying for ScrapingBee, use it for everything"
+>   eliminates the second API dependency and the YELP_API_KEY env var.
+> - Yelp's `/search` URL exposes more useful filters than Fusion
+>   (price tier, hours-open, distance) for future feature work.
+>
+> **What changed vs the original design below:**
+> - `tools/scraper/shared/yelp_fusion.py` — DELETED.
+> - `YELP_API_KEY` env var — REMOVED everywhere.
+> - `scrape_listing` — fetches `/search` pages instead of calling Fusion.
+> - `discover_taxonomy` — reads `tools/scraper/data/yelp_categories.json`
+>   (curated SMB verticals seed) instead of `GET /v3/categories`.
+> - **Card boundary parsing** added — `_extract_search_cards` honors
+>   `<li>` / `[role="listitem"]` ancestors so an adjacent card's rating
+>   never leaks onto a rating-less business.
+>
+> **Cost trade-off:** listing now costs ~2,250 cr per scrape (was free
+> via Fusion). Total scrape ~3,500–6,000 cr vs ~2,250–4,500 cr before.
+> Operator accepted the higher cost for predictable spend and one fewer
+> moving part. Bound by lowering `filters.max_pages` (default 5) or
+> trimming a country's city seed.
+>
+> **What still applies from the design below:** the empirical probe
+> table (`stealth_proxy` is the only ScrapingBee tier that works on
+> Yelp), the BasePlatformScraper plug-in shape, the `_upsert_nontrustpilot_lead`
+> path, the city seed structure, the profile-page parsing rules
+> (biz_redir unwrap, tel: phone, claim flag).
+>
+> The original Fusion-based design is preserved below as historical
+> context for the empirical findings and the cost trade-offs that
+> motivated revisiting it.
+
+---
 
 ---
 

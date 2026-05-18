@@ -25,10 +25,14 @@ export interface TaxonomyResult {
   countries: number;
 }
 
-const SCRIPT_REL_PATH = 'tools/scraper/discover_taxonomy.py';
+// Trustpilot has a legacy single-purpose script. Every other platform
+// flows through the unified plugin CLI which takes --platform + --action.
+const TRUSTPILOT_SCRIPT = 'tools/scraper/discover_taxonomy.py';
+const UNIFIED_PLUGIN_SCRIPT = 'tools/scraper/run.py';
 
 class TaxonomyDiscoveryRun extends EventEmitter {
   readonly startedAt = new Date().toISOString();
+  readonly platform: string;
   private proc: ChildProcess | null = null;
   private buffer = '';
   private stderr = '';
@@ -40,8 +44,9 @@ class TaxonomyDiscoveryRun extends EventEmitter {
   private resolveDone!: (r: TaxonomyResult) => void;
   private rejectDone!: (e: Error) => void;
 
-  constructor() {
+  constructor(platform: string) {
     super();
+    this.platform = platform;
     this.donePromise = new Promise<TaxonomyResult>((resolve, reject) => {
       this.resolveDone = resolve;
       this.rejectDone = reject;
@@ -52,10 +57,23 @@ class TaxonomyDiscoveryRun extends EventEmitter {
     const pythonPath = path.isAbsolute(config.pythonPath)
       ? config.pythonPath
       : path.resolve(config.projectRoot, config.pythonPath);
-    const fullScript = path.resolve(config.projectRoot, SCRIPT_REL_PATH);
 
-    console.log(`[Taxonomy] Running: ${pythonPath} ${fullScript}`);
-    this.proc = spawn(pythonPath, [fullScript], {
+    // Trustpilot still has its standalone script; everything else
+    // (TripAdvisor, Yelp, future plugins) goes through run.py which
+    // calls platform.discover_taxonomy() under the hood.
+    let scriptArgs: string[];
+    if (this.platform === 'trustpilot') {
+      scriptArgs = [path.resolve(config.projectRoot, TRUSTPILOT_SCRIPT)];
+    } else {
+      scriptArgs = [
+        path.resolve(config.projectRoot, UNIFIED_PLUGIN_SCRIPT),
+        '--platform', this.platform,
+        '--action', 'discover-taxonomy',
+      ];
+    }
+
+    console.log(`[Taxonomy:${this.platform}] Running: ${pythonPath} ${scriptArgs.join(' ')}`);
+    this.proc = spawn(pythonPath, scriptArgs, {
       cwd: config.projectRoot,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -141,31 +159,48 @@ class TaxonomyDiscoveryRun extends EventEmitter {
   }
 }
 
-let currentRun: TaxonomyDiscoveryRun | null = null;
+// Per-platform single-flight. A Trustpilot refresh and a Yelp refresh can
+// run concurrently — they hit different services and write to different
+// keys in platform_categories. Within a single platform, parallel callers
+// attach to the same run.
+const runsByPlatform = new Map<string, TaxonomyDiscoveryRun>();
 
 /**
- * Returns the in-flight run if one is currently active, otherwise null.
- * Lets a second caller attach to an existing discovery rather than starting
- * a parallel Chromium instance.
+ * Returns the in-flight run for `platform` if one is currently active,
+ * otherwise null. Lets a second caller attach to an existing discovery
+ * rather than starting a parallel subprocess.
  */
-export function getActiveDiscovery(): TaxonomyDiscoveryRun | null {
-  if (currentRun && !currentRun.finished()) return currentRun;
+export function getActiveDiscovery(platform: string): TaxonomyDiscoveryRun | null {
+  const run = runsByPlatform.get(platform);
+  if (run && !run.finished()) return run;
   return null;
 }
 
 /**
- * Start a new discovery, or return the in-flight one if it's still running.
- * Either way, the caller gets a handle they can subscribe to.
+ * Return any in-flight discovery, regardless of platform — used by the
+ * `/taxonomy/status` peek endpoint which doesn't take a platform arg.
  */
-export function startOrAttachDiscovery(): { run: TaxonomyDiscoveryRun; isNew: boolean } {
-  const active = getActiveDiscovery();
+export function getAnyActiveDiscovery(): TaxonomyDiscoveryRun | null {
+  for (const run of runsByPlatform.values()) {
+    if (!run.finished()) return run;
+  }
+  return null;
+}
+
+/**
+ * Start a new discovery for `platform`, or return the in-flight one if
+ * it's still running. Either way, the caller gets a handle they can
+ * subscribe to.
+ */
+export function startOrAttachDiscovery(platform: string): { run: TaxonomyDiscoveryRun; isNew: boolean } {
+  const active = getActiveDiscovery(platform);
   if (active) return { run: active, isNew: false };
-  const run = new TaxonomyDiscoveryRun();
-  currentRun = run;
+  const run = new TaxonomyDiscoveryRun(platform);
+  runsByPlatform.set(platform, run);
   run.start();
   // Clean the slot once finished so the next caller starts a fresh run.
   run.done().catch(() => {}).finally(() => {
-    if (currentRun === run) currentRun = null;
+    if (runsByPlatform.get(platform) === run) runsByPlatform.delete(platform);
   });
   return { run, isNew: true };
 }

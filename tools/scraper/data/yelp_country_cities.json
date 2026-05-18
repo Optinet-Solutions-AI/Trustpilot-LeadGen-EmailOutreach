@@ -1,0 +1,43 @@
+{
+  "_comment": "Yelp city fan-out seed. Add markets by adding a new country code → list of 'City, Region' strings (the form Fusion's /v3/businesses/search?location= accepts). Yelp coverage outside English-speaking markets is thin — DE/FR/JP have listings but very few low-rated businesses to outreach against. Adding a market is a JSON edit only; no code change.",
+  "US": [
+    "New York, NY",
+    "Los Angeles, CA",
+    "Chicago, IL",
+    "Houston, TX",
+    "Phoenix, AZ",
+    "Philadelphia, PA",
+    "San Diego, CA",
+    "Dallas, TX"
+  ],
+  "CA": [
+    "Toronto, ON",
+    "Vancouver, BC",
+    "Montreal, QC",
+    "Calgary, AB",
+    "Ottawa, ON"
+  ],
+  "UK": [
+    "London",
+    "Manchester",
+    "Birmingham",
+    "Glasgow",
+    "Edinburgh"
+  ],
+  "IE": [
+    "Dublin",
+    "Cork",
+    "Galway"
+  ],
+  "AU": [
+    "Sydney",
+    "Melbourne",
+    "Brisbane",
+    "Perth"
+  ],
+  "NZ": [
+    "Auckland",
+    "Wellington",
+    "Christchurch"
+  ]
+}

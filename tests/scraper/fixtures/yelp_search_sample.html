@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<!--
+  Minimal synthetic Yelp /search results page used by
+  tests/scraper/test_yelp_parser.py. Real captured search pages are
+  large React SPA bundles; this stub hits the stable signals
+  _extract_search_cards relies on:
+
+    1. <a href="/biz/<slug>"> wrapping the business name
+    2. aria-label "X.X star rating" for the rating
+    3. Text "N reviews" near the rating
+    4. Dedup: multiple anchors with the same /biz/<slug> href on one card
+       (the name, the rating icon link, the "N reviews" link) — only the
+       NAME anchor should become a stub.
+    5. Sponsored/Ad anchors that point at /biz/<slug>?ad_business_id=...
+       should still be picked up (the parser strips query params).
+
+  Update this fixture + test expectations if the parser's selector
+  strategy in tools/scraper/platforms/yelp.py changes.
+-->
+<html lang="en">
+<head><title>plumbers near Austin, TX - Yelp</title></head>
+<body>
+  <h1>Top 10 Best Plumbers near Austin, TX</h1>
+
+  <ul class="search-results">
+
+    <li class="search-result">
+      <h3>
+        <a href="/biz/acme-plumbing-austin">Acme Plumbing</a>
+      </h3>
+      <div role="img" aria-label="2.5 star rating">★★½</div>
+      <a href="/biz/acme-plumbing-austin?hrid=abc" class="review-link">47 reviews</a>
+      <p>123 W 6th St, Austin, TX 78701</p>
+      <p>Categories: Plumbing</p>
+    </li>
+
+    <li class="search-result">
+      <h3>
+        <a href="/biz/topnotch-plumbing-austin">TopNotch Plumbing Co</a>
+      </h3>
+      <div role="img" aria-label="4.5 star rating">★★★★½</div>
+      <a href="/biz/topnotch-plumbing-austin?hrid=def" class="review-link">200 reviews</a>
+      <p>456 Congress Ave, Austin, TX 78701</p>
+    </li>
+
+    <li class="search-result">
+      <h3>
+        <a href="/biz/minor-plumbing-austin">Minor Plumbing LLC</a>
+      </h3>
+      <div role="img" aria-label="1.5 star rating">★½</div>
+      <a href="/biz/minor-plumbing-austin?hrid=ghi" class="review-link">2 reviews</a>
+      <p>789 Lamar Blvd, Austin, TX 78704</p>
+    </li>
+
+    <!-- Sponsored result — same shape, extra query params on href -->
+    <li class="search-result sponsored">
+      <h3>
+        <a href="/biz/sponsored-plumbing-austin?ad_business_id=xyz&adjust=foo">Sponsored Plumbing Inc</a>
+      </h3>
+      <div role="img" aria-label="3.0 star rating">★★★</div>
+      <p>15 reviews</p>
+      <p>1 Plaza, Austin, TX</p>
+    </li>
+
+    <!-- Result with NO rating (too few reviews to show one) — should be dropped by scrape_listing -->
+    <li class="search-result">
+      <h3>
+        <a href="/biz/no-rating-plumber-austin">Brand New Plumber</a>
+      </h3>
+      <p>No reviews yet</p>
+      <p>9 Anywhere St, Austin, TX</p>
+    </li>
+
+  </ul>
+</body>
+</html>
