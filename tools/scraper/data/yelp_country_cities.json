@@ -1,5 +1,5 @@
 {
-  "_comment": "Yelp city fan-out seed. Add markets by adding a new country code → list of 'City, Region' strings (the form Fusion's /v3/businesses/search?location= accepts). Yelp coverage outside English-speaking markets is thin — DE/FR/JP have listings but very few low-rated businesses to outreach against. Adding a market is a JSON edit only; no code change.",
+  "_comment": "Yelp city fan-out seed. Add markets by adding a new country code → list of 'City, Region' strings (the form Yelp's /search?find_loc= param accepts). Yelp's business coverage is strongest in English-speaking markets (US/CA/UK/IE/AU/NZ); DE/FR/IT/ES/JP/BR/MX have listings but lead quality is noticeably lower. Adding a market is a JSON edit only — no code change.",
   "US": [
     "New York, NY",
     "Los Angeles, CA",
@@ -39,5 +39,54 @@
     "Auckland",
     "Wellington",
     "Christchurch"
+  ],
+  "DE": [
+    "Berlin",
+    "Hamburg",
+    "München",
+    "Köln",
+    "Frankfurt am Main"
+  ],
+  "FR": [
+    "Paris",
+    "Lyon",
+    "Marseille",
+    "Toulouse",
+    "Bordeaux"
+  ],
+  "IT": [
+    "Roma",
+    "Milano",
+    "Napoli",
+    "Torino",
+    "Firenze"
+  ],
+  "ES": [
+    "Madrid",
+    "Barcelona",
+    "Valencia",
+    "Sevilla",
+    "Bilbao"
+  ],
+  "JP": [
+    "Tokyo",
+    "Osaka",
+    "Kyoto",
+    "Yokohama",
+    "Nagoya"
+  ],
+  "BR": [
+    "São Paulo",
+    "Rio de Janeiro",
+    "Belo Horizonte",
+    "Brasília",
+    "Salvador"
+  ],
+  "MX": [
+    "Ciudad de México",
+    "Guadalajara",
+    "Monterrey",
+    "Puebla",
+    "Tijuana"
   ]
 }
