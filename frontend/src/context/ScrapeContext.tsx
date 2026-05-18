@@ -30,6 +30,15 @@ interface ScrapeContextValue {
   /** Job IDs currently rendered as live progress cards on the Scrape page. */
   activeScrapes: string[];
   jobs: ScrapeJob[];
+  /** Total number of scrape jobs on the server (vs jobs.length which is the page loaded). */
+  jobsTotal: number;
+  /** Currently active platform filter for the jobs table. null = all platforms. */
+  jobsPlatformFilter: string | null;
+  setJobsPlatformFilter: (platform: string | null) => void;
+  /** Whether a load-more / refetch is currently in flight. */
+  jobsLoading: boolean;
+  /** Append the next page of jobs to the existing list. Does nothing if all loaded. */
+  loadMoreJobs: () => Promise<void>;
   startScrape: (params: ScrapeParams) => Promise<string | null>;
   /** Remove a finished card from the stack. Does NOT cancel the job. */
   dismissScrape: (id: string) => void;
@@ -71,9 +80,14 @@ function writeStored(ids: string[]): void {
   }
 }
 
+const JOBS_PAGE_SIZE = 25;
+
 export function ScrapeProvider({ children }: { children: ReactNode }) {
   const [activeScrapes, setActiveScrapes] = useState<string[]>([]);
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
+  const [jobsTotal, setJobsTotal] = useState(0);
+  const [jobsPlatformFilter, setJobsPlatformFilter] = useState<string | null>(null);
+  const [jobsLoading, setJobsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Synchronous lock so burst clicks can't fire duplicate POSTs in the
@@ -97,30 +111,57 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     writeStored(activeScrapes);
   }, [activeScrapes]);
 
-  const fetchJobs = useCallback(async () => {
-    try {
-      const res = await api.get('/scrape');
-      const fetched = res.data.data as ScrapeJob[];
-      setJobs(fetched);
+  // Page-aware fetch. `mode='replace'` re-fetches the first page (used by
+  // the background poller + platform-filter changes). `mode='append'` is
+  // used by loadMoreJobs() to paginate backwards through history.
+  const fetchJobsPage = useCallback(
+    async (mode: 'replace' | 'append') => {
+      try {
+        setJobsLoading(true);
+        const offset = mode === 'append' ? jobs.length : 0;
+        const params = new URLSearchParams();
+        params.set('limit', String(JOBS_PAGE_SIZE));
+        params.set('offset', String(offset));
+        if (jobsPlatformFilter) params.set('platform', jobsPlatformFilter);
+        const res = await api.get(`/scrape?${params.toString()}`);
+        const payload = res.data.data;
+        // Backwards-compat: old API returned ScrapeJob[]; new returns {rows,total}
+        const rows = (Array.isArray(payload) ? payload : payload?.rows ?? []) as ScrapeJob[];
+        const total = Array.isArray(payload) ? rows.length : (payload?.total ?? rows.length);
 
-      // Auto-promote any 'running' jobs from the DB into the card stack
-      // if they aren't already tracked. Picks up jobs created by other tabs,
-      // other users, or other workers (e.g. the EC2 worker claimed something
-      // we didn't enqueue ourselves).
-      const running = fetched.filter((j) => j.status === 'running').map((j) => j.id);
-      if (running.length > 0) {
-        setActiveScrapes((prev) => {
-          const merged = [...prev];
-          for (const id of running) {
-            if (!merged.includes(id)) merged.push(id);
-          }
-          return merged;
-        });
+        setJobs((prev) => (mode === 'append' ? [...prev, ...rows] : rows));
+        setJobsTotal(total);
+
+        // Auto-promote any 'running' jobs into the card stack if they aren't
+        // already tracked. Picks up jobs created by other tabs / users /
+        // the EC2 worker.
+        const running = rows.filter((j) => j.status === 'running').map((j) => j.id);
+        if (running.length > 0) {
+          setActiveScrapes((prev) => {
+            const merged = [...prev];
+            for (const id of running) {
+              if (!merged.includes(id)) merged.push(id);
+            }
+            return merged;
+          });
+        }
+      } catch {
+        // silent — jobs list is non-critical
+      } finally {
+        setJobsLoading(false);
       }
-    } catch {
-      // silent — jobs list is non-critical
-    }
-  }, []);
+    },
+    [jobs.length, jobsPlatformFilter],
+  );
+
+  const fetchJobs = useCallback(() => fetchJobsPage('replace'), [fetchJobsPage]);
+  const loadMoreJobs = useCallback(() => fetchJobsPage('append'), [fetchJobsPage]);
+
+  // Re-fetch from page 0 whenever the platform filter changes
+  useEffect(() => {
+    void fetchJobsPage('replace');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobsPlatformFilter]);
 
   // Background jobs-list poller — runs continuously while the provider is mounted.
   // Cheap (one GET every 5s) and keeps the Recent Jobs table fresh.
@@ -144,21 +185,37 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       // TripAdvisor uses the new {platform, filters} envelope because its
       // filters don't fit the legacy shape. Backend accepts both — see
       // POST /api/scrape in server/src/routes/scrape.ts.
-      const body =
-        params.platform === 'tripadvisor'
-          ? {
-              platform: 'tripadvisor',
-              filters: {
-                country: params.country,
-                category: params.category,
-                min_rating: params.min_rating,
-                max_rating: params.max_rating,
-                enrich: params.enrich,
-                verify: params.verify,
-              },
-              forceRescrape: params.forceRescrape,
-            }
-          : params; // Trustpilot legacy shape — backend treats unset platform as trustpilot
+      let body: unknown;
+      if (params.platform === 'tripadvisor') {
+        body = {
+          platform: 'tripadvisor',
+          filters: {
+            country: params.country,
+            category: params.category,
+            min_rating: params.min_rating,
+            max_rating: params.max_rating,
+            enrich: params.enrich,
+            verify: params.verify,
+          },
+          forceRescrape: params.forceRescrape,
+        };
+      } else if (params.platform === 'yelp') {
+        body = {
+          platform: 'yelp',
+          filters: {
+            country: params.country,
+            category: params.category,
+            min_rating: params.min_rating,
+            max_rating: params.max_rating,
+            min_review_count: params.min_review_count,
+            enrich: params.enrich,
+            verify: params.verify,
+          },
+          forceRescrape: params.forceRescrape,
+        };
+      } else {
+        body = params; // Trustpilot legacy shape — backend treats unset platform as trustpilot
+      }
       const res = await api.post('/scrape', body);
       const id = res.data.data.jobId as string;
       setActiveScrapes((prev) => (prev.includes(id) ? prev : [...prev, id]));
@@ -251,6 +308,11 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   const value: ScrapeContextValue = {
     activeScrapes,
     jobs,
+    jobsTotal,
+    jobsPlatformFilter,
+    setJobsPlatformFilter,
+    jobsLoading,
+    loadMoreJobs,
     startScrape,
     dismissScrape,
     cancelJob,

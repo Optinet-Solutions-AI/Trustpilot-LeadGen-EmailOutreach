@@ -31,7 +31,19 @@ export interface TripAdvisorScrapeParams {
   forceRescrape: boolean;
 }
 
-export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams;
+export interface YelpScrapeParams {
+  platform: 'yelp';
+  country: string;
+  category: string;          // free-form Yelp category slug (plumbers, restaurants, ...)
+  min_rating: number;
+  max_rating: number;
+  min_review_count: number;  // Yelp-specific: don't outreach businesses with too few reviews to act on
+  enrich: boolean;
+  verify: boolean;
+  forceRescrape: boolean;
+}
+
+export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams;
 
 export interface ScrapeJob {
   id: string;

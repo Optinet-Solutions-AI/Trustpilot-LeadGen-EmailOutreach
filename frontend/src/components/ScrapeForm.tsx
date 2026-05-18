@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { Search } from 'lucide-react';
-import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams } from '../types/scrape';
+import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams } from '../types/scrape';
 import CountryPicker from './CountryPicker';
 import CategoryPicker from './CategoryPicker';
 import PlatformPicker, { type PlatformManifest } from './PlatformPicker';
@@ -23,8 +23,10 @@ const LISTING_TYPE_OPTIONS = [
   { value: 'attractions', label: 'Attractions' },
 ];
 
+type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp';
+
 export default function ScrapeForm({ onSubmit, loading }: Props) {
-  const [platform, setPlatform] = useState<'trustpilot' | 'tripadvisor'>('trustpilot');
+  const [platform, setPlatform] = useState<SupportedPlatform>('trustpilot');
   const [activeManifest, setActiveManifest] = useState<PlatformManifest | null>(null);
 
   // Trustpilot fields
@@ -38,6 +40,17 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [taCategory, setTaCategory] = useState<'hotels' | 'restaurants' | 'attractions'>('hotels');
   const [taMinRating, setTaMinRating] = useState(1.0);
   const [taMaxRating, setTaMaxRating] = useState(3.0);
+
+  // Yelp fields — country picker reads from platform=yelp taxonomy,
+  // category is a free-form slug (plumbers, restaurants, …) from the
+  // curated yelp_categories.json seed, plus a Yelp-specific
+  // min_review_count filter to drop businesses with too few reviews
+  // to be worth cold-outreach.
+  const [yCountry, setYCountry] = useState('US');
+  const [yCategory, setYCategory] = useState('plumbers');
+  const [yMinRating, setYMinRating] = useState(1.0);
+  const [yMaxRating, setYMaxRating] = useState(3.5);
+  const [yMinReviewCount, setYMinReviewCount] = useState(5);
 
   // Shared flags
   const [enrich, setEnrich] = useState(false);
@@ -68,6 +81,18 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         verify,
         forceRescrape,
       } satisfies TripAdvisorScrapeParams;
+    } else if (platform === 'yelp') {
+      params = {
+        platform: 'yelp',
+        country: yCountry,
+        category: yCategory,
+        min_rating: yMinRating,
+        max_rating: yMaxRating,
+        min_review_count: yMinReviewCount,
+        enrich,
+        verify,
+        forceRescrape,
+      } satisfies YelpScrapeParams;
     } else {
       params = {
         country,
@@ -111,7 +136,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
             id="scrape-platform"
             value={platform}
             onChange={(name, manifest) => {
-              setPlatform(name as 'trustpilot' | 'tripadvisor');
+              setPlatform(name as SupportedPlatform);
               setActiveManifest(manifest);
             }}
             disabled={busy}
@@ -196,6 +221,67 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 country={taCountry}
                 onGuardReady={(g) => { guardRef.current = g; }}
               />
+            </div>
+          </>
+        )}
+
+        {platform === 'yelp' && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="yelp-country">
+                Country
+              </label>
+              <CountryPicker
+                id="yelp-country"
+                value={yCountry}
+                onChange={setYCountry}
+                disabled={busy}
+                platform="yelp"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="yelp-category">
+                Category
+              </label>
+              <CategoryPicker
+                id="yelp-category"
+                value={yCategory}
+                onChange={setYCategory}
+                disabled={busy}
+                platform="yelp"
+              />
+            </div>
+            <RangeInput
+              label="Rating"
+              suffix="★"
+              value={[yMinRating, yMaxRating]}
+              onChange={([lo, hi]) => {
+                setYMinRating(lo);
+                setYMaxRating(hi);
+              }}
+              min={1}
+              max={5}
+              step={0.5}
+              disabled={busy}
+            />
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="yelp-min-reviews">
+                Min review count
+              </label>
+              <input
+                id="yelp-min-reviews"
+                type="number"
+                min={1}
+                max={1000}
+                step={1}
+                value={yMinReviewCount}
+                onChange={(e) => setYMinReviewCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+              <p className="mt-1 text-[11px] text-on-surface-variant">
+                Drop businesses with fewer than this many Yelp reviews
+              </p>
             </div>
           </>
         )}

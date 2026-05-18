@@ -29,9 +29,25 @@ function relativeFromNow(iso: string | null): string {
   return `Refreshed ${days}d ago`;
 }
 
+// Platform badge metadata — color tokens tuned to each brand without
+// being literal trademarks. Used by the Recent Scrape Jobs table.
+const PLATFORM_BADGE: Record<string, { label: string; bg: string; fg: string }> = {
+  trustpilot:   { label: 'Trustpilot',   bg: 'bg-emerald-50',  fg: 'text-emerald-700' },
+  tripadvisor:  { label: 'TripAdvisor',  bg: 'bg-teal-50',     fg: 'text-teal-700' },
+  yelp:         { label: 'Yelp',         bg: 'bg-rose-50',     fg: 'text-rose-700' },
+};
+
+const PLATFORM_FILTERS: Array<{ value: string | null; label: string }> = [
+  { value: null,           label: 'All platforms' },
+  { value: 'trustpilot',   label: 'Trustpilot' },
+  { value: 'tripadvisor',  label: 'TripAdvisor' },
+  { value: 'yelp',         label: 'Yelp' },
+];
+
 export default function Scrape() {
   const {
-    activeScrapes, jobs, error,
+    activeScrapes, jobs, jobsTotal, jobsPlatformFilter, setJobsPlatformFilter,
+    jobsLoading, loadMoreJobs, error,
     startScrape, dismissScrape, fetchJobs, deleteJob, cleanupEmptyJobs,
   } = useScrape();
   const taxonomy = useTaxonomy();
@@ -141,7 +157,16 @@ export default function Scrape() {
 
         {/* Stats Panel */}
         <div className="col-span-12 xl:col-span-4 space-y-4">
-          <Stat icon="group" label="Total Jobs Run" value={jobs.length} />
+          <Stat
+            icon="group"
+            label="Total Jobs Run"
+            value={jobsTotal || jobs.length}
+            helper={
+              jobsPlatformFilter
+                ? `filtered: ${PLATFORM_BADGE[jobsPlatformFilter]?.label ?? jobsPlatformFilter}`
+                : 'across all platforms'
+            }
+          />
 
           {lastDone && (
             <Stat
@@ -225,39 +250,61 @@ export default function Scrape() {
       )}
 
       {/* Recent Jobs Table */}
-      {jobs.length > 0 && (
+      {(jobs.length > 0 || jobsPlatformFilter !== null) && (
         <Card
           variant="flush"
           header={
-            <h3
-              className="font-bold text-on-surface"
-              style={{ fontFamily: 'Manrope, sans-serif' }}
-            >
-              Recent Scrape Jobs
-            </h3>
+            <div className="flex items-center gap-3 flex-wrap">
+              <h3
+                className="font-bold text-on-surface"
+                style={{ fontFamily: 'Manrope, sans-serif' }}
+              >
+                Recent Scrape Jobs
+              </h3>
+              <span className="text-xs text-secondary font-medium">
+                {jobs.length} of {jobsTotal} loaded
+              </span>
+            </div>
           }
           actions={
-            <>
-              <button
-                onClick={handleCleanup}
-                disabled={cleaning}
-                className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-[#b0004a] hover:text-[#8a003a] disabled:text-slate-300 disabled:cursor-not-allowed transition-colors"
-                title="Delete jobs with no leads in the Lead Matrix"
-              >
-                <span className="material-symbols-outlined text-[16px]">cleaning_services</span>
-                {cleaning ? 'Cleaning…' : 'Clean Stale Jobs'}
-              </button>
-              <span className="text-xs text-secondary font-medium">
-                Showing {jobs.length} job{jobs.length !== 1 ? 's' : ''}
-              </span>
-            </>
+            <button
+              onClick={handleCleanup}
+              disabled={cleaning}
+              className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-[#b0004a] hover:text-[#8a003a] disabled:text-slate-300 disabled:cursor-not-allowed transition-colors"
+              title="Delete jobs with no leads in the Lead Matrix"
+            >
+              <span className="material-symbols-outlined text-[16px]">cleaning_services</span>
+              {cleaning ? 'Cleaning…' : 'Clean Stale Jobs'}
+            </button>
           }
         >
+          {/* Platform filter chips */}
+          <div className="px-4 sm:px-6 pt-3 pb-1 flex flex-wrap gap-2 border-b border-slate-100">
+            {PLATFORM_FILTERS.map((f) => {
+              const active = jobsPlatformFilter === f.value;
+              return (
+                <button
+                  key={f.label}
+                  type="button"
+                  onClick={() => setJobsPlatformFilter(f.value)}
+                  className={
+                    'px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ' +
+                    (active
+                      ? 'bg-[#b0004a] text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200')
+                  }
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="sticky top-14 lg:top-16 z-10 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
                 <tr className="bg-slate-50/95 backdrop-blur-sm">
-                  {['Category', 'Country', 'Rating', 'Status', 'Found', 'Scraped', 'Failed', 'Date', ''].map((h, i) => (
+                  {['Platform', 'Target', 'Rating', 'Status', 'Results', 'Date', ''].map((h, i) => (
                     <th
                       key={h || `col-${i}`}
                       className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400"
@@ -275,6 +322,8 @@ export default function Scrape() {
                     : job.status === 'running' ? 'running'
                     : job.status === 'failed' ? 'error'
                     : 'neutral';
+                  const platKey = (job.platform || 'trustpilot').toLowerCase();
+                  const platMeta = PLATFORM_BADGE[platKey] ?? { label: platKey, bg: 'bg-slate-100', fg: 'text-slate-600' };
                   return (
                     <tr
                       key={job.id}
@@ -286,18 +335,44 @@ export default function Scrape() {
                       onClick={isCompleted ? () => openLeadsForJob(job) : undefined}
                       title={isCompleted ? 'Open these leads in the Lead Matrix' : undefined}
                     >
-                      <td className="px-6 py-4 font-bold text-sm text-on-surface">{job.category}</td>
-                      <td className="px-6 py-4 text-sm text-secondary">{job.country}</td>
-                      <td className="px-6 py-4 text-sm text-secondary">{job.min_rating}–{job.max_rating}★</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ${platMeta.bg} ${platMeta.fg}`}>
+                          {platMeta.label}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-sm text-on-surface leading-tight">{job.category}</span>
+                          <span className="text-[11px] text-secondary mt-0.5">{job.country}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-secondary whitespace-nowrap">
+                        {job.min_rating}–{job.max_rating}★
+                      </td>
                       <td className="px-6 py-4">
                         <Pill variant={statusVariant} size="sm">{job.status}</Pill>
                       </td>
-                      <td className="px-6 py-4 text-sm font-medium">{job.total_found}</td>
-                      <td className="px-6 py-4 text-sm font-medium">{job.total_scraped}</td>
-                      <td className={`px-6 py-4 text-sm font-medium ${job.total_failed ? 'text-error' : 'text-secondary'}`}>
-                        {job.total_failed || 0}
+                      <td className="px-6 py-4">
+                        <div className="flex items-baseline gap-3 text-sm whitespace-nowrap">
+                          <span className="font-bold text-on-surface">{job.total_found ?? 0}</span>
+                          <span className="text-[10px] uppercase tracking-wider text-secondary">found</span>
+                          {(job.total_scraped ?? 0) > 0 && (
+                            <>
+                              <span className="text-secondary">·</span>
+                              <span className="font-bold text-on-surface">{job.total_scraped}</span>
+                              <span className="text-[10px] uppercase tracking-wider text-secondary">scraped</span>
+                            </>
+                          )}
+                          {(job.total_failed ?? 0) > 0 && (
+                            <>
+                              <span className="text-secondary">·</span>
+                              <span className="font-bold text-error">{job.total_failed}</span>
+                              <span className="text-[10px] uppercase tracking-wider text-error">failed</span>
+                            </>
+                          )}
+                        </div>
                       </td>
-                      <td className="px-6 py-4 text-xs text-secondary">
+                      <td className="px-6 py-4 text-xs text-secondary whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5">
                           {new Date(job.created_at).toLocaleDateString()}
                           {isCompleted && (
@@ -325,9 +400,32 @@ export default function Scrape() {
                     </tr>
                   );
                 })}
+                {orderedJobs.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-12 text-center text-sm text-secondary">
+                      No jobs match this filter.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
+
+          {/* Load More */}
+          {jobs.length < jobsTotal && (
+            <div className="px-4 sm:px-6 py-4 border-t border-slate-100 flex justify-center">
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={() => loadMoreJobs()}
+                loading={jobsLoading}
+              >
+                {jobsLoading
+                  ? 'Loading…'
+                  : `Load more (${jobsTotal - jobs.length} more)`}
+              </Button>
+            </div>
+          )}
         </Card>
       )}
     </div>

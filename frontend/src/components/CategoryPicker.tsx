@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import api from '../api/client';
 import Combobox, { type ComboboxOption } from '../ui/Combobox';
 import { useTaxonomy } from '../hooks/useTaxonomy';
 
@@ -9,10 +10,43 @@ interface Props {
   onChange: (slug: string) => void;
   disabled?: boolean;
   id?: string;
+  /** When set, fetch the per-platform taxonomy instead of using the
+   *  shared TaxonomyContext (which is Trustpilot-only). */
+  platform?: string;
 }
 
-export default function CategoryPicker({ value, onChange, disabled, id }: Props) {
-  const { categories, loading } = useTaxonomy();
+interface TaxonomyCategory {
+  slug: string;
+  display_name: string;
+  parent_slug?: string | null;
+}
+
+export default function CategoryPicker({ value, onChange, disabled, id, platform }: Props) {
+  const ctx = useTaxonomy();
+  const [override, setOverride] = useState<TaxonomyCategory[] | null>(null);
+  const [overrideLoading, setOverrideLoading] = useState(false);
+
+  useEffect(() => {
+    if (!platform) {
+      setOverride(null);
+      return;
+    }
+    let cancelled = false;
+    setOverrideLoading(true);
+    api
+      .get(`/scrape/taxonomy?platform=${encodeURIComponent(platform)}&t=${Date.now()}`)
+      .then((res) => {
+        if (cancelled) return;
+        const list = (res.data?.data?.categories ?? []) as TaxonomyCategory[];
+        setOverride(Array.isArray(list) ? list : []);
+      })
+      .catch(() => { if (!cancelled) setOverride([]); })
+      .finally(() => { if (!cancelled) setOverrideLoading(false); });
+    return () => { cancelled = true; };
+  }, [platform]);
+
+  const categories = override ?? ctx.categories;
+  const loading = override === null ? ctx.loading : overrideLoading;
 
   const options = useMemo<ComboboxOption[]>(
     () =>

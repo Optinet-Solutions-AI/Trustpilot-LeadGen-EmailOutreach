@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import api from '../api/client';
 import Combobox, { type ComboboxOption } from '../ui/Combobox';
 import { useTaxonomy } from '../hooks/useTaxonomy';
 
@@ -17,10 +18,41 @@ interface Props {
   onChange: (code: string) => void;
   disabled?: boolean;
   id?: string;
+  /** When set, fetch `/api/scrape/taxonomy?platform=X` on mount instead
+   *  of using the shared TaxonomyContext (which only knows about
+   *  Trustpilot). Without this, Yelp's 13-country list would be shown
+   *  as Trustpilot's 80-country list. */
+  platform?: string;
 }
 
-export default function CountryPicker({ value, onChange, disabled, id }: Props) {
-  const { countries, loading } = useTaxonomy();
+interface TaxonomyCountry { code: string; name: string }
+
+export default function CountryPicker({ value, onChange, disabled, id, platform }: Props) {
+  const ctx = useTaxonomy();
+  const [override, setOverride] = useState<TaxonomyCountry[] | null>(null);
+  const [overrideLoading, setOverrideLoading] = useState(false);
+
+  useEffect(() => {
+    if (!platform) {
+      setOverride(null);
+      return;
+    }
+    let cancelled = false;
+    setOverrideLoading(true);
+    api
+      .get(`/scrape/taxonomy?platform=${encodeURIComponent(platform)}&t=${Date.now()}`)
+      .then((res) => {
+        if (cancelled) return;
+        const list = (res.data?.data?.countries ?? []) as TaxonomyCountry[];
+        setOverride(Array.isArray(list) ? list : []);
+      })
+      .catch(() => { if (!cancelled) setOverride([]); })
+      .finally(() => { if (!cancelled) setOverrideLoading(false); });
+    return () => { cancelled = true; };
+  }, [platform]);
+
+  const countries = override ?? ctx.countries;
+  const loading = override === null ? ctx.loading : overrideLoading;
 
   const options = useMemo<ComboboxOption[]>(
     () =>

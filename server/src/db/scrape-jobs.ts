@@ -298,16 +298,32 @@ export async function resolveDuplicateActiveJob(
   return winner;
 }
 
-export async function getJobs() {
+export async function getJobs(opts: { limit?: number; offset?: number; platform?: string } = {}) {
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
+
+  // First, total count so the frontend can offer pagination / a load-more button.
+  let countQuery = supabase
+    .from('scrape_jobs')
+    .select('*', { count: 'exact', head: true })
+    .neq('country', '_enrich_');
+  if (opts.platform) countQuery = countQuery.eq('platform', opts.platform);
+  const { count, error: countError } = await countQuery;
+  if (countError) throw new Error(countError.message);
+
+  // Then the page itself.
+  let pageQuery = supabase
     .from('scrape_jobs')
     .select('*')
-    .neq('country', '_enrich_')  // exclude enrichment-only jobs (managed by /api/enrich)
+    .neq('country', '_enrich_')
     .order('created_at', { ascending: false })
-    .limit(20);
+    .range(offset, offset + limit - 1);
+  if (opts.platform) pageQuery = pageQuery.eq('platform', opts.platform);
+  const { data, error } = await pageQuery;
   if (error) throw new Error(error.message);
-  return data || [];
+
+  return { rows: data || [], total: count ?? 0 };
 }
 
 export async function deleteJob(id: string) {

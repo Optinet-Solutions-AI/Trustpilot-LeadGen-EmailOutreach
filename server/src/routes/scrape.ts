@@ -373,11 +373,23 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/scrape — list recent scrape jobs
-router.get('/', async (_req: Request, res: Response) => {
+// GET /api/scrape — list recent scrape jobs. Supports ?limit, ?offset,
+// ?platform for pagination + per-platform filtering in the UI.
+// Response shape: { success: true, data: { rows, total } }. Backwards-
+// compatible with the old shape (data: ScrapeJob[]) is impossible without
+// a route version bump, so the frontend ScrapeContext.fetchJobs reads
+// data.rows / data.total directly.
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const jobs = await getJobs();
-    res.json({ success: true, data: jobs });
+    const limit = req.query.limit ? parseInt(param(req.query.limit as string), 10) : undefined;
+    const offset = req.query.offset ? parseInt(param(req.query.offset as string), 10) : undefined;
+    const platform = req.query.platform ? param(req.query.platform as string) : undefined;
+    const result = await getJobs({
+      limit: Number.isFinite(limit) ? limit : undefined,
+      offset: Number.isFinite(offset) ? offset : undefined,
+      platform,
+    });
+    res.json({ success: true, data: result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
