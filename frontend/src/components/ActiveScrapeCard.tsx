@@ -36,8 +36,22 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
   );
   const [startedAt, setStartedAt] = useState<string | null>(initialJob?.started_at ?? null);
   const [completedAt, setCompletedAt] = useState<string | null>(initialJob?.completed_at ?? null);
-  const [country, setCountry] = useState<string>(initialJob?.country ?? '');
-  const [category, setCategory] = useState<string>(initialJob?.category ?? '');
+  // For non-Trustpilot platforms the top-level country/category columns
+  // hold placeholders ('_yelp_' / 'all'), and the authoritative values
+  // live in `filters` jsonb. Pick the real ones for display.
+  const initialFiltersCountry = (initialJob?.filters as { country?: string } | null | undefined)?.country;
+  const initialFiltersCategory = (initialJob?.filters as { category?: string } | null | undefined)?.category;
+  const initialCountry =
+    initialJob?.country && !initialJob.country.startsWith('_')
+      ? initialJob.country
+      : initialFiltersCountry ?? initialJob?.country ?? '';
+  const initialCategory =
+    initialJob?.category && initialJob.category !== 'all'
+      ? initialJob.category
+      : initialFiltersCategory ?? initialJob?.category ?? '';
+
+  const [country, setCountry] = useState<string>(initialCountry);
+  const [category, setCategory] = useState<string>(initialCategory);
   const [platform, setPlatform] = useState<string | undefined>(initialJob?.platform);
 
   const statusRef = useRef<ScrapeJob['status']>(status);
@@ -52,8 +66,18 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
   useEffect(() => {
     if (!initialJob) return;
     if (initialJob.platform && !platform) setPlatform(initialJob.platform);
-    if (initialJob.country && !country) setCountry(initialJob.country);
-    if (initialJob.category && !category) setCategory(initialJob.category);
+    // Same filters-aware fallback as the initial useState init.
+    const f = initialJob.filters as { country?: string; category?: string } | null | undefined;
+    const realCountry =
+      initialJob.country && !initialJob.country.startsWith('_')
+        ? initialJob.country
+        : f?.country ?? initialJob.country;
+    const realCategory =
+      initialJob.category && initialJob.category !== 'all'
+        ? initialJob.category
+        : f?.category ?? initialJob.category;
+    if (realCountry && !country) setCountry(realCountry);
+    if (realCategory && !category) setCategory(realCategory);
     if (initialJob.started_at && !startedAt) setStartedAt(initialJob.started_at);
     if (initialJob.completed_at && !completedAt) setCompletedAt(initialJob.completed_at);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -65,13 +89,30 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
     const es = new EventSource(`${baseUrl}/api/scrape/${jobId}/status`);
 
     es.onmessage = (event) => {
-      const data = JSON.parse(event.data) as ScrapeProgress & { status?: string; platform?: string; country?: string; category?: string; started_at?: string; completed_at?: string };
+      const data = JSON.parse(event.data) as ScrapeProgress & {
+        status?: string;
+        platform?: string;
+        country?: string;
+        category?: string;
+        filters?: { country?: string; category?: string } | null;
+        started_at?: string;
+        completed_at?: string;
+      };
 
       if (data.stage === 'current') {
         const jobStatus = data.status as ScrapeJob['status'];
         if (data.platform) setPlatform(data.platform);
-        if (data.country) setCountry(data.country);
-        if (data.category) setCategory(data.category);
+        // Same filters-aware fallback so we never show '_yelp_' / 'all'.
+        const realCountry =
+          data.country && !data.country.startsWith('_')
+            ? data.country
+            : data.filters?.country ?? data.country;
+        const realCategory =
+          data.category && data.category !== 'all'
+            ? data.category
+            : data.filters?.category ?? data.category;
+        if (realCountry) setCountry(realCountry);
+        if (realCategory) setCategory(realCategory);
         if (data.started_at) setStartedAt(data.started_at);
         if (data.completed_at) setCompletedAt(data.completed_at);
         if (jobStatus === 'completed' || jobStatus === 'failed') {

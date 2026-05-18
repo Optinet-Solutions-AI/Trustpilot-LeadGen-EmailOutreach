@@ -50,6 +50,10 @@ export interface ScrapeJob {
   platform?: string;
   country: string;
   category: string;
+  /** Platform-specific filters jsonb. For non-Trustpilot platforms, the
+   *  authoritative country/category live here — the top-level columns
+   *  carry placeholders like '_yelp_' / 'all'. */
+  filters?: Record<string, unknown> | null;
   min_rating: number;
   max_rating: number;
   enrich: boolean;

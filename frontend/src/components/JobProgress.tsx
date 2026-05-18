@@ -9,7 +9,7 @@ export type JobKind = 'scrape' | 'enrichment' | 'verify' | 'check-links' | 'chec
 
 interface Props {
   kind: JobKind;
-  status: 'running' | 'completed' | 'failed' | null;
+  status: 'pending' | 'running' | 'completed' | 'failed' | null;
   progress: ScrapeProgressType[];
   error?: string | null;
   /** Fallback counters from the DB (jobs poll). Used when SSE doesn't fire. */
@@ -191,6 +191,14 @@ export default function JobProgress({
   };
 
   const headline = (() => {
+    if (status === 'pending') {
+      // Worker hasn't claimed the job yet. Show a queued state with the
+      // spinner so the card has SOMETHING visible — without this, the
+      // whole header collapsed to empty and the card looked frozen
+      // until the worker claimed (which takes up to 30s on the EC2
+      // poll interval).
+      return 'Queued — waiting for worker to claim…';
+    }
     if (status === 'running') {
       if (kind === 'enrichment') return 'Finding website emails…';
       if (kind === 'verify') return 'Verifying email addresses…';
@@ -212,7 +220,7 @@ export default function JobProgress({
       {/* Header */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
-          {status === 'running' && <Loader2 size={18} className="animate-spin text-[#b0004a]" />}
+          {(status === 'running' || status === 'pending') && <Loader2 size={18} className="animate-spin text-[#b0004a]" />}
           {status === 'completed' && <CheckCircle2 size={18} className="text-[#006630]" />}
           {status === 'failed' && <XCircle size={18} className="text-red-500" />}
           <div>
@@ -240,7 +248,7 @@ export default function JobProgress({
         </div>
 
         <div className="flex items-center gap-2">
-          {status === 'running' && onCancel && (
+          {(status === 'running' || status === 'pending') && onCancel && (
             <button
               onClick={handleCancel}
               disabled={cancelling}
