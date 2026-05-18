@@ -218,9 +218,17 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
       }
       const res = await api.post('/scrape', body);
       const id = res.data.data.jobId as string;
-      setActiveScrapes((prev) => (prev.includes(id) ? prev : [...prev, id]));
-      // Refresh the jobs list so the new pending row shows up immediately
-      void fetchJobs();
+      // Refresh the jobs list FIRST so the new row (with platform/country/
+      // category) is in `jobs[]` before the ActiveScrapeCard mounts. Without
+      // this await, the card mounts with initialJob=null and the "From X"
+      // label defaults to Trustpilot until the SSE 'current' event arrives
+      // 1-2s later. Use try/finally so the card still mounts if the refresh
+      // fails for any reason (silent — non-critical).
+      try {
+        await fetchJobs();
+      } finally {
+        setActiveScrapes((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      }
       return id;
     } catch (e: unknown) {
       const axiosMsg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;

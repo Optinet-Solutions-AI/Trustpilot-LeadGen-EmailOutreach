@@ -43,6 +43,22 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
   const statusRef = useRef<ScrapeJob['status']>(status);
   useEffect(() => { statusRef.current = status; }, [status]);
 
+  // Hydrate state from initialJob whenever it changes from null to a
+  // populated row. Without this, a card mounted before fetchJobs() resolved
+  // would stay with platform=undefined and the JobProgress label would
+  // default to "From Trustpilot" even on Yelp / TripAdvisor scrapes until
+  // the SSE 'current' event eventually arrives. Only fields that are still
+  // empty/default get overwritten, so we don't clobber live SSE updates.
+  useEffect(() => {
+    if (!initialJob) return;
+    if (initialJob.platform && !platform) setPlatform(initialJob.platform);
+    if (initialJob.country && !country) setCountry(initialJob.country);
+    if (initialJob.category && !category) setCategory(initialJob.category);
+    if (initialJob.started_at && !startedAt) setStartedAt(initialJob.started_at);
+    if (initialJob.completed_at && !completedAt) setCompletedAt(initialJob.completed_at);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJob?.id, initialJob?.platform, initialJob?.country, initialJob?.category]);
+
   // Open SSE + start polling fallback
   useEffect(() => {
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '';
