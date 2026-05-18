@@ -441,15 +441,23 @@ class YelpScraper(BasePlatformScraper):
 
         results: list[dict] = []
         seen_urls: set[str] = set()
+        # Global page counter across all cities — emitted to the SSE bridge
+        # as `category_progress` / `category_page_done` so the UI's stats
+        # cards update the same way they do for Trustpilot and TripAdvisor.
+        global_page = 0
 
         for city_idx, city in enumerate(cities):
             for page_idx in range(max_pages_per_city):
                 offset = page_idx * _RESULTS_PER_PAGE
                 url = _build_search_url(category, city, offset)
+                global_page += 1
                 print(
                     f"  [city {city_idx + 1}/{len(cities)}] {city} page {page_idx + 1}: {url}",
                     flush=True,
                 )
+                # Emit "we're looking at page N" the moment we START fetching —
+                # gives the UI feedback even on slow ScrapingBee responses.
+                print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
 
                 # Yelp profile + search pages BOTH need stealth_proxy —
                 # premium_proxy returns ScrapingBee 500. No tiered escalation.
@@ -462,7 +470,7 @@ class YelpScraper(BasePlatformScraper):
                 )
                 if not html:
                     print(
-                        f"FAILED:listing|{url}|empty_html|ScrapingBee returned no HTML",
+                        f"FAILED:listing|{url}|empty_html|ScrapingBee returned no HTML for {city} page {page_idx + 1}",
                         flush=True,
                     )
                     # If the very first page of a city fails, skip remaining
@@ -472,9 +480,20 @@ class YelpScraper(BasePlatformScraper):
                 cards = _extract_search_cards(html)
                 if not cards:
                     print(
-                        f"  no cards found on page {page_idx + 1}; stopping pagination for {city}",
+                        f"  no cards parsed on page {page_idx + 1} for {city} "
+                        f"(HTML was {len(html)} bytes — possible parser drift or "
+                        f"CF challenge); stopping pagination for {city}",
                         flush=True,
                     )
+                    # Mark as a failure too so the user sees it in scrape_failures
+                    # rather than silent zero output.
+                    if page_idx == 0:
+                        print(
+                            f"FAILED:listing|{url}|no_cards_parsed|"
+                            f"ScrapingBee returned {len(html)} bytes but parser "
+                            f"found 0 listing cards. Possible Yelp HTML drift.",
+                            flush=True,
+                        )
                     break
 
                 page_kept = 0
@@ -509,9 +528,10 @@ class YelpScraper(BasePlatformScraper):
                     f"(rating {min_rating}-{max_rating}, min_reviews {min_review_count})",
                     flush=True,
                 )
+                # category_page_done shape: {page}|{kept_on_page}|{total}
+                # (matches TripAdvisor — frontend parses this for the stats card)
                 print(
-                    f"PROGRESS:listing_page:{city_idx + 1}.{page_idx + 1}|{city}|"
-                    f"{len(results)}",
+                    f"PROGRESS:category_page_done:{global_page}|{page_kept}|{len(results)}",
                     flush=True,
                 )
                 if on_progress:
@@ -525,13 +545,16 @@ class YelpScraper(BasePlatformScraper):
 
                 if max_results is not None and len(results) >= max_results:
                     results = results[:max_results]
+                    print(f"PROGRESS:category_done:{len(results)}", flush=True)
                     return results
                 if len(cards) < _RESULTS_PER_PAGE:
                     # Yelp returned a short page → no more results for this city.
                     break
 
         print(f"\nTotal: {len(results)} Yelp businesses matched filter.", flush=True)
-        print(f"PROGRESS:listing_done:{len(results)}", flush=True)
+        # category_done — final total. Frontend's summarize() reads this to
+        # set the green "Found N companies" success banner.
+        print(f"PROGRESS:category_done:{len(results)}", flush=True)
         return results
 
     async def enrich_profiles(
