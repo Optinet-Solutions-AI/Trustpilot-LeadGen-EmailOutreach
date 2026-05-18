@@ -1,0 +1,9 @@
+# Shell scripts MUST stay LF-only — CRLF in the shebang line breaks the
+# script on Linux (the kernel tries to exec "/usr/bin/env bash\r" which
+# doesn't exist). Lock these to LF regardless of the user's
+# core.autocrlf setting.
+*.sh         text eol=lf
+*.bash       text eol=lf
+
+# Python is shebang-driven too; same risk.
+*.py         text eol=lf
