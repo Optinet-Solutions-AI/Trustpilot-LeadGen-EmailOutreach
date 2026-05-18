@@ -1,12 +1,30 @@
 # Yelp Platform Plugin — Design Spec
 
-**Date:** 2026-05-15 (original) · **Amended:** 2026-05-18 (Fusion-to-ScrapingBee pivot)
+**Date:** 2026-05-15 (original) · **Amended:** 2026-05-18 (pivot to ScrapingBee, then REVERTED)
 **Status:** SHIPPED — see implementation in `tools/scraper/platforms/yelp.py`
 **Goal:** Add Yelp as a third scrape platform alongside Trustpilot and TripAdvisor, targeting low-rated businesses for reputation-management cold email outreach. Same end-to-end pipeline as the existing platforms (scrape → enrich → upsert → campaign).
 
 ---
 
-> ## 🔄 2026-05-18 ADDENDUM — Fusion API dropped, ScrapingBee end-to-end
+> ## 🔁 2026-05-18 ADDENDUM SUPERSEDED — back to Fusion for listing
+>
+> An earlier addendum (~14:00 UTC) declared "Fusion dropped, ScrapingBee
+> end-to-end". That pivot was based on the assumption that ScrapingBee
+> `stealth_proxy` could reach `/search` as well as `/biz/<slug>` — an
+> assumption that was never verified. A local smoke test at 15:20 UTC
+> showed every `/search` request times out at 90 seconds (5 out of 5
+> attempts against BR/plumbers failed identically). The pivot was wrong.
+>
+> **The implementation is back to the original hybrid design below.**
+> Listing → Fusion (free). Profile enrichment → ScrapingBee stealth_proxy.
+>
+> Cost burned during the pivot ≈ 2,000 ScrapingBee credits across two
+> cancelled EC2 jobs and one local smoke test. Lesson recorded at
+> `feedback_smoke_test_before_ship.md`: never push a plugin change
+> without a live smoke run first; fixture-only tests can't catch
+> "can the proxy actually reach the URL" assumptions.
+>
+> ## Original 2026-05-18 ADDENDUM (now reverted, kept for context):
 >
 > The shipped implementation **does not use the Yelp Fusion API**. Listing
 > now fetches `https://www.yelp.com/search?find_desc=…&find_loc=…&start=N`

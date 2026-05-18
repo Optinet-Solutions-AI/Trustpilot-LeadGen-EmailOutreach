@@ -1,53 +1,58 @@
 """
-Yelp platform plugin — ScrapingBee-only.
+Yelp platform plugin — Fusion (listing) + ScrapingBee (profiles).
 
-NETWORK STRATEGY
+NETWORK STRATEGY (revised 2026-05-18 after the listing pivot smoke test)
 
-  Yelp's PerimeterX edge rejects direct Playwright on /, /search, and
-  /biz/<slug> with 403. Empirical probe data is in
-  docs/superpowers/specs/2026-05-15-yelp-platform-design.md (see the
-  2026-05-18 addendum for the Fusion-to-ScrapingBee pivot rationale).
+  Yelp's PerimeterX edge rejects direct Playwright on every public
+  endpoint (/, /search, /biz/<slug>). ScrapingBee `stealth_proxy`
+  bypasses PerimeterX ONLY for /biz/<slug> profile pages; /search
+  pages time out 100% of the time at 90s (verified by a local smoke
+  test that burned ~5×75=375 ScrapingBee credits with zero successful
+  fetches).
 
-  Listing AND enrichment both go through ScrapingBee `stealth_proxy`
-  (75 credits/page; `premium_proxy` is rejected with 500). The Fusion
-  API is no longer used — the free quota proved too restrictive in
-  practice and the operator preferred predictable cost over quota
-  anxiety.
+  So the listing stage routes through the Yelp Fusion API instead:
 
-  Listing URL pattern (Yelp's public search):
-    https://www.yelp.com/search?find_desc=<term>&find_loc=<city>&start=<offset>
+    Listing   →  Yelp Fusion API (free, 5000 calls/day, YELP_API_KEY)
+    Profile   →  ScrapingBee stealth_proxy (75 credits/page)
 
-  Pages ship ~10 results; we paginate `start=0,10,20,...` up to
-  `max_pages` per city. City fan-out comes from the per-country seed
-  in `data/yelp_country_cities.json`.
+  The original Fusion-based plan in the design spec is the correct
+  one. An interim pivot to ScrapingBee-end-to-end (commit 4253896)
+  shipped without verifying ScrapingBee could reach /search, and was
+  reverted in commit <this one>.
 
 COST MODEL
 
-  - Listing: 75 credits per page × 5-10 pages × N cities per country.
-    A 6-city × 5-page fan-out = 30 listing fetches = 2,250 credits.
-  - Profile enrichment: 75 credits per profile (after in-process rating
-    + review_count filter), screenshots ride free on the same fetch.
+  - Listing: $0. Free tier of Yelp Fusion (5000 calls/day, no card).
+    A typical 6-city × 5-page fan-out = ~30 calls.
+  - In-process filter: rating range + min_review_count applied BEFORE
+    profile enrichment, so ScrapingBee credits are only spent on leads
+    that already passed the filter.
+  - Profile enrichment: 75 credits per profile (stealth_proxy). For
+    a post-filter set of 30-60 leads, that's 2,250-4,500 credits.
 
-  Typical scrape footprint ~3,500-6,000 credits.
+  Total typical scrape: 2,250-4,500 ScrapingBee credits + ~30 free
+  Fusion calls.
 
 PARSING
 
-  Listing card extraction leans on stable signals:
-    • <a href="/biz/<slug>"> for the profile link + business name
-    • aria-label containing "X star rating" for the rating
-    • "N reviews" text near the rating for review_count
+  Listing: Fusion responses are clean JSON (name, rating, phone,
+  review_count, location.display_address) — no HTML parsing required.
 
-  Profile page parsing is unchanged from the Fusion era — see
-  `_extract_profile_detail` below.
+  Profile (`/biz/<slug>`): see _extract_profile_detail. Yelp wraps the
+  business website link in /biz_redir?url=...; unwrap and URL-decode
+  the `url=` parameter. Phone via tel: link, claim flag via "Claim
+  this business" CTA text.
 
 FAILURE MODES
 
-  - SCRAPINGBEE_API_KEY missing → listing returns [] with FAILED:listing
-  - ScrapingBee returns 500 on a page → that page is skipped; pagination
-    continues. Repeated 500s usually mean Yelp tightened detection and
-    the stealth_proxy pool needs ScrapingBee-side updates.
-  - Empty card list on a page → treated as last-page signal; stops
-    paginating for that city.
+  - YELP_API_KEY missing → scrape_listing emits FAILED:listing|yelp|missing_key
+    and returns []. UI sees the failure in scrape_failures.
+  - Fusion 429 → emits FAILED + stops paginating; cron will not retry
+    a failed commit (see deploy_ec2.sh anti-spam marker), operator
+    can re-run after the daily quota resets.
+  - SCRAPINGBEE_API_KEY missing during enrich → returns stubs with
+    Fusion-only data (name, rating, phone, address), no website/
+    screenshot/claim flag.
 """
 from __future__ import annotations
 
@@ -64,6 +69,10 @@ from tools.scraper.platforms.base import (
     BasePlatformScraper,
     FilterField,
     ProgressCallback,
+)
+from tools.scraper.shared.yelp_fusion import (
+    search_businesses_paged,
+    yelp_fusion_enabled,
 )
 from tools.scraper.shared.scrapingbee import (
     fetch_screenshot_via_scrapingbee,
@@ -406,10 +415,13 @@ class YelpScraper(BasePlatformScraper):
         max_results: Optional[int] = None,
         on_progress: ProgressCallback = None,
     ) -> list[dict]:
-        if not scrapingbee_enabled():
+        # Listing routes through Yelp Fusion (free 5000/day) because
+        # ScrapingBee can't reach /search. See module docstring.
+        if not yelp_fusion_enabled():
             print(
-                "FAILED:listing|yelp|missing_key|SCRAPINGBEE_API_KEY is not set; "
-                "Yelp listing fetches /search via ScrapingBee stealth_proxy.",
+                "FAILED:listing|yelp|missing_key|YELP_API_KEY is not set; "
+                "Yelp listing requires the free Fusion API. Register at "
+                "https://docs.developer.yelp.com/ (no card required).",
                 flush=True,
             )
             return []
@@ -427,7 +439,7 @@ class YelpScraper(BasePlatformScraper):
         min_rating = float(filters.get('min_rating', 1.0))
         max_rating = float(filters.get('max_rating', 3.5))
         min_review_count = int(filters.get('min_review_count', 5))
-        max_pages_per_city = int(filters.get('max_pages', _DEFAULT_MAX_PAGES_PER_CITY))
+        per_city_cap = int(filters.get('per_city_cap', 240))
 
         country_cities = _load_country_cities()
         cities = country_cities.get(country) or []
@@ -441,119 +453,97 @@ class YelpScraper(BasePlatformScraper):
 
         results: list[dict] = []
         seen_urls: set[str] = set()
-        # Global page counter across all cities — emitted to the SSE bridge
-        # as `category_progress` / `category_page_done` so the UI's stats
-        # cards update the same way they do for Trustpilot and TripAdvisor.
-        global_page = 0
+        global_page = 0  # SSE event counter — frontend's "page N" label
 
         for city_idx, city in enumerate(cities):
-            for page_idx in range(max_pages_per_city):
-                offset = page_idx * _RESULTS_PER_PAGE
-                url = _build_search_url(category, city, offset)
-                global_page += 1
-                print(
-                    f"  [city {city_idx + 1}/{len(cities)}] {city} page {page_idx + 1}: {url}",
-                    flush=True,
-                )
-                # Emit "we're looking at page N" the moment we START fetching —
-                # gives the UI feedback even on slow ScrapingBee responses.
-                print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
+            global_page += 1
+            print(
+                f"  [city {city_idx + 1}/{len(cities)}] {city}: querying Fusion...",
+                flush=True,
+            )
+            # Emit "we're looking at page N" the moment we START fetching.
+            print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
 
-                # Yelp profile + search pages BOTH need stealth_proxy —
-                # premium_proxy returns ScrapingBee 500. No tiered escalation.
-                html = await asyncio.to_thread(
-                    fetch_via_scrapingbee,
-                    url,
-                    render_js=True,
-                    premium_proxy=False,
-                    stealth_proxy=True,
-                )
-                if not html:
-                    print(
-                        f"FAILED:listing|{url}|empty_html|ScrapingBee returned no HTML for {city} page {page_idx + 1}",
-                        flush=True,
-                    )
-                    # If the very first page of a city fails, skip remaining
-                    # pages of that city to save credits.
-                    break
+            # on_page callback: called by search_businesses_paged after each
+            # Fusion call. We use it to emit progress for sub-pages within
+            # a city's pagination (every 50 results).
+            sub_seen_so_far = [0]
 
-                cards = _extract_search_cards(html)
-                if not cards:
-                    print(
-                        f"  no cards parsed on page {page_idx + 1} for {city} "
-                        f"(HTML was {len(html)} bytes — possible parser drift or "
-                        f"CF challenge); stopping pagination for {city}",
-                        flush=True,
-                    )
-                    # Mark as a failure too so the user sees it in scrape_failures
-                    # rather than silent zero output.
-                    if page_idx == 0:
-                        print(
-                            f"FAILED:listing|{url}|no_cards_parsed|"
-                            f"ScrapingBee returned {len(html)} bytes but parser "
-                            f"found 0 listing cards. Possible Yelp HTML drift.",
-                            flush=True,
-                        )
-                    break
+            def _on_fusion_page(seen: int, total_cap: int) -> None:
+                # `seen` = how many businesses Fusion returned for this city so far
+                # We don't increment global_page within a city — Fusion is fast,
+                # so the per-city granularity is good enough for the UI.
+                sub_seen_so_far[0] = seen
 
-                page_kept = 0
-                for c in cards:
-                    profile_url = c['profile_url']
-                    if profile_url in seen_urls:
-                        continue
-                    rating = c.get('rating')
-                    review_count = c.get('review_count') or 0
-                    if rating is None:
-                        # No rating means too few reviews to display one — skip.
-                        continue
-                    if not (min_rating <= float(rating) <= max_rating):
-                        continue
-                    if review_count < min_review_count:
-                        continue
-                    seen_urls.add(profile_url)
-                    results.append({
-                        'name': c['name'],
-                        'profile_url': profile_url,
-                        'rating': float(rating),
-                        'review_count': int(review_count),
-                        'platform': self.name,
-                        'country': country,
-                        'category': category,
-                        'city': city,
-                    })
-                    page_kept += 1
+            businesses = await asyncio.to_thread(
+                search_businesses_paged,
+                location=city,
+                categories=category,
+                max_results=per_city_cap,
+                on_page=_on_fusion_page,
+            )
 
-                print(
-                    f"  page {page_idx + 1}: {len(cards)} cards, {page_kept} matched "
-                    f"(rating {min_rating}-{max_rating}, min_reviews {min_review_count})",
-                    flush=True,
-                )
-                # category_page_done shape: {page}|{kept_on_page}|{total}
-                # (matches TripAdvisor — frontend parses this for the stats card)
-                print(
-                    f"PROGRESS:category_page_done:{global_page}|{page_kept}|{len(results)}",
-                    flush=True,
-                )
-                if on_progress:
-                    on_progress({
-                        'stage': 'listing',
-                        'city': city,
-                        'page': page_idx + 1,
-                        'found': len(results),
-                        'page_found': page_kept,
-                    })
+            page_kept = 0
+            for b in businesses:
+                rating = b.get('rating')
+                review_count = int(b.get('review_count') or 0)
+                if rating is None:
+                    continue
+                rating_f = float(rating)
+                if not (min_rating <= rating_f <= max_rating):
+                    continue
+                if review_count < min_review_count:
+                    continue
+                profile_url = _strip_query(b.get('url') or '')
+                if not profile_url or profile_url in seen_urls:
+                    continue
+                seen_urls.add(profile_url)
 
-                if max_results is not None and len(results) >= max_results:
-                    results = results[:max_results]
-                    print(f"PROGRESS:category_done:{len(results)}", flush=True)
-                    return results
-                if len(cards) < _RESULTS_PER_PAGE:
-                    # Yelp returned a short page → no more results for this city.
-                    break
+                location_obj = b.get('location') or {}
+                display_address = location_obj.get('display_address') or []
+
+                results.append({
+                    'name': b.get('name') or '',
+                    'profile_url': profile_url,
+                    'rating': rating_f,
+                    'review_count': review_count,
+                    'phone': b.get('phone') or None,
+                    'address': ', '.join(display_address) if display_address else None,
+                    'fusion_id': b.get('id'),
+                    'platform': self.name,
+                    'country': country,
+                    'category': category,
+                    'city': city,
+                })
+                page_kept += 1
+
+            print(
+                f"  {city}: Fusion returned {len(businesses)} businesses, "
+                f"{page_kept} matched filter (rating {min_rating}-{max_rating}, "
+                f"min_reviews {min_review_count})",
+                flush=True,
+            )
+            # category_page_done shape: {page}|{kept_on_page}|{total}
+            # — matches TripAdvisor / Trustpilot so the frontend's
+            # JobProgress.summarize() picks up companiesFound.
+            print(
+                f"PROGRESS:category_page_done:{global_page}|{page_kept}|{len(results)}",
+                flush=True,
+            )
+            if on_progress:
+                on_progress({
+                    'stage': 'listing',
+                    'city': city,
+                    'found': len(results),
+                    'page_found': page_kept,
+                })
+
+            if max_results is not None and len(results) >= max_results:
+                results = results[:max_results]
+                print(f"PROGRESS:category_done:{len(results)}", flush=True)
+                return results
 
         print(f"\nTotal: {len(results)} Yelp businesses matched filter.", flush=True)
-        # category_done — final total. Frontend's summarize() reads this to
-        # set the green "Found N companies" success banner.
         print(f"PROGRESS:category_done:{len(results)}", flush=True)
         return results
 

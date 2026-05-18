@@ -2,7 +2,7 @@
 
 **Objective:** Scrape Yelp listings for low-rated businesses, enrich with website/phone, upsert via the multi-platform path.
 
-Yelp's anti-bot stack (PerimeterX) rejects direct Playwright. Listing AND profile both route through **ScrapingBee `stealth_proxy`** (75 credits/page each). The Yelp Fusion API is NOT used — its free tier proved too restrictive in practice and the operator preferred predictable ScrapingBee cost over Fusion quota anxiety.
+Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages — every attempt against `/search` times out at 90 seconds (verified by smoke test 2026-05-18). So Yelp uses a **two-source design**: listing through Yelp Fusion (free, 5,000/day), profile enrichment through ScrapingBee.
 
 ---
 
@@ -23,27 +23,29 @@ Yelp's anti-bot stack (PerimeterX) rejects direct Playwright. Listing AND profil
 
 | Step | Tool |
 |---|---|
-| Listing | `tools/scraper/platforms/yelp.py` → `scrape_listing()` walks `/search?find_desc=…&find_loc=…&start=N` via ScrapingBee |
-| Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` fetches `/biz/<slug>` via ScrapingBee |
-| Card parser | `_extract_search_cards()` honors `<li>` / `[role="listitem"]` card boundaries to avoid cross-card rating leakage |
+| Listing | `tools/scraper/platforms/yelp.py` → `scrape_listing()` calls Fusion `GET /v3/businesses/search` |
+| Fusion client | `tools/scraper/shared/yelp_fusion.py` — wraps `search_businesses_paged`, `list_categories` |
+| Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` fetches `/biz/<slug>` via ScrapingBee `stealth_proxy` |
 | Profile parser | `_extract_profile_detail()` unwraps `/biz_redir?url=…` for the business website |
-| City seed | `tools/scraper/data/yelp_country_cities.json` |
-| Category seed | `tools/scraper/data/yelp_categories.json` |
+| City seed | `tools/scraper/data/yelp_country_cities.json` (13 markets) |
+| Category seed | `tools/scraper/data/yelp_categories.json` (30 SMB verticals) |
 | Upsert | `tools/db/upsert_leads.py` → `_upsert_nontrustpilot_lead` (writes `lead_platform_presences(platform='yelp')`) |
 
 ---
 
 ## Network strategy
 
-**Single tier — `stealth_proxy=True` everywhere.** Yelp's edge rejects both direct Playwright (403) and ScrapingBee `premium_proxy` (500). The plugin hardcodes `premium_proxy=False, stealth_proxy=True` for every fetch and never escalates.
+**Two sources, picked by what each can actually reach:**
 
-| Call | URL pattern | Credits |
-|---|---|---|
-| Listing page | `https://www.yelp.com/search?find_desc=<category>&find_loc=<city>&start=<offset>` | 75 |
-| Profile page | `https://www.yelp.com/biz/<slug>` | 75 |
-| Screenshot | bundled with profile fetch | free |
+| Call | URL / Endpoint | Service | Credits |
+|---|---|---|---|
+| Listing | `GET https://api.yelp.com/v3/businesses/search` | Yelp Fusion API | Free (5k/day) |
+| Profile page | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` | 75 / fetch |
+| Screenshot | bundled with profile fetch | ScrapingBee | free |
 
-**Cost model:** a 6-city × 5-page fan-out = 30 listing fetches (~2,250 credits) + ~30-60 post-filter profile fetches (~2,250-4,500 credits) = **3,500-6,000 credits per scrape**. Bound listing spend by lowering `max_pages` or trimming the country's city seed.
+**Why split:** ScrapingBee `stealth_proxy` can reach `/biz/<slug>` (verified — 200 OK, 1.8 MB HTML in the original probe) but CANNOT reach `/search` (verified — 100% timeout, 5/5 in the 2026-05-18 smoke test). Fusion is the only way into Yelp's listing data without burning credits on a service that doesn't work.
+
+**Cost model:** ~30 Fusion calls (free) + ~30-60 ScrapingBee profile fetches at 75 cr = **2,250-4,500 credits per scrape**.
 
 ---
 

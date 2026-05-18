@@ -106,24 +106,24 @@ All under `tools/scraper/`:
 
 ### Yelp (live — plugin)
 
-**Plugin:** `tools/scraper/platforms/yelp.py`. **Direct Playwright is 403** (PerimeterX). ScrapingBee `stealth_proxy` end-to-end:
+**Plugin:** `tools/scraper/platforms/yelp.py`. **Direct Playwright is 403** (PerimeterX). ScrapingBee `stealth_proxy` reaches `/biz/<slug>` profiles BUT NOT `/search` (smoke-tested 2026-05-18 — 100% timeout). Hybrid strategy:
 
 | Stage | Method | Cost |
 |---|---|---|
-| Listing | `https://www.yelp.com/search?find_desc=<cat>&find_loc=<city>&start=<offset>` via ScrapingBee `stealth_proxy` | 75 credits/page |
+| Listing | `https://api.yelp.com/v3/businesses/search` via Yelp Fusion API | Free (5,000/day) |
 | Profile enrichment | `https://www.yelp.com/biz/<slug>` via ScrapingBee `stealth_proxy` (premium_proxy is rejected) | 75 credits/page |
-| Taxonomy | Curated seed at `tools/scraper/data/yelp_categories.json` | Free (JSON load) |
+| Taxonomy | Curated seed at `tools/scraper/data/yelp_categories.json` (no Fusion taxonomy call) | Free (JSON load) |
 | Screenshot | Bundled with the ScrapingBee profile fetch | Free with proxy fetch |
 
-**Filter schema:** `country`, `category`, `max_rating`, `min_rating`, `min_review_count`, optional `max_pages`. Country fan-out from `tools/scraper/data/yelp_country_cities.json` (US, CA, UK, IE, AU, NZ).
+**Filter schema:** `country`, `category`, `max_rating`, `min_rating`, `min_review_count`. Country fan-out from `tools/scraper/data/yelp_country_cities.json` (13 markets: US, CA, UK, IE, AU, NZ + DE, FR, IT, ES, JP, BR, MX).
 
-**Listing card parsing:** card boundary is the nearest `<li>` or `[role="listitem"]` ancestor — critical to prevent cross-card rating leakage. Within the boundary: name from the `/biz/<slug>` anchor (excluding "N reviews" links), rating from `aria-label="X.X star rating"`, review count from regex `\b(\d+)\s+reviews?\b`.
+**Listing:** Fusion `/v3/businesses/search?location=<city>&categories=<slug>&limit=50&offset=<n>`. Walks up to 240 results per city (Fusion's hard cap). In-process rating + min_review_count filter drops businesses below threshold BEFORE the paid profile fetch.
 
 **Profile parsing gotcha:** Yelp wraps the business website link in a redirect (`/biz_redir?url=...`). Unwrap and URL-decode the `url=` parameter.
 
-**Required env:** `SCRAPINGBEE_API_KEY` only. Fusion API is NOT used — the free tier proved too restrictive in practice and the operator chose predictable ScrapingBee cost over Fusion quota anxiety. See the 2026-05-18 addendum in `docs/superpowers/specs/2026-05-15-yelp-platform-design.md`.
+**Required env:** `YELP_API_KEY` (free at https://docs.developer.yelp.com/) + `SCRAPINGBEE_API_KEY`.
 
-**Cost model:** 6-city × 5-page fan-out = 30 listing fetches (~2,250 cr) + ~30-60 post-filter profile fetches (~2,250-4,500 cr) ≈ **3,500-6,000 credits per scrape**. Bound listing spend by lowering `max_pages` or trimming the country's city seed.
+**Cost model:** ~30 Fusion calls per scrape (free) + ~30-60 post-filter profile fetches (~2,250-4,500 cr) = **2,250-4,500 credits per scrape**.
 
 ---
 
