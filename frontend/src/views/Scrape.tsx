@@ -99,7 +99,7 @@ export default function Scrape() {
       <SectionHeader
         title="Lead Scraping"
         accent="Dashboard"
-        subtitle="Configure and execute high-performance lead extraction from Trustpilot."
+        subtitle="Configure and execute high-performance lead extraction from review and social platforms."
         actions={
           <Pill variant="brand" size="md" className="!text-[10px]">
             Powered by EC2 Worker (Singapore)
@@ -117,7 +117,7 @@ export default function Scrape() {
                 className="text-xl font-extrabold text-on-surface"
                 style={{ fontFamily: 'Manrope, sans-serif' }}
               >
-                Scrape Trustpilot
+                New Scrape
               </h3>
             }
             actions={

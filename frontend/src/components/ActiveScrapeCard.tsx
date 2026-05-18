@@ -38,6 +38,7 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
   const [completedAt, setCompletedAt] = useState<string | null>(initialJob?.completed_at ?? null);
   const [country, setCountry] = useState<string>(initialJob?.country ?? '');
   const [category, setCategory] = useState<string>(initialJob?.category ?? '');
+  const [platform, setPlatform] = useState<string | undefined>(initialJob?.platform);
 
   const statusRef = useRef<ScrapeJob['status']>(status);
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -48,10 +49,11 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
     const es = new EventSource(`${baseUrl}/api/scrape/${jobId}/status`);
 
     es.onmessage = (event) => {
-      const data = JSON.parse(event.data) as ScrapeProgress & { status?: string; country?: string; category?: string; started_at?: string; completed_at?: string };
+      const data = JSON.parse(event.data) as ScrapeProgress & { status?: string; platform?: string; country?: string; category?: string; started_at?: string; completed_at?: string };
 
       if (data.stage === 'current') {
         const jobStatus = data.status as ScrapeJob['status'];
+        if (data.platform) setPlatform(data.platform);
         if (data.country) setCountry(data.country);
         if (data.category) setCategory(data.category);
         if (data.started_at) setStartedAt(data.started_at);
@@ -226,6 +228,7 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
         error={error}
         failedCount={failedCount}
         liveJob={liveJob}
+        platform={platform}
         startedAt={startedAt}
         completedAt={completedAt}
         onCancel={status === 'running' ? onCancel : undefined}

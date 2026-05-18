@@ -18,12 +18,26 @@ interface Props {
    *  in-memory progress array. Without this, the cards drop to 0/0/0 and
    *  the user sees "Enriching..." with no numbers behind it. */
   liveEnrich?: { total: number; found: number; failed: number } | null;
+  /** Which scraping platform this job belongs to. Used to label the
+   *  "emails from the profile page" stat correctly (was hardcoded
+   *  "From Trustpilot" pre-multi-platform). Undefined treated as Trustpilot
+   *  for backwards-compat with old SSE payloads. */
+  platform?: string;
   failedCount?: number;
   startedAt?: string | null;
   completedAt?: string | null;
   onCancel?: () => void;
   onRetryFailed?: () => void;
 }
+
+// Display name for the "emails listed on the profile page" stat card.
+// Each scraping platform calls its profile something different; the
+// underlying lead column is the same.
+const PLATFORM_PROFILE_LABEL: Record<string, string> = {
+  trustpilot: 'From Trustpilot',
+  tripadvisor: 'From TripAdvisor',
+  yelp: 'From Yelp',
+};
 
 interface PhaseDef {
   key: string;
@@ -77,12 +91,15 @@ export default function JobProgress({
   error,
   liveJob,
   liveEnrich,
+  platform,
   failedCount = 0,
   startedAt,
   completedAt,
   onCancel,
   onRetryFailed,
 }: Props) {
+  const profileLabel =
+    PLATFORM_PROFILE_LABEL[(platform || 'trustpilot').toLowerCase()] ?? 'From profile page';
   const [cancelling, setCancelling] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [now, setNow] = useState(() => Date.now());
@@ -343,7 +360,7 @@ export default function JobProgress({
               accent="#004b7f"
             />
             <Card
-              label="From Trustpilot"
+              label={profileLabel}
               value={summary.emailsCaptured}
               accent="#006630"
               hint="emails listed on the profile page"
