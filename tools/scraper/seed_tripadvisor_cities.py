@@ -4,6 +4,12 @@ Offline seeder for tripadvisor_cities.
 Walks each country's geographic tree on TripAdvisor and extracts every
 linked city: geo_id, slug, display name. UPSERTs into Supabase.
 
+The v1 limitation noted in commit 364aa1d (seeder only walked ~1 level
+deep) was resolved by the hybrid 2-pass walk that landed in dae9767.
+Big countries (US, FR, IT, DE) now seed at 5–10× the page-1 count.
+Re-run per-country once a quarter or whenever the TripAdvisor scrape
+shows thin city coverage; the upsert is idempotent.
+
 HYBRID WALK STRATEGY
 
   TA's `Tourism-g{geo}-{slug}-Vacations.html` page only lists ~30 "Popular

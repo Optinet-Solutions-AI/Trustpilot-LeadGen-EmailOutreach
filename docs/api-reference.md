@@ -156,7 +156,7 @@ Create a campaign and optionally assign leads.
 ```json
 {
   "name": "Germany Casino Outreach",
-  "templateSubject": "Your Trustpilot score needs attention",
+  "templateSubject": "Your online reputation needs attention",
   "templateBody": "<p>Hi {{company_name}}, ...</p>",
   "includeScreenshot": true,
   "filterCountry": "DE",
@@ -271,7 +271,9 @@ The template engine replaces `{{token}}` before sending.
 |-------|--------|
 | `{{company_name}}` | `lead.company_name` |
 | `{{website_url}}` | `lead.website_url` |
-| `{{trustpilot_url}}` | `lead.trustpilot_url` |
+| `{{trustpilot_url}}` | `lead.trustpilot_url` (legacy; Trustpilot only) |
+| `{{profile_url}}` | `lead_platform_presences.profile_url` for the platform that surfaced this lead |
+| `{{platform}}` | which platform the lead came from (e.g. `yelp`, `tripadvisor`) |
 | `{{primary_email}}` | `lead.primary_email` |
 | `{{country}}` | `lead.country` |
 | `{{category}}` | `lead.category` |

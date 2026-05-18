@@ -20,9 +20,14 @@ NETWORK STRATEGY
 DOM EXPECTATIONS
 
   TripAdvisor's HTML changes frequently. Selectors below are based on
-  the current SSR markup that ScrapingBee returns. Markers tagged
-  `# TODO(tripadvisor):` are the spots most likely to need iteration
-  if the markup drifts.
+  the current SSR markup that ScrapingBee returns (last verified
+  2026-05-13). The parser favors stable signals in this order:
+    1. JSON-LD `schema.org/LocalBusiness` (canonical, survives redesigns)
+    2. `data-automation="bubbleRatingValue"` for rating
+    3. `data-automation$="-card-title"` for listing cards
+    4. Last-resort: legacy `class*="bubble_XX"` and `aria-label*="of 5"`
+  If a smoke run produces parser failures (FAILED:profile|...|parser_*),
+  prefer adding new JSON-LD shapes over more DOM selectors.
 
 NETWORK FALLBACK
 

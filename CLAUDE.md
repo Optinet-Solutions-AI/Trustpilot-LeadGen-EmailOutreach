@@ -1,19 +1,21 @@
-# CLAUDE.md — Trustpilot Lead Gen & CRM Email Outreach
+# CLAUDE.md — Multi-Platform Lead Gen & CRM Email Outreach
+
+> Repo dir is `TRUSPILOT LEAD GEN AND EMAIL OUTREACH` and the Cloud Run service is `trustpilot-crm` — both names are **legacy** and intentionally unchanged. The system itself is platform-agnostic.
 
 ---
 
 ## Project Overview
 
-A full-stack lead generation and CRM system that scrapes low-rated companies from Trustpilot, enriches their contact data, verifies emails, manages leads through a pipeline, and runs personalized cold outreach campaigns via multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
+A full-stack lead generation and CRM system that scrapes companies from **any platform** — review sites (Trustpilot, Yelp, TripAdvisor — live) and social platforms (Facebook Pages/Groups, Instagram — planned, with post/group keyword search and post-author capture). Each platform is a plugin behind a single `BasePlatformScraper` contract; scraped leads are enriched, verified, managed through a pipeline, and contacted via personalized cold outreach campaigns over multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
 
-**Business purpose:** Sell reputation management services to companies with poor Trustpilot ratings. Brand: **OptiRate** / optiratesolutions.com.
+**Business purpose:** Sell reputation management & lead-gen services to small/mid businesses surfaced from review and social platforms. Brand: **OptiRate** / optiratesolutions.com.
 
 - **Frontend:** React + Vite + Tailwind CSS (port 5173) — deployed on Vercel
-- **Backend / API:** Node.js (Express) with TypeScript (port 3001) — deployed on Google Cloud Run (`trustpilot-crm`)
-- **Database:** Supabase (PostgreSQL, 8 tables)
+- **Backend / API:** Node.js (Express) with TypeScript (port 3001) — deployed on Google Cloud Run (`trustpilot-crm` — legacy service name)
+- **Database:** Supabase (PostgreSQL, 8+ tables including `lead_platform_presences` for multi-platform lead identity)
 - **Email Sending:** Multi-provider via `email_accounts` table — Gmail OAuth, SMTP (Bluehost/Titan, DreamHost, generic), and Gmail app-password. `EMAIL_PLATFORM=none` (no Instantly). Each account carries its own `daily_cap`/`hourly_cap` and DNS status (MX/SPF/DMARC).
-- **Scraper Tools:** Python + Playwright (headless Chromium) + playwright-stealth
-- **Email Verify:** ZeroBounce (mock mode available)
+- **Scraper Tools:** Python plugin registry (`tools/scraper/platforms/`) — Playwright + stealth (Trustpilot), ScrapingBee `stealth_proxy` (TripAdvisor, Yelp profiles), Yelp Fusion API (Yelp listings). Social platforms (planned) will use logged-in undetected-chromium + residential proxy + per-account session store.
+- **Email Verify:** ZeroBounce primary → MillionVerifier (Tier 2, on `unknown`) → Hunter (Tier 3, last resort)
 - **AI:** Google Gemini API (template generation)
 
 ---
@@ -21,19 +23,27 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
 ## How the App Works
 
 ```
-1. User opens CRM dashboard → navigates to Scrape page
+1. User opens CRM dashboard → navigates to Scrape page → picks a platform
    ↓
-2. Selects Country, Category, Star Rating range → clicks "Start Scrape"
+2. The page renders the platform's filter_schema dynamically (Trustpilot needs
+   country+category+rating; TripAdvisor needs location+listing_type+rating;
+   Yelp needs country+category+rating+min_review_count; etc.) → user fills it
+   in and clicks "Start Scrape"
    ↓
-3. Frontend calls POST /api/scrape → API creates job, spawns Python scrapers
+3. Frontend calls POST /api/scrape {platform, filters, max_results} → API
+   creates a scrape_jobs row, spawns the unified tools/scraper/run.py with
+   --platform <name> --action list|enrich
    ↓
-4. scrape_category.py paginates Trustpilot, filters by rating
+4. The platform plugin's scrape_listing(filters) paginates listing pages
+   and applies the rating/review filters → returns profile stubs
    ↓
-5. scrape_profile.py visits each /review/<slug> → extracts Name, URL, Email, Phone
+5. The plugin's enrich_profiles(stubs) visits each profile, pulls
+   {company_name, website_url, platform_email, phone, screenshot} →
+   takes screenshots → uploads to Supabase Storage
    ↓
-6. [Optional] scrape_website.py visits company sites → finds primary email
+6. [Optional] scrape_website.py visits company sites → finds website_email
    ↓
-7. upsert_leads.py saves all leads to Supabase
+7. upsert_leads.py writes the lead + lead_platform_presences(platform, profile_url) row
    ↓
 8. User manages leads in Table or Kanban pipeline view
    ↓
@@ -65,20 +75,20 @@ A full-stack lead generation and CRM system that scrapes low-rated companies fro
 └──────┬───────────────┬───────┘
        │               │
        ▼               ▼
-┌───────────┐    ┌──────────────────────────────┐
-│ Python    │    │ Email Layer (multi-provider) │
-│ Scrapers  │    │ campaign-scheduler.ts        │
-│ Playwright│    │ → Gmail OAuth / SMTP /       │
-│ + Stealth │    │   app-password per account   │
-└───────────┘    │   (email_accounts table)     │
-                 └──────────────────────────────┘
+┌──────────────────────────┐  ┌──────────────────────────────┐
+│ Platform Plugins (Py)    │  │ Email Layer (multi-provider) │
+│ Trustpilot / TripAdvisor │  │ campaign-scheduler.ts        │
+│ Yelp / [FB/IG planned]   │  │ → Gmail OAuth / SMTP /       │
+│ subclass                 │  │   app-password per account   │
+│ BasePlatformScraper      │  │   (email_accounts table)     │
+└──────────────────────────┘  └──────────────────────────────┘
 ```
 
 ### Golden Rules
 1. **Frontend is DUMB** — display data and fire actions only; zero business logic
 2. **API is the BRAIN** — all scraping orchestration, filtering, and enrichment logic
 3. **Database is the MEMORY** — Supabase is the single source of truth
-4. **Tools are atomic** — each Python script does one job; API orchestrates them
+4. **Platform plugin contract is the seam** — every scraping platform subclasses `BasePlatformScraper` at `tools/scraper/platforms/base.py` and registers itself in `platforms/__init__.py`. Adding a platform never edits the orchestrator.
 5. **Adapter pattern for email** — swap providers by changing `EMAIL_PLATFORM` env var
 6. **Test flight first** — NEVER send a live campaign without a successful test flight
 
@@ -102,13 +112,25 @@ trustpilot-leadgen/
 │
 ├── tools/                             ← Python scripts (WAT execution layer)
 │   ├── scraper/
-│   │   ├── browser_utils.py
-│   │   ├── scrape_category.py
-│   │   ├── scrape_profile.py
-│   │   └── scrape_website.py
+│   │   ├── browser_utils.py           ← stealth Playwright launch, safe_goto, popup dismissal
+│   │   ├── tls_fetch.py               ← curl_cffi TLS fingerprint fallback
+│   │   ├── scrape_category.py         ← legacy Trustpilot category scraper
+│   │   ├── scrape_profile.py          ← legacy Trustpilot profile scraper
+│   │   ├── scrape_website.py          ← platform-agnostic website email enrichment
+│   │   ├── run.py                     ← unified plugin entry point: --platform X --action list|enrich|discover-taxonomy
+│   │   ├── seed_tripadvisor_cities.py ← hybrid 2-pass city seeder
+│   │   ├── platforms/                 ← plugin registry
+│   │   │   ├── base.py                ← BasePlatformScraper ABC
+│   │   │   ├── __init__.py            ← PLATFORMS dict + get_platform()
+│   │   │   ├── trustpilot.py
+│   │   │   ├── tripadvisor.py
+│   │   │   ├── yelp.py
+│   │   │   └── _social_base.py        ← SocialPlatformScraper ABC (planned platforms)
+│   │   ├── shared/                    ← shared helpers (scrapingbee, yelp_fusion, etc.)
+│   │   └── data/                      ← seed JSON (tripadvisor_country_geo, yelp_country_cities)
 │   └── db/
 │       ├── supabase_client.py
-│       └── upsert_leads.py
+│       └── upsert_leads.py            ← splits Trustpilot legacy path vs _upsert_nontrustpilot_lead
 │
 ├── server/                            ← Express + TypeScript backend
 │   └── src/
@@ -172,7 +194,10 @@ trustpilot-leadgen/
 │   └── frontend-components.md
 │
 └── workflows/
-    └── scrape_trustpilot.md
+    ├── scrape_review_platform.md      ← generic SOP for any review-platform plugin
+    ├── scrape_trustpilot.md           ← Trustpilot-specific notes
+    ├── scrape_tripadvisor.md          ← TripAdvisor-specific notes
+    └── scrape_yelp.md                 ← Yelp-specific notes
 ```
 
 ---
@@ -194,6 +219,7 @@ trustpilot-leadgen/
 | `EMAIL_MAX_DELAY` | Global max ms between sends (per-account cap takes precedence) | `90000` |
 | `PLAYWRIGHT_HEADLESS` | Headless browser in prod | `true` |
 | `PYTHON_PATH` | Python executable | `/usr/bin/python3` |
+| `SCRAPINGBEE_API_KEY` | Required for TripAdvisor (always) and Yelp end-to-end (both `/search` listing AND `/biz/<slug>` profile via `stealth_proxy` — 75 credits/page). Sign up at https://scrapingbee.com | set |
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
@@ -202,26 +228,40 @@ trustpilot-leadgen/
 
 ---
 
-## Database Schema (Supabase — 8 Tables)
+## Database Schema (Supabase)
 
-### `leads`
+The schema is in a transitional state: a legacy `leads` table (Trustpilot-shaped, denormalized) coexists with a multi-platform `lead_platform_presences` table introduced by migration 032. Trustpilot still keys on `leads.trustpilot_url`; every other platform keys on `lead_platform_presences(platform, profile_url)`. Phase 2+ work will cut Trustpilot over and drop the legacy column.
+
+### `leads` (lead identity)
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | uuid PK | |
 | `company_name` | text | |
-| `trustpilot_url` | text UNIQUE | |
+| `trustpilot_url` | text UNIQUE NULLABLE | **Legacy** — only Trustpilot leads still write this; Yelp/TripAdvisor use `lead_platform_presences` |
 | `website_url` | text | |
-| `trustpilot_email` | text | |
-| `website_email` | text | |
-| `primary_email` | text | Resolved: trustpilot > website (skip a source whose `*_email_status` is `invalid`) |
+| `trustpilot_email` | text | Legacy — Trustpilot only |
+| `website_email` | text | Email scraped from company website (platform-agnostic) |
+| `primary_email` | text | Resolved: platform > website (skip a source whose `*_email_status` is `invalid`) |
 | `phone` | text | |
 | `country` | text | |
 | `category` | text | |
-| `star_rating` | real | |
-| `screenshot_path` | text | Public Supabase Storage URL |
+| `star_rating` | real | Denormalized for Trustpilot — platform-specific ratings live on `lead_platform_presences.rating` |
+| `screenshot_path` | text | Denormalized — canonical screenshots live on `lead_platform_presences.screenshot_path` |
 | `email_verified` | boolean | |
 | `verification_status` | text | `valid`/`invalid`/`catch-all`/`unknown` |
 | `outreach_status` | text | `new`/`contacted`/`replied`/`converted`/`lost` |
+
+### `lead_platform_presences` (multi-platform identity — migration 032)
+| Column | Type | Notes |
+|--------|------|-------|
+| `lead_id` | uuid FK → leads | |
+| `platform` | text | `trustpilot` / `tripadvisor` / `yelp` / future `facebook` / `instagram` |
+| `profile_url` | text | Canonical platform profile URL |
+| `rating` | real | Per-platform rating |
+| `platform_email` | text | Email scraped from the platform profile |
+| `screenshot_path` | text | Public Supabase Storage URL |
+| `scraped_at` | timestamp | |
+| **Unique:** | `(platform, profile_url)` | |
 
 ### `campaigns`
 | Column | Type | Notes |
@@ -345,14 +385,38 @@ See `docs/deployment.md` for complete reference.
 - Lead `outreach_status` enum: `new`/`contacted`/`replied`/`converted`/`lost`
 - `campaign_leads.status` enum: `pending`/`sent`/`opened`/`replied`/`bounced`
 - `EmailPlatformAdapter` interface in `types.ts` — all adapters must implement it exactly
+- `BasePlatformScraper` contract in `tools/scraper/platforms/base.py` — all platform plugins must implement it exactly. Social platforms add the `SocialPlatformScraper` subclass at `_social_base.py`.
+- `lead_platform_presences(platform, profile_url)` unique key — canonical multi-platform lead identity
 
 ---
 
 ## Known Constraints
 
-- Trustpilot blocks aggressive scrapers — use 2-5s randomized delays
-- Playwright required — Trustpilot pages are JS-rendered
-- ZeroBounce free tier: 100 credits/month
+### Trustpilot
+- Aggressive scrapers get rate-limited — use 2-5s randomized delays
+- Pages are JS-rendered — Playwright required (plus playwright-stealth)
+- Legacy 3-script chain (`scrape_category.py` → `scrape_profile.py` → `discover_taxonomy.py`); not yet migrated to the plugin pattern
+
+### TripAdvisor
+- Direct Playwright is 403'd by Cloudflare — `SCRAPINGBEE_API_KEY` is mandatory, `stealth_proxy` tier only
+- Parsing leans on JSON-LD `schema.org/LocalBusiness`; DOM-fallback selectors drift over time
+- City fan-out via `tripadvisor_cities` table (seed coverage is ~1-2 levels deep per country; hand-add cities if a country's seed is thin)
+
+### Yelp
+- Direct Playwright is 403 (PerimeterX). Listing AND profile both go through **ScrapingBee `stealth_proxy`** (75 credits/page); `premium_proxy` is rejected with 500.
+- Listing fetches `https://www.yelp.com/search?find_desc=<category>&find_loc=<city>&start=<offset>`. Pagination caps at 5 pages/city by default (`filters.max_pages` overrides).
+- Country fan-out via `tools/scraper/data/yelp_country_cities.json` (US, CA, UK, IE, AU, NZ in v1).
+- Category dropdown comes from a curated seed at `tools/scraper/data/yelp_categories.json` (no Fusion API). Add verticals by editing that file and re-running taxonomy refresh.
+- In-process filter applies rating range + min_review_count BEFORE profile enrichment to bound credit spend.
+
+### Social platforms (planned — Facebook, Instagram, FB Groups)
+- Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)
+- Per-account daily caps + residential proxies + undetected-chromium to avoid bans
+- Captcha checkpoints are routine; the in-app social-account recovery UI (planned) is how operators resolve them
+- Lead model includes post authors (DM target) and group admins, not just page owners
+
+### Email
+- ZeroBounce free tier: 100 credits/month; MillionVerifier free: 1000/mo; Hunter free: 50 calls/mo
 - Connected mailbox accounts (Gmail OAuth, Bluehost/Titan SMTP, DreamHost, app-password) are all managed in-app via the `email_accounts` table. Personal-provider addresses (Gmail/Yahoo/Outlook/etc.) should be used only as custom-domain aliases — sending bulk cold mail directly from free Gmail inboxes is a spam trap.
 - Warmup: start at 10–20 emails/day per account, ramp up over 2–4 weeks. Each account has its own `daily_cap`/`hourly_cap` — respect them per-account, not globally.
 - Deliverability requires MX + SPF + DMARC configured on the sending domain. The Email Accounts page shows per-account DNS badges; fix red badges before sending volume.
@@ -370,7 +434,8 @@ See `docs/deployment.md` for complete reference.
 - Type-check before deploying: `npx tsc --noEmit` in both `/server` and `/frontend`
 
 ### Don't
-- Don't call Trustpilot from the frontend — always go through the API
+- Don't call any scraping platform (Trustpilot, Yelp, TripAdvisor, …) from the frontend — always go through the API
+- Don't bypass the `BasePlatformScraper` contract — every new platform is a subclass + registry entry, not a one-off script
 - Don't store emails or API keys in client-side state
 - Don't skip the test flight before a live campaign
 - Don't commit `.env`, `credentials.json`, or `token.json`
@@ -436,7 +501,9 @@ After every set of changes, output this block at the end of your response (copy-
 | Type-check API | `cd server && npx tsc --noEmit` |
 | Type-check frontend | `cd frontend && npx tsc --noEmit` |
 | Deploy backend | `powershell -ExecutionPolicy Bypass -Command "cd 'c:/Users/User/Desktop/TRUSPILOT LEAD GEN AND EMAIL OUTREACH'; gcloud run deploy trustpilot-crm --source . --region us-central1 --project=trustpilot-leadgen --quiet"` |
-| Run scraper manually | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country DE --category casino --max-rating 3.5` |
+| Run Trustpilot scraper (legacy) | `.venv/Scripts/python.exe tools/scraper/scrape_category.py --country DE --category casino --max-rating 3.5` |
+| Run plugin scraper (TripAdvisor/Yelp) | `.venv/Scripts/python.exe tools/scraper/run.py --platform yelp --action list --filters '{"country":"US","category":"plumbers","max_rating":3.5}'` |
+| Seed TripAdvisor cities | `.venv/Scripts/python.exe tools/scraper/seed_tripadvisor_cities.py --country US` |
 | Run migration 008 | `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;` (Supabase SQL editor) |
 
 <!-- gitnexus:start -->
