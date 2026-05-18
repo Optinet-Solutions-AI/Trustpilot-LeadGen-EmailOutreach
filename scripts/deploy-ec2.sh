@@ -87,6 +87,15 @@ sudo -u "$SCRAPER_USER" bash -c "cd '$REPO_DIR/server' && npm ci --no-audit --no
 log "npm run build..."
 sudo -u "$SCRAPER_USER" bash -c "cd '$REPO_DIR/server' && npm run build" >> "$LOG_FILE" 2>&1
 
+# Keep the Python venv in sync with requirements.txt. Idempotent — pip
+# no-ops on packages already at the requested version. If the venv path
+# doesn't exist (fresh box), skip silently and let an operator bootstrap
+# it manually.
+if [[ -x "$REPO_DIR/.venv/bin/pip" ]]; then
+    log "pip install -r requirements.txt..."
+    sudo -u "$SCRAPER_USER" "$REPO_DIR/.venv/bin/pip" install --quiet --disable-pip-version-check -r "$REPO_DIR/requirements.txt" >> "$LOG_FILE" 2>&1
+fi
+
 log "systemctl restart $SERVICE_NAME..."
 systemctl restart "$SERVICE_NAME"
 

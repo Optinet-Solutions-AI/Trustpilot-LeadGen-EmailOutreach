@@ -11,3 +11,13 @@ requests>=2.31.0
 # Pre-built wheels are available for Windows / macOS / manylinux, so pip install
 # does not need a C toolchain in normal environments.
 curl_cffi>=0.7.0
+
+# BeautifulSoup + lxml — HTML parsing for the TripAdvisor and Yelp platform
+# plugins. Both import bs4 at module-top, so the package MUST be available
+# wherever tools.scraper.platforms is imported (Cloud Run for taxonomy
+# refresh; EC2 worker for actual scraping). Discovered missing on Cloud Run
+# 2026-05-18 when GET /api/scrape/taxonomy/refresh?platform=yelp returned
+# `ModuleNotFoundError: No module named 'bs4'` from the Python subprocess
+# spawned by server/src/services/taxonomy-discovery.ts.
+beautifulsoup4>=4.12.0
+lxml>=5.0.0

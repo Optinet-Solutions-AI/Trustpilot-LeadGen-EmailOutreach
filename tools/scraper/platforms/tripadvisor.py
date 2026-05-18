@@ -587,7 +587,119 @@ class TripAdvisorScraper(BasePlatformScraper):
         return enriched
 
     async def discover_taxonomy(self) -> dict:
-        # TripAdvisor has no global enumerable taxonomy — geographic, dynamic,
-        # and several million locations. The operator enters geo_id directly.
-        print("PROGRESS:taxonomy_skip:tripadvisor has no enumerable global taxonomy", flush=True)
-        return {'categories': [], 'countries': []}
+        """
+        Populate platform_countries from the seeded `tripadvisor_cities` table.
+
+        TripAdvisor itself has no enumerable global taxonomy (millions of
+        locations, no public categories endpoint). But the country dropdown
+        in the Scrape UI reads from `platform_countries`, so we mirror the
+        list of countries we've actually seeded cities for. Categories are
+        hardcoded in the manifest (Hotels / Restaurants / Attractions) so
+        the dropdown doesn't need a database entry — but we upsert them
+        anyway for consistency with how Trustpilot/Yelp populate their rows.
+        """
+        from datetime import datetime, timezone
+
+        print("PROGRESS:taxonomy_start:tripadvisor", flush=True)
+
+        try:
+            from tools.db.supabase_client import table
+
+            # Distinct country codes from seeded cities (active=true only)
+            result = (
+                table('tripadvisor_cities')
+                .select('country_code')
+                .eq('active', True)
+                .execute()
+            )
+            country_codes = sorted({
+                row['country_code']
+                for row in (result.data or [])
+                if row.get('country_code')
+            })
+
+            if not country_codes:
+                print(
+                    "PROGRESS:taxonomy_error:no_seeded_cities|run "
+                    "tools/scraper/seed_tripadvisor_cities.py first",
+                    flush=True,
+                )
+                return {'categories': [], 'countries': []}
+
+            countries = [
+                {'code': cc, 'name': _ISO_COUNTRY_NAMES.get(cc.upper(), cc.upper())}
+                for cc in country_codes
+            ]
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # Persist countries
+            print(f"PROGRESS:taxonomy_saving_countries:{len(countries)}", flush=True)
+            country_rows = [
+                {
+                    'platform': self.name,
+                    'code': c['code'],
+                    'name': c['name'],
+                    'last_seen_at': now_iso,
+                }
+                for c in countries
+            ]
+            (
+                table('platform_countries')
+                .upsert(country_rows, on_conflict='platform,code')
+                .execute()
+            )
+
+            # Mirror the hardcoded listing types as categories.
+            categories = [
+                {'slug': 'hotels',      'display_name': 'Hotels'},
+                {'slug': 'restaurants', 'display_name': 'Restaurants'},
+                {'slug': 'attractions', 'display_name': 'Attractions'},
+            ]
+            print(f"PROGRESS:taxonomy_saving_categories:{len(categories)}", flush=True)
+            cat_rows = [
+                {
+                    'platform': self.name,
+                    'slug': c['slug'],
+                    'parent_slug': None,
+                    'display_name': c['display_name'],
+                    'sort_order': i,
+                    'last_seen_at': now_iso,
+                }
+                for i, c in enumerate(categories)
+            ]
+            (
+                table('platform_categories')
+                .upsert(cat_rows, on_conflict='platform,slug')
+                .execute()
+            )
+
+            # taxonomy-discovery.ts parses PROGRESS:taxonomy_done:<cats>|<ctys>
+            print(
+                f"PROGRESS:taxonomy_done:{len(categories)}|{len(countries)}",
+                flush=True,
+            )
+            return {'categories': categories, 'countries': countries}
+        except Exception as e:  # noqa: BLE001
+            print(f"PROGRESS:taxonomy_error:{e}", flush=True)
+            return {'categories': [], 'countries': []}
+
+
+# ISO-3166-1 alpha-2 → display name. Covers every country code we've seeded
+# in tripadvisor_cities + every code listed in yelp_country_cities.json, plus
+# a generous tail of additional markets so a future seed-list expansion
+# doesn't need a code edit. Unknown codes fall back to the uppercased code.
+_ISO_COUNTRY_NAMES = {
+    'AE': 'United Arab Emirates', 'AR': 'Argentina', 'AT': 'Austria', 'AU': 'Australia',
+    'BE': 'Belgium', 'BG': 'Bulgaria', 'BR': 'Brazil', 'CA': 'Canada', 'CH': 'Switzerland',
+    'CL': 'Chile', 'CN': 'China', 'CO': 'Colombia', 'CR': 'Costa Rica', 'CY': 'Cyprus',
+    'CZ': 'Czech Republic', 'DE': 'Germany', 'DK': 'Denmark', 'EE': 'Estonia', 'EG': 'Egypt',
+    'ES': 'Spain', 'FI': 'Finland', 'FR': 'France', 'GB': 'United Kingdom', 'UK': 'United Kingdom',
+    'GR': 'Greece', 'HK': 'Hong Kong', 'HR': 'Croatia', 'HU': 'Hungary', 'ID': 'Indonesia',
+    'IE': 'Ireland', 'IL': 'Israel', 'IN': 'India', 'IS': 'Iceland', 'IT': 'Italy',
+    'JP': 'Japan', 'KR': 'South Korea', 'LT': 'Lithuania', 'LU': 'Luxembourg', 'LV': 'Latvia',
+    'MT': 'Malta', 'MX': 'Mexico', 'MY': 'Malaysia', 'NL': 'Netherlands', 'NO': 'Norway',
+    'NZ': 'New Zealand', 'PE': 'Peru', 'PH': 'Philippines', 'PL': 'Poland', 'PT': 'Portugal',
+    'RO': 'Romania', 'RU': 'Russia', 'SA': 'Saudi Arabia', 'SE': 'Sweden', 'SG': 'Singapore',
+    'SI': 'Slovenia', 'SK': 'Slovakia', 'TH': 'Thailand', 'TR': 'Turkey', 'TW': 'Taiwan',
+    'UA': 'Ukraine', 'US': 'United States', 'VN': 'Vietnam', 'ZA': 'South Africa',
+}
