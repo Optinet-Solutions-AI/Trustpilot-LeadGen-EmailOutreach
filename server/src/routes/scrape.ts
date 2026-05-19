@@ -407,8 +407,14 @@ router.get('/:id/status', async (req: Request, res: Response) => {
   res.flushHeaders();
 
   // Send current job status
+  let lastStatus: string | null = null;
+  let lastFound = -1;
+  let lastScraped = -1;
   try {
     const job = await getJob(jobId);
+    lastStatus = job.status;
+    lastFound = job.total_found ?? 0;
+    lastScraped = job.total_scraped ?? 0;
     res.write(`data: ${JSON.stringify({ stage: 'current', ...job })}\n\n`);
 
     if (job.status === 'completed' || job.status === 'failed') {
@@ -436,7 +442,43 @@ router.get('/:id/status', async (req: Request, res: Response) => {
   };
 
   scrapeEvents.on('progress', handler);
-  req.on('close', () => scrapeEvents.off('progress', handler));
+
+  // DB-poll fallback for jobs running on remote workers (EC2). The
+  // in-process EventEmitter only fires for jobs executed on THIS API
+  // instance; an EC2-claimed job updates the DB row but never pings the
+  // emitter here, so SSE clients would see nothing until they reconnect.
+  // Poll the row every 2.5s and synthesize a 'current' event when status
+  // or counts change. Cheap (one row by PK) and bounded by req.on('close').
+  const dbPoll = setInterval(async () => {
+    try {
+      const job = await getJob(jobId);
+      const changed =
+        job.status !== lastStatus ||
+        (job.total_found ?? 0) !== lastFound ||
+        (job.total_scraped ?? 0) !== lastScraped;
+      if (changed) {
+        lastStatus = job.status;
+        lastFound = job.total_found ?? 0;
+        lastScraped = job.total_scraped ?? 0;
+        res.write(`data: ${JSON.stringify({ stage: 'current', ...job })}\n\n`);
+      }
+      if (job.status === 'completed' || job.status === 'failed') {
+        // Mirror the terminal-event close timing used by the EventEmitter
+        // path so the final 'current' event flushes before res.end().
+        setTimeout(() => {
+          try { res.end(); } catch {}
+        }, 1000);
+        clearInterval(dbPoll);
+      }
+    } catch {
+      // transient supabase error — try again next tick
+    }
+  }, 2500);
+
+  req.on('close', () => {
+    scrapeEvents.off('progress', handler);
+    clearInterval(dbPoll);
+  });
 });
 
 // POST /api/scrape/:id/cancel — cancel a running scrape job

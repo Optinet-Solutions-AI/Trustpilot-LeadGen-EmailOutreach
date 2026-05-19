@@ -400,12 +400,17 @@ class YelpScraper(BasePlatformScraper):
             'max': 5.0,
             'step': 0.5,
         },
+        # Default lowered from 5 to 1 after 2026-05-19 incident: a BR
+        # roofing scrape found 337 businesses in Fusion but kept 0 because
+        # every result had <5 reviews. Yelp coverage outside US/UK is
+        # sparse — the typical BR/MX/JP listing has 0-1 reviews. Operator
+        # can still raise the bar in the UI.
         {
             'name': 'min_review_count',
             'type': 'number',
             'label': 'Min review count',
             'required': False,
-            'default': 5,
+            'default': 1,
             'min': 1,
             'max': 1000,
             'step': 1,
@@ -458,6 +463,7 @@ class YelpScraper(BasePlatformScraper):
         results: list[dict] = []
         seen_urls: set[str] = set()
         global_page = 0  # SSE event counter — frontend's "page N" label
+        total_seen_pre_filter = 0  # counts every Fusion result, for diagnostics
 
         for city_idx, city in enumerate(cities):
             global_page += 1
@@ -488,6 +494,7 @@ class YelpScraper(BasePlatformScraper):
             )
 
             page_kept = 0
+            total_seen_pre_filter += len(businesses)
             for b in businesses:
                 rating = b.get('rating')
                 review_count = int(b.get('review_count') or 0)
@@ -548,6 +555,23 @@ class YelpScraper(BasePlatformScraper):
                 return results
 
         print(f"\nTotal: {len(results)} Yelp businesses matched filter.", flush=True)
+        # Diagnostic for the "Fusion returned data but everything got filtered
+        # out" case. Common in low-coverage markets (BR/MX/JP) where most
+        # listings have rating=0 or rating=5.0 with <5 reviews. Without this
+        # event the operator sees "completed, 0 found" and can't tell whether
+        # Yelp had no data or the filter was too strict. Surfaced as a
+        # FAILED row so it shows up in the per-job Failures pane.
+        if total_seen_pre_filter > 0 and not results:
+            print(
+                f"FAILED:listing|yelp|filter_too_strict|"
+                f"Fusion returned {total_seen_pre_filter} businesses for "
+                f"{country}/{category} but 0 passed the filter "
+                f"(rating {min_rating}-{max_rating}, min_reviews "
+                f"{min_review_count}). Try widening max_rating to 5.0 and "
+                f"lowering min_review_count — Yelp coverage in {country} "
+                f"is thin and most listings have <5 reviews.",
+                flush=True,
+            )
         print(f"PROGRESS:category_done:{len(results)}", flush=True)
         return results
 

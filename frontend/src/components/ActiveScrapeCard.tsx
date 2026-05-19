@@ -115,8 +115,12 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
         if (realCategory) setCategory(realCategory);
         if (data.started_at) setStartedAt(data.started_at);
         if (data.completed_at) setCompletedAt(data.completed_at);
+        // Track pending → running too. Without this, an EC2-claimed job
+        // would stay visually 'pending' until terminal, because the
+        // EventEmitter on this API instance never fires (the worker
+        // lives in a different process).
+        if (jobStatus) setStatus(jobStatus);
         if (jobStatus === 'completed' || jobStatus === 'failed') {
-          setStatus(jobStatus);
           es.close();
         }
         return;
@@ -152,20 +156,38 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
       // We only force-close on terminal status.
     };
 
-    // Safety-net polling: catches DB-completion that SSE missed (e.g. SSE dropped while tab was inactive)
+    // Safety-net polling — the ONLY way this card sees live updates for
+    // jobs running on the remote EC2 worker (EC2 emits to its own in-process
+    // EventEmitter, which never reaches the API's SSE handler). Polls while
+    // the job is in any non-terminal state, including 'pending' (queued).
     const poll = setInterval(async () => {
-      if (statusRef.current !== 'running') return;
+      const cur = statusRef.current;
+      if (cur === 'completed' || cur === 'failed') return;
       try {
         const res = await api.get('/scrape');
         const jobs = res.data.data as ScrapeJob[];
         const j = jobs.find((row) => row.id === jobId);
         if (!j) return;
-        if (j.country && !country) setCountry(j.country);
-        if (j.category && !category) setCategory(j.category);
+        // Surface platform/country/category from the row in case the SSE
+        // current event hasn't landed yet (or this card was opened on a
+        // refresh after the worker already started).
+        if (j.platform && !platform) setPlatform(j.platform);
+        const f = (j.filters || null) as { country?: string; category?: string } | null;
+        const realCountry =
+          j.country && !j.country.startsWith('_') ? j.country : f?.country;
+        const realCategory =
+          j.category && j.category !== 'all' ? j.category : f?.category;
+        if (realCountry && !country) setCountry(realCountry);
+        if (realCategory && !category) setCategory(realCategory);
         if (j.started_at && !startedAt) setStartedAt(j.started_at);
         setLiveJob({ total_found: j.total_found ?? 0, total_scraped: j.total_scraped ?? 0 });
-        if (j.status === 'completed' || j.status === 'failed') {
+        // Mirror the DB status into local state — without this, a card
+        // initialised at 'pending' would never advance to 'running' for
+        // an EC2-claimed job.
+        if (j.status && j.status !== cur) {
           setStatus(j.status);
+        }
+        if (j.status === 'completed' || j.status === 'failed') {
           if (j.completed_at) setCompletedAt(j.completed_at);
           if (j.error) setError(j.error);
           es.close();
