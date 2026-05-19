@@ -22,6 +22,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/leads',                                 icon: 'grid_view',        label: 'Lead Matrix' },
   { href: '/leads?platform=trustpilot',             icon: 'workspace_premium',label: 'Trustpilot Leads',  platform: 'trustpilot' },
   { href: '/leads?platform=tripadvisor',            icon: 'travel_explore',   label: 'TripAdvisor Leads', platform: 'tripadvisor' },
+  { href: '/leads?platform=yelp',                   icon: 'storefront',       label: 'Yelp Leads',        platform: 'yelp' },
   { href: '/redirected-leads',                      icon: 'compare_arrows',   label: 'Redirected Leads' },
   { href: '/prospects',                             icon: 'how_to_reg',       label: 'Prospects' },
   { href: '/inbox',                                 icon: 'inbox',            label: 'Inbox' },
