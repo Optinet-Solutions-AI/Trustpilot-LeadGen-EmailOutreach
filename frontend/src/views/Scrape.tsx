@@ -47,7 +47,7 @@ const PLATFORM_FILTERS: Array<{ value: string | null; label: string }> = [
 export default function Scrape() {
   const {
     activeScrapes, jobs, jobsTotal, jobsPlatformFilter, setJobsPlatformFilter,
-    jobsLoading, loadMoreJobs, error,
+    jobsLoading, jobsPage, jobsPageSize, setJobsPage, error,
     startScrape, dismissScrape, fetchJobs, deleteJob, cleanupEmptyJobs,
   } = useScrape();
   const taxonomy = useTaxonomy();
@@ -279,7 +279,7 @@ export default function Scrape() {
                 Recent Scrape Jobs
               </h3>
               <span className="text-xs text-secondary font-medium">
-                {jobs.length} of {jobsTotal} loaded
+                {jobsTotal} job{jobsTotal === 1 ? '' : 's'} total
               </span>
             </div>
           }
@@ -428,21 +428,81 @@ export default function Scrape() {
             </table>
           </div>
 
-          {/* Load More */}
-          {jobs.length < jobsTotal && (
-            <div className="px-4 sm:px-6 py-4 border-t border-slate-100 flex justify-center">
-              <Button
-                variant="ghost"
-                size="md"
-                onClick={() => loadMoreJobs()}
-                loading={jobsLoading}
-              >
-                {jobsLoading
-                  ? 'Loading…'
-                  : `Load more (${jobsTotal - jobs.length} more)`}
-              </Button>
-            </div>
-          )}
+          {/* Pagination */}
+          {jobsTotal > jobsPageSize && (() => {
+            const totalPages = Math.max(1, Math.ceil(jobsTotal / jobsPageSize));
+            const firstIdx = (jobsPage - 1) * jobsPageSize + 1;
+            const lastIdx = Math.min(firstIdx + jobs.length - 1, jobsTotal);
+            // Compact page numbers: always show first, current ±1, last; ellipses elsewhere.
+            const pageNums: Array<number | 'gap'> = [];
+            const push = (n: number) => { if (!pageNums.includes(n)) pageNums.push(n); };
+            push(1);
+            for (let p = jobsPage - 1; p <= jobsPage + 1; p++) {
+              if (p > 1 && p < totalPages) push(p);
+            }
+            if (totalPages > 1) push(totalPages);
+            // Insert 'gap' markers where there's a jump > 1
+            const withGaps: Array<number | 'gap'> = [];
+            for (let i = 0; i < pageNums.length; i++) {
+              const cur = pageNums[i] as number;
+              if (i > 0) {
+                const prev = pageNums[i - 1] as number;
+                if (cur - prev > 1) withGaps.push('gap');
+              }
+              withGaps.push(cur);
+            }
+            return (
+              <div className="px-4 sm:px-6 py-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-xs text-secondary font-medium">
+                  Showing <span className="font-semibold text-on-surface">{firstIdx}–{lastIdx}</span> of{' '}
+                  <span className="font-semibold text-on-surface">{jobsTotal}</span>
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setJobsPage(jobsPage - 1)}
+                    disabled={jobsPage <= 1 || jobsLoading}
+                    className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    aria-label="Previous page"
+                  >
+                    ‹ Prev
+                  </button>
+                  {withGaps.map((p, i) =>
+                    p === 'gap' ? (
+                      <span key={`gap-${i}`} className="px-1 text-xs text-slate-400 select-none">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setJobsPage(p)}
+                        disabled={jobsLoading}
+                        className={
+                          'min-w-[32px] px-2 py-1.5 rounded-md text-xs font-semibold transition-colors ' +
+                          (p === jobsPage
+                            ? 'bg-[#b0004a] text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-slate-100')
+                        }
+                        aria-current={p === jobsPage ? 'page' : undefined}
+                      >
+                        {p}
+                      </button>
+                    ),
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setJobsPage(jobsPage + 1)}
+                    disabled={jobsPage >= totalPages || jobsLoading}
+                    className="px-2.5 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    aria-label="Next page"
+                  >
+                    Next ›
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </Card>
       )}
     </div>

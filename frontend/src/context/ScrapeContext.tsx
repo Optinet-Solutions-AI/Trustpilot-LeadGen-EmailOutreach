@@ -37,8 +37,12 @@ interface ScrapeContextValue {
   setJobsPlatformFilter: (platform: string | null) => void;
   /** Whether a load-more / refetch is currently in flight. */
   jobsLoading: boolean;
-  /** Append the next page of jobs to the existing list. Does nothing if all loaded. */
-  loadMoreJobs: () => Promise<void>;
+  /** Current 1-based page in the Recent Scrape Jobs table. */
+  jobsPage: number;
+  /** Fixed page size for the table. */
+  jobsPageSize: number;
+  /** Jump to a specific 1-based page in the table (replaces visible rows). */
+  setJobsPage: (page: number) => void;
   startScrape: (params: ScrapeParams) => Promise<string | null>;
   /** Remove a finished card from the stack. Does NOT cancel the job. */
   dismissScrape: (id: string) => void;
@@ -86,8 +90,9 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
   const [activeScrapes, setActiveScrapes] = useState<string[]>([]);
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
   const [jobsTotal, setJobsTotal] = useState(0);
-  const [jobsPlatformFilter, setJobsPlatformFilter] = useState<string | null>(null);
+  const [jobsPlatformFilter, setJobsPlatformFilterState] = useState<string | null>(null);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsPage, setJobsPageState] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
   // Synchronous lock so burst clicks can't fire duplicate POSTs in the
@@ -111,30 +116,32 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     writeStored(activeScrapes);
   }, [activeScrapes]);
 
-  // Page-aware fetch. `mode='replace'` re-fetches the first page (used by
-  // the background poller + platform-filter changes). `mode='append'` is
-  // used by loadMoreJobs() to paginate backwards through history.
-  const fetchJobsPage = useCallback(
-    async (mode: 'replace' | 'append') => {
+  // Page-aware fetch — replaces visible rows with the requested page slice.
+  // Used by every consumer: initial mount, background poller, platform-filter
+  // change, and explicit page navigation via setJobsPage().
+  const fetchJobsForPage = useCallback(
+    async (page: number, platform: string | null) => {
       try {
         setJobsLoading(true);
-        const offset = mode === 'append' ? jobs.length : 0;
+        const safePage = Math.max(1, page);
+        const offset = (safePage - 1) * JOBS_PAGE_SIZE;
         const params = new URLSearchParams();
         params.set('limit', String(JOBS_PAGE_SIZE));
         params.set('offset', String(offset));
-        if (jobsPlatformFilter) params.set('platform', jobsPlatformFilter);
+        if (platform) params.set('platform', platform);
         const res = await api.get(`/scrape?${params.toString()}`);
         const payload = res.data.data;
         // Backwards-compat: old API returned ScrapeJob[]; new returns {rows,total}
         const rows = (Array.isArray(payload) ? payload : payload?.rows ?? []) as ScrapeJob[];
         const total = Array.isArray(payload) ? rows.length : (payload?.total ?? rows.length);
 
-        setJobs((prev) => (mode === 'append' ? [...prev, ...rows] : rows));
+        setJobs(rows);
         setJobsTotal(total);
 
-        // Auto-promote any 'running' jobs into the card stack if they aren't
-        // already tracked. Picks up jobs created by other tabs / users /
-        // the EC2 worker.
+        // Auto-promote any 'running' jobs on the visible page into the card
+        // stack so the operator sees live progress. This is fine to do per-
+        // page because the worker writes status='running' whenever a job is
+        // claimed, regardless of where it falls in the paginated list.
         const running = rows.filter((j) => j.status === 'running').map((j) => j.id);
         if (running.length > 0) {
           setActiveScrapes((prev) => {
@@ -151,17 +158,39 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
         setJobsLoading(false);
       }
     },
-    [jobs.length, jobsPlatformFilter],
+    [],
   );
 
-  const fetchJobs = useCallback(() => fetchJobsPage('replace'), [fetchJobsPage]);
-  const loadMoreJobs = useCallback(() => fetchJobsPage('append'), [fetchJobsPage]);
+  // Public refetch — always re-pulls the CURRENT page. Used by the 5s
+  // background poller so an in-flight job's stats update without changing
+  // the operator's view.
+  const fetchJobs = useCallback(
+    () => fetchJobsForPage(jobsPage, jobsPlatformFilter),
+    [fetchJobsForPage, jobsPage, jobsPlatformFilter],
+  );
 
-  // Re-fetch from page 0 whenever the platform filter changes
-  useEffect(() => {
-    void fetchJobsPage('replace');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobsPlatformFilter]);
+  // Page navigation — wraps the state setter so navigation always triggers
+  // a fetch, and clamps to valid bounds.
+  const setJobsPage = useCallback(
+    (page: number) => {
+      const maxPage = Math.max(1, Math.ceil(jobsTotal / JOBS_PAGE_SIZE));
+      const clamped = Math.min(Math.max(page, 1), maxPage);
+      setJobsPageState(clamped);
+      void fetchJobsForPage(clamped, jobsPlatformFilter);
+    },
+    [fetchJobsForPage, jobsPlatformFilter, jobsTotal],
+  );
+
+  // Platform filter change → snap back to page 1 (otherwise the user could
+  // land on page 5 of a filter that only has 2 pages).
+  const setJobsPlatformFilter = useCallback(
+    (platform: string | null) => {
+      setJobsPlatformFilterState(platform);
+      setJobsPageState(1);
+      void fetchJobsForPage(1, platform);
+    },
+    [fetchJobsForPage],
+  );
 
   // Background jobs-list poller — runs continuously while the provider is mounted.
   // Cheap (one GET every 5s) and keeps the Recent Jobs table fresh.
@@ -320,7 +349,9 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
     jobsPlatformFilter,
     setJobsPlatformFilter,
     jobsLoading,
-    loadMoreJobs,
+    jobsPage,
+    jobsPageSize: JOBS_PAGE_SIZE,
+    setJobsPage,
     startScrape,
     dismissScrape,
     cancelJob,
