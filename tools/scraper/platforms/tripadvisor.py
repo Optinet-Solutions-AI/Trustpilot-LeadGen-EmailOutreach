@@ -424,6 +424,7 @@ class TripAdvisorScraper(BasePlatformScraper):
         max_pages = int(filters.get('max_pages', 30))
 
         results: list[dict] = []
+        empty_html_pages = 0  # diagnostic counter — see FAILED emit below
 
         for page_idx in range(max_pages):
             offset = page_idx * RESULTS_PER_PAGE
@@ -444,6 +445,20 @@ class TripAdvisorScraper(BasePlatformScraper):
                 render_js=True,
             )
             if not html:
+                # Without this FAILED row, a key-revoked / quota-exhausted
+                # state shows up as "completed, 0 found" with NO diagnostic
+                # rows in scrape_failures — operator has nowhere to look.
+                # Bug discovered 2026-05-19 when a DE/restaurants scrape ran
+                # for 6 minutes against a 401 ScrapingBee key and looked
+                # like a parser failure.
+                print(
+                    f"FAILED:listing|tripadvisor|empty_html|"
+                    f"ScrapingBee returned no HTML for {url} (page {page_idx + 1}). "
+                    f"Usually means SCRAPINGBEE_API_KEY is invalid/exhausted, "
+                    f"or the platform served a CAPTCHA-only response.",
+                    flush=True,
+                )
+                empty_html_pages += 1
                 print(f"  ScrapingBee returned no HTML for page {page_idx + 1}. Stopping pagination.")
                 break
 
