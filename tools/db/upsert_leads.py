@@ -202,8 +202,16 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
     # 2. Build the leads row. None values are stripped so we never blow
     #    away existing data with nulls on re-scrape (same convention as
     #    the trustpilot path below).
+    #
+    # country + category are populated here because `leads` is the table
+    # the Lead Matrix UI filters on. Without them, the 4 existing TA leads
+    # (and any future non-Trustpilot scrape) would land in `leads` with
+    # NULL country, and filtering by country='BR' would show nothing.
+    # Bug discovered 2026-05-19.
     leads_row = {
         'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
+        'country': lead.get('country'),
+        'category': lead.get('category'),
         'website_url': lead.get('website_url'),
         'phone': lead.get('phone'),
         'primary_email': lead.get('primary_email') or lead.get('website_email'),

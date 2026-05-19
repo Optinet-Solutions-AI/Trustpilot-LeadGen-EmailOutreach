@@ -46,6 +46,13 @@ async function processJob(job: ScrapeJob): Promise<void> {
     // runScrapeJob owns the heartbeat, progress events, and final status write.
     // It only throws on uncaught programming errors; expected failures are
     // captured into status='failed' inside the function.
+    //
+    // platform + filters are CRITICAL — without them, runScrapeJob defaults
+    // to platform='trustpilot' and routes the legacy Trustpilot pipeline at
+    // any non-Trustpilot job (e.g. a TripAdvisor scrape claimed by the EC2
+    // worker would run the legacy /review/<slug> scraper against TA URLs and
+    // save zero leads). Bug discovered 2026-05-19 when BR/TR TripAdvisor
+    // scrapes claimed by the worker showed total_scraped=0 / total_skipped=1.
     await runScrapeJob({
       jobId: job.id,
       country: job.country,
@@ -55,6 +62,8 @@ async function processJob(job: ScrapeJob): Promise<void> {
       enrich: job.enrich,
       verify: job.verify,
       source: job.source,
+      platform: job.platform,
+      filters: job.filters ?? undefined,
     });
     log(`finished job=${job.id}`);
   } catch (err) {
