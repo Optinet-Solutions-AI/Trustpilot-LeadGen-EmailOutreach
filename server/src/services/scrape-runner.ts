@@ -649,7 +649,12 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
           for (const row of cityRows) {
             const key = String(row.profile_url ?? '');
             if (key && !dedup.has(key)) {
-              dedup.set(key, { ...row, country: taCountry, city: city.name, city_geo_id: city.geo_id });
+              // category is set here so it lands on the `leads` row via
+              // _upsert_nontrustpilot_lead — without it the Lead Matrix's
+              // category filter (passed in the URL from the job card) drops
+              // freshly scraped TA leads on the floor. Bug discovered
+              // 2026-05-19 when 2/6 TA leads were invisible in the UI.
+              dedup.set(key, { ...row, country: taCountry, category: taCategory, city: city.name, city_geo_id: city.geo_id });
             }
           }
           emitProgress(jobId, 'city_done', `${city.geo_id}|${city.name}|${cityRows.length}`);
