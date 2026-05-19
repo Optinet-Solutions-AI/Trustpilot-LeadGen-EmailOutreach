@@ -158,14 +158,25 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
 
     // Safety-net polling — the ONLY way this card sees live updates for
     // jobs running on the remote EC2 worker (EC2 emits to its own in-process
-    // EventEmitter, which never reaches the API's SSE handler). Polls while
-    // the job is in any non-terminal state, including 'pending' (queued).
+    // EventEmitter, which never reaches the API's SSE handler). Also the
+    // ONLY update channel in production: the API Gateway in front of Cloud
+    // Run returns 502 on long-lived SSE streams (verified 2026-05-19), so
+    // the EventSource above never actually receives any events live —
+    // it just retries silently. Polls while the job is in any non-terminal
+    // state, including 'pending' (queued).
     const poll = setInterval(async () => {
       const cur = statusRef.current;
       if (cur === 'completed' || cur === 'failed') return;
       try {
+        // GET /api/scrape returns { data: { rows: [...], total: N } } —
+        // NOT a bare array. The previous code did `.find()` on the wrapper
+        // object, which throws TypeError, and the silent catch swallowed
+        // it on every single tick — i.e. the poll never updated ANYTHING
+        // for non-Trustpilot scrapes for any user, ever. Bug discovered
+        // 2026-05-19 while debugging a card stuck at 'pending' even though
+        // the EC2 worker had been running the job for 40+ seconds.
         const res = await api.get('/scrape');
-        const jobs = res.data.data as ScrapeJob[];
+        const jobs = (res.data?.data?.rows ?? []) as ScrapeJob[];
         const j = jobs.find((row) => row.id === jobId);
         if (!j) return;
         // Surface platform/country/category from the row in case the SSE
