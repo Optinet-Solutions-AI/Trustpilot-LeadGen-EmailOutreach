@@ -70,6 +70,10 @@ from tools.scraper.platforms.base import (
     FilterField,
     ProgressCallback,
 )
+from tools.scraper.shared.supabase_storage import (
+    supabase_storage_enabled,
+    upload_screenshot_bytes,
+)
 from tools.scraper.shared.yelp_fusion import (
     search_businesses_paged,
     yelp_fusion_enabled,
@@ -610,8 +614,14 @@ class YelpScraper(BasePlatformScraper):
 
                 detail = _extract_profile_detail(html)
 
+                # Screenshot: fetch from ScrapingBee, upload to Supabase
+                # Storage directly, and store the resulting PUBLIC URL on the
+                # lead. We also keep the local copy on disk (for debugging /
+                # the legacy scrape-runner upload step), but the row's
+                # screenshot_path is the public URL from this moment on so
+                # there's no two-step race with the post-enrich upload.
                 screenshot_path = ''
-                if screenshots_dir:
+                if screenshots_dir or supabase_storage_enabled():
                     png = await asyncio.to_thread(
                         fetch_screenshot_via_scrapingbee,
                         profile_url,
@@ -620,25 +630,48 @@ class YelpScraper(BasePlatformScraper):
                         render_js=True,
                     )
                     if png:
-                        try:
-                            screenshot_path = os.path.join(
-                                screenshots_dir, f"{slug_for_file}.png",
-                            )
-                            with open(screenshot_path, 'wb') as f:
-                                f.write(png)
-                        except OSError as e:
+                        # Local copy (best-effort; failure here is fine).
+                        if screenshots_dir:
+                            try:
+                                local_path = os.path.join(
+                                    screenshots_dir, f"{slug_for_file}.png",
+                                )
+                                with open(local_path, 'wb') as f:
+                                    f.write(png)
+                            except OSError as e:
+                                print(
+                                    f"    Yelp screenshot disk write failed for "
+                                    f"{slug_for_file}: {e}",
+                                    flush=True,
+                                )
+                        # Supabase Storage upload — the canonical path that
+                        # ends up in the DB. If this fails, the row gets no
+                        # screenshot_path (better than a dead local path).
+                        public_url = await asyncio.to_thread(
+                            upload_screenshot_bytes,
+                            png,
+                            f'yelp/{slug_for_file}.png',
+                        )
+                        if public_url:
+                            screenshot_path = public_url
+                        else:
                             print(
-                                f"    Yelp screenshot write failed for "
-                                f"{slug_for_file}: {e}",
+                                f"    Yelp screenshot upload returned no URL for "
+                                f"{slug_for_file}",
                                 flush=True,
                             )
-                            screenshot_path = ''
 
                 enriched = {**stub, 'platform': self.name}
-                if detail.get('company_name'):
+                # Fusion's stub.name is the canonical business name. The
+                # profile-page parser sometimes picks up section headers
+                # like "Business Photos" from Yelp's modern SPA markup, so
+                # only fall back to parsed name when Fusion didn't give us
+                # one (rare — Fusion always returns name).
+                stub_name = stub.get('name')
+                if stub_name:
+                    enriched['company_name'] = stub_name
+                elif detail.get('company_name'):
                     enriched['company_name'] = detail['company_name']
-                else:
-                    enriched.setdefault('company_name', stub.get('name'))
                 if detail.get('website_url'):
                     enriched['website_url'] = detail['website_url']
                 if detail.get('phone'):

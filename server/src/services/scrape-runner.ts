@@ -724,8 +724,16 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
     totalSaved = upsertResult.saved;
     emitProgress(jobId, 'checkpoint_done', `Saved ${totalSaved} leads`);
 
-    // ── Phase 4: upload local screenshots → Supabase Storage ─────
-    await uploadScreenshotsToStorage(screenshotsDir, enrichedOutput);
+    // ── Phase 4: screenshot upload ────────────────────────────────
+    // Non-Trustpilot plugins now upload PNGs directly inside
+    // enrich_profiles (see tools/scraper/shared/supabase_storage.py),
+    // so the rows already carry the public URL. Skip the post-enrich
+    // upload step for these platforms — running it would re-upload
+    // every PNG to a different in-bucket path and overwrite the
+    // correct URL with one in a different folder layout.
+    // The legacy Trustpilot path (runScrapeJobLegacy below) still
+    // calls uploadScreenshotsToStorage because the trustpilot scrapers
+    // haven't been migrated to the in-plugin upload yet.
 
     // ── Phase 5: optional website enrichment + final upsert ──────
     if (enrich) {

@@ -55,6 +55,10 @@ from tools.scraper.shared.scrapingbee import (
     fetch_via_scrapingbee_tiered,
     scrapingbee_enabled,
 )
+from tools.scraper.shared.supabase_storage import (
+    supabase_storage_enabled,
+    upload_screenshot_bytes,
+)
 
 
 # URL templates per listing type. (geo_id, location_slug, offset)
@@ -539,10 +543,14 @@ class TripAdvisorScraper(BasePlatformScraper):
 
                 detail = _extract_profile_detail(html)
 
-                # Screenshot — separate ScrapingBee call (still free, but uses
-                # another stealth_proxy unit). Skip if no screenshots_dir.
+                # Screenshot — fetch from ScrapingBee, upload to Supabase
+                # Storage directly, store the public URL on the row. Local
+                # copy is best-effort (kept for debugging). This atomic
+                # approach replaces the previous two-step path-matching dance
+                # that left 4/4 TripAdvisor leads with NULL screenshot_path
+                # in production (issue surfaced 2026-05-19).
                 screenshot_path = ''
-                if screenshots_dir:
+                if screenshots_dir or supabase_storage_enabled():
                     png = await asyncio.to_thread(
                         fetch_screenshot_via_scrapingbee,
                         profile_url,
@@ -551,13 +559,22 @@ class TripAdvisorScraper(BasePlatformScraper):
                         render_js=True,
                     )
                     if png:
-                        try:
-                            screenshot_path = os.path.join(screenshots_dir, f"{slug_for_file}.png")
-                            with open(screenshot_path, 'wb') as f:
-                                f.write(png)
-                        except OSError as e:
-                            print(f"    TA screenshot write failed for {slug_for_file}: {e}")
-                            screenshot_path = ''
+                        if screenshots_dir:
+                            try:
+                                local_path = os.path.join(screenshots_dir, f"{slug_for_file}.png")
+                                with open(local_path, 'wb') as f:
+                                    f.write(png)
+                            except OSError as e:
+                                print(f"    TA screenshot disk write failed for {slug_for_file}: {e}")
+                        public_url = await asyncio.to_thread(
+                            upload_screenshot_bytes,
+                            png,
+                            f'tripadvisor/{slug_for_file}.png',
+                        )
+                        if public_url:
+                            screenshot_path = public_url
+                        else:
+                            print(f"    TA screenshot upload returned no URL for {slug_for_file}")
 
                 enriched = {**stub}
                 for key in ('company_name', 'website_url', 'phone'):
