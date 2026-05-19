@@ -10,6 +10,10 @@ interface Props {
   includeScreenshot: boolean;
   filterCountry: string;
   filterCategory: string;
+  /** Optional — pre-filled from Step 1's platform picker. Empty/undefined
+   *  means "all platforms". Shown in the recipient summary so the operator
+   *  sees "Yelp · US · plumbing" instead of just "US · plumbing". */
+  filterPlatform?: string;
   recipientCount: number;
   followUpCount: number;
   schedule: SendingSchedule;
@@ -17,14 +21,21 @@ interface Props {
   onSubmit: () => void;
 }
 
+const PLATFORM_LABELS: Record<string, string> = {
+  trustpilot: 'Trustpilot',
+  tripadvisor: 'TripAdvisor',
+  yelp: 'Yelp',
+};
+
 export default function WizardStep4Launch({
   name, subject, body, includeScreenshot,
-  filterCountry, filterCategory,
+  filterCountry, filterCategory, filterPlatform,
   recipientCount, followUpCount, schedule,
   saving, onSubmit,
 }: Props) {
   const countryName  = COUNTRIES.find((c) => c.code === filterCountry)?.name  || 'All Countries';
   const categoryName = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
+  const platformName = filterPlatform ? (PLATFORM_LABELS[filterPlatform] ?? filterPlatform) : '';
   const tzLabel      = TIMEZONES.find((t) => t.value === schedule.timezone)?.label.split('—')[0].trim() || schedule.timezone;
   const activeDays   = schedule.days.map((d) => DAY_LABELS[d]).join(', ') || 'None';
   const bodyPreview  = body.replace(/<[^>]+>/g, '').slice(0, 200).trim();
@@ -86,11 +97,11 @@ export default function WizardStep4Launch({
                   <p className="text-sm font-semibold text-[#b0004a] mt-0.5">
                     {recipientCount.toLocaleString()} lead{recipientCount !== 1 ? 's' : ''}
                   </p>
-                  {(filterCountry || filterCategory) && (
+                  {(filterCountry || filterCategory || platformName) && (
                     <p className="text-xs text-secondary mt-0.5">
-                      {countryName !== 'All Countries' ? countryName : ''}
-                      {filterCountry && filterCategory ? ' · ' : ''}
-                      {filterCategory ? categoryName : ''}
+                      {[platformName, filterCountry ? countryName : '', filterCategory ? categoryName : '']
+                        .filter(Boolean)
+                        .join(' · ')}
                     </p>
                   )}
                 </div>

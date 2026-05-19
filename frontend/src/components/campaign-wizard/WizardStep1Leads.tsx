@@ -42,6 +42,11 @@ function preloadScreenshot(src: string): void {
 interface Props {
   filterCountry: string;
   filterCategory: string;
+  /** Empty string = all platforms (default). Set to a specific platform
+   *  slug ('trustpilot' / 'tripadvisor' / 'yelp' / etc.) to restrict the
+   *  lead pool to that platform's leads only. The backend /leads route
+   *  filters via the lead_platform_presences join when this is set. */
+  filterPlatform: string;
   selectedLeadIds: string[];
   manualEmails: string[];
   maxLeads: number;
@@ -57,19 +62,31 @@ interface Props {
   discoveryMode?: boolean;
   onFilterCountryChange: (v: string) => void;
   onFilterCategoryChange: (v: string) => void;
+  onFilterPlatformChange: (v: string) => void;
   onSelectionChange: (ids: string[]) => void;
   onManualEmailsChange: (emails: string[]) => void;
   onMaxLeadsChange: (n: number) => void;
 }
+
+// Platforms the user can pick from in the wizard. Mirrors the
+// PLATFORM_MANIFESTS list on the backend; keep in sync when adding a
+// new scraping platform.
+const PLATFORM_OPTIONS: Array<{ slug: string; name: string }> = [
+  { slug: '',            name: 'All Platforms' },
+  { slug: 'trustpilot',  name: 'Trustpilot' },
+  { slug: 'tripadvisor', name: 'TripAdvisor' },
+  { slug: 'yelp',        name: 'Yelp' },
+];
 
 const LIMIT = 50;
 
 type SourceMode = 'matrix' | 'manual';
 
 export default function WizardStep1Leads({
-  filterCountry, filterCategory, selectedLeadIds, manualEmails, maxLeads,
+  filterCountry, filterCategory, filterPlatform, selectedLeadIds, manualEmails, maxLeads,
   redirectMode, discoveryMode,
-  onFilterCountryChange, onFilterCategoryChange, onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
+  onFilterCountryChange, onFilterCategoryChange, onFilterPlatformChange,
+  onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
 }: Props) {
   const [appMode, setAppMode] = useState<AppMode | null>(null);
   const [dynamicCountries, setDynamicCountries] = useState<string[]>([]);
@@ -116,6 +133,7 @@ export default function WizardStep1Leads({
       const p = new URLSearchParams();
       if (filterCountry) p.set('country', filterCountry);
       if (filterCategory) p.set('category', filterCategory);
+      if (filterPlatform) p.set('platform', filterPlatform);
       if (debSearch) p.set('search', debSearch);
       p.set('page', String(page));
       p.set('limit', String(LIMIT));
@@ -142,7 +160,7 @@ export default function WizardStep1Leads({
     } finally {
       setLoading(false);
     }
-  }, [filterCountry, filterCategory, debSearch, page, sortBy, sortDir, redirectMode, discoveryMode]);
+  }, [filterCountry, filterCategory, filterPlatform, debSearch, page, sortBy, sortDir, redirectMode, discoveryMode]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
@@ -415,11 +433,20 @@ export default function WizardStep1Leads({
               <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
                 Select Target List
               </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <select
+                  value={filterPlatform}
+                  onChange={(e) => { onFilterPlatformChange(e.target.value); setPage(1); }}
+                  className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  aria-label="Platform"
+                >
+                  {PLATFORM_OPTIONS.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
+                </select>
                 <select
                   value={filterCountry}
                   onChange={(e) => { onFilterCountryChange(e.target.value); setPage(1); }}
                   className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  aria-label="Country"
                 >
                   {countryOptions.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
                 </select>
@@ -427,6 +454,7 @@ export default function WizardStep1Leads({
                   value={filterCategory}
                   onChange={(e) => { onFilterCategoryChange(e.target.value); setPage(1); }}
                   className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  aria-label="Category"
                 >
                   {categoryOptions.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
                 </select>

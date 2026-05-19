@@ -65,6 +65,11 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
   // Step 1 — Leads
   const [filterCountry, setFilterCountry]     = useState('');
   const [filterCategory, setFilterCategory]   = useState('');
+  // Empty string = all platforms. Set to 'trustpilot' / 'tripadvisor' / 'yelp'
+  // to restrict the lead pool to that platform's leads only — useful when
+  // you've just finished a Yelp scrape and want to send a campaign to the
+  // new Yelp leads without bleeding in old Trustpilot ones.
+  const [filterPlatform, setFilterPlatform]   = useState('');
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>(initialLeadIds ?? []);
   const [manualEmails, setManualEmails]       = useState<string[]>([]);
   const [maxLeads, setMaxLeads]               = useState(500);
@@ -241,6 +246,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
           <WizardStep1Leads
             filterCountry={filterCountry}
             filterCategory={filterCategory}
+            filterPlatform={filterPlatform}
             selectedLeadIds={selectedLeadIds}
             manualEmails={manualEmails}
             maxLeads={maxLeads}
@@ -248,6 +254,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             discoveryMode={discoveryMode}
             onFilterCountryChange={handleFilterCountryChange}
             onFilterCategoryChange={setFilterCategory}
+            onFilterPlatformChange={setFilterPlatform}
             onSelectionChange={setSelectedLeadIds}
             onManualEmailsChange={setManualEmails}
             onMaxLeadsChange={setMaxLeads}
@@ -286,6 +293,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             includeScreenshot={includeScreenshot}
             filterCountry={filterCountry}
             filterCategory={filterCategory}
+            filterPlatform={filterPlatform}
             recipientCount={selectedLeadIds.length + manualEmails.length}
             followUpCount={followUpSteps.length}
             schedule={schedule}
