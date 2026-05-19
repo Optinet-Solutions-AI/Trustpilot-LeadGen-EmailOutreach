@@ -341,6 +341,20 @@ export default function Scrape() {
                     : 'neutral';
                   const platKey = (job.platform || 'trustpilot').toLowerCase();
                   const platMeta = PLATFORM_BADGE[platKey] ?? { label: platKey, bg: 'bg-slate-100', fg: 'text-slate-600' };
+                  // For non-Trustpilot jobs the legacy country/category
+                  // columns hold placeholders ('_yelp_' / '_tripadvisor_'
+                  // / 'all'); the real values live in `filters` jsonb.
+                  // Without this fallback the row shows "all / _yelp_"
+                  // even though the scrape actually targeted plumbing/AU.
+                  const f = (job.filters || null) as { country?: string; category?: string } | null;
+                  const displayCountry =
+                    job.country && !job.country.startsWith('_')
+                      ? job.country
+                      : f?.country ?? job.country ?? '';
+                  const displayCategory =
+                    job.category && job.category !== 'all'
+                      ? job.category
+                      : f?.category ?? job.category ?? '';
                   return (
                     <tr
                       key={job.id}
@@ -359,8 +373,8 @@ export default function Scrape() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex flex-col">
-                          <span className="font-bold text-sm text-on-surface leading-tight">{job.category}</span>
-                          <span className="text-[11px] text-secondary mt-0.5">{job.country}</span>
+                          <span className="font-bold text-sm text-on-surface leading-tight">{displayCategory}</span>
+                          <span className="text-[11px] text-secondary mt-0.5">{displayCountry}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-secondary whitespace-nowrap">
