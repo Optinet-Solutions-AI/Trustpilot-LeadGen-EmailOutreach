@@ -897,6 +897,19 @@ export default function Leads() {
             onSortChange={toggleSort}
             onDismissLinkFlag={handleDismissLinkFlag}
             onEditLinkUrl={handleEditLinkUrl}
+            // Hide platform-irrelevant columns when filtered to a single
+            // non-Trustpilot platform:
+            //  - trustpilot_email + affiliate_email are Trustpilot-only
+            //    fields populated by the Trustpilot scrape path.
+            //  - 'claimed' is a Yelp-only flag (profile_claimed). TripAdvisor
+            //    has no claim concept that we capture.
+            hideColumns={
+              platformFilter === 'tripadvisor'
+                ? ['trustpilot_email', 'affiliate_email', 'claimed']
+                : platformFilter === 'yelp'
+                  ? ['trustpilot_email', 'affiliate_email']
+                  : undefined
+            }
           />
         ) : (
           <LeadPipeline

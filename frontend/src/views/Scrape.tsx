@@ -57,9 +57,26 @@ export default function Scrape() {
 
   const openLeadsForJob = (job: typeof jobs[number]) => {
     const params = new URLSearchParams();
-    if (job.country) params.set('country', job.country);
-    if (job.category) params.set('category', job.category);
-    router.push(`/leads${params.toString() ? `?${params.toString()}` : ''}`);
+    // 1. Carry the platform forward so the Lead Matrix filters to THIS
+    //    platform's leads only — without this, clicking '17 FOUND' on a
+    //    TripAdvisor job opened a Lead Matrix view filled with Trustpilot
+    //    leads that happened to share the country.
+    const platform = (job.platform || 'trustpilot').toLowerCase();
+    params.set('platform', platform);
+
+    // 2. For non-Trustpilot jobs the top-level country/category columns
+    //    are placeholders (_yelp_ / _tripadvisor_ / all) — the real values
+    //    live in `filters` jsonb. Read the real ones for the Lead Matrix
+    //    query, otherwise the filter would match nothing.
+    const f = (job.filters || null) as { country?: string; category?: string } | null;
+    const realCountry =
+      job.country && !job.country.startsWith('_') ? job.country : f?.country;
+    const realCategory =
+      job.category && job.category !== 'all' ? job.category : f?.category;
+    if (realCountry) params.set('country', realCountry);
+    if (realCategory) params.set('category', realCategory);
+
+    router.push(`/leads?${params.toString()}`);
   };
 
   const handleCleanup = async () => {
