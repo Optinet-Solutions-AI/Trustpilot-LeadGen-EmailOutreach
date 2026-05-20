@@ -20,7 +20,7 @@ router.get('/status', async (req: Request, res: Response) => {
   const supabase = getSupabase();
   const { data: job } = await supabase
     .from('scrape_jobs')
-    .select('id, status, total_found, total_enriched, total_failed, error')
+    .select('id, status, total_found, total_enriched, total_failed, error, last_heartbeat_at')
     .eq('id', jobId)
     .eq('country', ENRICH_SENTINEL)
     .single();
@@ -38,6 +38,11 @@ router.get('/status', async (req: Request, res: Response) => {
       total: job.total_found ?? 0,
       found: job.total_enriched ?? 0,
       failed: job.total_failed ?? 0,
+      // Surfaced so the frontend stall detector can use the worker's
+      // heartbeat (refreshed every ~20s) instead of relying on counter
+      // changes — slow websites can hold the enricher for 60-90s without
+      // any counter movement, which was tripping a false "stuck" banner.
+      last_heartbeat_at: job.last_heartbeat_at ?? null,
       ...(job.error ? { error: job.error } : {}),
     },
   });

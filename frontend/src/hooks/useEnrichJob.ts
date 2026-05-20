@@ -24,9 +24,15 @@ export interface EnrichJobState {
 
 const MAX_PROGRESS_ENTRIES = 200;
 const POLL_INTERVAL_MS = 5000;
-// Two missed polls + headroom. Anything longer than this with no SSE
-// event AND no counter change is genuinely stuck.
-const STALL_THRESHOLD_MS = 90_000;
+// Worker heartbeats every ~20s; ANY heartbeat newer than this means the
+// backend is alive — even if a slow website has held the enricher for a
+// minute with no counter movement. Counter changes also still count as
+// activity (they bump the same timestamp on the poll path).
+// Raised from 90s after 2026-05-20 incident where a 1m51s-into-the-job
+// poll showed "stuck" while the enricher was actually still working its
+// way through a slow-loading website (the job went on to finish 6 min
+// later with 18/20 enriched).
+const STALL_THRESHOLD_MS = 180_000;
 const STALL_CHECK_INTERVAL_MS = 5_000;
 
 /**
@@ -191,13 +197,26 @@ export function useEnrichJob(jobId: string | null): EnrichJobState {
           found: number;
           failed: number;
           error?: string;
+          last_heartbeat_at?: string | null;
         };
-        // Counter change counts as activity. A stuck server keeps
-        // returning 200 with the same numbers — that's NOT activity.
+        // Liveness: prefer the worker's heartbeat (refreshed ~every 20s on
+        // the running job) over counter changes. A counter-change-only
+        // signal flags a healthy enricher as "stuck" when a single slow
+        // website blocks the queue for 60-90s. Heartbeat means: "the
+        // process is alive and processing", which is what we actually want
+        // to know. Counter changes still count as activity too (covers a
+        // rare case where heartbeat is delayed but progress is happening).
         const last = lastSummaryRef.current;
-        if (d.total !== last.total || d.found !== last.found || d.failed !== last.failed) {
+        const heartbeatAge = d.last_heartbeat_at
+          ? Date.now() - new Date(d.last_heartbeat_at).getTime()
+          : Number.POSITIVE_INFINITY;
+        const counterChanged =
+          d.total !== last.total || d.found !== last.found || d.failed !== last.failed;
+        if (counterChanged || heartbeatAge < STALL_THRESHOLD_MS) {
           bumpActivity();
-          lastSummaryRef.current = { total: d.total, found: d.found, failed: d.failed };
+          if (counterChanged) {
+            lastSummaryRef.current = { total: d.total, found: d.found, failed: d.failed };
+          }
         }
         setState((prev) => ({
           ...prev,
