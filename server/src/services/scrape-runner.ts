@@ -574,16 +574,34 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
     let rawData: Array<Record<string, unknown>> = [];
 
     if (platform === 'tripadvisor') {
-      // Fan out across every seeded city for the country, dedup'ing by
+      // Fan out across the top-N seeded cities for the country, dedup'ing by
       // profile_url. Each city is a separate run.py spawn so cancellation
       // and watchdog logic stay per-process.
+      //
+      // Defaults are tuned for credit efficiency (chosen 2026-05-20):
+      //   - max_cities       = 10   (top by `rank`)
+      //   - max_pages_per_city = 1   (one page returns ~30 listings; that's
+      //                              already more than the rating filter
+      //                              typically keeps)
+      //   - early_stop_at_leads = 50 (cancel remaining cities once we've
+      //                              collected this many dedup'd leads)
+      // Operator overrides any of these via the `filters` jsonb on the job.
+      // Baseline before this change: a US/hotels scrape walked all 52 cities
+      // × 3 pages and burned ~780 ScrapingBee credits for ~2 leads. New
+      // default budget is ~150 credits and ~90s.
       const f = (filters ?? {}) as Record<string, unknown>;
       const taCountry = String(f.country ?? '').toUpperCase();
       const taCategory = String(f.category ?? 'hotels');
       const minR = Number(f.min_rating ?? 1.0);
       const maxR = Number(f.max_rating ?? 3.0);
+      const maxCities = Math.max(1, Number(f.max_cities ?? 10));
+      const maxPagesPerCity = Math.max(1, Number(f.max_pages_per_city ?? 1));
+      const earlyStopAtLeads = Math.max(1, Number(f.early_stop_at_leads ?? 50));
 
-      const cities: TripAdvisorCity[] = await listActiveCitiesForCountry(taCountry);
+      const allCities: TripAdvisorCity[] = await listActiveCitiesForCountry(taCountry);
+      // listActiveCitiesForCountry already orders by `rank` asc, so the
+      // first N entries are the top-N cities for that country.
+      const cities = allCities.slice(0, maxCities);
       if (cities.length === 0) {
         // Defensive — POST /api/scrape already rejects this case, but a race
         // could empty the table between submit and run. Treat as 0-lead success.
@@ -607,6 +625,19 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       const runOneCity = async (city: TripAdvisorCity): Promise<void> => {
         if (cancelled) return;
 
+        // Early-stop: bail out of remaining cities once we've collected
+        // enough leads. Saves credits + time on broad scrapes where the
+        // top few cities are enough to fill the operator's pipeline.
+        if (dedup.size >= earlyStopAtLeads) {
+          cancelled = true;
+          emitProgress(
+            jobId,
+            'city_skip',
+            `early_stop|reached ${dedup.size}/${earlyStopAtLeads} leads`,
+          );
+          return;
+        }
+
         // Cooperative cancel check between cities.
         try {
           const { data: jobRow } = await getSupabase()
@@ -626,6 +657,7 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
           listing_type:  taCategory,
           min_rating:    minR,
           max_rating:    maxR,
+          max_pages:     maxPagesPerCity,
         };
         emitProgress(jobId, 'city_start', `${city.geo_id}|${city.name}`);
         try {

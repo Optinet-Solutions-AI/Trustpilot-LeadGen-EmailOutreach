@@ -3,8 +3,14 @@ import api from '../api/client';
 
 // Per-page credit cost on ScrapingBee's premium_proxy tier (rounded up).
 const CREDITS_PER_LISTING_PAGE = 15;
-// Heuristic: TA listing pages average ~3 pages per city before exhausting.
-const AVG_PAGES_PER_CITY = 3;
+// Server-side default: scrape-runner walks the top-10 cities and pulls 1
+// listing page from each (see runScrapeJobViaRunPy in scrape-runner.ts).
+// Kept in sync with the runner's `max_cities` / `max_pages_per_city`
+// defaults — change both together. 2026-05-20: lowered from 3 → 1 page
+// and capped fan-out to 10 cities after measuring 9-min/780-credit US
+// scrapes that returned ~2 hotels.
+const MAX_CITIES_DEFAULT = 10;
+const AVG_PAGES_PER_CITY = 1;
 
 interface Props {
   country: string;
@@ -41,8 +47,11 @@ export default function ScrapeCostAdvisory({
     return () => { cancelled = true; };
   }, [country]);
 
+  // Effective fan-out = min(seeded cities, server-side cap). Reflects what
+  // the scrape will actually walk so the operator sees a realistic budget.
+  const effectiveCities = count == null ? null : Math.min(count, MAX_CITIES_DEFAULT);
   const estimatedCredits =
-    count == null ? null : count * AVG_PAGES_PER_CITY * CREDITS_PER_LISTING_PAGE;
+    effectiveCities == null ? null : effectiveCities * AVG_PAGES_PER_CITY * CREDITS_PER_LISTING_PAGE;
 
   useEffect(() => {
     onGuardReady(async () => {
@@ -62,7 +71,9 @@ export default function ScrapeCostAdvisory({
   }
   return (
     <p className="text-[12px] text-on-surface-muted">
-      ~{count} cities × ~{AVG_PAGES_PER_CITY} pages = ~{estimatedCredits?.toLocaleString()} SB credits (before enrichment)
+      Top {effectiveCities} of {count} cities × {AVG_PAGES_PER_CITY} page
+      {AVG_PAGES_PER_CITY === 1 ? '' : 's'} = ~{estimatedCredits?.toLocaleString()} SB credits
+      (stops early if 50 leads collected).
     </p>
   );
 }

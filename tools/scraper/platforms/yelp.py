@@ -597,6 +597,34 @@ class YelpScraper(BasePlatformScraper):
 
         del output_path, flush_every  # not needed — Yelp profiles are stateless HTTP fetches
 
+        # Cap profile enrichment to the top-N highest-quality leads. Each
+        # ScrapingBee fetch costs 75 credits on stealth_proxy — without a cap,
+        # a 100-result Fusion search burns 7,500 credits even though only a
+        # handful of those leads are worth a cold-email send. We rank by
+        # rating × log(1 + review_count): high-rated busy listings beat both
+        # 5★/1-review newbies and 1★/many-review chains. Operator can raise
+        # via the YELP_MAX_ENRICH env var for one-off larger runs.
+        # Default chosen 2026-05-20 to cut typical Yelp credit spend by ~80%.
+        import math
+        try:
+            max_enrich = max(1, int(os.environ.get('YELP_MAX_ENRICH', '25')))
+        except ValueError:
+            max_enrich = 25
+
+        if len(profile_stubs) > max_enrich:
+            def _quality(stub: dict) -> float:
+                rating = float(stub.get('rating') or 0.0)
+                reviews = int(stub.get('review_count') or 0)
+                return rating * math.log1p(reviews)
+            ranked = sorted(profile_stubs, key=_quality, reverse=True)
+            print(
+                f"PROGRESS:enrich_capped:{max_enrich}|{len(profile_stubs)}|"
+                f"keeping top {max_enrich} by rating × log(review_count); "
+                f"skipping {len(profile_stubs) - max_enrich} long-tail leads",
+                flush=True,
+            )
+            profile_stubs = ranked[:max_enrich]
+
         total = len(profile_stubs)
         if screenshots_dir:
             os.makedirs(screenshots_dir, exist_ok=True)
