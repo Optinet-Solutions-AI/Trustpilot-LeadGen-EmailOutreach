@@ -769,6 +769,18 @@ export default function Leads() {
             className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           >
             {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+            {/* When the URL carries a category slug that's not in our
+             *  Trustpilot-curated list (e.g. Yelp/TA values like 'plumbing'
+             *  or 'restaurants' passed in by a job-card click), render an
+             *  extra option so the filter is *visible* — without this, the
+             *  dropdown falls back to displaying "All Categories" while the
+             *  filter is silently active, and the user thinks the lead count
+             *  is wrong. Bug discovered 2026-05-20 when a Yelp AU/plumbing
+             *  scrape's job-card "7 found" link took the user to a Lead
+             *  Matrix view showing only 5 leads with no obvious filter. */}
+            {categoryFilter && !CATEGORIES.some((c) => c.slug === categoryFilter) && (
+              <option value={categoryFilter}>{categoryFilter}</option>
+            )}
           </select>
           <select
             value={statusFilter}
@@ -834,6 +846,10 @@ export default function Leads() {
               className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
               {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+              {/* See desktop dropdown above for why this fallback exists. */}
+              {categoryFilter && !CATEGORIES.some((c) => c.slug === categoryFilter) && (
+                <option value={categoryFilter}>{categoryFilter}</option>
+              )}
             </select>
           </div>
           <div>
