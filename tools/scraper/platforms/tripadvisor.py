@@ -540,6 +540,35 @@ class TripAdvisorScraper(BasePlatformScraper):
         # unused-arg lint by binding to a temp.
         del output_path, flush_every
 
+        # Cap profile enrichment to the top-N highest-quality leads. Each
+        # ScrapingBee fetch is ~15-75 credits and ~5-30 seconds; without a
+        # cap, a US/hotels scrape that finds 58 listings burns ~870-4,350
+        # credits and ~15+ minutes on profile pages, most of which never
+        # get used. We rank by rating × log(1 + review_count) — same scoring
+        # the Yelp plugin uses. Operator can override via TA_MAX_ENRICH env
+        # var (e.g. for exhaustive runs once leads are vetted).
+        # Default chosen 2026-05-20 after a US/hotels test scrape (job
+        # 15c898c5) found 58 cards in ~4 min then sat in enrichment 10+ min.
+        import math
+        try:
+            max_enrich = max(1, int(os.environ.get('TA_MAX_ENRICH', '25')))
+        except ValueError:
+            max_enrich = 25
+
+        if len(profile_stubs) > max_enrich:
+            def _quality(stub: dict) -> float:
+                rating = float(stub.get('rating') or 0.0)
+                reviews = int(stub.get('review_count') or 0)
+                return rating * math.log1p(reviews)
+            ranked = sorted(profile_stubs, key=_quality, reverse=True)
+            print(
+                f"PROGRESS:enrich_capped:{max_enrich}|{len(profile_stubs)}|"
+                f"keeping top {max_enrich} by rating × log(review_count); "
+                f"skipping {len(profile_stubs) - max_enrich} long-tail leads",
+                flush=True,
+            )
+            profile_stubs = ranked[:max_enrich]
+
         total = len(profile_stubs)
         if screenshots_dir:
             os.makedirs(screenshots_dir, exist_ok=True)
