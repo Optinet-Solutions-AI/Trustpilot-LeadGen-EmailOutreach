@@ -15,7 +15,7 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
 import { config } from '../config.js';
-import { updateJob } from '../db/scrape-jobs.js';
+import { updateJob, markJobFailed } from '../db/scrape-jobs.js';
 import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
@@ -817,11 +817,15 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.error(`[${platform}] Job ${jobId} failed:`, errorMessage);
-    await updateJob(jobId, {
-      status: 'failed',
-      error: errorMessage.slice(0, 2000),
-      completed_at: new Date().toISOString(),
-    }).catch(() => {});
+    // Use markJobFailed (not updateJob with status='failed' directly) so a
+    // job killed by a worker restart / transient error gets re-queued
+    // automatically while it still has retry budget. The previous direct
+    // updateJob marked the job permanently failed on the first crash even
+    // though attempts (1) < max_attempts (3), so EC2 cron-induced kills
+    // looked like permanent failures to the operator instead of recoverable
+    // ones. markJobFailed branches: status='pending' if retryable, else
+    // status='failed'.
+    await markJobFailed(jobId, errorMessage).catch(() => {});
     emitProgress(jobId, 'failed', errorMessage.slice(0, 200));
   } finally {
     stopHeartbeat(jobId);

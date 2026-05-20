@@ -76,6 +76,46 @@ if [[ -f "$ATTEMPTED_FILE" ]] && [[ "$(cat "$ATTEMPTED_FILE")" == "$REMOTE" ]]; 
 fi
 echo "$REMOTE" > "$ATTEMPTED_FILE"
 
+# Defer deploy if the worker is mid-scrape. Restarting now would SIGTERM
+# the worker, which kills the Python subprocesses doing the actual scrapes,
+# which makes the active job die with "Script exited with code null". The
+# next cron tick (5 min later) will pick this commit up.
+#
+# Safety override: if any in-flight job has been running >45 min, assume
+# it's stuck and proceed with the deploy anyway. 45m > the typical TA city
+# fan-out (~10 min) and Yelp 25-profile enrichment (~8 min).
+#
+# Hits the Supabase REST API directly so we don't need a Node runtime to
+# query it. Credentials live in /etc/scraper-worker.env (read by the unit).
+if [[ -f /etc/scraper-worker.env ]]; then
+    # shellcheck disable=SC1091
+    set -a; source /etc/scraper-worker.env; set +a
+fi
+if [[ -n "${SUPABASE_URL:-}" ]] && [[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
+    BUSY_JSON=$(curl -fsS \
+        -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+        -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+        "$SUPABASE_URL/rest/v1/scrape_jobs?select=id,started_at&status=eq.running&worker_id=eq.ec2-sg-1" 2>>"$LOG_FILE" || echo '[]')
+    BUSY_COUNT=$(echo "$BUSY_JSON" | grep -o '"id"' | wc -l)
+    if [[ "$BUSY_COUNT" -gt 0 ]]; then
+        # Check oldest started_at against the 45-min override
+        OLDEST_START=$(echo "$BUSY_JSON" | grep -oE '"started_at":"[^"]+"' | sed 's/.*:"//;s/"//' | sort | head -1)
+        if [[ -n "$OLDEST_START" ]]; then
+            OLDEST_EPOCH=$(date -u -d "$OLDEST_START" +%s 2>/dev/null || echo 0)
+            NOW_EPOCH=$(date -u +%s)
+            AGE_MIN=$(( (NOW_EPOCH - OLDEST_EPOCH) / 60 ))
+            if [[ "$AGE_MIN" -lt 45 ]]; then
+                log "=== deploy DEFERRED: $BUSY_COUNT job(s) running (oldest ${AGE_MIN}m old, override at 45m); will retry next tick ==="
+                # Roll back the attempted-marker so the next tick re-tries
+                # this same commit instead of skipping it.
+                rm -f "$ATTEMPTED_FILE"
+                exit 0
+            fi
+            log "deploy proceeding despite $BUSY_COUNT busy job(s) — oldest is ${AGE_MIN}m old (>=45m override)"
+        fi
+    fi
+fi
+
 log "=== deploy starting: $LOCAL -> $REMOTE ==="
 
 log "git pull --ff-only..."
