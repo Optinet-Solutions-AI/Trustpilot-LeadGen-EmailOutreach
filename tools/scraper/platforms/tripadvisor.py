@@ -464,6 +464,23 @@ class TripAdvisorScraper(BasePlatformScraper):
 
             cards = _extract_listing_cards(html)
             if not cards:
+                # ScrapingBee returned HTML but our parser found 0 listings on
+                # it. Two common causes: (a) selector drift (TripAdvisor
+                # restyled the listing markup and our extractor doesn't match
+                # the new DOM), (b) page is actually empty for this city +
+                # listing_type combo (rare). Either way, log it so the next
+                # debug session has the offending URL + HTML size to inspect.
+                # Bug discovered 2026-05-20 when a US/hotels scrape ran with
+                # 10 cities × 1 page and emitted zero FAILED rows despite
+                # returning 0 leads.
+                print(
+                    f"FAILED:listing|tripadvisor|no_cards_parsed|"
+                    f"{url} returned {len(html)} bytes of HTML but the listing "
+                    f"parser matched 0 cards. Either TripAdvisor's DOM drifted "
+                    f"(selectors in _extract_listing_cards need updating) or "
+                    f"the page is genuinely empty for this geo+listing_type.",
+                    flush=True,
+                )
                 print(f"  No cards found on page {page_idx + 1}. Stopping pagination.")
                 break
 
