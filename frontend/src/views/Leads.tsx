@@ -118,6 +118,32 @@ export default function Leads() {
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 
+  // Sidecar count of redirected leads that match the *same* filters but were
+  // hidden by `redirected=exclude` above. We surface this as an inline banner
+  // so the operator isn't left wondering why the scrape job's "X scraped"
+  // doesn't match the Lead Matrix total — common after a Yelp/TA enrichment
+  // pass detects a domain redirect. Without this banner the missing leads
+  // look like data loss. Bug reported 2026-05-20 (DE/landscaping: 2 scraped,
+  // 1 shown, no obvious explanation).
+  const [hiddenRedirectCount, setHiddenRedirectCount] = useState(0);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    params.set('page', '1');
+    params.set('limit', '1');           // we only want `.total`, not rows
+    params.set('redirected', 'only');
+    if (statusFilter) params.set('status', statusFilter);
+    if (countryFilter) params.set('country', countryFilter);
+    if (categoryFilter) params.set('category', categoryFilter);
+    if (hasEmailFilter) params.set('hasEmail', 'true');
+    if (search) params.set('search', search);
+    if (platformFilter) params.set('platform', platformFilter);
+    let cancelled = false;
+    api.get(`/leads?${params}`)
+      .then((res) => { if (!cancelled) setHiddenRedirectCount(res.data?.total ?? 0); })
+      .catch(() => { if (!cancelled) setHiddenRedirectCount(0); });
+    return () => { cancelled = true; };
+  }, [statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, platformFilter]);
+
   const handleViewChange = (v: View) => {
     setView(v);
     localStorage.setItem('leads_view', v);
@@ -886,6 +912,32 @@ export default function Leads() {
           </button>
         </div>
       </MobileBottomSheet>
+
+      {/* Notice — explains why the Lead Matrix total can be lower than what
+          a scrape job claims to have saved. The Lead Matrix hides leads whose
+          websites redirect off-domain (the regular outreach pipeline excludes
+          them so cold email never goes to a misattributed brand); they live
+          on the dedicated /redirected-leads page. Only renders when there's
+          actually something hidden for the current filter set. */}
+      {hiddenRedirectCount > 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
+          <span className="material-symbols-outlined text-amber-600 text-[18px] mt-0.5 flex-shrink-0">info</span>
+          <div className="flex-1 text-amber-900">
+            <span className="font-semibold">{hiddenRedirectCount}</span>
+            {' '}lead{hiddenRedirectCount === 1 ? ' is' : 's are'} hidden here because{' '}
+            {hiddenRedirectCount === 1 ? 'its website redirects' : 'their websites redirect'}
+            {' '}off-domain. They&apos;re still saved — open them on the{' '}
+            <button
+              type="button"
+              onClick={() => router.push('/redirected-leads')}
+              className="font-bold text-[#b0004a] hover:underline"
+            >
+              Redirected Leads
+            </button>
+            {' '}page.
+          </div>
+        </div>
+      )}
 
       {/* Content. `overflow-clip` (not `overflow-hidden`) clips the rounded
           corners without turning this wrapper into a scroll container — that
