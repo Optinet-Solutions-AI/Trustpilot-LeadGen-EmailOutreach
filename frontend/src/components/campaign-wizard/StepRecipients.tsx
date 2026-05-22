@@ -32,6 +32,27 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   const [sortBy, setSortBy] = useState('star_rating');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
+  // Global "already contacted" set — emails previously sent/opened/replied/
+  // auto_replied/bounced in ANY campaign. Lowercased server-side. Used to
+  // badge rows in this picker and exclude them from bulk-select. The server
+  // also dedupes at insert and send time as belt-and-suspenders.
+  const [contactedEmails, setContactedEmails] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/campaigns/sent-emails');
+        if (!cancelled) {
+          const arr: string[] = res.data?.data || [];
+          setContactedEmails(new Set(arr));
+        }
+      } catch {
+        // Non-fatal — picker still works without the badge.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     const t = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
     return () => clearTimeout(t);
@@ -73,6 +94,8 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   // anything that comes back invalid after the refresh.
   const [reverifying, setReverifying] = useState<Set<string>>(new Set());
   const isInvalid = (l: PickerLead) => l.verification_status === 'invalid';
+  const isAlreadyContacted = (l: PickerLead) =>
+    l.primary_email != null && contactedEmails.has(l.primary_email.toLowerCase());
 
   const reverifyLead = async (id: string) => {
     setReverifying((prev) => { const n = new Set(prev); n.add(id); return n; });
@@ -112,8 +135,13 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   //   - unknown: verifier returned inconclusive; treat as risky.
   //   - null (not verified): never run through verify; sending blind risks
   //     bouncing on dead addresses and burning sender reputation.
+  //   - already contacted in another campaign: server will mark as 'skipped'
+  //     at send time; bulk-adding them just clutters the campaign with
+  //     dedup-victim rows.
   // Manual click on any row still works as a conscious override.
-  const pageIds = leads.filter((l) => l.verification_status === 'valid').map((l) => l.id);
+  const pageIds = leads
+    .filter((l) => l.verification_status === 'valid' && !isAlreadyContacted(l))
+    .map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
 
   const togglePage = () => {
@@ -125,7 +153,8 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   // matching the current country/category/search filters via the dedicated
   // /api/leads/ids endpoint. Capped at 5000 server-side. Catch-all/invalid/
   // unknown are excluded for the same sender-reputation reasons as
-  // "Select page" above.
+  // "Select page" above. Already-contacted leads are also stripped here so
+  // the bulk-add doesn't immediately pile up dedup-victims in the campaign.
   const [selectingAll, setSelectingAll] = useState(false);
   const selectAllValid = async () => {
     setSelectingAll(true);
@@ -136,7 +165,10 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
       if (debouncedSearch) params.set('search', debouncedSearch);
       params.set('verificationStatus', 'valid');
       const res = await api.get(`/leads/ids?${params}`);
-      const ids: string[] = res.data?.data || [];
+      const rows: Array<{ id: string; primary_email: string | null }> = res.data?.data || [];
+      const ids = rows
+        .filter((r) => r.primary_email == null || !contactedEmails.has(r.primary_email.toLowerCase()))
+        .map((r) => r.id);
       const merged = Array.from(new Set([...selectedLeadIds, ...ids]));
       onSelectionChange(merged);
     } catch {
@@ -271,6 +303,12 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                 const isCatchAll = lead.verification_status === 'catch-all';
                 const isUnknown = lead.verification_status === 'unknown';
                 const isNotVerified = lead.verification_status == null;
+                const alreadyContacted = isAlreadyContacted(lead);
+                const rowTitle = blocked
+                  ? 'Click to re-verify with ZeroBounce. If both addresses still fail, the row stays blocked.'
+                  : alreadyContacted
+                    ? "This email was already sent in another campaign. Adding it anyway will land as 'Skipped'."
+                    : undefined;
                 return (
                   <tr
                     key={lead.id}
@@ -279,10 +317,12 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                         ? `bg-red-50/30 ${isReverifying ? 'cursor-wait' : 'cursor-pointer hover:bg-red-50/50'}`
                         : isSelected
                           ? 'bg-[#ffd9de]/30 hover:bg-[#ffd9de]/50 cursor-pointer'
-                          : 'hover:bg-surface-container-low cursor-pointer'
+                          : alreadyContacted
+                            ? 'bg-orange-50/30 hover:bg-orange-50/50 cursor-pointer'
+                            : 'hover:bg-surface-container-low cursor-pointer'
                     }`}
                     onClick={() => toggleLead(lead.id)}
-                    title={blocked ? 'Click to re-verify with ZeroBounce. If both addresses still fail, the row stays blocked.' : undefined}
+                    title={rowTitle}
                   >
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       {isReverifying ? (
@@ -325,6 +365,11 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                         {isNotVerified && (
                           <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Not verified yet. Not added by 'Select page'; click the row to include manually, or run Verify on the Leads page first.">
                             <span className="material-symbols-outlined text-[9px]">pending</span>not verified
+                          </span>
+                        )}
+                        {alreadyContacted && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded-full" title="This email was already sent in another campaign. Not added by 'Select page'; clicking the row anyway will land as 'Skipped' at send time.">
+                            <span className="material-symbols-outlined text-[9px]">block</span>contacted elsewhere
                           </span>
                         )}
                       </div>

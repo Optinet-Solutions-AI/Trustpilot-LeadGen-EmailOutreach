@@ -97,6 +97,9 @@ export async function deleteCampaign(id: string) {
  * support inbox is unmonitored — re-emailing it just produces another
  * auto-reply. This prevents re-sending to hard-bounced addresses and
  * double-emailing active conversations.
+ *
+ * All entries are lowercased so callers can do case-insensitive lookups
+ * without worrying about how the address was capitalised at scrape/insert time.
  */
 export async function getSentEmails(): Promise<Set<string>> {
   const supabase = getSupabase();
@@ -105,9 +108,29 @@ export async function getSentEmails(): Promise<Set<string>> {
     .select('email_used')
     .in('status', ['sent', 'opened', 'replied', 'auto_replied', 'bounced']);
   if (error) throw new Error(error.message);
-  return new Set(
-    (data || []).map((r: { email_used: string | null }) => r.email_used).filter(Boolean) as string[]
-  );
+  const out = new Set<string>();
+  for (const r of (data || []) as Array<{ email_used: string | null }>) {
+    if (r.email_used) out.add(r.email_used.toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Flip the given campaign_leads rows to status='skipped' and record why.
+ * Used by the send route's dedup step and by addLeadsToCampaign so the UI
+ * pill matches reality instead of guessing from a stuck 'pending' state.
+ */
+export async function markCampaignLeadsSkipped(
+  campaignLeadIds: string[],
+  reason: 'already_contacted_in_another_campaign',
+): Promise<void> {
+  if (campaignLeadIds.length === 0) return;
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from('campaign_leads')
+    .update({ status: 'skipped', skip_reason: reason })
+    .in('id', campaignLeadIds);
+  if (error) throw new Error(error.message);
 }
 
 export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) {
@@ -129,15 +152,26 @@ export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) 
     .in('id', leadIds);
   if (leadsError) throw new Error(leadsError.message);
 
+  // Pre-fetch the global "already contacted" set so anything that came
+  // through the picker despite the badge (manual click-through, legacy
+  // selection, race with another campaign send) lands as 'skipped' instead
+  // of 'pending'. The send-time filter still runs as a safety net.
+  const alreadySent = await getSentEmails();
+
   const rows = (leads || [])
-    .map((lead) => ({
-      campaign_id: campaignId,
-      lead_id: lead.id,
-      email_used: isDiscoveryFollowup
+    .map((lead) => {
+      const emailUsed = isDiscoveryFollowup
         ? lead.discovered_email ?? null
-        : (resolvePrimaryEmail(lead) ?? lead.primary_email),
-      status: 'pending',
-    }))
+        : (resolvePrimaryEmail(lead) ?? lead.primary_email);
+      const isSkipped = emailUsed != null && alreadySent.has(emailUsed.toLowerCase());
+      return {
+        campaign_id: campaignId,
+        lead_id: lead.id,
+        email_used: emailUsed,
+        status: isSkipped ? 'skipped' : 'pending',
+        skip_reason: isSkipped ? 'already_contacted_in_another_campaign' : null,
+      };
+    })
     // Drop rows the discovery follow-up can't actually target — a lead with
     // no accepted discovered_email shouldn't end up in this campaign.
     .filter((row) => row.email_used);
@@ -174,12 +208,19 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
   if (leadsError) throw new Error(leadsError.message);
   if (!leads || leads.length === 0) return [];
 
-  const rows = leads.map((lead) => ({
-    campaign_id: campaignId,
-    lead_id: lead.id,
-    email_used: resolvePrimaryEmail(lead) ?? lead.primary_email,
-    status: 'pending',
-  }));
+  const alreadySent = await getSentEmails();
+
+  const rows = leads.map((lead) => {
+    const emailUsed = resolvePrimaryEmail(lead) ?? lead.primary_email;
+    const isSkipped = emailUsed != null && alreadySent.has(emailUsed.toLowerCase());
+    return {
+      campaign_id: campaignId,
+      lead_id: lead.id,
+      email_used: emailUsed,
+      status: isSkipped ? 'skipped' : 'pending',
+      skip_reason: isSkipped ? 'already_contacted_in_another_campaign' : null,
+    };
+  });
 
   const { data, error } = await supabase.from('campaign_leads').upsert(rows, {
     onConflict: 'campaign_id,lead_id',
@@ -210,7 +251,7 @@ export async function getCampaignStats(campaignId: string) {
     .eq('campaign_id', campaignId);
   if (error) throw new Error(error.message);
 
-  const stats = { pending: 0, sent: 0, opened: 0, replied: 0, auto_replied: 0, bounced: 0 };
+  const stats = { pending: 0, sent: 0, opened: 0, replied: 0, auto_replied: 0, bounced: 0, skipped: 0 };
   for (const row of data || []) {
     const s = row.status as keyof typeof stats;
     if (s in stats) stats[s]++;

@@ -94,22 +94,27 @@ export async function getLeads(filters: LeadFilters = {}) {
 }
 
 /**
- * Returns lead IDs matching filters — no pagination, no row data.
+ * Returns lead IDs (with primary_email) matching filters — no pagination, no row data.
  * Used by the campaign wizard's "Select all valid" button to grab every
  * matching lead across all pages in one round-trip. Hard-capped at 5000
  * to keep the response size sane; the wizard refuses to bulk-select
  * beyond that for sender-reputation reasons anyway.
+ *
+ * primary_email is returned so the wizard can filter already-contacted
+ * leads client-side against the global sent-set without a second round-trip.
  */
-export async function getLeadIds(filters: LeadFilters = {}): Promise<string[]> {
+export async function getLeadIds(
+  filters: LeadFilters = {},
+): Promise<Array<{ id: string; primary_email: string | null }>> {
   const supabase = getSupabase();
   const MAX_IDS = 5000;
 
   let query = filters.platform
     ? supabase
         .from('leads')
-        .select('id, lead_platform_presences!inner(platform)')
+        .select('id, primary_email, lead_platform_presences!inner(platform)')
         .eq('lead_platform_presences.platform', filters.platform)
-    : supabase.from('leads').select('id');
+    : supabase.from('leads').select('id, primary_email');
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
   if (filters.country) query = query.eq('country', filters.country);
@@ -126,7 +131,10 @@ export async function getLeadIds(filters: LeadFilters = {}): Promise<string[]> {
 
   const { data, error } = await query.range(0, MAX_IDS - 1);
   if (error) throw new Error(error.message);
-  return (data || []).map((r: { id: string }) => r.id);
+  return (data || []).map((r: { id: string; primary_email: string | null }) => ({
+    id: r.id,
+    primary_email: r.primary_email ?? null,
+  }));
 }
 
 export async function getLeadById(id: string) {

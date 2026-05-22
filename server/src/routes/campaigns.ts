@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
-import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
+import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, markCampaignLeadsSkipped, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
 import { upsertManualLeads } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
 import { createNote } from '../db/notes.js';
@@ -168,6 +168,21 @@ router.get('/preview-recipients', async (req: Request, res: Response) => {
     const category = req.query.category ? String(req.query.category) : undefined;
     const result = await previewRecipientCount({ country, category });
     res.json({ success: true, data: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/campaigns/sent-emails — global "already contacted" set
+// Used by the campaign wizard's StepRecipients to badge leads whose primary
+// email was already emailed in any prior campaign (sent/opened/replied/
+// auto_replied/bounced). Lowercased so the frontend can match against
+// lead.primary_email.toLowerCase() without normalising itself.
+router.get('/sent-emails', async (_req: Request, res: Response) => {
+  try {
+    const set = await getSentEmails();
+    res.json({ success: true, data: Array.from(set) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
@@ -530,10 +545,26 @@ router.post('/:id/send', async (req: Request, res: Response) => {
     // Deduplication: collect emails already successfully sent in ANY campaign
     const alreadySent = await getSentEmails();
 
+    // Identify pending rows whose email_used is in the global sent-set.
+    // These get a real terminal status so the UI pill is honest and we never
+    // re-evaluate them at every send.
+    const dedupSkipped = campaignLeads.filter(
+      (cl: { id: string; email_used: string | null; status: string }) =>
+        cl.status === 'pending' &&
+        cl.email_used != null &&
+        alreadySent.has(cl.email_used.toLowerCase()),
+    );
+    if (dedupSkipped.length > 0) {
+      await markCampaignLeadsSkipped(
+        dedupSkipped.map((cl: { id: string }) => cl.id),
+        'already_contacted_in_another_campaign',
+      );
+    }
+
     // Filter to pending leads with valid, unsent emails
     const pendingLeads = campaignLeads.filter((cl: { email_used: string | null; status: string }) => {
       if (!cl.email_used || cl.status !== 'pending') return false;
-      if (alreadySent.has(cl.email_used)) return false;
+      if (alreadySent.has(cl.email_used.toLowerCase())) return false;
       return true;
     });
 

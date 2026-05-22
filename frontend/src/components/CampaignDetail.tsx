@@ -9,6 +9,7 @@ interface CampaignLead {
   lead_id: string;
   email_used: string | null;
   status: string;
+  skip_reason?: string | null;
   sent_at: string | null;
   scheduled_at?: string | null;
   reply_snippet?: string | null;
@@ -56,6 +57,11 @@ const STATUS_CONFIG: Record<string, { label: string; classes: string; icon: stri
   opened:  { label: 'Opened',  classes: 'bg-[#ffd9de] text-[#b0004a]',               icon: 'drafts' },
   replied: { label: 'Replied', classes: 'bg-[#8ff9a8]/30 text-[#006630]',            icon: 'reply' },
   bounced: { label: 'Bounced', classes: 'bg-red-50 text-error',                      icon: 'unsubscribe' },
+  skipped: { label: 'Skipped', classes: 'bg-orange-50 text-orange-700',              icon: 'block' },
+};
+
+const SKIP_REASON_LABEL: Record<string, string> = {
+  already_contacted_in_another_campaign: 'already contacted in another campaign',
 };
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -292,7 +298,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
 
           {/* Filter tabs */}
           <div className="flex gap-2 px-6 pt-4 pb-2 flex-wrap">
-            {(['all', 'pending', 'sent', 'replied', 'bounced'] as const).map((f) => (
+            {(['all', 'pending', 'sent', 'replied', 'bounced', 'skipped'] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -360,18 +366,18 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                               </span>
                               <span className="text-[10px] text-secondary">scheduled</span>
                             </span>
-                          ) : l.status === 'pending' ? (
-                            campaign.status === 'draft' ? (
-                              <span className="flex flex-col items-end gap-0.5">
-                                <span className="text-secondary font-bold text-[11px]">Awaiting launch</span>
-                                <span className="text-[10px] text-secondary">campaign not sent yet</span>
+                          ) : l.status === 'skipped' ? (
+                            <span className="flex flex-col items-end gap-0.5">
+                              <span className="text-orange-500 font-bold text-[11px]">Skipped</span>
+                              <span className="text-[10px] text-secondary">
+                                {l.skip_reason ? SKIP_REASON_LABEL[l.skip_reason] ?? l.skip_reason.replace(/_/g, ' ') : 'no reason recorded'}
                               </span>
-                            ) : (
-                              <span className="flex flex-col items-end gap-0.5">
-                                <span className="text-orange-500 font-bold text-[11px]">Skipped</span>
-                                <span className="text-[10px] text-secondary">already contacted in another campaign</span>
-                              </span>
-                            )
+                            </span>
+                          ) : l.status === 'pending' && campaign.status === 'draft' ? (
+                            <span className="flex flex-col items-end gap-0.5">
+                              <span className="text-secondary font-bold text-[11px]">Awaiting launch</span>
+                              <span className="text-[10px] text-secondary">campaign not sent yet</span>
+                            </span>
                           ) : '—'}
                         </td>
                         <td className="py-3 pl-2">
