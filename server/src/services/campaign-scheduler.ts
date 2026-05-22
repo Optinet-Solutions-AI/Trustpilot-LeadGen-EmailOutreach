@@ -71,16 +71,23 @@ export function startCampaignScheduler(): void {
 async function processDueSends(): Promise<void> {
   const supabase = getSupabase();
 
+  // !inner + .eq('campaigns.status', 'sending') is critical: without it Supabase
+  // does a left-join, the campaign-status filter only narrows the nested object,
+  // and BATCH_LIMIT slots get burned on orphan rows from campaigns that already
+  // finalized to 'sent'/'completed'. That was the exact starvation bug that left
+  // genuinely-due leads stuck for days while every tick saw 10 ghost rows first.
   const { data: dueLeads, error } = await supabase
     .from('campaign_leads')
     .select(`
       id, campaign_id, lead_id, email_used, scheduled_at,
-      campaigns (id, name, template_subject, template_body, include_screenshot, status, sending_schedule),
+      campaigns!inner (id, name, template_subject, template_body, include_screenshot, status, sending_schedule),
       leads (*)
     `)
     .eq('status', 'pending')
+    .eq('campaigns.status', 'sending')
     .not('scheduled_at', 'is', null)
     .lte('scheduled_at', new Date().toISOString())
+    .order('scheduled_at', { ascending: true })
     .limit(BATCH_LIMIT);
 
   if (error) {
@@ -89,7 +96,8 @@ async function processDueSends(): Promise<void> {
   }
   if (!dueLeads || dueLeads.length === 0) return;
 
-  // Only process leads from campaigns that are still 'sending'
+  // Defensive: keep the in-memory filter in case the inner-join ever races a
+  // status flip between the join read and the filter evaluation.
   const actionable = dueLeads.filter((cl: any) => cl.campaigns?.status === 'sending');
   if (actionable.length === 0) return;
 
