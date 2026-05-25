@@ -488,6 +488,73 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       ? messages.filter((m) => m.campaign_type === campaignTypeFilter)
       : messages;
 
+    // Fan out per-send rows for the Sent folder so the inbox mirrors the
+    // user's mental model — one row per outbound email rather than one row
+    // per (campaign, lead). Replies folder stays collapsed: there's only
+    // ever one reply state per pair, and duplicating it by step would be
+    // confusing.
+    //
+    // Source of truth for per-send timestamps is lead_notes (type=email_sent).
+    // campaign-scheduler writes one row per step-1 send; sequence-scheduler
+    // writes one per follow-up step. Each synthetic message keeps the
+    // canonical campaign_lead_id under a sibling field so reply tracking,
+    // mark-read, promote, and the thread endpoints still resolve correctly
+    // regardless of which step the user clicked.
+    type Msg = typeof filtered[number];
+    type ExpandedMsg = Msg & { campaign_lead_id: string; step_number: number; total_steps: number };
+    const expandedMessages: ExpandedMsg[] = [];
+    if (folder === 'sent') {
+      const leadIds = Array.from(new Set(
+        filtered.map((m) => (m.lead_id as string | null) ?? null).filter((v): v is string => !!v),
+      ));
+      const notesByKey = new Map<string, string[]>();
+      if (leadIds.length > 0) {
+        const { data: notes } = await getSupabase()
+          .from('lead_notes')
+          .select('lead_id, metadata, created_at')
+          .in('lead_id', leadIds)
+          .eq('type', 'email_sent')
+          .order('created_at', { ascending: true });
+        for (const n of notes ?? []) {
+          const meta = (n.metadata as Record<string, unknown> | null) ?? null;
+          const cidRaw = meta?.campaign_id;
+          if (!cidRaw) continue;
+          const key = `${n.lead_id}|${String(cidRaw)}`;
+          const arr = notesByKey.get(key) ?? [];
+          arr.push(n.created_at as string);
+          notesByKey.set(key, arr);
+        }
+      }
+      for (const msg of filtered) {
+        const key = `${msg.lead_id}|${msg.campaign_id}`;
+        const sendTimes = notesByKey.get(key) ?? [];
+        const canonicalId = msg.id as string;
+        if (sendTimes.length <= 1) {
+          expandedMessages.push({ ...msg, campaign_lead_id: canonicalId, step_number: 1, total_steps: 1 });
+          continue;
+        }
+        for (let i = 0; i < sendTimes.length; i++) {
+          const isLatest = i === sendTimes.length - 1;
+          expandedMessages.push({
+            ...msg,
+            id: `${canonicalId}:step${i + 1}`,
+            campaign_lead_id: canonicalId,
+            step_number: i + 1,
+            total_steps: sendTimes.length,
+            sent_at: sendTimes[i],
+            status: isLatest ? msg.status : 'sent',
+            replied_at: isLatest ? msg.replied_at : null,
+            reply_read_at: isLatest ? msg.reply_read_at : null,
+            reply_snippet: isLatest ? msg.reply_snippet : null,
+          });
+        }
+      }
+    } else {
+      for (const msg of filtered) {
+        expandedMessages.push({ ...msg, campaign_lead_id: msg.id as string, step_number: 1, total_steps: 1 });
+      }
+    }
+
     if (groupBy === 'campaign') {
       // Group flat messages by campaign_id so the frontend can render a
       // collapsible section per campaign with type badge + counts.
@@ -497,9 +564,9 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
         campaign_type: string;
         message_count: number;
         latest_at: string | null;
-        messages: typeof filtered;
+        messages: ExpandedMsg[];
       }>();
-      for (const msg of filtered) {
+      for (const msg of expandedMessages) {
         const cid = String(msg.campaign_id);
         const g = groups.get(cid);
         if (g) {
@@ -526,7 +593,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       return;
     }
 
-    res.json({ success: true, data: filtered });
+    res.json({ success: true, data: expandedMessages });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
