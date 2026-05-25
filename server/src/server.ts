@@ -17,6 +17,7 @@ import analyticsRoutes from './routes/analytics.js';
 import gmailRoutes from './routes/gmail.js';
 import webhookRoutes from './routes/webhooks.js';
 import emailAccountsRoutes from './routes/email-accounts.js';
+import socialAccountsRoutes from './routes/social-accounts.js';
 import dnsHealthRoutes from './routes/dns-health.js';
 import warmupRoutes from './routes/warmup.js';
 import inboxRoutes from './routes/inbox.js';
@@ -64,6 +65,7 @@ app.use('/api/follow-ups', followUpsRoutes);  // /api/follow-ups (top-level for 
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/gmail', gmailRoutes);
 app.use('/api/email-accounts', emailAccountsRoutes);
+app.use('/api/social-accounts', socialAccountsRoutes);
 app.use('/api/dns-health', dnsHealthRoutes);
 app.use('/api/warmup', warmupRoutes);
 app.use('/api/inbox', inboxRoutes);
