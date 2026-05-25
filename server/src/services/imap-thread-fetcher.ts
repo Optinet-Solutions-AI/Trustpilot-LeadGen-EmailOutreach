@@ -500,8 +500,8 @@ export async function fetchSmtpThread(
     if (leadEmail && sentBox?.path) {
       // Pull the seed subject out of whatever we already collected via the
       // header-based search. That's the authoritative "this conversation's
-      // subject" — used below to filter Sent search results down to just
-      // the conversation the caller asked for.
+      // subject" — used below to score Sent search results so the right
+      // conversation wins.
       const normalizeSubject = (s: string) =>
         s.replace(/^\s*(re|fwd|fw)\s*:\s*/i, '').trim().toLowerCase();
       // target is lowercased; c.messageId now preserves original case, so
@@ -521,13 +521,21 @@ export async function fetchSmtpThread(
             const messageId = preserveId(msg.envelope?.messageId);
             const messageIdKey = normalizeId(msg.envelope?.messageId);
             if (messageIdKey && seenMessageIds.has(messageIdKey)) continue;
-            // Subject filter: include only messages whose normalized subject
-            // matches the seed conversation's subject. Skip when we have no
-            // seed subject to compare against (better to include than drop
-            // the whole fallback).
+            // Subject filter — relaxed from strict equality to substring
+            // overlap. Strict equality was dropping legacy follow-ups whose
+            // step template had its own subject (no "Re:" prefix, different
+            // wording), leaving the thread view showing only step 1. We now
+            // accept any message whose normalized subject either matches,
+            // contains, or is contained by the seed conversation's subject.
+            // The (sender, lead, 90-day) scope keeps false positives rare
+            // and the benefit — every send in the cadence appears in the
+            // thread — outweighs the risk of merging an unrelated thread.
             if (targetSubject) {
               const subj = normalizeSubject(msg.envelope?.subject ?? '');
-              if (subj !== targetSubject) continue;
+              const matches = subj === targetSubject
+                || (subj.length >= 6 && targetSubject.includes(subj))
+                || (targetSubject.length >= 6 && subj.includes(targetSubject));
+              if (!matches) continue;
             }
             if (messageIdKey) seenMessageIds.add(messageIdKey);
             collected.push({

@@ -75,6 +75,19 @@ function htmlToPlainText(html: string): string {
 
 export interface SendEmailOptions {
   screenshotPath?: string;
+  /** RFC 2822 In-Reply-To. Pass the previous send's RFC822 Message-ID
+   *  (with or without angle brackets) so the recipient's mail client groups
+   *  this send into the existing conversation instead of starting a new one. */
+  inReplyTo?: string;
+  /** RFC 2822 References — full breadcrumb trail of Message-IDs in the
+   *  conversation, space-separated, angle-bracketed. Falls back to the
+   *  inReplyTo value when omitted. */
+  references?: string;
+  /** Gmail-only: thread the new message into a specific Gmail thread by ID.
+   *  When provided, the Gmail API will graft the message onto that thread
+   *  even if RFC822 headers wouldn't normally cluster it there. Ignored by
+   *  the SMTP sender (no equivalent concept). */
+  gmailThreadId?: string;
 }
 
 export interface SendEmailResult {
@@ -137,6 +150,30 @@ export async function sendEmail(
     // Domain-aligned Message-ID improves DKIM/SPF authentication
     const senderDomain = fromEmail.split('@')[1] || 'gmail.com';
 
+    // Threading headers — wrap each ID in angle brackets if the caller didn't.
+    // References falls back to inReplyTo so a single-ID parent still ends up
+    // in the chain (some MUAs reject References-less conversations even when
+    // In-Reply-To is present).
+    const headers: Record<string, string> = {
+      'List-Unsubscribe': `<mailto:${fromEmail}?subject=unsubscribe>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    };
+    const wrapAngles = (id: string): string => {
+      const trimmed = id.trim().replace(/^<|>$/g, '');
+      return trimmed ? `<${trimmed}>` : '';
+    };
+    if (options.inReplyTo) {
+      const irt = wrapAngles(options.inReplyTo);
+      if (irt) headers['In-Reply-To'] = irt;
+    }
+    if (options.references || options.inReplyTo) {
+      // References can be a pre-built "<A> <B>" chain — pass through verbatim
+      // when it already contains angle brackets; otherwise wrap a bare ID.
+      const refsRaw = options.references ?? options.inReplyTo ?? '';
+      const refs = /<[^>]+>/.test(refsRaw) ? refsRaw : wrapAngles(refsRaw);
+      if (refs) headers['References'] = refs;
+    }
+
     const mailOptions: Record<string, unknown> = {
       from,
       to,
@@ -145,10 +182,7 @@ export async function sendEmail(
       text: htmlToPlainText(bodyHtml),
       attachments,
       messageId: `<${crypto.randomUUID()}@${senderDomain}>`,
-      headers: {
-        'List-Unsubscribe': `<mailto:${fromEmail}?subject=unsubscribe>`,
-        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      },
+      headers,
     };
 
     // Build raw MIME message with nodemailer MailComposer
@@ -166,9 +200,15 @@ export async function sendEmail(
       });
     });
 
+    const requestBody: Record<string, unknown> = { raw };
+    // Gmail's own threading: pass threadId explicitly so the send is grafted
+    // onto the existing conversation in the user's mailbox view, regardless
+    // of how the recipient's MUA interprets the RFC822 headers.
+    if (options.gmailThreadId) requestBody.threadId = options.gmailThreadId;
+
     const response = await gmail.users.messages.send({
       userId: 'me',
-      requestBody: { raw },
+      requestBody,
     });
 
     return {
