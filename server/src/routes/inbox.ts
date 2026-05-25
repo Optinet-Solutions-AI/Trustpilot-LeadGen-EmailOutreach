@@ -513,11 +513,16 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       ));
       const notesByKey = new Map<string, string[]>();
       if (leadIds.length > 0) {
+        // Include manual replies sent through the Inbox composer
+        // (type='email_replied_manually') alongside scheduler-driven sends
+        // (type='email_sent'). Both are outbound messages the user expects
+        // to see as its own row, and both already carry campaign_id in
+        // their metadata so the grouping key resolves uniformly.
         const { data: notes } = await getSupabase()
           .from('lead_notes')
           .select('lead_id, metadata, created_at')
           .in('lead_id', leadIds)
-          .eq('type', 'email_sent')
+          .in('type', ['email_sent', 'email_replied_manually'])
           .order('created_at', { ascending: true });
         for (const n of notes ?? []) {
           const meta = (n.metadata as Record<string, unknown> | null) ?? null;
