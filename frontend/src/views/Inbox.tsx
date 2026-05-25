@@ -666,90 +666,64 @@ export default function Inbox() {
         ? `/inbox/thread-smtp/${cid}`
         : null;
 
-    // Per-step thread routing — when a multi-step send was fanned out into
-    // separate rows, opening the INITIAL row should show the original
-    // outreach template, not the live mailbox thread. The live thread
-    // typically only contains whatever the recipient's server returned for
-    // the latest send (often just the follow-up + reply), so clicking
-    // INITIAL and getting the same view as the follow-up row reads as a
-    // duplicate. Bypass the live-thread chain and render the campaign
-    // template directly for these rows. Follow-up rows (step >= 2) keep
-    // the live-thread behaviour — that's where the reply actually lives.
-    const isInitialOfMultistep = (msg.step_number ?? 1) === 1 && (msg.total_steps ?? 1) > 1;
-
-    // Three-tier strategy (only for non-INITIAL rows):
+    // Three-tier strategy:
     //   1. Primary — stored IDs (Gmail thread, SMTP Message-ID)
     //   2. Search — walk every connected mailbox for a matching conversation
     //   3. Rendered — reconstruct from the stored campaign template + lead data
     // (3) always succeeds for sends with an intact campaign + lead row, so the
     // user never sees "thread not available" for a campaign they actually ran.
+    //
+    // Both INITIAL and follow-up rows hit the same chain — the IMAP
+    // TO-based Sent search (server side) now pulls in every outbound
+    // message we sent to this lead in the last 180 days, regardless of
+    // subject overlap, so the initial outreach appears alongside the
+    // follow-up in the thread view. The visual differentiation between
+    // step rows lives in the pills, not in the thread itself.
     setThreadLoading(true);
     try {
       let data = null;
-      if (isInitialOfMultistep) {
-        // INITIAL row of a multi-step send — render the campaign template
-        // and surface only the outgoing message. We drop any synthetic
-        // reply rows the rendered endpoint normally appends because the
-        // reply belongs to the latest send (its own row), not the initial.
+      if (primaryUrl) {
+        try {
+          const res = await api.get(primaryUrl);
+          data = res.data.data;
+        } catch { /* fall through */ }
+      }
+      if (!data) {
+        try {
+          const res = await api.get(`/inbox/search-thread/${cid}`);
+          data = res.data.data;
+        } catch { /* fall through to rendered */ }
+      }
+      if (!data) {
         try {
           const res = await api.get(`/inbox/rendered-send/${cid}`);
-          const renderedData = res.data.data;
-          const outgoingOnly = (renderedData?.messages ?? []).filter((m: ThreadMessage) =>
-            m.labels?.includes('rendered') && !m.labels?.includes('reply'),
-          );
-          if (outgoingOnly.length > 0) {
-            data = {
-              ...renderedData,
-              messages: outgoingOnly,
-              rendered: true,
-            };
-          } else {
-            setThreadError('Initial outreach template not available');
-          }
+          data = res.data.data;
         } catch (err: unknown) {
           const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-            || (err instanceof Error ? err.message : 'Failed to load initial outreach');
+            || (err instanceof Error ? err.message : 'Failed to load thread');
           setThreadError(errMsg);
-        }
-      } else {
-        if (primaryUrl) {
-          try {
-            const res = await api.get(primaryUrl);
-            data = res.data.data;
-          } catch { /* fall through */ }
-        }
-        if (!data) {
-          try {
-            const res = await api.get(`/inbox/search-thread/${cid}`);
-            data = res.data.data;
-          } catch { /* fall through to rendered */ }
-        }
-        if (!data) {
-          try {
-            const res = await api.get(`/inbox/rendered-send/${cid}`);
-            data = res.data.data;
-          } catch (err: unknown) {
-            const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-              || (err instanceof Error ? err.message : 'Failed to load thread');
-            setThreadError(errMsg);
-          }
         }
       }
 
-      // Outgoing-message backfill: when the live mailbox thread came back
-      // with only inbound messages (the lead's auto-reply, a redirect notice
-      // from their mail server, or a reply that didn't reference our
-      // Message-ID), prepend the rendered campaign template so the user can
-      // always see what they originally sent. This is the common case for
-      // domain-level autoresponders ("no emails received under this domain,
-      // click CONTINUE") where our outgoing copy never gets correlated.
+      // Outgoing-message backfill — fires in two cases:
+      //   (a) the live thread has zero outgoing messages (domain-level
+      //       autoresponders, redirect notices, replies whose In-Reply-To
+      //       was lost) — surface what we sent so the user has context.
+      //   (b) the row claims `total_steps > 1` but the live thread only
+      //       returned fewer outgoing messages than that. This commonly
+      //       means the initial outreach was bounced/redirected before
+      //       the IMAP append landed, or got cleared from the Sent folder.
+      //       Prepending the rendered template guarantees the user always
+      //       sees the original outreach when clicking the INITIAL row.
       if (data?.messages && data.messages.length > 0 && !data.rendered) {
         const senderAcct = (data.senderAccount ?? '').toLowerCase();
-        const hasOutgoing = senderAcct !== '' && data.messages.some((m: ThreadMessage) => {
+        const outgoingCount = senderAcct === '' ? 0 : data.messages.filter((m: ThreadMessage) => {
           const fromAddr = (m.from.match(/<([^>]+)>/)?.[1] ?? m.from).toLowerCase();
           return fromAddr === senderAcct;
-        });
-        if (!hasOutgoing) {
+        }).length;
+        const expectedSteps = msg.total_steps ?? 1;
+        const shouldBackfill = outgoingCount === 0 || outgoingCount < expectedSteps;
+        if (shouldBackfill) {
           try {
             const renderedRes = await api.get(`/inbox/rendered-send/${cid}`);
             const renderedData = renderedRes.data.data;
@@ -757,10 +731,21 @@ export default function Inbox() {
               m.labels?.includes('rendered') && !m.labels?.includes('reply'),
             );
             if (renderedOutgoing) {
-              data = {
-                ...data,
-                messages: [renderedOutgoing, ...data.messages],
-              };
+              // Dedup — if the live thread already has a message at the
+              // same date as the rendered initial (within 60s), the IMAP
+              // search did find it and we shouldn't double-display.
+              const renderedTime = new Date(renderedOutgoing.date).getTime();
+              const alreadyPresent = data.messages.some((m: ThreadMessage) => {
+                const t = new Date(m.date).getTime();
+                return Number.isFinite(t) && Number.isFinite(renderedTime)
+                  && Math.abs(t - renderedTime) < 60 * 1000;
+              });
+              if (!alreadyPresent) {
+                data = {
+                  ...data,
+                  messages: [renderedOutgoing, ...data.messages],
+                };
+              }
             }
           } catch { /* keep live thread as-is when rendered fallback fails */ }
         }
