@@ -7,6 +7,7 @@ import { NotificationsProvider } from '../context/NotificationsContext';
 import { UIProvider } from '../context/UIContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+import CheckpointBanner from './CheckpointBanner';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -25,6 +26,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </Suspense>
               <TopBar />
               <main className="flex-1 min-w-0 max-w-full min-h-screen pt-14 lg:pt-16 lg:ml-64">
+                <CheckpointBanner />
                 {children}
               </main>
             </div>
