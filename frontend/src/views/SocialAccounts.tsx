@@ -256,7 +256,7 @@ export default function SocialAccounts() {
     <div className="p-6 max-w-5xl mx-auto">
       <SectionHeader
         title="Social Accounts"
-        subtitle="Connected Facebook and Instagram sessions used by the scraper."
+        subtitle="Connected Facebook and Instagram sessions used by the scraper. (build: v2-autofill)"
         actions={
           <Button onClick={() => setShowCreate((v) => !v)}>
             <span className="material-symbols-outlined text-[18px] mr-1">add</span>
