@@ -290,10 +290,17 @@ router.get('/messages', async (req: Request, res: Response) => {
   }
 });
 
-// ── GET /api/inbox/thread/:threadId?account=email ────────────────────────────
+// ── GET /api/inbox/thread/:threadId?account=email&lead=email ─────────────────
+// Optional `?lead=<email>` triggers an orphan-recovery merge: after fetching
+// the primary thread by ID, the endpoint runs a secondary Gmail search for
+// any `from:<account> to:<lead>` messages in the last 90 days and grafts any
+// not-already-included messages into the returned list. This restores legacy
+// follow-ups that were sent before the sequence scheduler started writing
+// In-Reply-To / threadId, where Gmail filed them into separate conversations.
 router.get('/thread/:threadId', async (req: Request, res: Response) => {
   const { threadId } = req.params;
   const account = (req.query.account as string | undefined)?.toLowerCase();
+  const leadEmail = (req.query.lead as string | undefined)?.toLowerCase();
 
   try {
     const clients = await getAllConnectedGmailClients();
@@ -312,7 +319,7 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
       format: 'full',
     });
 
-    const messages = ((threadRes.data.messages ?? []) as any[]).map((msg: any) => {
+    const messageBuilder = (msg: any) => {
       const headers = (msg.payload?.headers ?? []) as { name: string; value: string }[];
       const { html, plain } = extractBody(msg.payload);
       return {
@@ -328,7 +335,48 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
         unread: (msg.labelIds ?? []).includes('UNREAD'),
         labels: msg.labelIds ?? [],
       };
-    });
+    };
+
+    const messages = ((threadRes.data.messages ?? []) as any[]).map(messageBuilder);
+    const seenIds = new Set<string>(messages.map((m) => m.id).filter((id): id is string => !!id));
+
+    // Orphan-recovery pass — only fires when the caller supplied ?lead= so we
+    // never pay the extra round trip on inbox listings that don't need it.
+    if (leadEmail) {
+      try {
+        const q = `from:${entry.email} to:${leadEmail} newer_than:90d`;
+        const listRes = await entry.gmail.users.threads.list({ userId: 'me', q, maxResults: 5 });
+        const otherThreadIds = ((listRes.data.threads ?? []) as { id?: string | null }[])
+          .map((t) => t.id)
+          .filter((tid): tid is string => !!tid && tid !== threadId);
+
+        for (const tid of otherThreadIds) {
+          try {
+            const otherRes = await (entry.gmail.users.threads.get as (params: Record<string, unknown>) => Promise<{ data: any }>)({
+              userId: 'me',
+              id: tid,
+              format: 'full',
+            });
+            for (const m of (otherRes.data.messages ?? []) as any[]) {
+              if (!m.id || seenIds.has(m.id)) continue;
+              seenIds.add(m.id);
+              messages.push(messageBuilder(m));
+            }
+          } catch (e) {
+            console.warn(`[InboxThread] orphan merge failed for thread ${tid}:`, e instanceof Error ? e.message : e);
+          }
+        }
+        // Sort by Date header so the grafted orphans land in chronological
+        // order alongside the primary thread's messages.
+        messages.sort((a, b) => {
+          const ta = new Date(a.date).getTime() || 0;
+          const tb = new Date(b.date).getTime() || 0;
+          return ta - tb;
+        });
+      } catch (e) {
+        console.warn(`[InboxThread] orphan-recovery search failed for ${leadEmail}:`, e instanceof Error ? e.message : e);
+      }
+    }
 
     res.json({
       success: true,

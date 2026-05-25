@@ -120,8 +120,15 @@ async function sendFollowUp(cl: Record<string, unknown>) {
   // Wait for rate limiter
   await rateLimiter.waitUntilCanSend('[SequenceScheduler] ');
 
-  // Render template with lead data
-  const subject = renderAndSpin(step.template_subject, lead);
+  // Render template with lead data. Force a single "Re:" prefix on follow-ups
+  // so the recipient's MUA groups the message into the original conversation
+  // (subject is one of the three threading signals Gmail/Outlook use, along
+  // with In-Reply-To and References — set below). If the operator already
+  // wrote "Re:" into the template, leave it alone to avoid "Re: Re: Re:".
+  const renderedSubject = renderAndSpin(step.template_subject, lead);
+  const subject = /^re:\s/i.test(renderedSubject)
+    ? renderedSubject
+    : `Re: ${renderedSubject}`;
   const html = renderAndSpin(step.template_body, lead);
 
   // Check for screenshot
@@ -156,12 +163,38 @@ async function sendFollowUp(cl: Record<string, unknown>) {
     console.log(`[SequenceScheduler] Reusing initial sender ${senderAccount.email} for follow-up step ${nextStepNumber} → ${cl.email_used}`);
   }
 
+  // Threading signals — pulled from the original send recorded on this row.
+  //  - originalMessageId: RFC822 Message-ID for SMTP/IMAP path. Empty string
+  //    for Gmail-OAuth sends, where campaign_leads.gmail_message_id holds the
+  //    opaque Gmail internal ID, not a real RFC822 ID; passing it as
+  //    In-Reply-To would be useless (the recipient's MUA can't resolve it).
+  //  - gmailThreadId: Gmail-side thread grafting. Always set when we have
+  //    one — Gmail accepts threadId for any account, ignored elsewhere.
+  // All follow-up steps reference STEP 1's IDs so every send in the sequence
+  // grafts back onto the original conversation. We deliberately don't update
+  // gmail_message_id on this row — reply-tracker matches replies by step 1's
+  // ID, and overwriting it would orphan any in-flight replies to earlier
+  // steps.
+  const senderAuthType = (senderAccount as { auth_type?: string } | null | undefined)?.auth_type;
+  const isGmailSender = !senderAuthType || senderAuthType === 'gmail_oauth' || senderAuthType === 'app_password';
+  const recordedMessageId = (cl.gmail_message_id as string | null) ?? '';
+  const recordedThreadId = (cl.gmail_thread_id as string | null) ?? '';
+  // For Gmail accounts the stored gmail_message_id is Gmail's internal numeric
+  // ID, not an RFC822 Message-ID — never thread by it. SMTP accounts store
+  // the real Message-ID, which IS valid for In-Reply-To.
+  const inReplyTo = isGmailSender ? '' : recordedMessageId;
+  const gmailThreadId = recordedThreadId || '';
+
   // Send the email
   const result = await sendEmail(
     transformed.to,
     transformed.subject,
     transformed.html,
-    { screenshotPath },
+    {
+      screenshotPath,
+      ...(inReplyTo ? { inReplyTo, references: inReplyTo } : {}),
+      ...(gmailThreadId ? { gmailThreadId } : {}),
+    },
     senderAccount ?? undefined,
   );
 

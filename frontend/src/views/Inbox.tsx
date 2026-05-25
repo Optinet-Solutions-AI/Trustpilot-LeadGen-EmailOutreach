@@ -107,6 +107,11 @@ const REPLIED_READ_BADGE = { label: 'Replied', classes: 'bg-slate-100 text-slate
 export default function Inbox() {
   const searchParams = useSearchParams();
   const openParam = searchParams?.get('open') ?? null;
+  // Top-bar search lands here as ?search=… when the user is on /inbox. The
+  // value seeds the sidebar's free-text filter on mount and re-applies on
+  // subsequent param changes so consecutive searches from the top bar update
+  // the in-place filter without forcing a full reload.
+  const searchParam = searchParams?.get('search') ?? null;
 
   const [folder, setFolder] = useState<Folder>('replies');
   const [messages, setMessages] = useState<CampaignMessage[]>([]);
@@ -140,8 +145,10 @@ export default function Inbox() {
     const saved = localStorage.getItem('inbox_sort_mode');
     return saved === 'oldest' || saved === 'alpha' ? saved : 'latest';
   });
-  // Free-text filter on company / campaign name.
-  const [searchText, setSearchText] = useState<string>('');
+  // Free-text filter on company / campaign name. Initialized from the
+  // ?search= URL param so the top-bar global search seeds the sidebar filter
+  // when the user lands here from a different page.
+  const [searchText, setSearchText] = useState<string>(() => searchParam ?? '');
   const [loading, setLoading] = useState(true);
   const isMobile = useIsMobile();
   const [folderNavOpen, setFolderNavOpen] = useState(false);
@@ -345,8 +352,9 @@ export default function Inbox() {
       // message, we merge: take the refetched messages and append our
       // synthetic so it stays visible.
       const gmail = selectedMsg.sender_auth_type === 'gmail_oauth' || selectedMsg.sender_auth_type === 'app_password';
+      const refetchLeadParam = selectedMsg.email_used ? `?lead=${encodeURIComponent(selectedMsg.email_used)}` : '';
       const primaryUrl = gmail && selectedMsg.gmail_thread_id
-        ? `/inbox/thread/${selectedMsg.gmail_thread_id}`
+        ? `/inbox/thread/${selectedMsg.gmail_thread_id}${refetchLeadParam}`
         : selectedMsg.sender_auth_type === 'smtp' && selectedMsg.gmail_message_id
           ? `/inbox/thread-smtp/${selectedMsg.id}`
           : null;
@@ -533,6 +541,14 @@ export default function Inbox() {
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
 
+  // Keep the sidebar filter in sync with the URL ?search= param so a fresh
+  // top-bar search while already on /inbox updates the filter. Only applies
+  // when the param actually changes — clearing the param does NOT clobber a
+  // filter the user typed locally.
+  useEffect(() => {
+    if (searchParam !== null) setSearchText(searchParam);
+  }, [searchParam]);
+
   // Manual mailbox poll — hits /gmail/check-replies which runs the same
   // Gmail + IMAP scan the 10-min background job does, then refreshes the list
   // and top-bar notification badges.
@@ -578,8 +594,13 @@ export default function Inbox() {
 
     const canTryGmail = isGmailAccount(msg.sender_auth_type) && !!msg.gmail_thread_id;
     const canTrySmtp = isSmtpAccount(msg.sender_auth_type) && !!msg.gmail_message_id;
+    // For Gmail accounts, pass ?lead= so the route can run an orphan-recovery
+    // search for legacy follow-ups that landed in separate Gmail threads.
+    // Encode + omit when the email is absent so we never build a "?lead=" with
+    // an empty value that Gmail's query would reject.
+    const gmailLeadParam = msg.email_used ? `?lead=${encodeURIComponent(msg.email_used)}` : '';
     const primaryUrl = canTryGmail
-      ? `/inbox/thread/${msg.gmail_thread_id}`
+      ? `/inbox/thread/${msg.gmail_thread_id}${gmailLeadParam}`
       : canTrySmtp
         ? `/inbox/thread-smtp/${msg.id}`
         : null;

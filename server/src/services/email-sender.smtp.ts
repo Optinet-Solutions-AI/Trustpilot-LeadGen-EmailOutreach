@@ -107,6 +107,25 @@ export async function sendEmailSmtp(
   const hostPart = account.email.split('@')[1] || 'localhost';
   const messageId = `<${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}@${hostPart}>`;
 
+  // Threading headers — same wrap-in-angles logic as the Gmail path. Without
+  // these, the recipient's MUA cannot group the follow-up with the original
+  // outreach, and the IMAP thread fetcher's SEARCH HEADER In-Reply-To /
+  // References passes return nothing for the new send.
+  const wrapAngles = (id: string): string => {
+    const trimmed = id.trim().replace(/^<|>$/g, '');
+    return trimmed ? `<${trimmed}>` : '';
+  };
+  const threadHeaders: Record<string, string> = {};
+  if (options.inReplyTo) {
+    const irt = wrapAngles(options.inReplyTo);
+    if (irt) threadHeaders['In-Reply-To'] = irt;
+  }
+  if (options.references || options.inReplyTo) {
+    const refsRaw = options.references ?? options.inReplyTo ?? '';
+    const refs = /<[^>]+>/.test(refsRaw) ? refsRaw : wrapAngles(refsRaw);
+    if (refs) threadHeaders['References'] = refs;
+  }
+
   const mailOptions: nodemailer.SendMailOptions = {
     from: `"${account.fromName}" <${account.email}>`,
     to,
@@ -114,6 +133,7 @@ export async function sendEmailSmtp(
     html: bodyHtml,
     attachments,
     messageId,
+    ...(Object.keys(threadHeaders).length > 0 ? { headers: threadHeaders } : {}),
   };
 
   try {

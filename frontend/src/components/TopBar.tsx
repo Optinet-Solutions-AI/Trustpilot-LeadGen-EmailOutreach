@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useNotifications } from '../context/NotificationsContext';
 import { useUI } from '../context/UIContext';
 import MobileBottomSheet from './MobileBottomSheet';
@@ -34,6 +34,7 @@ function formatRelative(iso: string | null): string {
 
 export default function TopBar() {
   const router = useRouter();
+  const pathname = usePathname() ?? '';
   const [query, setQuery] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
@@ -54,9 +55,18 @@ export default function TopBar() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
+  // Route the search to whichever page the user is currently on if it has its
+  // own search behaviour (currently /inbox); otherwise fall through to the
+  // global Lead Matrix search. Without this, hitting Enter while looking at a
+  // thread silently redirects to /leads — which is misleading when the query
+  // is an email address or company name the user expects to find in the
+  // current view.
+  const isInbox = pathname.startsWith('/inbox');
+  const searchPlaceholder = isInbox ? 'Search inbox…' : 'Search leads…';
   const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && query.trim()) {
-      router.push(`/leads?search=${encodeURIComponent(query.trim())}`);
+      const target = isInbox ? '/inbox' : '/leads';
+      router.push(`${target}?search=${encodeURIComponent(query.trim())}`);
       setQuery('');
     }
   };
@@ -89,7 +99,7 @@ export default function TopBar() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleSearch}
-            placeholder="Search leads…"
+            placeholder={searchPlaceholder}
             className="w-full bg-surface-container-low border-none rounded-lg py-2 pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 transition-all"
           />
         </div>
