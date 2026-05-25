@@ -32,6 +32,10 @@ interface SocialAccount {
 
 interface ConnectStream {
   stages: { stage: string; detail: string | null }[];
+  // Raw stdout/stderr lines for debugging silent failures (missing env
+  // key, missing python dep, etc.). Surface in the UI so the operator
+  // sees SOMETHING when Python explodes before emitting STAGE events.
+  diagnostics: { kind: 'stdout' | 'stderr' | 'http'; line: string }[];
   status: 'idle' | 'streaming' | 'done' | 'failed';
   error?: string;
 }
@@ -45,6 +49,7 @@ const STATUS_VARIANT: Record<Status, 'success' | 'info' | 'error' | 'neutral'> =
 
 const STAGE_LABEL: Record<string, string> = {
   browser_open: 'Browser launching',
+  autofilled: 'Login form pre-filled — click Log in inside the browser',
   waiting_for_login: 'Log in inside the browser window',
   waiting_for_checkpoint_clear: 'Clear the captcha inside the browser window',
   cookies_captured: 'Cookies captured',
@@ -57,7 +62,12 @@ export default function SocialAccounts() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ platform: 'facebook' as Platform, handle: '', display_name: '' });
+  const [form, setForm] = useState({
+    platform: 'facebook' as Platform,
+    handle: '',
+    display_name: '',
+    password: '',  // optional autofill; never stored in DB or persisted in browser state
+  });
   const [streams, setStreams] = useState<Record<string, ConnectStream>>({});
   const eventSources = useRef<Record<string, EventSource>>({});
 
@@ -82,25 +92,15 @@ export default function SocialAccounts() {
     };
   }, [load]);
 
-  // ── create ──
-  const onCreate = async () => {
-    try {
-      await api.post('/social-accounts', {
-        platform: form.platform,
-        handle: form.handle.trim(),
-        display_name: form.display_name.trim() || undefined,
-      });
-      setForm({ platform: 'facebook', handle: '', display_name: '' });
-      setShowCreate(false);
-      void load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
   // ── connect / recover (SSE over POST via fetch) ──
-  const driveLoginFlow = useCallback(async (id: string, mode: 'connect' | 'recover') => {
-    setStreams((prev) => ({ ...prev, [id]: { stages: [], status: 'streaming' } }));
+  // Generic driver — handles freshly-created accounts (via /connect with
+  // optional creds in body) and captcha recovery (/recover, no body).
+  const driveLoginFlow = useCallback(async (
+    id: string,
+    mode: 'connect' | 'recover',
+    creds?: { username?: string; password?: string },
+  ) => {
+    setStreams((prev) => ({ ...prev, [id]: { stages: [], diagnostics: [], status: 'streaming' } }));
 
     const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL ?? '').replace(/\/$/, '') || '/api';
     const url = `${apiBase}/social-accounts/${id}/${mode}`;
@@ -112,11 +112,17 @@ export default function SocialAccounts() {
           ? { 'x-api-key': process.env.NEXT_PUBLIC_API_SECRET_KEY }
           : {}),
       },
+      body: creds ? JSON.stringify(creds) : undefined,
     });
     if (!resp.ok || !resp.body) {
       setStreams((prev) => ({
         ...prev,
-        [id]: { stages: [], status: 'failed', error: `HTTP ${resp.status}` },
+        [id]: {
+          stages: [],
+          diagnostics: [{ kind: 'http', line: `HTTP ${resp.status} ${resp.statusText}` }],
+          status: 'failed',
+          error: `HTTP ${resp.status}`,
+        },
       }));
       return;
     }
@@ -137,29 +143,78 @@ export default function SocialAccounts() {
             lastEvent = line.slice(7).trim();
           } else if (line.startsWith('data: ')) {
             const payload = JSON.parse(line.slice(6));
-            if (lastEvent === 'stage') {
-              setStreams((prev) => ({
-                ...prev,
-                [id]: {
-                  ...prev[id],
-                  stages: [...(prev[id]?.stages ?? []), payload],
-                  status: payload.stage === 'done'
-                    ? 'done'
-                    : payload.stage === 'failed'
-                    ? 'failed'
-                    : 'streaming',
-                  error: payload.stage === 'failed' ? payload.detail : undefined,
-                },
-              }));
-            } else if (lastEvent === 'exit') {
-              // Final flush — reload accounts so status pill updates.
-              void load();
-            }
+            setStreams((prev) => {
+              const cur = prev[id] ?? { stages: [], diagnostics: [], status: 'streaming' as const };
+              if (lastEvent === 'stage') {
+                return {
+                  ...prev,
+                  [id]: {
+                    ...cur,
+                    stages: [...cur.stages, payload],
+                    status: payload.stage === 'done'
+                      ? 'done'
+                      : payload.stage === 'failed'
+                      ? 'failed'
+                      : 'streaming',
+                    error: payload.stage === 'failed' ? payload.detail : cur.error,
+                  },
+                };
+              }
+              if (lastEvent === 'stdout' || lastEvent === 'stderr') {
+                return {
+                  ...prev,
+                  [id]: {
+                    ...cur,
+                    diagnostics: [...cur.diagnostics, { kind: lastEvent, line: payload.line }],
+                  },
+                };
+              }
+              if (lastEvent === 'exit') {
+                void load();
+                // If Python exited non-zero without ever emitting a 'failed' stage,
+                // surface that so the card doesn't look stuck on "streaming".
+                if (payload.code !== 0 && cur.status === 'streaming') {
+                  return {
+                    ...prev,
+                    [id]: { ...cur, status: 'failed', error: `Python exited ${payload.code}` },
+                  };
+                }
+              }
+              return prev;
+            });
           }
         }
       }
     }
   }, [load]);
+
+  // ── create ── one click: write the row, then immediately start the
+  // login flow with optional username+password autofill. Password is
+  // POSTed once, never persisted in the DB or in browser state after
+  // the request resolves.
+  const onCreate = async () => {
+    try {
+      const res = await api.post('/social-accounts', {
+        platform: form.platform,
+        handle: form.handle.trim(),
+        display_name: form.display_name.trim() || undefined,
+      });
+      const newId: string | undefined = res.data?.data?.id;
+      const password = form.password;
+      // Reset form FIRST so the password leaves React state immediately.
+      setForm({ platform: 'facebook', handle: '', display_name: '', password: '' });
+      setShowCreate(false);
+      await load();
+      if (newId) {
+        void driveLoginFlow(newId, 'connect', {
+          username: form.handle.trim(),
+          password: password || undefined,
+        });
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   // ── caps edit ──
   const [editCapsId, setEditCapsId] = useState<string | null>(null);
@@ -215,8 +270,8 @@ export default function SocialAccounts() {
       {/* Create form */}
       {showCreate && (
         <div className="mt-4 p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
-          <div className="flex gap-3 items-end">
-            <label className="flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+            <label className="block">
               <span className="block text-xs font-medium text-slate-600 mb-1">Platform</span>
               <select
                 className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
@@ -227,16 +282,30 @@ export default function SocialAccounts() {
                 <option value="instagram">Instagram</option>
               </select>
             </label>
-            <label className="flex-1">
-              <span className="block text-xs font-medium text-slate-600 mb-1">Username / handle</span>
+            <label className="block">
+              <span className="block text-xs font-medium text-slate-600 mb-1">Username / email</span>
               <input
                 className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
-                placeholder={form.platform === 'facebook' ? 'jane.doe.123' : '@jane_doe'}
+                placeholder={form.platform === 'facebook' ? 'jane@example.com' : '@jane_doe'}
                 value={form.handle}
+                autoComplete="off"
                 onChange={(e) => setForm({ ...form, handle: e.target.value })}
               />
             </label>
-            <label className="flex-1">
+            <label className="block">
+              <span className="block text-xs font-medium text-slate-600 mb-1">
+                Password <span className="text-slate-400 font-normal">(optional)</span>
+              </span>
+              <input
+                type="password"
+                className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+                placeholder="Not stored"
+                value={form.password}
+                autoComplete="new-password"
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+              />
+            </label>
+            <label className="block">
               <span className="block text-xs font-medium text-slate-600 mb-1">Label (optional)</span>
               <input
                 className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
@@ -245,11 +314,19 @@ export default function SocialAccounts() {
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })}
               />
             </label>
-            <Button onClick={onCreate} disabled={!form.handle.trim()}>Save</Button>
           </div>
-          <p className="text-xs text-slate-500">
-            Saving creates the row. You&apos;ll then click <strong>Connect</strong> on the card to launch a real browser and log in.
-          </p>
+          <div className="flex items-center justify-between gap-3 pt-1">
+            <p className="text-xs text-slate-500 max-w-2xl">
+              <strong>Save & log in</strong> creates the row and immediately opens a real browser.
+              If you provide a password, the login form is auto-filled so you only need to handle
+              2FA / captcha. {' '}
+              <span className="text-amber-700">Password is sent through your local server once and never stored anywhere.</span>
+            </p>
+            <Button onClick={onCreate} disabled={!form.handle.trim()}>
+              <span className="material-symbols-outlined text-[18px] mr-1">login</span>
+              Save &amp; log in
+            </Button>
+          </div>
         </div>
       )}
 
@@ -393,11 +470,14 @@ function AccountCard({
       </div>
 
       {/* Stream progress */}
-      {stream && stream.stages.length > 0 && (
+      {stream && (stream.stages.length > 0 || stream.diagnostics.length > 0 || stream.status === 'streaming') && (
         <div className="mt-3 p-2 bg-slate-50 rounded text-xs space-y-0.5 font-mono">
+          {stream.status === 'streaming' && stream.stages.length === 0 && (
+            <div className="text-slate-500 italic">Starting…</div>
+          )}
           {stream.stages.map((s, i) => (
             <div
-              key={i}
+              key={`s-${i}`}
               className={
                 s.stage === 'failed' ? 'text-red-700' :
                 s.stage === 'done' ? 'text-green-700' :
@@ -408,6 +488,26 @@ function AccountCard({
               {s.detail ? ` — ${s.detail}` : ''}
             </div>
           ))}
+          {stream.diagnostics.length > 0 && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-slate-500 select-none">
+                show {stream.diagnostics.length} diagnostic line{stream.diagnostics.length === 1 ? '' : 's'}
+              </summary>
+              <div className="mt-1 space-y-0.5">
+                {stream.diagnostics.map((d, i) => (
+                  <div
+                    key={`d-${i}`}
+                    className={d.kind === 'stderr' || d.kind === 'http' ? 'text-red-600' : 'text-slate-500'}
+                  >
+                    [{d.kind}] {d.line.trim()}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+          {stream.status === 'failed' && stream.error && (
+            <div className="text-red-700 font-bold mt-1">⚠ {stream.error}</div>
+          )}
         </div>
       )}
     </div>

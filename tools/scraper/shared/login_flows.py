@@ -129,11 +129,40 @@ def _wait_for_session_cookie(driver, cookie_name: str, deadline: float) -> Optio
     return None
 
 
+def _try_autofill(driver, platform: str, username: str, password: str) -> None:
+    """Best-effort pre-fill of the platform's login form.
+
+    Credentials come in via env vars (SOCIAL_LOGIN_USERNAME / _PASSWORD)
+    so they never appear on the command line. They are NOT persisted —
+    the process exits and they're gone. Selectors can drift; failures
+    here are silent (operator just sees an empty form and types manually).
+    """
+    from selenium.webdriver.common.by import By  # noqa: WPS433
+    try:
+        if platform == 'facebook':
+            user_el = driver.find_element(By.ID, 'email')
+            pass_el = driver.find_element(By.ID, 'pass')
+        else:  # instagram
+            user_el = driver.find_element(By.NAME, 'username')
+            pass_el = driver.find_element(By.NAME, 'password')
+        user_el.clear(); user_el.send_keys(username)
+        pass_el.clear(); pass_el.send_keys(password)
+        _emit('autofilled')
+        # Submitting the form is operator-driven on purpose — let them
+        # eyeball the values + handle the "Save your login info?" prompt
+        # that often follows a successful auth. Auto-submit increases
+        # ban risk without meaningfully reducing the human-in-the-loop time.
+    except Exception as exc:  # noqa: BLE001
+        print(f'WARN: autofill skipped — {exc}', file=sys.stderr)
+
+
 def start_login_session(account_id: str) -> bool:
     """Drive an operator-completed login for ``social_accounts.id``.
 
     Returns True on success (cookies saved, status='active'), False
-    otherwise.
+    otherwise. If SOCIAL_LOGIN_USERNAME + SOCIAL_LOGIN_PASSWORD are set
+    in the process environment, the login form is auto-filled so the
+    operator only has to click "Log in" + handle any 2FA/captcha.
     """
     account = _fetch_account(account_id)
     platform = account['platform']
@@ -146,6 +175,15 @@ def start_login_session(account_id: str) -> bool:
     driver = _open_driver(headless=False)
     try:
         driver.get(START_URL_BY_PLATFORM[platform])
+        # Read + erase the creds from process env immediately so even a
+        # crash dump can't reveal them.
+        user = os.environ.pop('SOCIAL_LOGIN_USERNAME', '')
+        pwd = os.environ.pop('SOCIAL_LOGIN_PASSWORD', '')
+        if user and pwd:
+            time.sleep(1.5)  # give the login page a beat to settle
+            _try_autofill(driver, platform, user, pwd)
+            user = ''  # zero the locals
+            pwd = ''
         _emit('waiting_for_login')
         deadline = time.monotonic() + LOGIN_MAX_SECONDS
         jar = _wait_for_session_cookie(driver, cookie_name, deadline)

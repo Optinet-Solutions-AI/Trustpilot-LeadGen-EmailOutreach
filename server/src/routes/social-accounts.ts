@@ -114,7 +114,19 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // ── Shared connect/recover SSE driver ────────────────────────────────
-function streamLoginFlow(accountId: string, recover: boolean, res: Response): void {
+/**
+ * Spawn the Python login_flows subprocess and stream its progress.
+ *
+ * `creds` are passed via spawn env (NOT command-line args, NOT logged)
+ * and the Python child pops them off process.env immediately, so they
+ * exist only briefly in the spawn's env block. Nothing is persisted.
+ */
+function streamLoginFlow(
+  accountId: string,
+  recover: boolean,
+  res: Response,
+  creds?: { username?: string; password?: string },
+): void {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -123,10 +135,23 @@ function streamLoginFlow(accountId: string, recover: boolean, res: Response): vo
   const args = ['-m', 'tools.scraper.shared.login_flows', '--account-id', accountId];
   if (recover) args.push('--recover');
 
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (creds?.username && creds?.password) {
+    childEnv.SOCIAL_LOGIN_USERNAME = creds.username;
+    childEnv.SOCIAL_LOGIN_PASSWORD = creds.password;
+  }
+
   const child = spawn(PYTHON, args, {
     cwd: PROJECT_ROOT,
-    env: { ...process.env },
+    env: childEnv,
   });
+  // Zero our local handle to the password so a heap dump of this process
+  // doesn't keep it around. The spawn() call has already copied it into
+  // the child's env block at this point.
+  if (creds) {
+    creds.password = undefined;
+    creds.username = undefined;
+  }
 
   const send = (event: string, data: unknown) => {
     res.write(`event: ${event}\n`);
@@ -144,6 +169,10 @@ function streamLoginFlow(accountId: string, recover: boolean, res: Response): vo
         const rest = line.slice('STAGE:'.length);
         const [stage, ...detailParts] = rest.split(':');
         send('stage', { stage, detail: detailParts.join(':') || null });
+      } else if (line) {
+        // Non-STAGE stdout is still useful when something explodes before
+        // the harness emits its first event (e.g. missing env key).
+        send('stdout', { line });
       }
     }
   });
@@ -171,8 +200,15 @@ function req_close(req: Request, fn: () => void): void {
 }
 
 // ── POST /api/social-accounts/:id/connect (SSE) ──────────────────────
+// Body may include { username, password } for autofill — both optional;
+// when present, the Python child uses them once to pre-fill the form and
+// then discards them.
 router.post('/:id/connect', (req: Request, res: Response) => {
-  streamLoginFlow(String(req.params.id), false, res);
+  const body = (req.body ?? {}) as { username?: string; password?: string };
+  streamLoginFlow(String(req.params.id), false, res, {
+    username: body.username,
+    password: body.password,
+  });
 });
 
 // ── POST /api/social-accounts/:id/recover (SSE) ──────────────────────
