@@ -144,6 +144,43 @@ async def _run_discover_taxonomy(args: argparse.Namespace) -> None:
     print(f"Taxonomy refresh summary: {summary}")
 
 
+async def _run_search_posts(args: argparse.Namespace) -> None:
+    """Social-platforms post search — consumer-mode lead discovery.
+
+    Reads ``query`` out of --filters (the same envelope the listing path
+    uses, so frontends can submit one shape). Writes PostStubs as JSON.
+    """
+    platform = get_platform(args.platform)
+    if not hasattr(platform, 'search_posts'):
+        raise SystemExit(f"Platform '{args.platform}' does not support post search.")
+    filters = _parse_filters(args.filters)
+    query = filters.get('query', '').strip()
+    if not query:
+        raise SystemExit("--filters must include a non-empty 'query' for --action search-posts.")
+
+    stubs = await platform.search_posts(query, filters, max_results=args.max_results)
+    _ensure_parent_dir(args.output)
+    with open(args.output, 'w', encoding='utf-8') as f:
+        json.dump(stubs, f, indent=2, ensure_ascii=False)
+    print(f"Wrote {len(stubs)} post stubs to {args.output}")
+    print(f"PROGRESS:search_done:{len(stubs)}", flush=True)
+
+
+async def _run_enrich_authors(args: argparse.Namespace) -> None:
+    """Social-platforms author enrichment — turns PostStubs into AuthorLeads."""
+    platform = get_platform(args.platform)
+    if not hasattr(platform, 'enrich_authors'):
+        raise SystemExit(f"Platform '{args.platform}' does not support author enrichment.")
+    with open(args.input, 'r', encoding='utf-8') as f:
+        stubs = json.load(f)
+    leads = await platform.enrich_authors(stubs, screenshots_dir=args.screenshots_dir)
+    _ensure_parent_dir(args.output)
+    with open(args.output, 'w', encoding='utf-8') as f:
+        json.dump(leads, f, indent=2, ensure_ascii=False)
+    print(f"Wrote {len(leads)} author leads to {args.output}")
+    print(f"PROGRESS:enrich_done:{len(leads)}", flush=True)
+
+
 def _run_manifests(_: argparse.Namespace) -> None:
     print(json.dumps(list_manifests(), indent=2, ensure_ascii=False))
 
@@ -160,7 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         '--action',
         required=True,
-        choices=['list', 'enrich', 'discover-taxonomy', 'manifests'],
+        choices=['list', 'enrich', 'discover-taxonomy', 'manifests', 'search-posts', 'enrich-authors'],
         help='Pipeline step to execute.',
     )
     # list-specific
@@ -201,6 +238,14 @@ def main() -> None:
         asyncio.run(_run_enrich(args))
     elif args.action == 'discover-taxonomy':
         asyncio.run(_run_discover_taxonomy(args))
+    elif args.action == 'search-posts':
+        if not args.output:
+            raise SystemExit("--output is required for --action search-posts.")
+        asyncio.run(_run_search_posts(args))
+    elif args.action == 'enrich-authors':
+        if not args.input or not args.output:
+            raise SystemExit("--input and --output are required for --action enrich-authors.")
+        asyncio.run(_run_enrich_authors(args))
 
 
 if __name__ == '__main__':

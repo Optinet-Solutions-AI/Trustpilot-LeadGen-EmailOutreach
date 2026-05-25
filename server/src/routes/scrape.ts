@@ -23,6 +23,11 @@ interface PlatformManifest {
   base_url: string;
   filter_schema: Array<Record<string, unknown>>;
   requires_proxy: boolean;
+  // Social platforms (Facebook, Instagram) declare these so the
+  // frontend can render the post-search variant of the form instead
+  // of the category-picker variant.
+  supports_post_search?: boolean;
+  supports_group_search?: boolean;
 }
 const PLATFORM_MANIFESTS: PlatformManifest[] = [
   {
@@ -71,6 +76,30 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
       { name: 'max_rating',       type: 'number', label: 'Max rating',      required: false, default: 3.5, min: 1.0, max: 5.0, step: 0.5 },
       { name: 'min_rating',       type: 'number', label: 'Min rating',      required: false, default: 1.0, min: 1.0, max: 5.0, step: 0.5 },
       { name: 'min_review_count', type: 'number', label: 'Min review count',required: false, default: 5,   min: 1,   max: 1000, step: 1 },
+    ],
+  },
+  {
+    name: 'facebook',
+    label: 'Facebook',
+    base_url: 'https://www.facebook.com',
+    requires_proxy: true,
+    supports_post_search: true,
+    supports_group_search: true,
+    filter_schema: [
+      { name: 'lead_type', type: 'select', label: 'Lead type', required: true,
+        default: 'consumers',
+        options: [
+          { value: 'consumers',  label: 'People asking for a service (post authors)' },
+          { value: 'businesses', label: 'Businesses in a niche (page owners)' },
+        ] },
+      // Consumer-mode fields
+      { name: 'query',        type: 'text',    label: 'Keyword / phrase' },
+      { name: 'groups_only',  type: 'boolean', label: 'Search inside groups only', default: false },
+      { name: 'date_from',    type: 'text',    label: 'Date from (YYYY-MM-DD)' },
+      { name: 'date_to',      type: 'text',    label: 'Date to (YYYY-MM-DD)' },
+      // Business-mode fields
+      { name: 'category',     type: 'text',    label: 'Page category (slug)' },
+      { name: 'country',      type: 'select',  label: 'Country', options_source: 'taxonomy:countries' },
     ],
   },
 ];
