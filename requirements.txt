@@ -21,3 +21,8 @@ curl_cffi>=0.7.0
 # spawned by server/src/services/taxonomy-discovery.ts.
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+
+# cryptography — AES-256-GCM for social_accounts.encrypted_cookies.
+# Required by tools/scraper/shared/encryption.py; cookies must round-trip
+# byte-compatibly with server/src/lib/encryption.ts (Node built-in crypto).
+cryptography>=42.0.0
