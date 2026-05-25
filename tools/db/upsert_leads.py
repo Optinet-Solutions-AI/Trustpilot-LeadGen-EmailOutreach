@@ -252,6 +252,10 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
         'platform_email': lead.get('platform_email'),
         'scraped_at': now_iso,
+        # Social-platform columns (M1 / migration 039) — null on review platforms
+        'author_handle': lead.get('author_handle'),
+        'follower_count': lead.get('follower_count'),
+        'is_business_profile': lead.get('is_business_profile'),
     }
     presence_row = {k: v for k, v in presence_row.items() if v is not None}
     try:
@@ -264,6 +268,39 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         # Leads row already wrote — partial success. Log and move on; the
         # next scrape will repair the missing presence.
         print(f"FAILED:upsert_presence|{profile_url}|{str(e)[:200]}")
+
+    # 5. UPSERT any attached posts into lead_platform_posts (M8).
+    #
+    # Social leads come with a `posts: [PostStub]` field listing the
+    # specific posts the author was observed in. Each PostStub becomes
+    # one lead_platform_posts row, keyed on (platform, post_url) so
+    # rerunning the same search doesn't multiply rows.
+    posts = lead.get('posts') or []
+    if posts and isinstance(posts, list):
+        for post in posts:
+            post_url = post.get('post_url')
+            if not post_url:
+                continue
+            post_row = {
+                'lead_id': lead_id,
+                'platform': platform,
+                'post_url': post_url,
+                'group_id': post.get('group_id'),
+                'group_name': post.get('group_name'),
+                'content_excerpt': post.get('content_excerpt'),
+                'posted_at': post.get('posted_at'),
+                'media_urls': post.get('media_urls'),
+                'scraped_at': now_iso,
+            }
+            post_row = {k: v for k, v in post_row.items() if v is not None}
+            try:
+                (
+                    table('lead_platform_posts')
+                    .upsert(post_row, on_conflict='platform,post_url')
+                    .execute()
+                )
+            except Exception as e:
+                print(f"FAILED:upsert_post|{post_url}|{str(e)[:200]}")
 
     return lead_id, is_new
 

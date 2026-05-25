@@ -537,12 +537,16 @@ class FacebookScraper(SocialPlatformScraper):
                         'profile_url': profile_url,
                         'author_handle': posts[0].get('author_handle'),
                         'display_name': display_name,
+                        'company_name': display_name,  # mapped to leads.company_name by upsert
                         'website_url': bio_link,
                         'email': None,
                         'location': None,
                         'is_business_profile': False,  # heuristic; v2
                         'follower_count': None,
                         'bio_excerpt': None,
+                        # Attach every observed post — upsert_leads.py writes
+                        # them into lead_platform_posts keyed on (platform,post_url).
+                        'posts': posts,
                     })
                     _emit(on_progress, 'enrich_progress', i=i, total=len(unique_authors))
                 except Exception as exc:  # noqa: BLE001

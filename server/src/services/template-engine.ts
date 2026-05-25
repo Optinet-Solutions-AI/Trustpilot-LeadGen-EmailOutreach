@@ -18,6 +18,10 @@ interface LeadData {
   category?: string;
   country?: string;
   primary_email?: string;
+  // Social-platform tokens — populated by the campaign-scheduler when
+  // it joins lead_platform_posts on lead_id (most recent post wins).
+  post_excerpt?: string;
+  post_url?: string;
   [key: string]: unknown;
 }
 
@@ -39,6 +43,12 @@ const TOKEN_MAP: Record<string, (lead: LeadData) => string> = {
   category:     (l) => l.category || 'your industry',
   country:      (l) => l.country || 'your market',
   email:        (l) => l.primary_email || '',
+  // Social-platform tokens — see lead_platform_posts (migration 039).
+  // Campaign-scheduler populates post_excerpt/post_url on the LeadData
+  // it hands to renderTemplate; if the lead has no observed posts,
+  // both tokens degrade to neutral phrasing that still reads naturally.
+  post_excerpt: (l) => (typeof l.post_excerpt === 'string' && l.post_excerpt) || 'your recent post',
+  post_url:     (l) => (typeof l.post_url === 'string' && l.post_url) || '',
 };
 
 /**
