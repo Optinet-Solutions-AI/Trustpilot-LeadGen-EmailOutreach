@@ -43,7 +43,24 @@ export interface YelpScrapeParams {
   forceRescrape: boolean;
 }
 
-export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams;
+export interface FacebookScrapeParams {
+  platform: 'facebook';
+  lead_type: 'consumers' | 'businesses';
+  // Consumer mode
+  query?: string;
+  groups_only?: boolean;
+  date_from?: string;
+  date_to?: string;
+  // Business mode
+  category?: string;
+  country?: string;
+  // Shared
+  enrich: boolean;
+  verify: boolean;
+  forceRescrape: boolean;
+}
+
+export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams | FacebookScrapeParams;
 
 export interface ScrapeJob {
   id: string;

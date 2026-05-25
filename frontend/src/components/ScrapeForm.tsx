@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { Search } from 'lucide-react';
-import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams } from '../types/scrape';
+import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams } from '../types/scrape';
 import CountryPicker from './CountryPicker';
 import CategoryPicker from './CategoryPicker';
 import PlatformPicker, { type PlatformManifest } from './PlatformPicker';
@@ -23,7 +23,7 @@ const LISTING_TYPE_OPTIONS = [
   { value: 'attractions', label: 'Attractions' },
 ];
 
-type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp';
+type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp' | 'facebook';
 
 export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [platform, setPlatform] = useState<SupportedPlatform>('trustpilot');
@@ -51,6 +51,15 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [yMinRating, setYMinRating] = useState(1.0);
   const [yMaxRating, setYMaxRating] = useState(3.5);
   const [yMinReviewCount, setYMinReviewCount] = useState(5);
+
+  // Facebook fields — two modes (consumers/businesses) toggled by leadType.
+  const [fbLeadType, setFbLeadType] = useState<'consumers' | 'businesses'>('consumers');
+  const [fbQuery, setFbQuery] = useState('');
+  const [fbGroupsOnly, setFbGroupsOnly] = useState(false);
+  const [fbDateFrom, setFbDateFrom] = useState('');
+  const [fbDateTo, setFbDateTo] = useState('');
+  const [fbCategory, setFbCategory] = useState('dentist');
+  const [fbCountry, setFbCountry] = useState('US');
 
   // Shared flags
   const [enrich, setEnrich] = useState(false);
@@ -93,6 +102,17 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         verify,
         forceRescrape,
       } satisfies YelpScrapeParams;
+    } else if (platform === 'facebook') {
+      params = {
+        platform: 'facebook',
+        lead_type: fbLeadType,
+        ...(fbLeadType === 'consumers'
+          ? { query: fbQuery, groups_only: fbGroupsOnly, date_from: fbDateFrom || undefined, date_to: fbDateTo || undefined }
+          : { category: fbCategory, country: fbCountry }),
+        enrich,
+        verify,
+        forceRescrape,
+      } satisfies FacebookScrapeParams;
     } else {
       params = {
         country,
@@ -221,6 +241,125 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 country={taCountry}
                 onGuardReady={(g) => { guardRef.current = g; }}
               />
+            </div>
+          </>
+        )}
+
+        {platform === 'facebook' && (
+          <>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="block text-sm font-medium text-on-surface mb-1.5">
+                Lead type
+              </label>
+              <div className="flex gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="fb-lead-type"
+                    value="consumers"
+                    checked={fbLeadType === 'consumers'}
+                    onChange={() => setFbLeadType('consumers')}
+                    disabled={busy}
+                  />
+                  People asking for a service (post authors)
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="fb-lead-type"
+                    value="businesses"
+                    checked={fbLeadType === 'businesses'}
+                    onChange={() => setFbLeadType('businesses')}
+                    disabled={busy}
+                  />
+                  Businesses in a niche (page owners)
+                </label>
+              </div>
+            </div>
+
+            {fbLeadType === 'consumers' && (
+              <>
+                <div className="sm:col-span-2 lg:col-span-2">
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-query">
+                    Keyword / phrase
+                  </label>
+                  <input
+                    id="fb-query"
+                    type="text"
+                    placeholder='e.g. "looking for a dentist"'
+                    value={fbQuery}
+                    onChange={(e) => setFbQuery(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={fbGroupsOnly}
+                      onChange={(e) => setFbGroupsOnly(e.target.checked)}
+                      disabled={busy}
+                    />
+                    Search inside groups only
+                  </label>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-date-from">
+                    Date from
+                  </label>
+                  <input
+                    id="fb-date-from"
+                    type="date"
+                    value={fbDateFrom}
+                    onChange={(e) => setFbDateFrom(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-date-to">
+                    Date to
+                  </label>
+                  <input
+                    id="fb-date-to"
+                    type="date"
+                    value={fbDateTo}
+                    onChange={(e) => setFbDateTo(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                </div>
+              </>
+            )}
+            {fbLeadType === 'businesses' && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-country">
+                    Country
+                  </label>
+                  <CountryPicker id="fb-country" value={fbCountry} onChange={setFbCountry} disabled={busy} />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-category">
+                    Page category slug
+                  </label>
+                  <input
+                    id="fb-category"
+                    type="text"
+                    placeholder="dentist, plumber, restaurant, …"
+                    value={fbCategory}
+                    onChange={(e) => setFbCategory(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                </div>
+              </>
+            )}
+            <div className="sm:col-span-2 lg:col-span-3">
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                Requires at least one connected Facebook account. Manage in <a href="/social-accounts" className="underline">Social Accounts</a>.
+              </p>
             </div>
           </>
         )}
