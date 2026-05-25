@@ -17,7 +17,20 @@ const FOLDERS: { key: Folder; icon: string; label: string }[] = [
 type SenderAuthType = 'gmail_oauth' | 'app_password' | 'smtp' | 'unknown';
 
 interface CampaignMessage {
+  /** Synthetic id when this row was fanned out from a multi-step
+   *  campaign_lead (`<clid>:stepN`), or the canonical campaign_lead UUID
+   *  otherwise. Use canonicalId() for any API call — `id` is for React keys
+   *  and selection state only. */
   id: string;
+  /** Canonical campaign_lead UUID. Always present on rows returned by the
+   *  fan-out endpoint; thread, reply, mark-read, and promote APIs resolve
+   *  via this field rather than the synthetic `id`. */
+  campaign_lead_id?: string;
+  /** 1-indexed step number when displaying per-send rows. */
+  step_number?: number;
+  /** Total sends recorded for this campaign_lead. >1 means the list is
+   *  showing a fanned-out view of a multi-step send. */
+  total_steps?: number;
   campaign_id: string;
   campaign_name: string;
   /** 'outreach' (default) or 'discovery_followup' — set in migration 028.
@@ -42,6 +55,14 @@ interface CampaignMessage {
    *  user can tell promoted-replies at a glance without losing them from the
    *  inbox. */
   is_prospect?: boolean;
+}
+
+// Resolve the canonical campaign_lead UUID from a row. Synthetic rows from
+// the per-step fan-out have an `id` like `<clid>:stepN`; every downstream
+// API (mark-read, reply, thread, promote) only accepts the canonical
+// campaign_lead id, so centralise that lookup here.
+function canonicalId(msg: Pick<CampaignMessage, 'id' | 'campaign_lead_id'>): string {
+  return msg.campaign_lead_id ?? msg.id;
 }
 
 interface ThreadMessage {
@@ -314,7 +335,7 @@ export default function Inbox() {
     setReplySending(true);
     setReplyStatus(null);
     try {
-      const res = await api.post(`/inbox/reply/${selectedMsg.id}`, {
+      const res = await api.post(`/inbox/reply/${canonicalId(selectedMsg)}`, {
         body: replyBody,
         subject: replySubject || undefined,
         replyToMessageId: replyTargetMsgId || undefined,
@@ -356,7 +377,7 @@ export default function Inbox() {
       const primaryUrl = gmail && selectedMsg.gmail_thread_id
         ? `/inbox/thread/${selectedMsg.gmail_thread_id}${refetchLeadParam}`
         : selectedMsg.sender_auth_type === 'smtp' && selectedMsg.gmail_message_id
-          ? `/inbox/thread-smtp/${selectedMsg.id}`
+          ? `/inbox/thread-smtp/${canonicalId(selectedMsg)}`
           : null;
       if (primaryUrl && data.message) {
         const syntheticMsg = data.message;
@@ -507,8 +528,18 @@ export default function Inbox() {
     setPromoting(true);
     setPromoteResult(null);
     try {
+      // Selection happens against synthetic per-step ids; the promote
+      // endpoint expects canonical campaign_lead ids. Map then dedupe so
+      // selecting multiple step rows for the same campaign_lead doesn't
+      // promote it twice.
+      const canonicalIds = Array.from(new Set(
+        [...selectedReplyIds].map((rid) => {
+          const m = messages.find((x) => x.id === rid);
+          return m ? canonicalId(m) : rid;
+        }),
+      ));
       const res = await api.post('/inbox/promote-to-prospects', {
-        campaignLeadIds: [...selectedReplyIds],
+        campaignLeadIds: canonicalIds,
       });
       const data = res.data?.data ?? {};
       const promoted = data.promoted ?? 0;
@@ -582,11 +613,17 @@ export default function Inbox() {
     // Mark as read locally AND in the DB so the badges update immediately.
     // The awaited markRead posts to mark-replies-read; refreshNotifications
     // forces a re-fetch of the sidebar + bell badge so the number drops even
-    // if the optimistic update and the 30s poll disagree.
+    // if the optimistic update and the 30s poll disagree. With per-send
+    // fan-out, "read" lives on the canonical campaign_lead — flip the
+    // optimistic state on every synthetic sibling row so all step rows
+    // share the same read indicator.
+    const cid = canonicalId(msg);
     if (msg.status === 'replied' && !msg.reply_read_at) {
-      setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, reply_read_at: new Date().toISOString() } : m));
+      setMessages((prev) => prev.map((m) =>
+        canonicalId(m) === cid ? { ...m, reply_read_at: new Date().toISOString() } : m,
+      ));
       try {
-        await markRead([msg.id]);
+        await markRead([cid]);
       } finally {
         refreshNotifications();
       }
@@ -602,7 +639,7 @@ export default function Inbox() {
     const primaryUrl = canTryGmail
       ? `/inbox/thread/${msg.gmail_thread_id}${gmailLeadParam}`
       : canTrySmtp
-        ? `/inbox/thread-smtp/${msg.id}`
+        ? `/inbox/thread-smtp/${cid}`
         : null;
 
     // Three-tier strategy:
@@ -622,13 +659,13 @@ export default function Inbox() {
       }
       if (!data) {
         try {
-          const res = await api.get(`/inbox/search-thread/${msg.id}`);
+          const res = await api.get(`/inbox/search-thread/${cid}`);
           data = res.data.data;
         } catch { /* fall through to rendered */ }
       }
       if (!data) {
         try {
-          const res = await api.get(`/inbox/rendered-send/${msg.id}`);
+          const res = await api.get(`/inbox/rendered-send/${cid}`);
           data = res.data.data;
         } catch (err: unknown) {
           const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -650,7 +687,15 @@ export default function Inbox() {
       setFolder('replies');
       return; // fetchMessages will re-run and we'll re-enter this effect
     }
-    const match = messages.find((m) => m.id === openParam);
+    // Match by canonical campaign_lead_id as well as synthetic row id — the
+    // notification bell sends the campaign_lead UUID, which won't equal a
+    // fanned-out row's synthetic `<clid>:stepN` id directly. When multiple
+    // sibling rows share the same canonical id, prefer the latest step (it
+    // carries the reply state the user actually wants to open).
+    const candidates = messages.filter((m) => m.id === openParam || m.campaign_lead_id === openParam);
+    const match = candidates.length > 0
+      ? candidates.sort((a, b) => (b.step_number ?? 1) - (a.step_number ?? 1))[0]
+      : null;
     if (match) {
       deeplinkHandledRef.current = openParam;
       openMessage(match);
@@ -1019,6 +1064,15 @@ export default function Inbox() {
                             className="text-[9px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap"
                           >
                             D-FU
+                          </span>
+                        )}
+                        {(msg.total_steps ?? 1) > 1 && (
+                          <span
+                            title={`Send ${msg.step_number} of ${msg.total_steps} for this lead (step 1 = initial outreach, step 2+ = follow-ups)`}
+                            className="text-[9px] font-bold uppercase tracking-wide bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                          >
+                            {msg.step_number === 1 ? 'Initial' : `Step ${msg.step_number}`}
+                            <span className="text-slate-400">/{msg.total_steps}</span>
                           </span>
                         )}
                         <span className="truncate">{msg.campaign_name}</span>
