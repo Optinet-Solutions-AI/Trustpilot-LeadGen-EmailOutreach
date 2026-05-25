@@ -411,7 +411,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
   try {
     const { data, error } = await getSupabase()
       .from('campaign_leads')
-      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, campaigns(name, campaign_type), leads(company_name, country)')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, campaigns(name, campaign_type), leads(company_name, country)')
       .in('status', statusFilter)
       .order('sent_at', { ascending: false })
       .limit(400);
@@ -478,6 +478,10 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
         reply_snippet: row.reply_snippet,
         gmail_thread_id: row.gmail_thread_id,
         gmail_message_id: row.gmail_message_id,
+        // current_step from campaign_leads — used as a fan-out fallback when
+        // lead_notes is missing entries for some sends (e.g. data that
+        // pre-dates the per-send activity log being wired up).
+        current_step: (row.current_step as number | null) ?? 1,
         is_prospect: prospectIds.has(row.id as string),
       };
     });
@@ -529,19 +533,37 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
         const key = `${msg.lead_id}|${msg.campaign_id}`;
         const sendTimes = notesByKey.get(key) ?? [];
         const canonicalId = msg.id as string;
-        if (sendTimes.length <= 1) {
+        // Effective send count is the max of the activity-log entries and the
+        // campaign_lead's current_step. lead_notes is the authoritative
+        // per-send log when complete, but historical rows that pre-date the
+        // per-send logging (or sends issued through paths that didn't write
+        // the note) can leave it short of reality. current_step is updated
+        // every time the sequence scheduler advances and is reliable for
+        // anything sequence-driven. Taking the max means a follow-up that
+        // current_step records but the note log doesn't still surfaces as
+        // its own row — the user sees the right total count even when the
+        // timestamps for missing steps fall back to the campaign_lead's
+        // sent_at.
+        const currentStep = (msg as { current_step?: number }).current_step ?? 1;
+        const effectiveCount = Math.max(sendTimes.length, currentStep);
+        if (effectiveCount <= 1) {
           expandedMessages.push({ ...msg, campaign_lead_id: canonicalId, step_number: 1, total_steps: 1 });
           continue;
         }
-        for (let i = 0; i < sendTimes.length; i++) {
-          const isLatest = i === sendTimes.length - 1;
+        const fallbackTime = (msg.sent_at as string | null) ?? null;
+        for (let i = 0; i < effectiveCount; i++) {
+          const isLatest = i === effectiveCount - 1;
+          // Prefer the note timestamp when one exists for this step; fall
+          // back to the campaign_lead's sent_at so the row still sorts into
+          // roughly the right place when notes are missing.
+          const stepTime = sendTimes[i] ?? fallbackTime;
           expandedMessages.push({
             ...msg,
             id: `${canonicalId}:step${i + 1}`,
             campaign_lead_id: canonicalId,
             step_number: i + 1,
-            total_steps: sendTimes.length,
-            sent_at: sendTimes[i],
+            total_steps: effectiveCount,
+            sent_at: stepTime,
             status: isLatest ? msg.status : 'sent',
             replied_at: isLatest ? msg.replied_at : null,
             reply_read_at: isLatest ? msg.reply_read_at : null,
