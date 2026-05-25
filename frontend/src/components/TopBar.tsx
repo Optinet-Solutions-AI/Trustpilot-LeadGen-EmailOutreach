@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, Suspense } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useNotifications } from '../context/NotificationsContext';
 import { useUI } from '../context/UIContext';
@@ -34,9 +34,6 @@ function formatRelative(iso: string | null): string {
 
 export default function TopBar() {
   const router = useRouter();
-  const pathname = usePathname() ?? '';
-  const searchParams = useSearchParams();
-  const [query, setQuery] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
@@ -56,33 +53,6 @@ export default function TopBar() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  // Route the search to whichever page the user is currently on if it has its
-  // own search behaviour (currently /inbox); otherwise fall through to the
-  // global Lead Matrix search. Without this, hitting Enter while looking at a
-  // thread silently redirects to /leads — which is misleading when the query
-  // is an email address or company name the user expects to find in the
-  // current view.
-  const isInbox = pathname.startsWith('/inbox');
-  const searchPlaceholder = isInbox ? 'Search inbox…' : 'Search leads…';
-
-  // On /inbox the URL is the single source of truth for the search filter —
-  // the Inbox sidebar's free-text filter also writes here. Mirror the param
-  // into the top-bar input so both controls always show the same value,
-  // regardless of which one the user typed into. Only sync when on /inbox
-  // so the top-bar input on other pages keeps its untouched draft state.
-  useEffect(() => {
-    if (!isInbox) return;
-    const fromUrl = searchParams?.get('search') ?? '';
-    setQuery((prev) => (prev === fromUrl ? prev : fromUrl));
-  }, [isInbox, searchParams]);
-  const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && query.trim()) {
-      const target = isInbox ? '/inbox' : '/leads';
-      router.push(`${target}?search=${encodeURIComponent(query.trim())}`);
-      setQuery('');
-    }
-  };
-
   const openReply = (id: string) => {
     markRead([id]);
     setShowNotif(false);
@@ -101,20 +71,28 @@ export default function TopBar() {
           <span className="material-symbols-outlined">menu</span>
         </button>
 
-        {/* Search — full width below `sm`, fixed-width above */}
-        <div className="relative w-full sm:w-56 xl:w-80 max-w-[calc(100vw-7rem)]">
-          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px] pointer-events-none">
-            search
-          </span>
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleSearch}
-            placeholder={searchPlaceholder}
-            className="w-full bg-surface-container-low border-none rounded-lg py-2 pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 transition-all"
-          />
-        </div>
+        {/* Search — extracted into a Suspense-wrapped child so its
+            useSearchParams() / usePathname() hooks don't bubble up and
+            force a CSR bailout on prerendered pages like /_not-found.
+            The fallback renders an inert disabled input so the layout
+            doesn't reflow between SSR and hydration. */}
+        <Suspense
+          fallback={
+            <div className="relative w-full sm:w-56 xl:w-80 max-w-[calc(100vw-7rem)]">
+              <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px] pointer-events-none">
+                search
+              </span>
+              <input
+                type="search"
+                disabled
+                placeholder="Search…"
+                className="w-full bg-surface-container-low border-none rounded-lg py-2 pl-10 pr-3 text-sm focus:outline-none"
+              />
+            </div>
+          }
+        >
+          <TopBarSearch />
+        </Suspense>
       </div>
 
       {/* Right Controls */}
@@ -230,6 +208,52 @@ export default function TopBar() {
         </div>
       </div>
     </header>
+  );
+}
+
+// Suspense-wrapped search input. Owns its own query state plus the
+// useSearchParams / usePathname / useRouter hooks so the rest of TopBar
+// stays prerender-friendly. Hitting Enter routes to /inbox?search= or
+// /leads?search= depending on the current page; while on /inbox the
+// input mirrors the URL ?search= param so the sidebar's free-text
+// filter and this input stay in lockstep.
+function TopBarSearch() {
+  const router = useRouter();
+  const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState('');
+
+  const isInbox = pathname.startsWith('/inbox');
+  const searchPlaceholder = isInbox ? 'Search inbox…' : 'Search leads…';
+
+  useEffect(() => {
+    if (!isInbox) return;
+    const fromUrl = searchParams?.get('search') ?? '';
+    setQuery((prev) => (prev === fromUrl ? prev : fromUrl));
+  }, [isInbox, searchParams]);
+
+  const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && query.trim()) {
+      const target = isInbox ? '/inbox' : '/leads';
+      router.push(`${target}?search=${encodeURIComponent(query.trim())}`);
+      setQuery('');
+    }
+  };
+
+  return (
+    <div className="relative w-full sm:w-56 xl:w-80 max-w-[calc(100vw-7rem)]">
+      <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px] pointer-events-none">
+        search
+      </span>
+      <input
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={handleSearch}
+        placeholder={searchPlaceholder}
+        className="w-full bg-surface-container-low border-none rounded-lg py-2 pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 transition-all"
+      />
+    </div>
   );
 }
 
