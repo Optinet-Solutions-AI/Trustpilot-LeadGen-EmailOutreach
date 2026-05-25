@@ -32,5 +32,12 @@ cryptography>=42.0.0
 # login) and tools/scraper/platforms/{facebook,instagram}.py (actual
 # scraping sessions). Playwright's CDP signals are detected by Meta's
 # fingerprinting; this driver patches them out.
+#
+# setuptools<81 is a transitive workaround: undetected-chromedriver 3.5.x
+# still imports the stdlib `distutils` module, which Python 3.12+ removed.
+# setuptools<81 reinstates `distutils` as a compat shim. Setuptools 81+
+# dropped that shim, so pin below 81 until undetected-chromedriver 4.x
+# (which doesn't depend on distutils) lands.
+setuptools<81
 undetected-chromedriver>=3.5.5
 selenium>=4.18.0
