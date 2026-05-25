@@ -666,7 +666,18 @@ export default function Inbox() {
         ? `/inbox/thread-smtp/${cid}`
         : null;
 
-    // Three-tier strategy:
+    // Per-step thread routing — when a multi-step send was fanned out into
+    // separate rows, opening the INITIAL row should show the original
+    // outreach template, not the live mailbox thread. The live thread
+    // typically only contains whatever the recipient's server returned for
+    // the latest send (often just the follow-up + reply), so clicking
+    // INITIAL and getting the same view as the follow-up row reads as a
+    // duplicate. Bypass the live-thread chain and render the campaign
+    // template directly for these rows. Follow-up rows (step >= 2) keep
+    // the live-thread behaviour — that's where the reply actually lives.
+    const isInitialOfMultistep = (msg.step_number ?? 1) === 1 && (msg.total_steps ?? 1) > 1;
+
+    // Three-tier strategy (only for non-INITIAL rows):
     //   1. Primary — stored IDs (Gmail thread, SMTP Message-ID)
     //   2. Search — walk every connected mailbox for a matching conversation
     //   3. Rendered — reconstruct from the stored campaign template + lead data
@@ -675,26 +686,53 @@ export default function Inbox() {
     setThreadLoading(true);
     try {
       let data = null;
-      if (primaryUrl) {
-        try {
-          const res = await api.get(primaryUrl);
-          data = res.data.data;
-        } catch { /* fall through */ }
-      }
-      if (!data) {
-        try {
-          const res = await api.get(`/inbox/search-thread/${cid}`);
-          data = res.data.data;
-        } catch { /* fall through to rendered */ }
-      }
-      if (!data) {
+      if (isInitialOfMultistep) {
+        // INITIAL row of a multi-step send — render the campaign template
+        // and surface only the outgoing message. We drop any synthetic
+        // reply rows the rendered endpoint normally appends because the
+        // reply belongs to the latest send (its own row), not the initial.
         try {
           const res = await api.get(`/inbox/rendered-send/${cid}`);
-          data = res.data.data;
+          const renderedData = res.data.data;
+          const outgoingOnly = (renderedData?.messages ?? []).filter((m: ThreadMessage) =>
+            m.labels?.includes('rendered') && !m.labels?.includes('reply'),
+          );
+          if (outgoingOnly.length > 0) {
+            data = {
+              ...renderedData,
+              messages: outgoingOnly,
+              rendered: true,
+            };
+          } else {
+            setThreadError('Initial outreach template not available');
+          }
         } catch (err: unknown) {
           const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-            || (err instanceof Error ? err.message : 'Failed to load thread');
+            || (err instanceof Error ? err.message : 'Failed to load initial outreach');
           setThreadError(errMsg);
+        }
+      } else {
+        if (primaryUrl) {
+          try {
+            const res = await api.get(primaryUrl);
+            data = res.data.data;
+          } catch { /* fall through */ }
+        }
+        if (!data) {
+          try {
+            const res = await api.get(`/inbox/search-thread/${cid}`);
+            data = res.data.data;
+          } catch { /* fall through to rendered */ }
+        }
+        if (!data) {
+          try {
+            const res = await api.get(`/inbox/rendered-send/${cid}`);
+            data = res.data.data;
+          } catch (err: unknown) {
+            const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+              || (err instanceof Error ? err.message : 'Failed to load thread');
+            setThreadError(errMsg);
+          }
         }
       }
 
