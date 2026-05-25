@@ -26,3 +26,11 @@ lxml>=5.0.0
 # Required by tools/scraper/shared/encryption.py; cookies must round-trip
 # byte-compatibly with server/src/lib/encryption.ts (Node built-in crypto).
 cryptography>=42.0.0
+
+# undetected-chromedriver — anti-fingerprint Chrome driver for Facebook/
+# Instagram. Required by tools/scraper/shared/login_flows.py (operator
+# login) and tools/scraper/platforms/{facebook,instagram}.py (actual
+# scraping sessions). Playwright's CDP signals are detected by Meta's
+# fingerprinting; this driver patches them out.
+undetected-chromedriver>=3.5.5
+selenium>=4.18.0
