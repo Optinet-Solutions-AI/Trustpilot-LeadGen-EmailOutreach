@@ -102,6 +102,24 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
       { name: 'country',      type: 'select',  label: 'Country', options_source: 'taxonomy:countries' },
     ],
   },
+  {
+    name: 'instagram',
+    label: 'Instagram',
+    base_url: 'https://www.instagram.com',
+    requires_proxy: true,
+    supports_post_search: true,
+    supports_group_search: false,
+    filter_schema: [
+      { name: 'lead_type', type: 'select', label: 'Lead type', required: true,
+        default: 'consumers',
+        options: [
+          { value: 'consumers',  label: 'People posting under a hashtag (post authors)' },
+          { value: 'businesses', label: 'Business profiles by category (explore feed)' },
+        ] },
+      { name: 'query',    type: 'text', label: 'Hashtag (without #)' },
+      { name: 'category', type: 'text', label: 'Explore category' },
+    ],
+  },
 ];
 const KNOWN_PLATFORMS = new Set(PLATFORM_MANIFESTS.map(p => p.name));
 
