@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useNotifications } from '../context/NotificationsContext';
 import { useUI } from '../context/UIContext';
 import MobileBottomSheet from './MobileBottomSheet';
@@ -35,6 +35,7 @@ function formatRelative(iso: string | null): string {
 export default function TopBar() {
   const router = useRouter();
   const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
   const [query, setQuery] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
@@ -63,6 +64,17 @@ export default function TopBar() {
   // current view.
   const isInbox = pathname.startsWith('/inbox');
   const searchPlaceholder = isInbox ? 'Search inbox…' : 'Search leads…';
+
+  // On /inbox the URL is the single source of truth for the search filter —
+  // the Inbox sidebar's free-text filter also writes here. Mirror the param
+  // into the top-bar input so both controls always show the same value,
+  // regardless of which one the user typed into. Only sync when on /inbox
+  // so the top-bar input on other pages keeps its untouched draft state.
+  useEffect(() => {
+    if (!isInbox) return;
+    const fromUrl = searchParams?.get('search') ?? '';
+    setQuery((prev) => (prev === fromUrl ? prev : fromUrl));
+  }, [isInbox, searchParams]);
   const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && query.trim()) {
       const target = isInbox ? '/inbox' : '/leads';

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import api from '../api/client';
 import { useNotifications } from '../context/NotificationsContext';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -126,6 +126,7 @@ const STATUS_BADGE: Record<string, { label: string; classes: string }> = {
 const REPLIED_READ_BADGE = { label: 'Replied', classes: 'bg-slate-100 text-slate-400' };
 
 export default function Inbox() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const openParam = searchParams?.get('open') ?? null;
   // Top-bar search lands here as ?search=… when the user is on /inbox. The
@@ -579,6 +580,29 @@ export default function Inbox() {
   useEffect(() => {
     if (searchParam !== null) setSearchText(searchParam);
   }, [searchParam]);
+
+  // Inverse sync: when the user types in the sidebar filter, mirror the
+  // value into the URL ?search= param after a short debounce. The top-bar
+  // search input reads the same param via usePathname/useSearchParams, so
+  // this is how the two stay in lockstep without sharing component state.
+  // Debounced (220ms) to avoid spamming router.replace on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const current = searchParams?.get('search') ?? '';
+      // No-op when nothing actually changed — saves an unnecessary
+      // router.replace and the implicit re-render it triggers.
+      if (current === searchText) return;
+      const params = new URLSearchParams(searchParams?.toString() ?? '');
+      if (searchText.trim()) {
+        params.set('search', searchText);
+      } else {
+        params.delete('search');
+      }
+      const qs = params.toString();
+      router.replace(qs ? `/inbox?${qs}` : '/inbox', { scroll: false });
+    }, 220);
+    return () => clearTimeout(handle);
+  }, [searchText, router, searchParams]);
 
   // Manual mailbox poll — hits /gmail/check-replies which runs the same
   // Gmail + IMAP scan the 10-min background job does, then refreshes the list
@@ -1085,6 +1109,30 @@ export default function Inbox() {
                           <span className={`text-sm truncate ${isUnread ? 'font-black text-on-surface' : 'font-bold text-on-surface'}`}>
                             {msg.company_name}
                           </span>
+                          {/* Step pill — promoted from the secondary line so the user can
+                              tell INITIAL from FOLLOW-UP at a glance instead of squinting
+                              at a tiny grey chip on the second row. Distinct colours per
+                              step type so two synthetic rows for the same lead don't read
+                              as visual duplicates. */}
+                          {(msg.total_steps ?? 1) > 1 && (
+                            <span
+                              title={msg.step_number === 1
+                                ? `Initial outreach (send 1 of ${msg.total_steps})`
+                                : `Follow-up #${(msg.step_number ?? 1) - 1} (send ${msg.step_number} of ${msg.total_steps})`}
+                              className={`flex-shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full whitespace-nowrap ${
+                                msg.step_number === 1
+                                  ? 'bg-blue-50 text-blue-700'
+                                  : 'bg-amber-50 text-amber-800'
+                              }`}
+                            >
+                              <span className="material-symbols-outlined text-[10px]">
+                                {msg.step_number === 1 ? 'send' : 'reply_all'}
+                              </span>
+                              {msg.step_number === 1
+                                ? 'Initial'
+                                : `Follow-up #${(msg.step_number ?? 1) - 1}`}
+                            </span>
+                          )}
                         </div>
                         <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.replied_at || msg.sent_at)}</span>
                       </div>
@@ -1095,15 +1143,6 @@ export default function Inbox() {
                             className="text-[9px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap"
                           >
                             D-FU
-                          </span>
-                        )}
-                        {(msg.total_steps ?? 1) > 1 && (
-                          <span
-                            title={`Send ${msg.step_number} of ${msg.total_steps} for this lead (step 1 = initial outreach, step 2+ = follow-ups)`}
-                            className="text-[9px] font-bold uppercase tracking-wide bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-full whitespace-nowrap"
-                          >
-                            {msg.step_number === 1 ? 'Initial' : `Step ${msg.step_number}`}
-                            <span className="text-slate-400">/{msg.total_steps}</span>
                           </span>
                         )}
                         <span className="truncate">{msg.campaign_name}</span>
