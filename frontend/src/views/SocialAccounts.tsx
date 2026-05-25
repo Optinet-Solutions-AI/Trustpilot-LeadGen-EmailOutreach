@@ -102,7 +102,11 @@ export default function SocialAccounts() {
   ) => {
     setStreams((prev) => ({ ...prev, [id]: { stages: [], diagnostics: [], status: 'streaming' } }));
 
-    const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL ?? '').replace(/\/$/, '') || '/api';
+    // Mirror the axios client's base resolution: NEXT_PUBLIC_API_BASE_URL + '/api'.
+    // We can't use axios for SSE (it consumes the body as JSON), so this raw
+    // fetch has to reconstruct the same URL shape by hand.
+    const envBase = (process.env.NEXT_PUBLIC_API_BASE_URL ?? '').replace(/\/$/, '');
+    const apiBase = envBase ? `${envBase}/api` : '/api';
     const url = `${apiBase}/social-accounts/${id}/${mode}`;
     const resp = await fetch(url, {
       method: 'POST',
