@@ -673,6 +673,37 @@ export default function Inbox() {
           setThreadError(errMsg);
         }
       }
+
+      // Outgoing-message backfill: when the live mailbox thread came back
+      // with only inbound messages (the lead's auto-reply, a redirect notice
+      // from their mail server, or a reply that didn't reference our
+      // Message-ID), prepend the rendered campaign template so the user can
+      // always see what they originally sent. This is the common case for
+      // domain-level autoresponders ("no emails received under this domain,
+      // click CONTINUE") where our outgoing copy never gets correlated.
+      if (data?.messages && data.messages.length > 0 && !data.rendered) {
+        const senderAcct = (data.senderAccount ?? '').toLowerCase();
+        const hasOutgoing = senderAcct !== '' && data.messages.some((m: ThreadMessage) => {
+          const fromAddr = (m.from.match(/<([^>]+)>/)?.[1] ?? m.from).toLowerCase();
+          return fromAddr === senderAcct;
+        });
+        if (!hasOutgoing) {
+          try {
+            const renderedRes = await api.get(`/inbox/rendered-send/${cid}`);
+            const renderedData = renderedRes.data.data;
+            const renderedOutgoing = (renderedData?.messages ?? []).find((m: ThreadMessage) =>
+              m.labels?.includes('rendered') && !m.labels?.includes('reply'),
+            );
+            if (renderedOutgoing) {
+              data = {
+                ...data,
+                messages: [renderedOutgoing, ...data.messages],
+              };
+            }
+          } catch { /* keep live thread as-is when rendered fallback fails */ }
+        }
+      }
+
       setThread(data);
     } finally {
       setThreadLoading(false);
