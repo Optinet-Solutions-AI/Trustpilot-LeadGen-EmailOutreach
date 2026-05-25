@@ -76,14 +76,19 @@ async function processDueSends(): Promise<void> {
   // and BATCH_LIMIT slots get burned on orphan rows from campaigns that already
   // finalized to 'sent'/'completed'. That was the exact starvation bug that left
   // genuinely-due leads stuck for days while every tick saw 10 ghost rows first.
+  // channel='email' filters out DM-channel rows (dm_facebook, dm_instagram —
+  // see migration 039). DM dispatch is M11/v2 work and gets its own scheduler;
+  // for now DM rows just sit at status='pending' so this loop doesn't try to
+  // fire them through nodemailer with an empty email_used.
   const { data: dueLeads, error } = await supabase
     .from('campaign_leads')
     .select(`
-      id, campaign_id, lead_id, email_used, scheduled_at,
+      id, campaign_id, lead_id, email_used, scheduled_at, channel,
       campaigns!inner (id, name, template_subject, template_body, include_screenshot, status, sending_schedule),
       leads (*)
     `)
     .eq('status', 'pending')
+    .eq('channel', 'email')
     .eq('campaigns.status', 'sending')
     .not('scheduled_at', 'is', null)
     .lte('scheduled_at', new Date().toISOString())
