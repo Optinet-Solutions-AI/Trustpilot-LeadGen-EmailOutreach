@@ -13,6 +13,7 @@ JSON so the storage format stays scraper-agnostic.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from tools.db.supabase_client import table
@@ -43,11 +44,18 @@ def load_cookies(account_id: str) -> Optional[CookieJar]:
 
 
 def save_cookies(account_id: str, jar: CookieJar) -> None:
-    """Encrypt and persist a cookie jar into social_accounts.encrypted_cookies."""
+    """Encrypt and persist a cookie jar into social_accounts.encrypted_cookies.
+
+    Also bumps ``updated_at`` so the Social Accounts UI (M4) can show a
+    reliable "last cookie refresh" timestamp — Postgres only auto-fires
+    the column's DEFAULT now() at INSERT time, so updates need to set it
+    explicitly.
+    """
     payload = encrypt_cookie(json.dumps(jar))
+    now_iso = datetime.now(timezone.utc).isoformat()
     (
         table('social_accounts')
-        .update({'encrypted_cookies': payload})
+        .update({'encrypted_cookies': payload, 'updated_at': now_iso})
         .eq('id', account_id)
         .execute()
     )

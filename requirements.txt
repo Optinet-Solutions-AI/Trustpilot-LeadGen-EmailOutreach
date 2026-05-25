@@ -4,7 +4,7 @@
 
 playwright>=1.40.0
 python-dotenv>=1.0.0
-postgrest==0.10.6
+postgrest>=0.10.6,<0.21
 playwright-stealth>=1.0.6
 requests>=2.31.0
 # curl_cffi — Chrome-TLS-fingerprint HTTP for the Tier 1.5 enricher fallback.
