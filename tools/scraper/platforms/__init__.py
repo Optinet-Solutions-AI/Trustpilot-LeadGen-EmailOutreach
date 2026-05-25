@@ -18,12 +18,14 @@ from tools.scraper.platforms.base import BasePlatformScraper
 from tools.scraper.platforms.trustpilot import TrustpilotScraper
 from tools.scraper.platforms.tripadvisor import TripAdvisorScraper
 from tools.scraper.platforms.yelp import YelpScraper
+from tools.scraper.platforms.facebook import FacebookScraper
 
 # Order here is the order the frontend's PlatformPicker dropdown shows.
 PLATFORMS: dict[str, Type[BasePlatformScraper]] = {
     TrustpilotScraper.name: TrustpilotScraper,
     TripAdvisorScraper.name: TripAdvisorScraper,
     YelpScraper.name: YelpScraper,
+    FacebookScraper.name: FacebookScraper,
 }
 
 
