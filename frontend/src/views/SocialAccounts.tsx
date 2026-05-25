@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../api/client';
+import api from '../api/client';
 import Button from '../ui/Button';
 import LoadingState from '../ui/LoadingState';
 import Pill from '../ui/Pill';

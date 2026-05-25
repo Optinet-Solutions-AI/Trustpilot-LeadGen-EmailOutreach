@@ -172,12 +172,12 @@ function req_close(req: Request, fn: () => void): void {
 
 // ── POST /api/social-accounts/:id/connect (SSE) ──────────────────────
 router.post('/:id/connect', (req: Request, res: Response) => {
-  streamLoginFlow(req.params.id, false, res);
+  streamLoginFlow(String(req.params.id), false, res);
 });
 
 // ── POST /api/social-accounts/:id/recover (SSE) ──────────────────────
 router.post('/:id/recover', (req: Request, res: Response) => {
-  streamLoginFlow(req.params.id, true, res);
+  streamLoginFlow(String(req.params.id), true, res);
 });
 
 export default router;

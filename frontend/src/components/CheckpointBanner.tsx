@@ -15,7 +15,7 @@
  * over.
  */
 import { useEffect, useState } from 'react';
-import { api } from '../api/client';
+import api from '../api/client';
 
 interface CheckpointAccount {
   id: string;
