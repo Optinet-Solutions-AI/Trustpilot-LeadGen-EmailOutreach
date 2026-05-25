@@ -498,19 +498,20 @@ export async function fetchSmtpThread(
     // to the same lead don't leak into this thread. Dedupe by Message-ID
     // keeps it additive.
     if (leadEmail && sentBox?.path) {
-      // Pull the seed subject out of whatever we already collected via the
-      // header-based search. That's the authoritative "this conversation's
-      // subject" — used below to score Sent search results so the right
-      // conversation wins.
-      const normalizeSubject = (s: string) =>
-        s.replace(/^\s*(re|fwd|fw)\s*:\s*/i, '').trim().toLowerCase();
-      // target is lowercased; c.messageId now preserves original case, so
-      // compare case-insensitively to find the seed outbound message.
-      const seed = collected.find((c) => c.messageId.toLowerCase() === target) ?? collected[0];
-      const targetSubject = seed ? normalizeSubject(seed.envelopeSubject) : '';
-
+      // Pull in every outbound message we sent to this lead from this
+      // account, over the last 180 days. No subject filter — the previous
+      // substring-overlap heuristic was excluding initial sends whose
+      // subject didn't share enough characters with the follow-up's, which
+      // left the thread view showing only the follow-up.
+      //
+      // For a B2B cold-outreach inbox the (sender_account, lead_email)
+      // tuple is unique enough that "everything we sent this person from
+      // this mailbox" is exactly what the user wants to see — and if the
+      // same lead does appear in two separate campaigns we'd rather merge
+      // them into a single thread than hide one. Dedup by Message-ID stays
+      // active so server-save + IMAP-append duplicates don't double-count.
       const leadAddr = leadEmail.toLowerCase();
-      const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
       try {
         const lock = await client.getMailboxLock(sentBox.path);
         try {
@@ -521,22 +522,6 @@ export async function fetchSmtpThread(
             const messageId = preserveId(msg.envelope?.messageId);
             const messageIdKey = normalizeId(msg.envelope?.messageId);
             if (messageIdKey && seenMessageIds.has(messageIdKey)) continue;
-            // Subject filter — relaxed from strict equality to substring
-            // overlap. Strict equality was dropping legacy follow-ups whose
-            // step template had its own subject (no "Re:" prefix, different
-            // wording), leaving the thread view showing only step 1. We now
-            // accept any message whose normalized subject either matches,
-            // contains, or is contained by the seed conversation's subject.
-            // The (sender, lead, 90-day) scope keeps false positives rare
-            // and the benefit — every send in the cadence appears in the
-            // thread — outweighs the risk of merging an unrelated thread.
-            if (targetSubject) {
-              const subj = normalizeSubject(msg.envelope?.subject ?? '');
-              const matches = subj === targetSubject
-                || (subj.length >= 6 && targetSubject.includes(subj))
-                || (targetSubject.length >= 6 && subj.includes(targetSubject));
-              if (!matches) continue;
-            }
             if (messageIdKey) seenMessageIds.add(messageIdKey);
             collected.push({
               uid: msg.uid!,
