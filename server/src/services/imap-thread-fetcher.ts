@@ -604,7 +604,18 @@ export async function fetchSmtpThread(
 
     messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    const result = { threadId: target, messages, senderAccount: accountEmail };
+    // Post-incident dedup — collapse same-direction sends within a 5-minute
+    // window. The 2026-05 scheduler race produced multiple physical sends
+    // per legitimate send, each with a different Message-ID so the
+    // Message-ID-based dedup above misses them. Walk chronologically; if a
+    // message has the same (from, to) as a recently-kept one and is within
+    // 5 minutes of it, drop it as a duplicate. Replies (different From)
+    // and genuine separate sends days apart survive untouched. Bursts in
+    // the historical data were all within 30 seconds, so 5 minutes is
+    // generous and safe.
+    const dedupedMessages = dedupBurstDuplicates(messages);
+
+    const result = { threadId: target, messages: dedupedMessages, senderAccount: accountEmail };
     setCachedThread(cacheKey, result);
     return result;
   } catch (err) {
@@ -737,8 +748,9 @@ export async function searchImapThreadByEmail(
     }
 
     messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const dedupedMessages = dedupBurstDuplicates(messages);
 
-    return { threadId: target, messages, senderAccount: accountEmail };
+    return { threadId: target, messages: dedupedMessages, senderAccount: accountEmail };
   } catch (err) {
     console.error(`[ImapThreadFetcher:search] ${accountEmail} error:`, err instanceof Error ? err.message : err);
     return null;
@@ -747,4 +759,51 @@ export async function searchImapThreadByEmail(
       try { await client.logout(); } catch { /* ignore */ }
     }
   }
+}
+
+/**
+ * Collapse same-direction sends within a 5-minute window. Defends against
+ * the 2026-05 scheduler race that produced multiple physical sends per
+ * legitimate send, each with a different Message-ID (so the seenMessageIds
+ * dedup above misses them).
+ *
+ * Algorithm: sort chronologically, then sweep. For each (from, to) pair,
+ * track the most recent kept message; drop any subsequent message in the
+ * same direction within 5 minutes. Replies (different From), genuine
+ * separate sends (days apart), and inbound mail all survive untouched.
+ *
+ * The 5-minute window is generous — the historical burst data shows
+ * duplicates within 30 seconds. Larger window picks up clock-skew edge
+ * cases without risk of merging genuine follow-ups (which are days apart
+ * by design).
+ */
+export function dedupBurstDuplicates<T extends { from: string; to: string; date: string }>(messages: T[]): T[] {
+  const WINDOW_MS = 5 * 60 * 1000;
+  const sorted = [...messages].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const kept: T[] = [];
+  const lastKeptByDirection = new Map<string, number>();
+  for (const m of sorted) {
+    const fromAddr = extractFirstAddress(m.from);
+    const toAddr = extractFirstAddress(m.to);
+    const direction = `${fromAddr}|${toAddr}`;
+    const ms = new Date(m.date).getTime();
+    const last = lastKeptByDirection.get(direction);
+    if (last === undefined || ms - last > WINDOW_MS) {
+      kept.push(m);
+      lastKeptByDirection.set(direction, ms);
+    }
+    // else: this is a burst duplicate of an earlier kept message — drop silently
+  }
+  return kept;
+}
+
+/** Pull the first email-address-shaped substring out of a From/To value
+ *  ("Name <email@host>" → "email@host"; bare "email@host" stays as-is).
+ *  Used solely for direction-pair clustering in dedupBurstDuplicates. */
+function extractFirstAddress(value: string): string {
+  if (!value) return '';
+  const angleMatch = value.match(/<([^>]+)>/);
+  if (angleMatch) return angleMatch[1].toLowerCase().trim();
+  const firstSegment = value.split(',')[0]?.trim() ?? value;
+  return firstSegment.toLowerCase().trim();
 }

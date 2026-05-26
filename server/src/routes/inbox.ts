@@ -13,7 +13,7 @@ import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { ImapFlow } from 'imapflow';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
-import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache } from '../services/imap-thread-fetcher.js';
+import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache, dedupBurstDuplicates } from '../services/imap-thread-fetcher.js';
 import { extractContacts } from '../services/auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 import { renderAndSpin } from '../services/template-engine.js';
@@ -378,9 +378,17 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
       }
     }
 
+    // Post-incident burst dedup — collapses duplicate same-direction
+    // sends within 5 minutes of each other (the 2026-05 scheduler race
+    // shipped multiple physical sends per legitimate send; the Message-ID
+    // dedup above doesn't catch them because each duplicate has a unique
+    // RFC822 Message-ID). Replies and genuine separate sends days apart
+    // survive untouched.
+    const dedupedMessages = dedupBurstDuplicates(messages);
+
     res.json({
       success: true,
-      data: { threadId, messages, senderAccount: entry.email },
+      data: { threadId, messages: dedupedMessages, senderAccount: entry.email },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -770,7 +778,7 @@ router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response)
           };
         });
 
-        res.json({ success: true, data: { threadId, messages, senderAccount: email } });
+        res.json({ success: true, data: { threadId, messages: dedupBurstDuplicates(messages), senderAccount: email } });
         return;
       } catch (e) {
         console.warn(`[search-thread] Gmail miss on ${email}:`, e instanceof Error ? e.message : e);
