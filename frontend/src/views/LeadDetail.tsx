@@ -94,6 +94,12 @@ export default function LeadDetail() {
   const { data: leadDiscoveries, refresh: refreshDiscoveries } = useLeadDiscoveries(id || null);
   const discoveryActions = useDiscoveryActions();
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
+  // Hide the screenshot section as a whole when the image 404s — otherwise
+  // the header sits orphaned above a broken image rectangle. Resets every
+  // time the lead's screenshot_path changes so navigating between leads
+  // doesn't carry one lead's failure flag to another.
+  const [screenshotFailed, setScreenshotFailed] = useState(false);
+  useEffect(() => { setScreenshotFailed(false); }, [lead?.screenshot_path]);
 
   // Loading flag distinct from `lead == null` — without it, a transient
   // network failure followed by an unset `loadError` would re-show the
@@ -473,8 +479,12 @@ export default function LeadDetail() {
           </div>
         </div>
 
-        {/* Screenshot */}
-        {lead.screenshot_path && (
+        {/* Screenshot — pass the raw screenshot_path through when it's a
+            full URL (Supabase Storage), otherwise route it through the API
+            proxy for legacy local-filename rows. The entire section hides
+            on load failure so the header never sits orphaned over a broken
+            image rectangle. */}
+        {lead.screenshot_path && !screenshotFailed && (
           <div className="mt-6 pt-6 border-t border-slate-100">
             <h3 className="text-sm font-bold text-on-surface mb-3 flex items-center gap-2">
               <span className="material-symbols-outlined text-[16px] text-secondary">screenshot</span>
@@ -482,10 +492,14 @@ export default function LeadDetail() {
             </h3>
             <div className="rounded-xl overflow-hidden border border-slate-100">
               <img
-                src={`/api/screenshots/${lead.screenshot_path.split(/[/\\]/).pop()}`}
+                src={
+                  /^https?:\/\//i.test(lead.screenshot_path)
+                    ? lead.screenshot_path
+                    : `/api/screenshots/${lead.screenshot_path.split(/[/\\]/).pop()}`
+                }
                 alt={`Trustpilot profile of ${lead.company_name}`}
                 className="w-full max-h-[400px] object-contain bg-surface-container"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                onError={() => setScreenshotFailed(true)}
               />
             </div>
           </div>
