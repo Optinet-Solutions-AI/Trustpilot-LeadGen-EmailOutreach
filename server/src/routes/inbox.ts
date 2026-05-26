@@ -861,11 +861,20 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
           .select('email, auth_type, status, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
           .ilike('email', cl.sender_email as string)
           .maybeSingle();
+        // Deliberately NOT gating on status='active'. 'paused' /
+        // 'disabled' means stop sending NEW mail — it must not block
+        // read access to historical replies on the same mailbox.
+        // Reply lookups are downstream of sending decisions and the
+        // operator typically pauses a sender for warmup or
+        // deliverability reasons, not because they want to lose access
+        // to the inbox. Re-activating the account is a separate
+        // operation handled on the Email Accounts page.
         if (!acc) {
           console.warn(`${logTag} reply-body fetch: no email_accounts row for sender ${cl.sender_email}`);
-        } else if (acc.status && acc.status !== 'active') {
-          console.warn(`${logTag} reply-body fetch: sender account ${cl.sender_email} is ${acc.status} (not active)`);
         } else {
+          if (acc.status && acc.status !== 'active') {
+            console.log(`${logTag} reply-body fetch: sender account ${cl.sender_email} is ${acc.status} — proceeding with read-only fetch anyway`);
+          }
           const authType = (acc.auth_type as string | null) ?? 'unknown';
           const replyAnchor = (cl.replied_at as string | null) ?? (cl.sent_at as string | null) ?? null;
           let snippet: string | null = null;
