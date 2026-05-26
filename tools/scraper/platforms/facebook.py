@@ -154,34 +154,60 @@ BUSINESS_PATTERNS = [
     "follow us", "like our page", "page", "official page",
 ]
 
-# Phrases that signal the post-author IS the kind of consumer we want:
-# someone seeking a service. Used both to score and to keep posts
-# that mention business-y words for context but ARE asking for help.
+# STRONG asking signals — phrases that almost always mean the author is
+# CURRENTLY looking for the service (not thanking, recommending, or sharing
+# a past experience). Removed the 'salamat doc / thanks doc / i recommend'
+# patterns that previously kept post-experience thank-you posts in the lead
+# list (e.g. Alcantara MTherese's 'Salamat Doc GV Niña' after a dentist
+# visit — she has a dentist, she's not looking for one).
 CONSUMER_PATTERNS = [
-    "looking for", "anyone know", "anyone tried", "any recommendation",
-    "any recommendations", "can you recommend", "i recommend",
-    "help me find", "where can i find", "any suggestion", "any suggestions",
-    "salamat doc",  # "thank you doctor" — Filipino consumers thanking a dentist
-    "thanks doc", "thank you doc",
-    "need a", "need help with",
+    "looking for a", "looking for an", "looking for any", "looking for some",
+    "looking for someone",
+    "anyone know a", "anyone tried", "anyone been to",
+    "any recommendation", "any recommendations",
+    "can you recommend", "can someone recommend", "please recommend",
+    "help me find", "where can i find", "where to find",
+    "any suggestion", "any suggestions", "any tips on finding",
+    "need a good", "need a reliable", "need to find", "need someone",
+    "in search of", "in need of",
+    "anyone here knows", "anyone here know",
+    "pa-suggest", "pa-recommend",  # Filipino code-switch for "please suggest / recommend"
 ]
+
+# Phrases that mean POST-EXPERIENCE (already went / already have a provider).
+# These authors are NOT looking — they're either thanking or showing off.
+# When detected, drop the post regardless of any consumer-pattern match.
+POST_EXPERIENCE_PATTERNS = [
+    "salamat doc", "thanks doc", "thank you doc",
+    "thank you to", "thanks to ",
+    "had my", "went to", "got my teeth", "appointment was", "appointment with",
+    "shoutout to dr", "shoutout to doc",
+    "i recommend", "i highly recommend", "highly recommend dr",
+    "i went", "i had", "we went", "we had",
+]
+
+
+def _is_actively_asking(excerpt: str) -> bool:
+    """Strict check: the post LOOKS like someone CURRENTLY asking for the
+    service. Requires (a) a strong consumer/asking phrase, and (b) absence
+    of post-experience markers. Returns False for thank-you posts,
+    recommendations, and past-tense narratives even when they happen to
+    contain 'looking for' rhetorically.
+    """
+    text = (excerpt or '').lower()
+    has_asking = any(p in text for p in CONSUMER_PATTERNS)
+    has_past = any(p in text for p in POST_EXPERIENCE_PATTERNS)
+    return has_asking and not has_past
 
 
 def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
     """Return True when the post LOOKS like a business advertising rather than
     a consumer asking.
 
-    Three strength levels of business signal:
-      1. STRONG handle — the FB handle itself contains a clinic/business
-         token (arriesgado.dentalclinic, neardentalclinics, etc.).
-         Drop regardless of post text — businesses often phrase ads as
-         'Looking for a dentist? We've got you!' which matches consumer
-         patterns and would otherwise sneak through.
-      2. STRONG text — 2 or more business phrases in the excerpt
-         ('book an appointment' + 'our team' + 'branch:' clearly an ad).
-         Drop regardless of consumer phrases.
-      3. WEAK signals — 1 business phrase. Only drops if no consumer
-         phrases are present.
+    Decision tree:
+      1. Handle clearly identifies a business (clinic/dental/etc.) → drop.
+      2. 2+ business phrases in excerpt → drop regardless of asking phrases.
+      3. 1 business phrase AND no asking phrase → drop.
     """
     text = (excerpt or '').lower()
     handle = (author_handle or '').lower()
@@ -191,18 +217,15 @@ def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
         'studio', 'spa', 'salon', 'medspa', 'wellness', 'pharmacy',
         'optical', 'medical', 'health',
     )
-    # Strong: handle clearly identifies a business. Always drop.
     if any(tok in handle for tok in BUSINESS_HANDLE_TOKENS):
         return True
 
     business_hits = sum(1 for p in BUSINESS_PATTERNS if p in text)
-    has_consumer_signal = any(p in text for p in CONSUMER_PATTERNS)
+    has_asking = any(p in text for p in CONSUMER_PATTERNS)
 
-    # Strong: 2+ business phrases beats any single consumer phrase.
     if business_hits >= 2:
         return True
-    # Weak: 1 business phrase + no consumer phrase = drop.
-    if business_hits >= 1 and not has_consumer_signal:
+    if business_hits >= 1 and not has_asking:
         return True
     return False
 
@@ -541,25 +564,42 @@ class FacebookScraper(SocialPlatformScraper):
             query = (filters.get('query') or '').strip()
             if not query:
                 raise ValueError("Consumer-mode Facebook scrapes require a 'query' filter")
+            # Default to groups-only because group posts are MUCH more likely
+            # to be people actively asking ("Anyone know a good dentist in
+            # <city>?") than the FB News Feed's open search which mixes in
+            # thank-yous, recommendations, photos from past visits, etc.
+            # Operator can override by setting groups_only=false explicitly.
+            if 'groups_only' not in filters:
+                filters = {**filters, 'groups_only': True}
             post_stubs = await self.search_posts(
                 query, filters, max_results=max_results, on_progress=on_progress,
             )
-            # Filter out posts that look like businesses advertising
-            # themselves — the consumer-mode use case wants people ASKING
-            # for the service, not clinics promoting it. Operator can
-            # override by setting exclude_businesses=false in filters.
+            # Two-layer consumer-only filter:
+            #  1. Drop business/ad posts (clinic handles, ad copy).
+            #  2. Keep only posts that look like someone ACTIVELY ASKING
+            #     for the service. Post-experience thank-you posts
+            #     ('Salamat Doc...') and recommendations ('I recommend
+            #     Dr.X') get dropped — those people already have a
+            #     dentist, they're not leads.
+            # Either filter is operator-overridable via filters.
             exclude_businesses = filters.get('exclude_businesses', True)
-            if exclude_businesses:
+            asking_only = filters.get('asking_only', True)
+            if exclude_businesses or asking_only:
                 before = len(post_stubs)
-                post_stubs = [
-                    s for s in post_stubs
-                    if not _looks_like_business_post(
-                        s.get('content_excerpt', ''), s.get('author_handle', ''),
-                    )
-                ]
-                dropped = before - len(post_stubs)
+                kept: list = []
+                for s in post_stubs:
+                    excerpt = s.get('content_excerpt', '') or ''
+                    handle = s.get('author_handle', '') or ''
+                    if exclude_businesses and _looks_like_business_post(excerpt, handle):
+                        continue
+                    if asking_only and not _is_actively_asking(excerpt):
+                        continue
+                    kept.append(s)
+                dropped = before - len(kept)
                 if dropped > 0:
-                    _emit(on_progress, 'business_filtered', dropped=dropped, kept=len(post_stubs))
+                    _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
+                          reason='non-asking posts (thanks/recommend/business) removed')
+                post_stubs = kept
 
             # Reshape PostStubs into profile-stub form so the list→enrich
             # orchestrator can drive them. We keep the original PostStub

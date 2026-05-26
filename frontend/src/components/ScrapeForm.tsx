@@ -55,7 +55,10 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   // Facebook fields — two modes (consumers/businesses) toggled by leadType.
   const [fbLeadType, setFbLeadType] = useState<'consumers' | 'businesses'>('consumers');
   const [fbQuery, setFbQuery] = useState('');
-  const [fbGroupsOnly, setFbGroupsOnly] = useState(false);
+  // groups_only defaults TRUE — group posts are mostly people actively
+  // asking ('Anyone know a good dentist?'). Open feed search mixes in
+  // thank-yous, recommendations, and ads.
+  const [fbGroupsOnly, setFbGroupsOnly] = useState(true);
   const [fbDateFrom, setFbDateFrom] = useState('');
   const [fbDateTo, setFbDateTo] = useState('');
   const [fbCategory, setFbCategory] = useState('dentist');
@@ -301,8 +304,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                       onChange={(e) => setFbGroupsOnly(e.target.checked)}
                       disabled={busy}
                     />
-                    Search inside groups only
+                    Groups-only (recommended)
                   </label>
+                  <p className="text-[11px] text-on-surface-variant ml-6 mt-0.5">
+                    People asking for services post in groups. Open feed has too many thank-yous + ads.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-date-from">
