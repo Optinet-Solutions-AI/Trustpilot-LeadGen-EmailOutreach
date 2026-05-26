@@ -564,13 +564,15 @@ class FacebookScraper(SocialPlatformScraper):
             query = (filters.get('query') or '').strip()
             if not query:
                 raise ValueError("Consumer-mode Facebook scrapes require a 'query' filter")
-            # Default to groups-only because group posts are MUCH more likely
-            # to be people actively asking ("Anyone know a good dentist in
-            # <city>?") than the FB News Feed's open search which mixes in
-            # thank-yous, recommendations, photos from past visits, etc.
-            # Operator can override by setting groups_only=false explicitly.
-            if 'groups_only' not in filters:
-                filters = {**filters, 'groups_only': True}
+            # NOTE: FB's `/search/posts/?q=...&filters=groups` URL returns
+            # zero results — there is no global "posts inside groups"
+            # search. The Groups tab in FB's search UI shows groups
+            # themselves, not posts within them. To actually scope a
+            # search to group posts, we'd need to (a) find groups via
+            # search_groups, then (b) visit each group's own search
+            # endpoint (/groups/<id>/search/?q=...). That's a future
+            # enhancement. For now we rely on the strict asking-only
+            # filter below to clean the open-feed results.
             post_stubs = await self.search_posts(
                 query, filters, max_results=max_results, on_progress=on_progress,
             )
