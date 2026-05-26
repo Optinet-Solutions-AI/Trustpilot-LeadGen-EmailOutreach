@@ -627,8 +627,12 @@ export default function Inbox() {
     }
   }, [checkingMailbox, fetchMessages, refreshNotifications]);
 
-  const openMessage = useCallback(async (msg: CampaignMessage) => {
-    if (selectedId === msg.id) return;
+  // openMessage runs the full thread-load chain. Pass { force: true } when
+  // the caller wants to bypass the same-row dedup — useful for an explicit
+  // Resync button that re-triggers the rendered-send on-demand IMAP fetch
+  // even when nothing about the selected row has changed.
+  const openMessage = useCallback(async (msg: CampaignMessage, opts: { force?: boolean } = {}) => {
+    if (!opts.force && selectedId === msg.id) return;
     setSelectedId(msg.id);
     setSelectedMsg(msg);
     setThread(null);
@@ -1239,9 +1243,27 @@ export default function Inbox() {
                   </span>
                 )}
               </div>
-              <button onClick={() => { setSelectedId(null); setSelectedMsg(null); setThread(null); setThreadError(null); }} className="p-1.5 rounded-lg hover:bg-surface-container transition-colors">
-                <span className="material-symbols-outlined text-[18px] text-secondary">close</span>
-              </button>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                {/* Resync — re-runs the thread-load chain with force=true so
+                    the rendered-send endpoint's on-demand IMAP body fetch
+                    fires even when the same row is already open. Useful
+                    when the reply-tracker just landed a reply (status
+                    flipped but body cache empty) and the user wants the
+                    body pulled in right now without reopening the row. */}
+                <button
+                  onClick={() => { if (selectedMsg) openMessage(selectedMsg, { force: true }); }}
+                  disabled={threadLoading}
+                  title="Re-fetch this thread — pulls the latest reply body from your mailbox"
+                  className="p-1.5 rounded-lg hover:bg-surface-container transition-colors disabled:opacity-40"
+                >
+                  <span className={`material-symbols-outlined text-[18px] text-secondary ${threadLoading ? 'animate-spin' : ''}`}>
+                    {threadLoading ? 'progress_activity' : 'refresh'}
+                  </span>
+                </button>
+                <button onClick={() => { setSelectedId(null); setSelectedMsg(null); setThread(null); setThreadError(null); }} className="p-1.5 rounded-lg hover:bg-surface-container transition-colors">
+                  <span className="material-symbols-outlined text-[18px] text-secondary">close</span>
+                </button>
+              </div>
             </div>
 
             <div className="px-5 py-4 flex items-center gap-3 border-b border-slate-100">
