@@ -141,6 +141,29 @@ def _flag_checkpoint(account_id: str, reason: str) -> None:
     _emit(None, 'failed', kind='checkpoint', account=account_id, reason=reason)
 
 
+def _detect_chrome_major_version() -> Optional[int]:
+    """Read installed Chrome's major version so chromedriver matches."""
+    import re
+    import subprocess
+    candidates = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    ]
+    chrome_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if not chrome_path:
+        return None
+    try:
+        out = subprocess.check_output(
+            ['powershell', '-NoProfile', '-Command',
+             f"(Get-Item '{chrome_path}').VersionInfo.ProductVersion"],
+            text=True, timeout=5,
+        ).strip()
+        m = re.match(r'(\d+)\.', out)
+        return int(m.group(1)) if m else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _open_driver():
     """Open an undetected-chromedriver, headless if PLAYWRIGHT_HEADLESS=true."""
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy
@@ -152,7 +175,17 @@ def _open_driver():
     options.add_argument('--window-size=1280,900')
     options.add_argument('--lang=en-US,en')
     options.add_argument('--disable-blink-features=AutomationControlled')
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    # Pin chromedriver to installed Chrome major version so we don't get
+    # the version-149-but-Chrome-148 mismatch.
+    version_main: Optional[int] = None
+    override = os.getenv('SOCIAL_CHROME_VERSION')
+    if override and override.isdigit():
+        version_main = int(override)
+    else:
+        version_main = _detect_chrome_major_version()
+    if version_main:
+        print(f'INFO: pinning chromedriver to Chrome major version {version_main}', file=sys.stderr)
+    driver = uc.Chrome(options=options, use_subprocess=True, version_main=version_main)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     return driver
 
@@ -192,34 +225,92 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
 
     Returns dicts with: post_url, author_handle, author_profile_url,
     content_excerpt, posted_at (best-effort).
+
+    FB uses several post-URL patterns. We accept any anchor whose
+    href matches one of the known patterns:
+      - /posts/<id> or /<handle>/posts/<id>
+      - /permalink.php?story_fbid=...
+      - /share/p/<id>
+      - /groups/<id>/posts/<id>
+      - /story.php?...
     """
+    import re
+    import hashlib
+
+    # Author = a user profile or page handle (NOT /groups/, /photo/, /watch/,
+    # /search/, /reel/, /events/). FB's new search results encrypt actual
+    # post permalinks behind `__cft__` tokens, so there's no clean post URL
+    # to extract — we synthesize one from author + content hash for dedup.
+    NON_AUTHOR_PREFIXES = (
+        '/groups/', '/photo/', '/photo.php', '/watch/', '/search/', '/reel/',
+        '/events/', '/marketplace/', '/share/', '/permalink', '/story.php',
+        '/messages/', '/help/', '/policies/', '/privacy/', '/terms/',
+    )
+
+    def _is_author_link(href: str) -> bool:
+        if 'facebook.com' not in href:
+            return False
+        path = href.split('facebook.com', 1)[-1].split('?')[0].split('#')[0]
+        if any(path.startswith(p) for p in NON_AUTHOR_PREFIXES):
+            return False
+        # /profile.php?id=... is a valid author link
+        if '/profile.php' in href:
+            return True
+        # /<handle>/ or /<handle>?... — single path segment is the handle
+        segments = [s for s in path.strip('/').split('/') if s]
+        return len(segments) == 1 and segments[0] not in ('', 'home.php')
+
     posts: list[dict] = []
-    # role=article is the most stable anchor for a post card.
+    articles: list = []
     try:
-        articles = driver.find_elements('css selector', 'div[role="article"]')
+        articles = driver.find_elements('css selector', 'div[role="feed"] > div')
+        if not articles:
+            articles = driver.find_elements('css selector', 'div[role="article"]')
     except Exception:
-        articles = []
-    for article in articles[:30]:
+        pass
+    print(f'DEBUG: found {len(articles)} post-card elements on page', file=sys.stderr)
+
+    for idx, article in enumerate(articles[:30]):
         try:
-            # Author link — first <a> with a /profile.php or /<handle> href.
-            author_a = article.find_element('css selector', 'a[href*="facebook.com/"]')
-            author_url = author_a.get_attribute('href') or ''
+            all_links = article.find_elements('css selector', 'a[href]')
+            author_url = None
+            for a in all_links:
+                href = (a.get_attribute('href') or '')
+                if _is_author_link(href):
+                    # Strip FB tracking params but keep ?id= for profile.php
+                    if '/profile.php' in href:
+                        m = re.search(r'/profile\.php\?id=(\d+)', href)
+                        author_url = f'https://www.facebook.com/profile.php?id={m.group(1)}' if m else href.split('&')[0]
+                    else:
+                        author_url = href.split('?')[0]
+                    break
+
+            if not author_url:
+                continue
+
+            excerpt = (article.text or '').strip()[:500]
+            if not excerpt:
+                continue
+
+            # Synthesize a stable post_url from author + first 12 chars of
+            # excerpt SHA1. This keeps (platform, post_url) unique while
+            # also being idempotent on re-scrape (same author + same text
+            # = same hash, no duplicate row).
+            digest = hashlib.sha1(excerpt[:200].encode('utf-8')).hexdigest()[:12]
+            synthetic_post_url = f'{author_url}#post-{digest}'
+
             author_handle = author_url.rstrip('/').split('/')[-1].split('?')[0]
-            # Post permalink — the link that wraps a timestamp.
-            permalink_a = article.find_elements('css selector', 'a[href*="/posts/"]')
-            post_url = permalink_a[0].get_attribute('href') if permalink_a else None
-            # Body text — sloppy but effective: grab the article's innerText.
-            excerpt = article.text[:500]
-            if post_url:
-                posts.append({
-                    'post_url': post_url,
-                    'author_handle': author_handle,
-                    'author_profile_url': author_url.split('?')[0],
-                    'content_excerpt': excerpt,
-                    'posted_at': None,  # parsing FB's relative timestamps is fragile; leave for v2
-                })
-        except Exception:  # noqa: BLE001 — skip malformed article
+            posts.append({
+                'post_url': synthetic_post_url,
+                'author_handle': author_handle,
+                'author_profile_url': author_url,
+                'content_excerpt': excerpt,
+                'posted_at': None,
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f'DEBUG: article[{idx}] parse error: {exc}', file=sys.stderr)
             continue
+    print(f'DEBUG: extracted {len(posts)} post stubs from page', file=sys.stderr)
     return posts
 
 
@@ -433,9 +524,35 @@ class FacebookScraper(SocialPlatformScraper):
             driver.get(search_url)
             time.sleep(SCROLL_PAUSE)
 
+            # Diagnostic — log where Chrome actually ended up. If cookies
+            # don't authenticate, FB redirects to /login/ and the search
+            # page never renders. If the URL ends in /search/posts but
+            # results are empty, the selectors need tuning instead.
+            try:
+                _emit(on_progress, 'debug_url', url=driver.current_url[:200], title=(driver.title or '')[:100])
+            except Exception:  # noqa: BLE001
+                pass
+
             if _is_checkpoint(driver):
                 _flag_checkpoint(account['id'], 'captcha-during-search')
                 return results
+
+            # Give FB's React feed extra time to mount real post cards
+            # (the initial 'article' element is usually a skeleton/placeholder).
+            time.sleep(4)
+
+            # Save a debug screenshot so we can SEE what FB rendered.
+            try:
+                debug_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '.tmp'))
+                os.makedirs(debug_dir, exist_ok=True)
+                png_path = os.path.join(debug_dir, 'fb_search_debug.png')
+                html_path = os.path.join(debug_dir, 'fb_search_debug.html')
+                driver.save_screenshot(png_path)
+                with open(html_path, 'w', encoding='utf-8') as fh:
+                    fh.write(driver.page_source)
+                _emit(on_progress, 'debug_screenshot', path=png_path)
+            except Exception as exc:  # noqa: BLE001
+                print(f'WARN: debug screenshot failed: {exc}', file=sys.stderr)
 
             seen_urls: set[str] = set()
             for scroll in range(MAX_SCROLLS_PER_QUERY):
