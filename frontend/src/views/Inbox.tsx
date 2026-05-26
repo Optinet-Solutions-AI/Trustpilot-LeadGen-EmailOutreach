@@ -1443,7 +1443,6 @@ export default function Inbox() {
                                   // translated string would over-match.
                                   let mainHtml: string;
                                   let quoteHtml: string | null = null;
-                                  let quoteLineCount = 0;
                                   if (showTranslated) {
                                     mainHtml = t!.text as string;
                                   } else if (msg.bodyType === 'html') {
@@ -1452,8 +1451,11 @@ export default function Inbox() {
                                     const parts = splitReplyFromQuote(msg.body, 'plain');
                                     mainHtml = plainToHtml(parts.main);
                                     if (parts.quote) {
-                                      quoteHtml = plainToHtml(parts.quote);
-                                      quoteLineCount = parts.quoteLineCount;
+                                      // Render quoted history as styled blockquotes
+                                      // (one per nesting level) instead of dumping
+                                      // the raw "> Line" prefix text. The "> "
+                                      // markers get stripped during grouping.
+                                      quoteHtml = renderQuoteHtml(parts.quote);
                                     }
                                   }
                                   return (
@@ -1464,21 +1466,11 @@ export default function Inbox() {
                                         dangerouslySetInnerHTML={{ __html: mainHtml }}
                                       />
                                       {quoteHtml && (
-                                        <details className="mt-2 group">
-                                          <summary
-                                            className="cursor-pointer text-[11px] font-bold text-secondary hover:text-on-surface inline-flex items-center gap-1 select-none px-2 py-1 rounded-md bg-surface-container hover:bg-surface-container-high transition-colors"
-                                            title="Toggle quoted reply history"
-                                          >
-                                            <span className="material-symbols-outlined text-[14px] group-open:rotate-90 transition-transform">chevron_right</span>
-                                            <span className="group-open:hidden">Show quoted content ({quoteLineCount} lines)</span>
-                                            <span className="hidden group-open:inline">Hide quoted content</span>
-                                          </summary>
-                                          <div
-                                            className="mt-2 pl-3 border-l-2 border-slate-200 text-secondary text-xs whitespace-pre-wrap overflow-auto"
-                                            style={{ maxHeight: '300px' }}
-                                            dangerouslySetInnerHTML={{ __html: quoteHtml }}
-                                          />
-                                        </details>
+                                        <div
+                                          className="mt-3 text-xs overflow-auto"
+                                          style={{ maxHeight: '400px' }}
+                                          dangerouslySetInnerHTML={{ __html: quoteHtml }}
+                                        />
                                       )}
                                       <div className="mt-2 flex items-center gap-2 text-[11px]">
                                         {t?.status === 'loading' && (
