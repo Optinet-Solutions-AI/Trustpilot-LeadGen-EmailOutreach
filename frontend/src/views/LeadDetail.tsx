@@ -479,21 +479,37 @@ export default function LeadDetail() {
           </div>
         </div>
 
-        {/* Screenshot — pass the raw screenshot_path through when it's a
-            full URL (Supabase Storage), otherwise route it through the API
-            proxy for legacy local-filename rows. Whole section hides only
-            when there's no screenshot_path at all; for failed loads we
-            switch the tile to an explicit error state with a "open URL"
-            escape hatch so the user knows what's wrong instead of staring
-            at an empty header. Clicking the image opens it full-size in a
-            new tab — useful for the Trustpilot reputation screenshots
-            that pack 5+ stars + 30+ reviews into a 400-px-tall preview. */}
+        {/* Screenshot — entire section is gated on three things: the lead
+            has a screenshot_path AT ALL, and the image we tried to load
+            actually resolved successfully (not failed). Showing a "broken
+            image" tile when the file is missing from Supabase is worse
+            than showing nothing: the user just learns the row is lying
+            about having a screenshot and there's no useful action to
+            take. A hidden probe img runs in the background; only when it
+            fires onLoad does the visible section appear. Click anywhere
+            on the rendered image to open the full-size version in a new
+            tab — useful for the dense Trustpilot reputation panels. */}
         {lead.screenshot_path && (() => {
           const resolvedUrl = /^https?:\/\//i.test(lead.screenshot_path)
             ? lead.screenshot_path
             : `/api/screenshots/${lead.screenshot_path.split(/[/\\]/).pop()}`;
+          // Always render a hidden probe img so onLoad/onError fire
+          // regardless of whether the visible section is mounted yet. The
+          // probe is the source of truth for whether the file exists.
+          const probe = (
+            <img
+              src={resolvedUrl}
+              alt=""
+              aria-hidden
+              className="hidden"
+              onLoad={() => setScreenshotState('ready')}
+              onError={() => setScreenshotState('failed')}
+            />
+          );
+          if (screenshotState === 'failed') return probe;
           return (
             <div className="mt-6 pt-6 border-t border-slate-100">
+              {probe}
               <h3 className="text-sm font-bold text-on-surface mb-3 flex items-center gap-2">
                 <span className="material-symbols-outlined text-[16px] text-secondary">screenshot</span>
                 Trustpilot Profile Screenshot
@@ -509,33 +525,23 @@ export default function LeadDetail() {
                   </a>
                 )}
               </h3>
-              <a
-                href={resolvedUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                title="Click to open the full-size screenshot in a new tab"
-                className="block rounded-xl overflow-hidden border border-slate-100 group relative"
-              >
-                {screenshotState === 'loading' && (
-                  <div className="w-full h-[200px] bg-surface-container animate-pulse" />
-                )}
-                {screenshotState === 'failed' && (
-                  <div className="w-full py-10 px-6 bg-surface-container text-center">
-                    <span className="material-symbols-outlined text-slate-300 text-[32px] block mb-2">broken_image</span>
-                    <p className="text-sm font-semibold text-secondary mb-1">Screenshot couldn't load</p>
-                    <p className="text-xs text-slate-400 break-all px-4">{resolvedUrl}</p>
-                  </div>
-                )}
-                <img
-                  src={resolvedUrl}
-                  alt={`Trustpilot profile of ${lead.company_name}`}
-                  className={`w-full max-h-[400px] object-contain bg-surface-container transition-transform group-hover:scale-[1.01] ${
-                    screenshotState === 'ready' ? 'block cursor-zoom-in' : 'hidden'
-                  }`}
-                  onLoad={() => setScreenshotState('ready')}
-                  onError={() => setScreenshotState('failed')}
-                />
-              </a>
+              {screenshotState === 'loading' ? (
+                <div className="w-full h-[200px] bg-surface-container animate-pulse rounded-xl" />
+              ) : (
+                <a
+                  href={resolvedUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  title="Click to open the full-size screenshot in a new tab"
+                  className="block rounded-xl overflow-hidden border border-slate-100 group relative"
+                >
+                  <img
+                    src={resolvedUrl}
+                    alt={`Trustpilot profile of ${lead.company_name}`}
+                    className="block w-full max-h-[400px] object-contain bg-surface-container transition-transform group-hover:scale-[1.01] cursor-zoom-in"
+                  />
+                </a>
+              )}
             </div>
           );
         })()}
