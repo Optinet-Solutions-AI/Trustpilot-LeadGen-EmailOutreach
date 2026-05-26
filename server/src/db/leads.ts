@@ -38,7 +38,7 @@ export async function getLeads(filters: LeadFilters = {}) {
   let query = filters.platform
     ? supabase
         .from('leads')
-        .select('*, lead_platform_presences!inner(platform)', { count: 'exact' })
+        .select('*, lead_platform_presences!inner(platform, profile_url, author_handle, is_business_profile)', { count: 'exact' })
         .eq('lead_platform_presences.platform', filters.platform)
     : supabase.from('leads').select('*', { count: 'exact' });
 

@@ -299,7 +299,13 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
             digest = hashlib.sha1(excerpt[:200].encode('utf-8')).hexdigest()[:12]
             synthetic_post_url = f'{author_url}#post-{digest}'
 
-            author_handle = author_url.rstrip('/').split('/')[-1].split('?')[0]
+            # Handle: /<handle>/ → handle; /profile.php?id=N → profile.php:N
+            # (keep the numeric id so distinct profile.php leads don't collapse)
+            if '/profile.php' in author_url:
+                m = re.search(r'[?&]id=(\d+)', author_url)
+                author_handle = f'profile.php:{m.group(1)}' if m else 'profile.php'
+            else:
+                author_handle = author_url.rstrip('/').split('/')[-1].split('?')[0]
             posts.append({
                 'post_url': synthetic_post_url,
                 'author_handle': author_handle,
@@ -668,9 +674,33 @@ class FacebookScraper(SocialPlatformScraper):
                         _flag_checkpoint(account['id'], 'captcha-during-enrich')
                         break
 
-                    # Display name — the page <title> is the most stable source.
+                    # Display name. The page <title> is usually "Name | Facebook"
+                    # but on private/blocked/just-logged-in profiles it can be
+                    # just "Facebook" or "(N) Facebook" — useless. Fall back to
+                    # the <h1> tag, then to the author_handle from the URL.
                     raw_title = driver.title or ''
                     display_name = raw_title.split(' | ')[0].split(' - ')[0].strip()
+                    bad_titles = {'facebook', '', 'log in to facebook', 'log into facebook'}
+                    if display_name.lower() in bad_titles or 'facebook' == display_name.lower().rstrip(')').lstrip('(0123456789 '):
+                        try:
+                            h1 = driver.find_elements('css selector', 'h1')
+                            for el in h1:
+                                txt = (el.text or '').strip()
+                                if txt and txt.lower() not in bad_titles:
+                                    display_name = txt
+                                    break
+                        except Exception:
+                            pass
+                    if display_name.lower() in bad_titles:
+                        # Last-resort: pull a handle out of the profile URL.
+                        # /<handle>/ → handle; /profile.php?id=X → "user X"
+                        if '/profile.php' in profile_url:
+                            import re as _re
+                            m = _re.search(r'[?&]id=(\d+)', profile_url)
+                            display_name = f'User {m.group(1)}' if m else 'Unknown'
+                        else:
+                            tail = profile_url.rstrip('/').split('/')[-1]
+                            display_name = tail.replace('.', ' ').replace('_', ' ').title() if tail else 'Unknown'
                     # Bio link — the first external anchor in the intro section.
                     bio_link = None
                     try:

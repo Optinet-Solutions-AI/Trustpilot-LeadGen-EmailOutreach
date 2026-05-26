@@ -423,20 +423,55 @@ export default function LeadsTable({
       case 'company':
         return (
           <td key={col} className="px-4 py-3 max-w-[220px]">
-            {lead.trustpilot_url ? (
-              <a
-                href={lead.trustpilot_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="font-bold text-[#b0004a] hover:underline inline-flex items-center gap-1 text-sm leading-tight"
-              >
-                <span className="truncate max-w-[190px]">{lead.company_name}</span>
-                <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
-              </a>
-            ) : (
-              <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
-            )}
+            {(() => {
+              // For social-platform leads, the company-name link points at the
+              // joined platform-presence profile_url. Falls back to trustpilot_url
+              // for review-platform leads (the legacy column).
+              const presence = lead.lead_platform_presences?.[0];
+              const linkHref = lead.trustpilot_url || presence?.profile_url || null;
+              const platformLabel = presence?.platform
+                ? presence.platform.charAt(0).toUpperCase() + presence.platform.slice(1)
+                : null;
+              return linkHref ? (
+                <a
+                  href={linkHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="font-bold text-[#b0004a] hover:underline inline-flex items-center gap-1 text-sm leading-tight"
+                >
+                  <span className="truncate max-w-[190px]">{lead.company_name}</span>
+                  <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
+                </a>
+              ) : (
+                <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
+              );
+            })()}
+            {/* For social leads, show the handle + a 'Message on FB/IG' link
+                below the name since email outreach doesn't apply. */}
+            {lead.lead_platform_presences?.[0] && (lead.lead_platform_presences[0].platform === 'facebook' || lead.lead_platform_presences[0].platform === 'instagram') && (() => {
+              const p = lead.lead_platform_presences[0];
+              // Messenger deep link only works for /<handle> Pages, not
+              // /profile.php?id= URLs. For profile.php fall back to the
+              // profile URL itself (operator clicks Message there).
+              const dmHref = p.profile_url.includes('/profile.php')
+                ? p.profile_url
+                : `https://m.me/${(p.author_handle || '').replace(/^@/, '')}`;
+              return (
+                <div className="mt-0.5 flex items-center gap-2 text-xs">
+                  <code className="bg-slate-100 px-1 rounded text-slate-600">@{p.author_handle}</code>
+                  <a
+                    href={dmHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[#b0004a] underline hover:text-[#900040]"
+                  >
+                    Message on {p.platform === 'facebook' ? 'Facebook' : 'Instagram'}
+                  </a>
+                </div>
+              );
+            })()}
             {lead.website_url && (
               <a
                 href={lead.website_url}

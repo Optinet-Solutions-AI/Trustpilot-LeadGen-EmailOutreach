@@ -55,6 +55,15 @@ export interface Lead {
   contacted_at: string | null;
   created_at: string;
   updated_at: string;
+  // Joined when the Leads API is filtered by ?platform=. For social
+  // platforms this carries the canonical profile URL so the Lead Matrix
+  // can render a clickable link in lieu of trustpilot_url.
+  lead_platform_presences?: Array<{
+    platform: string;
+    profile_url: string;
+    author_handle: string | null;
+    is_business_profile: boolean | null;
+  }>;
 }
 
 export interface LeadNote {
