@@ -653,19 +653,25 @@ export default function LeadsTable({
       case 'social_profile': {
         const p = lead.lead_platform_presences?.[0];
         if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
-        // Render the FB/IG profile URL as a clickable shortened link.
-        const shortUrl = p.profile_url
-          .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/^m\./, '');
+        // Prefer the most-recent POST URL when it's a real permalink
+        // (real permalinks are FB-shaped URLs without the #post- synthetic
+        // hash suffix). Falls back to the profile URL when we only have
+        // a synthetic post URL from older scrapes.
+        const post = lead.lead_platform_posts?.[0];
+        const isRealPostUrl = post?.post_url && !post.post_url.includes('#post-');
+        const targetUrl = isRealPostUrl ? post!.post_url : p.profile_url;
+        const label = isRealPostUrl ? 'View post' : 'View profile';
+        const shortUrl = targetUrl.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/^m\./, '');
         return (
           <td key={col} className="px-4 py-3 max-w-[180px]" onClick={(e) => e.stopPropagation()}>
             <a
-              href={p.profile_url}
+              href={targetUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-[#b0004a] underline hover:text-[#900040] text-xs inline-flex items-center gap-1"
-              title={p.profile_url}
+              title={`${label} — ${targetUrl}`}
             >
-              <span className="truncate max-w-[150px]">{shortUrl}</span>
+              <span className="truncate max-w-[150px]">{isRealPostUrl ? '📝 View post' : shortUrl}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
           </td>

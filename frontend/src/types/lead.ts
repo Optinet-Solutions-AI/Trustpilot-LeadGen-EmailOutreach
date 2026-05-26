@@ -64,6 +64,15 @@ export interface Lead {
     author_handle: string | null;
     is_business_profile: boolean | null;
   }>;
+  // All posts we've observed this author in. The Lead Matrix surfaces
+  // the most-recent one as a 'View post' link. Empty for review-platform
+  // leads (Trustpilot/Yelp/TripAdvisor don't write to lead_platform_posts).
+  lead_platform_posts?: Array<{
+    post_url: string;
+    content_excerpt: string | null;
+    posted_at: string | null;
+    scraped_at: string | null;
+  }>;
 }
 
 export interface LeadNote {

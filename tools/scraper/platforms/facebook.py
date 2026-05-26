@@ -141,6 +141,61 @@ def _flag_checkpoint(account_id: str, reason: str) -> None:
     _emit(None, 'failed', kind='checkpoint', account=account_id, reason=reason)
 
 
+# Phrases that almost always indicate a BUSINESS posting an ad rather
+# than a consumer asking for a service. When the operator filters for
+# consumers we drop posts matching these.
+BUSINESS_PATTERNS = [
+    "we've got you covered", "we have got you covered", "we offer",
+    "our team", "our clinic", "our services", "our branch",
+    "book an appointment", "book your appointment", "book now", "schedule your",
+    "contact us", "call us", "visit our", "our location",
+    "assigned dentists", "branch:", "services include",
+    "open from", "operating hours", "promo", "discount",
+    "follow us", "like our page", "page", "official page",
+]
+
+# Phrases that signal the post-author IS the kind of consumer we want:
+# someone seeking a service. Used both to score and to keep posts
+# that mention business-y words for context but ARE asking for help.
+CONSUMER_PATTERNS = [
+    "looking for", "anyone know", "anyone tried", "any recommendation",
+    "any recommendations", "can you recommend", "i recommend",
+    "help me find", "where can i find", "any suggestion", "any suggestions",
+    "salamat doc",  # "thank you doctor" — Filipino consumers thanking a dentist
+    "thanks doc", "thank you doc",
+    "need a", "need help with",
+]
+
+
+def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
+    """Return True when the post LOOKS like a business advertising rather than
+    a consumer asking. Conservative: a post that contains BOTH business
+    patterns AND consumer patterns counts as consumer (consumers often
+    mention 'branch' or 'clinic' when asking for one). Pure business posts
+    have only the business patterns.
+
+    Also flags obvious business-handle suffixes (dental, clinic, etc.).
+    """
+    text = (excerpt or '').lower()
+    handle = (author_handle or '').lower()
+
+    has_business_signal = any(p in text for p in BUSINESS_PATTERNS)
+    has_consumer_signal = any(p in text for p in CONSUMER_PATTERNS)
+
+    # If the handle itself reads like a clinic, that's a strong signal even
+    # without business phrases in the excerpt (the excerpt might just be the
+    # business's brief intro).
+    BUSINESS_HANDLE_TOKENS = (
+        'clinic', 'dental', 'dentist', 'dds', 'orthodontic', 'aesthetic',
+        'studio', 'spa', 'salon', 'medspa', 'wellness', 'pharmacy',
+    )
+    handle_looks_business = any(tok in handle for tok in BUSINESS_HANDLE_TOKENS)
+
+    if handle_looks_business and not has_consumer_signal:
+        return True
+    return has_business_signal and not has_consumer_signal
+
+
 def _extract_country_from_excerpt(text: str) -> Optional[str]:
     """Best-effort: scan a post excerpt for a city/region name and map to a
     country ISO code. Returns None when no known city is found. The map is
@@ -275,14 +330,47 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
     import hashlib
 
     # Author = a user profile or page handle (NOT /groups/, /photo/, /watch/,
-    # /search/, /reel/, /events/). FB's new search results encrypt actual
-    # post permalinks behind `__cft__` tokens, so there's no clean post URL
-    # to extract — we synthesize one from author + content hash for dedup.
+    # /search/, /reel/, /events/). FB encrypts post permalinks behind
+    # `__cft__` tokens but the BASE URL (path + meaningful query) is still
+    # the actual post permalink — we just strip the tracking junk.
     NON_AUTHOR_PREFIXES = (
         '/groups/', '/photo/', '/photo.php', '/watch/', '/search/', '/reel/',
         '/events/', '/marketplace/', '/share/', '/permalink', '/story.php',
         '/messages/', '/help/', '/policies/', '/privacy/', '/terms/',
     )
+
+    # Patterns that identify an anchor as pointing at a SPECIFIC POST (not
+    # the author profile, not the group page, not a generic FB nav link).
+    POST_URL_PATTERNS = [
+        r'/photo/?\?[^"]*fbid=',     # photo posts: /photo/?fbid=...&set=pcb.<post>
+        r'/photo\.php\?[^"]*fbid=',  # legacy photo URL
+        r'/posts/\d',                # /<handle>/posts/<id>
+        r'/permalink\.php\?',        # /permalink.php?story_fbid=...
+        r'/groups/[^/]+/posts/',
+        r'/groups/[^/]+/permalink/',
+        r'/share/p/',
+        r'/videos/\d',
+        r'/story\.php\?',
+    ]
+    post_url_re = re.compile('|'.join(POST_URL_PATTERNS))
+
+    def _clean_fb_url(href: str) -> str:
+        """Strip FB's __cft__ / __tn__ / ref_ tracking params; keep the
+        path + content-meaningful query (fbid, set, story_fbid, etc.).
+        Anchors render fine without tracking params."""
+        if '?' not in href:
+            return href.split('#')[0]
+        base, _, qs = href.partition('?')
+        kept = []
+        for part in qs.split('&'):
+            if not part:
+                continue
+            key = part.split('=', 1)[0]
+            if key.startswith('__') or key in ('ref', 'eav', '_rdr', 'mibextid'):
+                continue
+            kept.append(part)
+        cleaned = base + ('?' + '&'.join(kept) if kept else '')
+        return cleaned.split('#')[0]
 
     def _is_author_link(href: str) -> bool:
         if 'facebook.com' not in href:
@@ -311,16 +399,20 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
         try:
             all_links = article.find_elements('css selector', 'a[href]')
             author_url = None
+            real_post_url = None
             for a in all_links:
                 href = (a.get_attribute('href') or '')
-                if _is_author_link(href):
-                    # Strip FB tracking params but keep ?id= for profile.php
+                if not href:
+                    continue
+                # Capture the FIRST real post permalink we see in the card.
+                if real_post_url is None and post_url_re.search(href):
+                    real_post_url = _clean_fb_url(href)
+                if author_url is None and _is_author_link(href):
                     if '/profile.php' in href:
                         m = re.search(r'/profile\.php\?id=(\d+)', href)
                         author_url = f'https://www.facebook.com/profile.php?id={m.group(1)}' if m else href.split('&')[0]
                     else:
                         author_url = href.split('?')[0]
-                    break
 
             if not author_url:
                 continue
@@ -329,22 +421,24 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
             if not excerpt:
                 continue
 
-            # Synthesize a stable post_url from author + first 12 chars of
-            # excerpt SHA1. This keeps (platform, post_url) unique while
-            # also being idempotent on re-scrape (same author + same text
-            # = same hash, no duplicate row).
-            digest = hashlib.sha1(excerpt[:200].encode('utf-8')).hexdigest()[:12]
-            synthetic_post_url = f'{author_url}#post-{digest}'
+            # Prefer the real post permalink. Fall back to a synthetic hash
+            # only if no permalink-shaped URL appeared in the card — that
+            # way (platform, post_url) is still unique for dedup, but most
+            # rows now carry a clickable link to the actual post on FB.
+            if real_post_url:
+                post_url = real_post_url
+            else:
+                digest = hashlib.sha1(excerpt[:200].encode('utf-8')).hexdigest()[:12]
+                post_url = f'{author_url}#post-{digest}'
 
             # Handle: /<handle>/ → handle; /profile.php?id=N → profile.php:N
-            # (keep the numeric id so distinct profile.php leads don't collapse)
             if '/profile.php' in author_url:
                 m = re.search(r'[?&]id=(\d+)', author_url)
                 author_handle = f'profile.php:{m.group(1)}' if m else 'profile.php'
             else:
                 author_handle = author_url.rstrip('/').split('/')[-1].split('?')[0]
             posts.append({
-                'post_url': synthetic_post_url,
+                'post_url': post_url,
                 'author_handle': author_handle,
                 'author_profile_url': author_url,
                 'content_excerpt': excerpt,
@@ -439,6 +533,23 @@ class FacebookScraper(SocialPlatformScraper):
             post_stubs = await self.search_posts(
                 query, filters, max_results=max_results, on_progress=on_progress,
             )
+            # Filter out posts that look like businesses advertising
+            # themselves — the consumer-mode use case wants people ASKING
+            # for the service, not clinics promoting it. Operator can
+            # override by setting exclude_businesses=false in filters.
+            exclude_businesses = filters.get('exclude_businesses', True)
+            if exclude_businesses:
+                before = len(post_stubs)
+                post_stubs = [
+                    s for s in post_stubs
+                    if not _looks_like_business_post(
+                        s.get('content_excerpt', ''), s.get('author_handle', ''),
+                    )
+                ]
+                dropped = before - len(post_stubs)
+                if dropped > 0:
+                    _emit(on_progress, 'business_filtered', dropped=dropped, kept=len(post_stubs))
+
             # Reshape PostStubs into profile-stub form so the list→enrich
             # orchestrator can drive them. We keep the original PostStub
             # fields intact (post_url, content_excerpt, …) so enrich_profiles
@@ -701,6 +812,12 @@ class FacebookScraper(SocialPlatformScraper):
         post_stubs: list[PostStub],
         on_progress: ProgressCallback,
     ) -> list[AuthorLead]:
+        # When the orchestrator chains LIST -> ENRICH back-to-back, the
+        # previous undetected-chromedriver process may not have fully
+        # released its chromedriver binary by the time we try to start
+        # a fresh Chrome here. Brief settle prevents 'session not created'
+        # races on Windows.
+        time.sleep(3)
         account = self._claim_or_raise()
         # Dedup by author_profile_url FIRST so we minimize profile visits.
         unique_authors: dict[str, list[PostStub]] = {}
