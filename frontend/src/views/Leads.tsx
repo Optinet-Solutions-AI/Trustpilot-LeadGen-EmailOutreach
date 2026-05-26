@@ -973,10 +973,15 @@ export default function Leads() {
             //    has no claim concept that we capture.
             hideColumns={
               platformFilter === 'tripadvisor'
-                ? ['trustpilot_email', 'affiliate_email', 'claimed']
+                ? ['trustpilot_email', 'affiliate_email', 'claimed', 'social_profile', 'social_handle', 'social_action']
                 : platformFilter === 'yelp'
-                  ? ['trustpilot_email', 'affiliate_email']
-                  : undefined
+                  ? ['trustpilot_email', 'affiliate_email', 'social_profile', 'social_handle', 'social_action']
+                  : platformFilter === 'facebook' || platformFilter === 'instagram'
+                    // Social leads: hide email/rating/claimed/screenshot — none of
+                    // those apply to FB/IG. Show the social-specific Profile,
+                    // Handle, and Message columns instead.
+                    ? ['trustpilot_email', 'website_email', 'affiliate_email', 'rating', 'claimed', 'screenshot']
+                    : ['social_profile', 'social_handle', 'social_action']
             }
           />
         ) : (

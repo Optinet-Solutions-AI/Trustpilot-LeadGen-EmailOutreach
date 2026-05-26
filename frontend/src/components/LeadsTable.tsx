@@ -127,17 +127,18 @@ interface Props {
   hideColumns?: ColKey[];
 }
 
-type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'screenshot' | 'status';
+type ColKey = 'company' | 'country' | 'category' | 'trustpilot_email' | 'website_email' | 'affiliate_email' | 'rating' | 'tags' | 'claimed' | 'scraped' | 'screenshot' | 'status' | 'social_profile' | 'social_handle' | 'social_action';
 
-const DEFAULT_COLS: ColKey[] = ['company', 'country', 'category', 'trustpilot_email', 'website_email', 'affiliate_email', 'rating', 'tags', 'claimed', 'scraped', 'screenshot', 'status'];
+const DEFAULT_COLS: ColKey[] = ['company', 'social_profile', 'social_handle', 'social_action', 'country', 'category', 'trustpilot_email', 'website_email', 'affiliate_email', 'rating', 'tags', 'claimed', 'scraped', 'screenshot', 'status'];
 // Bump on every new column so loadColOrder injects it for existing users.
-const COL_STORAGE_KEY = 'leads_col_order_v7';
+const COL_STORAGE_KEY = 'leads_col_order_v8';
 
 const COL_LABELS: Record<ColKey, string> = {
   company: 'Company', country: 'Country', category: 'Category',
   trustpilot_email: 'TP Email', website_email: 'Site Email', affiliate_email: 'Affiliate Email',
   rating: 'Rating', tags: 'Tags', claimed: 'Claimed', scraped: 'Scraped',
   screenshot: 'Shot', status: 'Status',
+  social_profile: 'Profile', social_handle: 'Handle', social_action: 'Message',
 };
 
 // Fixed column widths in px — both the sticky header table and the body
@@ -146,10 +147,11 @@ const COL_LABELS: Record<ColKey, string> = {
 // containers. Changing a value here MUST happen in lockstep across both
 // tables (which both call renderColgroup, so just edit this map).
 const COL_WIDTHS: Record<ColKey, number> = {
-  company: 220, country: 72, category: 130,
+  company: 200, country: 72, category: 130,
   trustpilot_email: 200, website_email: 200, affiliate_email: 200,
   rating: 90, tags: 160, claimed: 100, scraped: 110,
   screenshot: 64, status: 130,
+  social_profile: 180, social_handle: 160, social_action: 130,
 };
 const CHECKBOX_COL_WIDTH = 44;
 const ACTIONS_COL_WIDTH = 56;
@@ -447,31 +449,9 @@ export default function LeadsTable({
                 <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
               );
             })()}
-            {/* For social leads, show the handle + a 'Message on FB/IG' link
-                below the name since email outreach doesn't apply. */}
-            {lead.lead_platform_presences?.[0] && (lead.lead_platform_presences[0].platform === 'facebook' || lead.lead_platform_presences[0].platform === 'instagram') && (() => {
-              const p = lead.lead_platform_presences[0];
-              // Messenger deep link only works for /<handle> Pages, not
-              // /profile.php?id= URLs. For profile.php fall back to the
-              // profile URL itself (operator clicks Message there).
-              const dmHref = p.profile_url.includes('/profile.php')
-                ? p.profile_url
-                : `https://m.me/${(p.author_handle || '').replace(/^@/, '')}`;
-              return (
-                <div className="mt-0.5 flex items-center gap-2 text-xs">
-                  <code className="bg-slate-100 px-1 rounded text-slate-600">@{p.author_handle}</code>
-                  <a
-                    href={dmHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="text-[#b0004a] underline hover:text-[#900040]"
-                  >
-                    Message on {p.platform === 'facebook' ? 'Facebook' : 'Instagram'}
-                  </a>
-                </div>
-              );
-            })()}
+            {/* Social-platform extras live in their own dedicated columns
+                (social_profile, social_handle, social_action) — no longer
+                stuffed under the Company cell. */}
             {lead.website_url && (
               <a
                 href={lead.website_url}
@@ -670,6 +650,77 @@ export default function LeadsTable({
             </select>
           </td>
         );
+      case 'social_profile': {
+        const p = lead.lead_platform_presences?.[0];
+        if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
+        // Render the FB/IG profile URL as a clickable shortened link.
+        const shortUrl = p.profile_url
+          .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/^m\./, '');
+        return (
+          <td key={col} className="px-4 py-3 max-w-[180px]" onClick={(e) => e.stopPropagation()}>
+            <a
+              href={p.profile_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#b0004a] underline hover:text-[#900040] text-xs inline-flex items-center gap-1"
+              title={p.profile_url}
+            >
+              <span className="truncate max-w-[150px]">{shortUrl}</span>
+              <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
+            </a>
+          </td>
+        );
+      }
+      case 'social_handle': {
+        const p = lead.lead_platform_presences?.[0];
+        if (!p?.author_handle) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
+        return (
+          <td key={col} className="px-4 py-3 text-xs">
+            <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">@{p.author_handle}</code>
+            {p.is_business_profile && (
+              <div className="mt-1 inline-block text-[10px] uppercase font-bold tracking-wider text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
+                Business
+              </div>
+            )}
+          </td>
+        );
+      }
+      case 'social_action': {
+        const p = lead.lead_platform_presences?.[0];
+        if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
+        // Messenger deep link works for vanity handles. For /profile.php?id=N
+        // there's no m.me equivalent — Messenger doesn't accept numeric IDs.
+        // Build the platform-specific DM URL.
+        let dmHref: string;
+        let dmLabel: string;
+        if (p.platform === 'facebook') {
+          if (p.profile_url.includes('/profile.php')) {
+            // Numeric-id profile: open Messenger search prefilled with the name
+            dmHref = `https://www.facebook.com/messages/t/?recipient_id=${(p.profile_url.match(/[?&]id=(\d+)/) || [])[1] || ''}`;
+          } else {
+            dmHref = `https://m.me/${(p.author_handle || '').replace(/^@/, '')}`;
+          }
+          dmLabel = 'Message on Facebook';
+        } else if (p.platform === 'instagram') {
+          dmHref = `https://www.instagram.com/direct/new/?profile_handle=${(p.author_handle || '').replace(/^@/, '')}`;
+          dmLabel = 'Message on Instagram';
+        } else {
+          return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
+        }
+        return (
+          <td key={col} className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+            <a
+              href={dmHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs font-bold text-white bg-[#b0004a] hover:bg-[#900040] px-2.5 py-1.5 rounded-md transition-colors"
+            >
+              <span className="material-symbols-outlined text-[14px]">send</span>
+              {dmLabel}
+            </a>
+          </td>
+        );
+      }
       default:
         return null;
     }
