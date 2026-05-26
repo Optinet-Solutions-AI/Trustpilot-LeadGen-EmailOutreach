@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
@@ -22,10 +22,44 @@ const claimedJobKey = (leadId: string) => `active_claimed_check_job_${leadId}`;
 
 const STATUSES: LeadStatus[] = ['new', 'contacted', 'replied', 'converted', 'lost'];
 
+// Extract the lead UUID from window.location.pathname. The /leads/[id] route
+// is statically pre-rendered as /leads/_id.html with vercel.json rewriting
+// any /leads/<anything> to that shell, so useParams() returns the literal
+// placeholder '_id' instead of the real URL segment. Reading the actual
+// pathname client-side is the only reliable source of the user-navigated ID
+// under this output:'export' setup.
+function readLeadIdFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/\/leads\/([^/?#]+)/);
+  if (!match) return null;
+  const candidate = decodeURIComponent(match[1]);
+  // Guard against the static-shell placeholder ever leaking through.
+  return candidate === '_id' ? null : candidate;
+}
+
 export default function LeadDetail() {
-  const params = useParams<{ id: string }>();
-  const id = params?.id;
   const router = useRouter();
+  // Start as null on every render path (server build + client mount) so the
+  // static HTML and the first client render agree — eliminates the
+  // hydration-mismatch warning that a window-aware lazy initializer would
+  // throw under output:'export'. The real ID lands one tick later via the
+  // mount effect below, which always runs client-side.
+  const [id, setId] = useState<string | null>(null);
+  useEffect(() => {
+    const resolved = readLeadIdFromUrl();
+    setId(resolved);
+    if (!resolved) {
+      // Can't pull a real ID out of the URL — show a clear error instead
+      // of leaving the page in a perma-skeleton. Real-world trigger is a
+      // malformed link or a paste of an old /leads/_id fixture URL.
+      setLoadError('Could not read a lead ID from this URL.');
+    }
+    // Re-resolve when the URL changes — covers same-component navigation
+    // between lead detail pages without full reloads.
+    const sync = () => setId(readLeadIdFromUrl());
+    window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
+  }, []);
   const [lead, setLead] = useState<Lead | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState('');
@@ -56,7 +90,7 @@ export default function LeadDetail() {
   };
 
   const { notes, fetchNotes, addNote } = useNotes(id || '');
-  const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id);
+  const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id ?? undefined);
   const { data: leadDiscoveries, refresh: refreshDiscoveries } = useLeadDiscoveries(id || null);
   const discoveryActions = useDiscoveryActions();
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
@@ -68,7 +102,7 @@ export default function LeadDetail() {
   const [leadLoading, setLeadLoading] = useState(false);
 
   const loadLead = useCallback(async () => {
-    if (!id || id === '_id') return;
+    if (!id) return;
     setLeadLoading(true);
     setLoadError(null);
     // Local AbortController — independent of axios's global timeout so the
@@ -100,7 +134,7 @@ export default function LeadDetail() {
   }, [id]);
 
   useEffect(() => {
-    if (!id || id === '_id') return;
+    if (!id) return;
     // Kick off all three fetches in parallel. Each section renders its own
     // loading / empty / error state, so a slow lead lookup no longer
     // blocks the activity timeline or follow-ups from appearing.
