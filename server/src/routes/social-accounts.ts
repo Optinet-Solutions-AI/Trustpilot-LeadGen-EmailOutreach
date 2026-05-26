@@ -131,6 +131,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 function streamLoginFlow(
   accountId: string,
   recover: boolean,
+  req: Request,
   res: Response,
   creds?: { username?: string; password?: string },
 ): void {
@@ -230,17 +231,18 @@ function streamLoginFlow(
     res.end();
   });
 
-  req_close(req_safe(res), () => {
+  // Kill the child only when the client closes the SSE connection BEFORE
+  // we're done. Listen on the RESPONSE, not the request — req 'close'
+  // fires when the request body upload ends (immediate for a POST), and
+  // would SIGTERM the child within milliseconds of spawning.
+  let childExited = false;
+  child.on('exit', () => { childExited = true; });
+  res.on('close', () => {
+    if (childExited) return;
+    if (res.writableEnded) return;
+    console.log(`[social-accounts] client disconnected, killing pid=${child.pid}`);
     try { child.kill('SIGTERM'); } catch { /* ignore */ }
   });
-}
-
-// Tiny shims to keep TypeScript happy with the Express types.
-function req_safe(res: Response): Request {
-  return (res as unknown as { req: Request }).req;
-}
-function req_close(req: Request, fn: () => void): void {
-  req.on('close', fn);
 }
 
 // ── POST /api/social-accounts/:id/connect (SSE) ──────────────────────
@@ -249,7 +251,7 @@ function req_close(req: Request, fn: () => void): void {
 // then discards them.
 router.post('/:id/connect', (req: Request, res: Response) => {
   const body = (req.body ?? {}) as { username?: string; password?: string };
-  streamLoginFlow(String(req.params.id), false, res, {
+  streamLoginFlow(String(req.params.id), false, req, res, {
     username: body.username,
     password: body.password,
   });
@@ -257,7 +259,7 @@ router.post('/:id/connect', (req: Request, res: Response) => {
 
 // ── POST /api/social-accounts/:id/recover (SSE) ──────────────────────
 router.post('/:id/recover', (req: Request, res: Response) => {
-  streamLoginFlow(String(req.params.id), true, res);
+  streamLoginFlow(String(req.params.id), true, req, res);
 });
 
 export default router;

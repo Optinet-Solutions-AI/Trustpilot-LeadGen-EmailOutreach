@@ -82,6 +82,34 @@ def _mark_status(account_id: str, status: str, **extra) -> None:
     table('social_accounts').update(payload).eq('id', account_id).execute()
 
 
+def _detect_chrome_major_version() -> Optional[int]:
+    """Read the installed Chrome's major version so undetected-chromedriver
+    pulls the matching chromedriver. Without this, uc tends to grab the
+    newest released driver, which fails when Chrome's auto-update lags.
+    Returns None if detection fails — caller falls back to uc's default.
+    """
+    import re
+    import subprocess
+    candidates = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    ]
+    chrome_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if not chrome_path:
+        return None
+    try:
+        # PowerShell is the most reliable way to read a .exe's ProductVersion on Windows.
+        out = subprocess.check_output(
+            ['powershell', '-NoProfile', '-Command',
+             f"(Get-Item '{chrome_path}').VersionInfo.ProductVersion"],
+            text=True, timeout=5,
+        ).strip()
+        m = re.match(r'(\d+)\.', out)
+        return int(m.group(1)) if m else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _open_driver(headless: bool = False):
     """Lazy-import undetected_chromedriver so the module imports cheap.
 
@@ -95,7 +123,18 @@ def _open_driver(headless: bool = False):
     # Reasonable defaults that mimic an everyday browser session.
     options.add_argument('--window-size=1280,900')
     options.add_argument('--disable-blink-features=AutomationControlled')
-    return uc.Chrome(options=options, use_subprocess=True)
+
+    # Pin chromedriver to the installed Chrome's major version. SOCIAL_CHROME_VERSION
+    # env var can override (for debugging). Falls back to None = uc default.
+    version_main: Optional[int] = None
+    override = os.getenv('SOCIAL_CHROME_VERSION')
+    if override and override.isdigit():
+        version_main = int(override)
+    else:
+        version_main = _detect_chrome_major_version()
+    if version_main:
+        print(f'INFO: pinning chromedriver to Chrome major version {version_main}', file=sys.stderr)
+    return uc.Chrome(options=options, use_subprocess=True, version_main=version_main)
 
 
 def _load_jar_into_driver(driver, jar: list[dict]) -> None:
@@ -148,10 +187,13 @@ def _try_autofill(driver, platform: str, username: str, password: str) -> None:
         user_el.clear(); user_el.send_keys(username)
         pass_el.clear(); pass_el.send_keys(password)
         _emit('autofilled')
-        # Submitting the form is operator-driven on purpose — let them
-        # eyeball the values + handle the "Save your login info?" prompt
-        # that often follows a successful auth. Auto-submit increases
-        # ban risk without meaningfully reducing the human-in-the-loop time.
+        # Submit the form. After this, either:
+        #   (a) Facebook accepts the credentials → c_user cookie set → harness wins
+        #   (b) FB asks for 2FA / captcha → operator handles inside Chrome
+        # If SOCIAL_LOGIN_AUTOSUBMIT=false is set the operator must click Log in.
+        if os.getenv('SOCIAL_LOGIN_AUTOSUBMIT', 'true').lower() != 'false':
+            pass_el.submit()
+            _emit('login_submitted')
     except Exception as exc:  # noqa: BLE001
         print(f'WARN: autofill skipped — {exc}', file=sys.stderr)
 
