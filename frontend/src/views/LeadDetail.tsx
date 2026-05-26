@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
@@ -61,15 +61,36 @@ export default function LeadDetail() {
   const discoveryActions = useDiscoveryActions();
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
 
+  // Loading flag distinct from `lead == null` — without it, a transient
+  // network failure followed by an unset `loadError` would re-show the
+  // skeleton instead of the error state. Tracks the active lead fetch
+  // independently from the side fetches (notes, follow-ups) below.
+  const [leadLoading, setLeadLoading] = useState(false);
+
+  const loadLead = useCallback(async () => {
+    if (!id || id === '_id') return;
+    setLeadLoading(true);
+    setLoadError(null);
+    try {
+      const res = await api.get(`/leads/${id}`);
+      setLead(res.data.data);
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      setLoadError(e?.response?.data?.error || e?.message || 'Failed to load lead');
+    } finally {
+      setLeadLoading(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     if (!id || id === '_id') return;
-    setLoadError(null);
-    api.get(`/leads/${id}`)
-      .then((res) => setLead(res.data.data))
-      .catch((err) => setLoadError(err?.response?.data?.error || err.message || 'Failed to load lead'));
+    // Kick off all three fetches in parallel. Each section renders its own
+    // loading / empty / error state, so a slow lead lookup no longer
+    // blocks the activity timeline or follow-ups from appearing.
+    loadLead();
     fetchNotes();
     fetchFollowUps();
-  }, [id, fetchNotes, fetchFollowUps]);
+  }, [id, loadLead, fetchNotes, fetchFollowUps]);
 
   // React to claimed-check job reaching a terminal state — refresh the lead
   // so the Profile Claimed tile picks up the new value.
@@ -90,30 +111,6 @@ export default function LeadDetail() {
       localStorage.removeItem(claimedJobKey(id));
     }
   }, [claimedJob.status, claimedJob.summary, claimedJob.error, claimedJobId, id]);
-
-  if (loadError) return (
-    <div className="px-3 py-4 sm:px-6 sm:py-8 xl:px-10 xl:py-10 space-y-6">
-      <button
-        onClick={() => router.push('/leads')}
-        className="flex items-center gap-2 text-sm font-semibold text-secondary hover:text-on-surface transition-colors"
-      >
-        <span className="material-symbols-outlined text-[18px]">arrow_back</span>
-        Back to Lead Matrix
-      </button>
-      <div className="flex flex-col items-center justify-center h-64 gap-3">
-        <span className="material-symbols-outlined text-slate-300 text-[40px]">error_outline</span>
-        <p className="text-base font-bold text-on-surface">Could not load lead</p>
-        <p className="text-sm text-secondary">{loadError}</p>
-      </div>
-    </div>
-  );
-
-  if (!lead) return (
-    <div className="flex items-center justify-center h-64 text-secondary gap-2">
-      <span className="material-symbols-outlined text-[#b0004a] text-[20px]" style={{ animation: 'spin 1s linear infinite' }}>progress_activity</span>
-      Loading lead...
-    </div>
-  );
 
   const handleStatusChange = async (status: LeadStatus) => {
     const res = await api.patch(`/leads/${id}`, { outreach_status: status });
@@ -258,7 +255,47 @@ export default function LeadDetail() {
         </div>
       )}
 
-      {/* Lead Info Card */}
+      {/* Lead Info Card — has three states: loading skeleton, error with
+          retry, and full data. The activity / follow-ups sections below
+          render independently, so even when this card is in skeleton mode
+          the user can still browse notes and schedule follow-ups. */}
+      {!lead && loadError ? (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
+          <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
+            <span className="material-symbols-outlined text-slate-300 text-[40px]">error_outline</span>
+            <p className="text-base font-bold text-on-surface">Could not load lead</p>
+            <p className="text-sm text-secondary max-w-md">{loadError}</p>
+            <button
+              onClick={loadLead}
+              disabled={leadLoading}
+              className="mt-2 flex items-center gap-2 px-4 py-2 rounded-lg bg-[#b0004a] text-white text-xs font-bold hover:bg-[#90003b] disabled:opacity-50 transition-colors"
+            >
+              <span className={`material-symbols-outlined text-[16px] ${leadLoading ? 'animate-spin' : ''}`}>
+                {leadLoading ? 'progress_activity' : 'refresh'}
+              </span>
+              {leadLoading ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        </div>
+      ) : !lead ? (
+        <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8 animate-pulse">
+          <div className="flex items-start justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-xl bg-surface-container" />
+              <div className="space-y-2">
+                <div className="h-7 w-64 bg-surface-container rounded" />
+                <div className="h-4 w-48 bg-surface-container rounded" />
+              </div>
+            </div>
+            <div className="h-10 w-32 bg-surface-container rounded-lg" />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="bg-surface-container rounded-xl p-4 h-20" />
+            ))}
+          </div>
+        </div>
+      ) : (
       <div className="bg-surface-container-lowest rounded-xl ambient-shadow p-8">
         <div className="flex items-start justify-between mb-6">
           <div className="flex items-center gap-4">
@@ -403,6 +440,7 @@ export default function LeadDetail() {
           </div>
         )}
       </div>
+      )}
 
       {quickSendOpen && lead && (
         <QuickSendModal
