@@ -73,21 +73,42 @@ app.use('/api/discovered-contacts', discoveredContactsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tripadvisor', tripadvisorRoutes);
 
-// Serve screenshots as static files. Aggressive caching is safe here —
-// scrape-runner overwrites by filename when re-uploading, but the modal
-// preview is read-mostly and 1 day of stale-but-fast is a fine trade.
-// Most fresh leads point at Supabase Storage URLs which are CDN-cached
-// independently; this branch is the local-disk fallback for legacy rows.
+// Serve screenshots — two paths. Local disk first (legacy dev rows that
+// haven't been migrated to Supabase yet); falls through to a 302 redirect
+// at the Supabase Storage public URL for anything missing locally. On
+// Cloud Run the local-disk branch is always empty (stateless filesystem),
+// so the Supabase redirect is the production path. Aggressive cache
+// headers stay on the static middleware — Supabase's CDN handles caching
+// on its side.
+const screenshotsDir = path.resolve(config.projectRoot, '.tmp', 'screenshots');
 app.use('/api/screenshots', express.static(
-  path.resolve(config.projectRoot, '.tmp', 'screenshots'),
+  screenshotsDir,
   {
     maxAge: '1d',
     immutable: false,
+    fallthrough: true,
     setHeaders: (res) => {
       res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
     },
   },
 ));
+app.get('/api/screenshots/:filename', (req, res) => {
+  // Sanitise the filename — only allow basenames to prevent any
+  // accidental ../ shenanigans flowing into the public bucket URL.
+  const filename = path.basename(req.params.filename || '');
+  if (!filename) {
+    res.status(400).json({ success: false, error: 'Missing screenshot filename' });
+    return;
+  }
+  const supabaseUrl = config.supabaseUrl?.replace(/\/+$/, '');
+  if (!supabaseUrl) {
+    res.status(404).json({ success: false, error: 'Screenshot not found' });
+    return;
+  }
+  // Bucket name matches scrape-runner.ts where these were uploaded.
+  const publicUrl = `${supabaseUrl}/storage/v1/object/public/screenshots/${encodeURIComponent(filename)}`;
+  res.redirect(302, publicUrl);
+});
 
 // Health check
 app.get('/api/health', (_req, res) => {
