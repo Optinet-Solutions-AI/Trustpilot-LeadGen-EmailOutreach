@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useEffect } from 'react';
 import { ScrapeProvider } from '../context/ScrapeContext';
 import { TaxonomyProvider } from '../context/TaxonomyContext';
 import { NotificationsProvider } from '../context/NotificationsContext';
@@ -8,8 +8,19 @@ import { UIProvider } from '../context/UIContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import CheckpointBanner from './CheckpointBanner';
+import api from '../api/client';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
+  // Cloud Run warm-up — fire-and-forget /api/health ping on first mount so
+  // the container is awake by the time the user clicks into a heavy view
+  // like /leads/:id. Without this, the first request after an idle period
+  // pays the 5-15s cold-start cost, which felt like the page was frozen.
+  // Failures are silently swallowed: this is a hint, not a precondition,
+  // and a real outage will surface on the actual API calls.
+  useEffect(() => {
+    api.get('/health', { timeout: 8_000 }).catch(() => { /* swallowed */ });
+  }, []);
+
   return (
     <ScrapeProvider>
       <TaxonomyProvider>
