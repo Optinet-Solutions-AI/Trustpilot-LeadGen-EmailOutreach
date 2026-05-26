@@ -288,17 +288,46 @@ class FacebookScraper(SocialPlatformScraper):
         max_results: Optional[int] = None,
         on_progress: ProgressCallback = None,
     ) -> list[dict]:
-        """Business mode — enumerate Pages by category."""
+        """Discover either Pages (businesses) or post-authors (consumers).
+
+        For lead_type='consumers' we run search_posts under the hood and
+        reshape PostStubs into profile-stub form (with ``profile_url`` set
+        to the author profile). The orchestrator's existing list→enrich
+        pipeline then routes each author through enrich_profiles, which
+        detects the PostStub shape and pivots to author-enrichment.
+        """
         lead_type = (filters.get('lead_type') or 'consumers').lower()
+
         if lead_type == 'consumers':
-            # In consumer mode, the run.py orchestrator will call search_posts
-            # instead. Return [] so the unified pipeline doesn't barf if it
-            # blindly hits scrape_listing.
-            return []
+            query = (filters.get('query') or '').strip()
+            if not query:
+                raise ValueError("Consumer-mode Facebook scrapes require a 'query' filter")
+            post_stubs = await self.search_posts(
+                query, filters, max_results=max_results, on_progress=on_progress,
+            )
+            # Reshape PostStubs into profile-stub form so the list→enrich
+            # orchestrator can drive them. We keep the original PostStub
+            # fields intact (post_url, content_excerpt, …) so enrich_profiles
+            # can detect this and pivot to enrich_authors.
+            reshaped: list[dict] = []
+            for s in post_stubs:
+                author_url = s.get('author_profile_url')
+                if not author_url:
+                    continue
+                reshaped.append({
+                    **s,
+                    'profile_url': author_url,
+                    'name': s.get('author_handle') or author_url.rstrip('/').split('/')[-1] or 'Unknown',
+                    'rating': None,
+                })
+            # Mirror the legacy listing-done signal so the existing UI counter
+            # increments — it listens for PROGRESS:category_done.
+            _emit(on_progress, 'category_done', count=len(reshaped))
+            return reshaped
+
         category = filters.get('category')
         if not category:
             raise ValueError("Business-mode Facebook scrapes require 'category' filter")
-
         return await asyncio.to_thread(self._sync_scrape_pages, category, max_results or 50, on_progress)
 
     async def enrich_profiles(
@@ -311,9 +340,13 @@ class FacebookScraper(SocialPlatformScraper):
         flush_every: int = 25,
         on_progress: ProgressCallback = None,
     ) -> list[dict]:
-        """Best-effort enrichment: visit each Page, extract bio link + about info."""
+        """Best-effort enrichment. Pivots to author-enrichment when the input
+        stubs are reshaped PostStubs (carry ``post_url``)."""
         if not profile_stubs:
             return []
+        # Detect consumer-mode reshape: PostStubs carry a 'post_url'.
+        if any('post_url' in s for s in profile_stubs):
+            return await asyncio.to_thread(self._sync_enrich_authors, profile_stubs, on_progress)
         return await asyncio.to_thread(self._sync_enrich_pages, profile_stubs, screenshots_dir, on_progress)
 
     # ── SocialPlatformScraper interface ──────────────────────────────

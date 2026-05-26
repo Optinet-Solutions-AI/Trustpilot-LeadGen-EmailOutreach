@@ -101,9 +101,35 @@ class InstagramScraper(SocialPlatformScraper):
         max_results: Optional[int] = None,
         on_progress: ProgressCallback = None,
     ) -> list[dict]:
+        """Discover business profiles OR hashtag-post authors.
+
+        Consumer mode (default): runs search_posts under the hood and
+        reshapes PostStubs into profile-stub form. enrich_profiles
+        detects the PostStub shape and pivots to author-enrichment.
+        """
         lead_type = (filters.get('lead_type') or 'consumers').lower()
-        if lead_type != 'businesses':
-            return []
+
+        if lead_type == 'consumers':
+            query = (filters.get('query') or '').strip()
+            if not query:
+                raise ValueError("Consumer-mode Instagram scrapes require a 'query' filter (hashtag)")
+            post_stubs = await self.search_posts(
+                query, filters, max_results=max_results, on_progress=on_progress,
+            )
+            reshaped: list[dict] = []
+            for s in post_stubs:
+                author_url = s.get('author_profile_url')
+                if not author_url:
+                    continue
+                reshaped.append({
+                    **s,
+                    'profile_url': author_url,
+                    'name': s.get('author_handle') or author_url.rstrip('/').split('/')[-1] or 'Unknown',
+                    'rating': None,
+                })
+            _emit(on_progress, 'category_done', count=len(reshaped))
+            return reshaped
+
         category = filters.get('category')
         if not category:
             raise ValueError("Business-mode Instagram scrapes require 'category' filter")
@@ -121,6 +147,8 @@ class InstagramScraper(SocialPlatformScraper):
     ) -> list[dict]:
         if not profile_stubs:
             return []
+        if any('post_url' in s for s in profile_stubs):
+            return await asyncio.to_thread(self._sync_enrich_authors, profile_stubs, on_progress)
         return await asyncio.to_thread(self._sync_enrich_pages, profile_stubs, on_progress)
 
     async def search_posts(
