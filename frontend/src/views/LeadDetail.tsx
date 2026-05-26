@@ -489,14 +489,15 @@ export default function LeadDetail() {
             fires onLoad does the visible section appear. Click anywhere
             on the rendered image to open the full-size version in a new
             tab — useful for the dense Trustpilot reputation panels. */}
-        {lead.screenshot_path && (() => {
-          const resolvedUrl = /^https?:\/\//i.test(lead.screenshot_path)
-            ? lead.screenshot_path
-            : `/api/screenshots/${lead.screenshot_path.split(/[/\\]/).pop()}`;
-          // Always render a hidden probe img so onLoad/onError fire
-          // regardless of whether the visible section is mounted yet. The
-          // probe is the source of truth for whether the file exists.
-          const probe = (
+        {(lead.screenshot_path || lead.trustpilot_url) && (() => {
+          const resolvedUrl = lead.screenshot_path
+            ? (/^https?:\/\//i.test(lead.screenshot_path)
+                ? lead.screenshot_path
+                : `/api/screenshots/${lead.screenshot_path.split(/[/\\]/).pop()}`)
+            : null;
+          // Probe img runs hidden so onLoad/onError fire even before the
+          // visible tile mounts. State drives which sub-view shows below.
+          const probe = resolvedUrl ? (
             <img
               src={resolvedUrl}
               alt=""
@@ -505,15 +506,14 @@ export default function LeadDetail() {
               onLoad={() => setScreenshotState('ready')}
               onError={() => setScreenshotState('failed')}
             />
-          );
-          if (screenshotState === 'failed') return probe;
+          ) : null;
           return (
             <div className="mt-6 pt-6 border-t border-slate-100">
               {probe}
               <h3 className="text-sm font-bold text-on-surface mb-3 flex items-center gap-2">
                 <span className="material-symbols-outlined text-[16px] text-secondary">screenshot</span>
                 Trustpilot Profile Screenshot
-                {screenshotState === 'ready' && (
+                {screenshotState === 'ready' && resolvedUrl && (
                   <a
                     href={resolvedUrl}
                     target="_blank"
@@ -525,7 +525,34 @@ export default function LeadDetail() {
                   </a>
                 )}
               </h3>
-              {screenshotState === 'loading' ? (
+              {(!resolvedUrl || screenshotState === 'failed') ? (
+                /* Empty / failed state — visible escape hatch so the user
+                   knows the screenshot is missing AND has a one-click path
+                   to verify the lead's live Trustpilot reputation. Beats
+                   silently hiding the section: at least now they can
+                   confirm the lead's standing without bouncing through the
+                   Lead Matrix. */
+                <div className="w-full rounded-xl border border-dashed border-slate-200 bg-surface-container-low px-6 py-8 flex flex-col items-center gap-3 text-center">
+                  <span className="material-symbols-outlined text-slate-300 text-[36px]">image_not_supported</span>
+                  <div>
+                    <p className="text-sm font-semibold text-on-surface">No screenshot available</p>
+                    <p className="text-xs text-secondary mt-1 max-w-md">
+                      The Trustpilot profile screenshot for this lead isn't in our storage bucket — most likely it was never captured, or the cleanup job removed it. Re-running a scrape on this lead will refresh it.
+                    </p>
+                  </div>
+                  {lead.trustpilot_url && (
+                    <a
+                      href={lead.trustpilot_url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#b0004a] text-white text-xs font-bold hover:bg-[#90003b] transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                      View live Trustpilot profile
+                    </a>
+                  )}
+                </div>
+              ) : screenshotState === 'loading' ? (
                 <div className="w-full h-[200px] bg-surface-container animate-pulse rounded-xl" />
               ) : (
                 <a
