@@ -345,6 +345,19 @@ router.post('/', async (req: Request, res: Response) => {
           verify,
         }
       : {
+          // Non-review platforms (Facebook, Instagram) submit their filters
+          // flat at the top level of the body (lead_type, query, date_from,
+          // ...). Earlier versions only read body.filters and silently
+          // dropped everything, so the spawned Python received an empty
+          // filters object and crashed on missing 'query'.
+          //
+          // Pick up every non-control field from the body, then layer
+          // body.filters on top so the explicit envelope wins ties.
+          ...Object.fromEntries(
+            Object.entries(body).filter(([k]) =>
+              !['platform', 'forceRescrape', 'filters', 'enrich', 'verify'].includes(k),
+            ),
+          ),
           ...(rawFilters as Record<string, unknown>),
           enrich,
           verify,
