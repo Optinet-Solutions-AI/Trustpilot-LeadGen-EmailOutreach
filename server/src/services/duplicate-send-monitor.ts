@@ -43,7 +43,7 @@
 
 import { getSupabase } from '../lib/supabase.js';
 import { sendEmail } from './email-sender.js';
-import { getSenderAccountByEmail } from './sender-loader.js';
+import { getAccountForUtilitySend } from './sender-loader.js';
 
 const POLL_INTERVAL_MS = Number(process.env.DUPLICATE_SEND_MONITOR_INTERVAL_MS) || 5 * 60 * 1000;
 const WINDOW_MINUTES   = Number(process.env.DUPLICATE_SEND_MONITOR_WINDOW_MIN) || 5;
@@ -234,9 +234,14 @@ async function postEmail(
     console.error('[DuplicateSendMonitor] DUPLICATE_SEND_MONITOR_FROM_EMAIL not set — refusing to send alert via env-default Gmail (which is retired). Set it to the email of an active row in email_accounts.');
     return false;
   }
-  const senderAccount = await getSenderAccountByEmail(fromEmail);
+  // getAccountForUtilitySend bypasses the status='active' + is_cold_sender
+  // filters that getSenderAccountByEmail enforces. Monitor alerts must be
+  // able to fire even when the operator has paused cold sending (in fact
+  // ESPECIALLY then — that's when monitoring matters most), and warmup peers
+  // are legitimate alert senders. Still requires valid creds.
+  const senderAccount = await getAccountForUtilitySend(fromEmail);
   if (!senderAccount) {
-    console.error(`[DuplicateSendMonitor] Sender ${fromEmail} not found in email_accounts or not loadable — refusing to send alert. Confirm the row exists with status='active' and valid creds.`);
+    console.error(`[DuplicateSendMonitor] Sender ${fromEmail} not found in email_accounts or missing creds — refusing to send alert. Confirm the row exists with valid auth_type credentials.`);
     return false;
   }
 
