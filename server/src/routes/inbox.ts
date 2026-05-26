@@ -886,8 +886,15 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
       labels: ['rendered', 'sent'],
     });
 
-    // The reply snippet the tracker captured, if any. Plain-text rendering —
-    // we don't have the full reply body, just the first 200 chars.
+    // Reply rendering — three branches depending on what we have stored:
+    //   (a) reply_snippet present → render it. We don't have the full body
+    //       but the first 200 chars is enough to grok the response.
+    //   (b) status='replied' but reply_snippet missing → emit a synthetic
+    //       "reply detected" placeholder so the user understands a reply
+    //       exists even when the tracker didn't store the body. Before
+    //       this branch, the thread showed only the outgoing template and
+    //       it looked like the "Replied" badge was lying.
+    //   (c) status != 'replied' → no reply row at all.
     if (cl.status === 'replied' && cl.reply_snippet) {
       messages.push({
         id: `rendered:${cl.id}:reply`,
@@ -901,6 +908,31 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
         bodyType: 'plain',
         unread: false,
         labels: ['rendered', 'reply'],
+      });
+    } else if (cl.status === 'replied') {
+      const repliedAt = (cl.replied_at as string) || new Date().toISOString();
+      const replyDateLabel = (() => {
+        try { return new Date(repliedAt).toLocaleString(); } catch { return repliedAt; }
+      })();
+      const placeholderHtml = `
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#5a4044;background:#fff4e5;border:1px solid #ffd9b3;border-radius:8px;padding:16px;">
+          <p style="margin:0 0 8px;font-weight:700;color:#a64b00;">Reply detected, but body unavailable</p>
+          <p style="margin:0 0 8px;">Our reply tracker flagged a response from <strong>${escapeHtmlFragment((cl.email_used as string) || 'the lead')}</strong> at <strong>${escapeHtmlFragment(replyDateLabel)}</strong>, but no body snippet was captured at the time.</p>
+          <p style="margin:0;">Open the conversation directly in <strong>${escapeHtmlFragment((cl.sender_email as string) || 'your sender mailbox')}</strong> to read the full reply.</p>
+        </div>
+      `;
+      messages.push({
+        id: `rendered:${cl.id}:reply-placeholder`,
+        threadId: cl.id as string,
+        from: (cl.email_used as string) || '(reply sender)',
+        to: (cl.sender_email as string) || '',
+        subject: `Re: ${subject}`,
+        date: repliedAt,
+        snippet: 'Reply detected but body not stored — open in your mailbox to read.',
+        body: placeholderHtml,
+        bodyType: 'html',
+        unread: false,
+        labels: ['rendered', 'reply', 'placeholder'],
       });
     }
 
