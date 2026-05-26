@@ -65,6 +65,62 @@ function canonicalId(msg: Pick<CampaignMessage, 'id' | 'campaign_lead_id'>): str
   return msg.campaign_lead_id ?? msg.id;
 }
 
+// Split an email body into reply text + quoted history. Gmail / Outlook /
+// most clients prefix quoted lines with "> " (possibly nested "> >") and
+// usually precede the quote with an attribution line ("On ..., ... wrote:"
+// or "<sender> schreef op ...:"). Catching either signal lets us collapse
+// the quote into a Gmail-style "Show quoted content" toggle rather than
+// dumping the whole conversation history inline. Handles plain bodies
+// (the common case for IMAP/Gmail replies) and the HTML output from our
+// own rendered-send endpoint; richer MUA HTML quoting (<blockquote>) is
+// left as-is — those messages already look fine.
+const ATTRIBUTION_REGEX = /^(.{0,120}?)\b(wrote|écrit|schrieb|escribió|schreef|wrote on|wrote:|escribi(ó|o)|geschrieben)\b.{0,80}:?$/i;
+function splitReplyFromQuote(rawBody: string, bodyType: 'html' | 'plain'): { main: string; quote: string | null; quoteLineCount: number } {
+  // Only attempt to split plain bodies — HTML messages with blockquotes
+  // are already structured and our regex would chop them mid-tag.
+  if (bodyType !== 'plain') {
+    return { main: rawBody, quote: null, quoteLineCount: 0 };
+  }
+  const lines = rawBody.split(/\r?\n/);
+  let splitIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].replace(/^\s+/, '');
+    if (trimmed.startsWith('>')) {
+      // Walk backwards through blank lines to find an attribution line.
+      // Anchor the quote at the attribution so the "On <date> wrote:" line
+      // ends up inside the collapsed block, not above it.
+      let attribIdx = i - 1;
+      while (attribIdx >= 0 && lines[attribIdx].trim() === '') attribIdx--;
+      if (attribIdx >= 0 && ATTRIBUTION_REGEX.test(lines[attribIdx].trim())) {
+        splitIdx = attribIdx;
+      } else {
+        splitIdx = i;
+      }
+      break;
+    }
+    if (ATTRIBUTION_REGEX.test(lines[i].trim())) {
+      // Attribution without `>` lines (rare — happens when the user quoted
+      // with indentation instead of >). Treat as the split point too.
+      splitIdx = i;
+      break;
+    }
+  }
+  if (splitIdx === -1) return { main: rawBody, quote: null, quoteLineCount: 0 };
+  // Trim trailing blanks off the main so the boundary doesn't read empty.
+  let mainEnd = splitIdx;
+  while (mainEnd > 0 && lines[mainEnd - 1].trim() === '') mainEnd--;
+  const mainText = lines.slice(0, mainEnd).join('\n');
+  const quoteText = lines.slice(splitIdx).join('\n');
+  return { main: mainText, quote: quoteText, quoteLineCount: quoteText.split('\n').length };
+}
+function plainToHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
 interface ThreadMessage {
   id: string;
   threadId: string;
@@ -1349,18 +1405,50 @@ export default function Inbox() {
                                 {(() => {
                                   const t = translations[msg.id];
                                   const showTranslated = t?.status === 'done' && t.visible && t.text;
-                                  const bodyHtml = showTranslated
-                                    ? (t!.text as string)
-                                    : msg.bodyType === 'html'
-                                      ? msg.body
-                                      : msg.body.replace(/\n/g, '<br>');
+                                  // Translated bodies come back as HTML so we
+                                  // skip the quote-collapser for them — the
+                                  // translator already handles formatting and
+                                  // running plain-text heuristics over a
+                                  // translated string would over-match.
+                                  let mainHtml: string;
+                                  let quoteHtml: string | null = null;
+                                  let quoteLineCount = 0;
+                                  if (showTranslated) {
+                                    mainHtml = t!.text as string;
+                                  } else if (msg.bodyType === 'html') {
+                                    mainHtml = msg.body;
+                                  } else {
+                                    const parts = splitReplyFromQuote(msg.body, 'plain');
+                                    mainHtml = plainToHtml(parts.main);
+                                    if (parts.quote) {
+                                      quoteHtml = plainToHtml(parts.quote);
+                                      quoteLineCount = parts.quoteLineCount;
+                                    }
+                                  }
                                   return (
                                     <>
                                       <div
                                         className="email-body text-secondary text-xs overflow-auto"
                                         style={{ maxHeight: '400px' }}
-                                        dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                                        dangerouslySetInnerHTML={{ __html: mainHtml }}
                                       />
+                                      {quoteHtml && (
+                                        <details className="mt-2 group">
+                                          <summary
+                                            className="cursor-pointer text-[11px] font-bold text-secondary hover:text-on-surface inline-flex items-center gap-1 select-none px-2 py-1 rounded-md bg-surface-container hover:bg-surface-container-high transition-colors"
+                                            title="Toggle quoted reply history"
+                                          >
+                                            <span className="material-symbols-outlined text-[14px] group-open:rotate-90 transition-transform">chevron_right</span>
+                                            <span className="group-open:hidden">Show quoted content ({quoteLineCount} lines)</span>
+                                            <span className="hidden group-open:inline">Hide quoted content</span>
+                                          </summary>
+                                          <div
+                                            className="mt-2 pl-3 border-l-2 border-slate-200 text-secondary text-xs whitespace-pre-wrap overflow-auto"
+                                            style={{ maxHeight: '300px' }}
+                                            dangerouslySetInnerHTML={{ __html: quoteHtml }}
+                                          />
+                                        </details>
+                                      )}
                                       <div className="mt-2 flex items-center gap-2 text-[11px]">
                                         {t?.status === 'loading' && (
                                           <span className="inline-flex items-center gap-1 text-secondary">
