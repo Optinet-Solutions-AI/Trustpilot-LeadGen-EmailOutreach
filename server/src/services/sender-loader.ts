@@ -96,4 +96,35 @@ export async function getSenderAccountByEmail(email: string): Promise<SenderAcco
   }
 }
 
+/**
+ * Load any email_accounts row that has valid sender creds — used by utility
+ * sends like the duplicate-send monitor's alert email or any other internal
+ * notification path. Deliberately looser filters than getSenderAccountByEmail:
+ *   - DOES NOT require status='active' — operator pauses (status='paused')
+ *     should not silence the monitor that watches for those very issues
+ *   - DOES NOT require is_cold_sender=true — warmup peers can legitimately
+ *     send utility mail without polluting the cold-outreach pool
+ *   - DOES still require an auth_type with full creds attached, since a
+ *     credential-less row can't actually send mail
+ *
+ * Callers should treat null as "the address you configured isn't a working
+ * mailbox in email_accounts" — refuse to send rather than fall back.
+ */
+export async function getAccountForUtilitySend(email: string): Promise<SenderAccountWithCaps | null> {
+  if (!email) return null;
+  try {
+    const { data, error } = await getSupabase()
+      .from('email_accounts')
+      .select(SENDER_COLUMNS)
+      .ilike('email', email)
+      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password'])
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return mapRow(data as unknown as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
 export type { GmailSenderAccount, SmtpSenderAccount, SenderAccount };
