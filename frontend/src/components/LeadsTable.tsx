@@ -653,27 +653,41 @@ export default function LeadsTable({
       case 'social_profile': {
         const p = lead.lead_platform_presences?.[0];
         if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
-        // Prefer the most-recent POST URL when it's a real permalink
-        // (real permalinks are FB-shaped URLs without the #post- synthetic
-        // hash suffix). Falls back to the profile URL when we only have
-        // a synthetic post URL from older scrapes.
         const post = lead.lead_platform_posts?.[0];
         const isRealPostUrl = post?.post_url && !post.post_url.includes('#post-');
         const targetUrl = isRealPostUrl ? post!.post_url : p.profile_url;
-        const label = isRealPostUrl ? 'View post' : 'View profile';
-        const shortUrl = targetUrl.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/^m\./, '');
+        // For text-only posts (where FB doesn't expose a permalink in the
+        // search-result card) we show a 'Find on profile' link + the
+        // excerpt below it as a hint, so the operator knows what post to
+        // scroll for when they land on the timeline.
+        // Strip the OCR-noise FB renders inside posts (random letters
+        // separated by newlines/spaces from accessibility text overlays).
+        const cleanExcerpt = (post?.content_excerpt || '')
+          .replace(/\s+/g, ' ')
+          .replace(/(?:[a-zA-Z0-9](?:\s[a-zA-Z0-9]){4,})/g, '')  // drop runs of single letters
+          .trim()
+          .slice(0, 110);
+        const linkLabel = isRealPostUrl ? '📝 View post' : '👤 Find on profile';
         return (
-          <td key={col} className="px-4 py-3 max-w-[180px]" onClick={(e) => e.stopPropagation()}>
+          <td key={col} className="px-4 py-3 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
             <a
               href={targetUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-[#b0004a] underline hover:text-[#900040] text-xs inline-flex items-center gap-1"
-              title={`${label} — ${targetUrl}`}
+              title={targetUrl}
             >
-              <span className="truncate max-w-[150px]">{isRealPostUrl ? '📝 View post' : shortUrl}</span>
+              <span className="truncate max-w-[200px]">{linkLabel}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
+            {cleanExcerpt && (
+              <p
+                className="mt-1 text-[10px] italic text-slate-500 leading-tight line-clamp-2"
+                title={post?.content_excerpt || ''}
+              >
+                &ldquo;{cleanExcerpt}&hellip;&rdquo;
+              </p>
+            )}
           </td>
         );
       }
