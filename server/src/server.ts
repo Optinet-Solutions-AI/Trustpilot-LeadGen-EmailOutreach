@@ -182,20 +182,47 @@ const server = app.listen(config.port, async () => {
     console.warn('[Startup] Warmup scheduler error (non-fatal):', e instanceof Error ? e.message : e);
   }
 
-  // Start sequence scheduler for follow-up emails (direct/Gmail mode only)
-  try {
-    const { startSequenceScheduler } = await import('./services/sequence-scheduler.js');
-    startSequenceScheduler();
-  } catch (e) {
-    console.error('[Startup] Sequence scheduler error:', e instanceof Error ? e.message : e);
+  // Email scheduler gate — set SCHEDULERS_ENABLED=false on the main API
+  // service to suppress both the sequence-scheduler and campaign-scheduler
+  // loops here, so they run ONLY on a dedicated Cloud Run service deployed
+  // with --min-instances=1 --max-instances=1. This eliminates the cross-
+  // instance race that produced the 2026-05 incident (Cloud Run autoscales
+  // the API by traffic; each replica independently ticked setInterval, so
+  // N replicas → N parallel schedulers picking the same due rows in the
+  // same second). Default true preserves current behavior until the
+  // dedicated scheduler service is provisioned.
+  const schedulersEnabled = (process.env.SCHEDULERS_ENABLED ?? 'true').toLowerCase() !== 'false';
+  if (!schedulersEnabled) {
+    console.log('[Startup] SCHEDULERS_ENABLED=false — sequence + campaign schedulers suppressed on this instance');
+  } else {
+    // Start sequence scheduler for follow-up emails (direct/Gmail mode only)
+    try {
+      const { startSequenceScheduler } = await import('./services/sequence-scheduler.js');
+      startSequenceScheduler();
+    } catch (e) {
+      console.error('[Startup] Sequence scheduler error:', e instanceof Error ? e.message : e);
+    }
+
+    // Start campaign scheduler — DB-driven poller that sends scheduled campaign emails (Gmail mode only)
+    try {
+      const { startCampaignScheduler } = await import('./services/campaign-scheduler.js');
+      startCampaignScheduler();
+    } catch (e) {
+      console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
+    }
   }
 
-  // Start campaign scheduler — DB-driven poller that sends scheduled campaign emails (Gmail mode only)
+  // Duplicate-send monitor — watchdog that pages an operator when a
+  // (lead, campaign, step) tuple gets more than one email_sent note in
+  // a 5-minute rolling window. Defense in depth above the claim lock,
+  // idempotency guard, and unique indexes — closes the human-visibility
+  // gap that let the 2026-05 incident run for two weeks unnoticed.
+  // No-op when DUPLICATE_SEND_MONITOR_WEBHOOK_URL is unset.
   try {
-    const { startCampaignScheduler } = await import('./services/campaign-scheduler.js');
-    startCampaignScheduler();
+    const { startDuplicateSendMonitor } = await import('./services/duplicate-send-monitor.js');
+    startDuplicateSendMonitor();
   } catch (e) {
-    console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
+    console.error('[Startup] Duplicate-send monitor error:', e instanceof Error ? e.message : e);
   }
 
   // Start nightly scrape scheduler — DB-driven poller that runs the full

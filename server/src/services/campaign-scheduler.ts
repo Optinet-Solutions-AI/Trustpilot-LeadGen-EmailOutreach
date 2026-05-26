@@ -295,8 +295,63 @@ function pickSender(
 
 async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefined): Promise<void> {
   const supabase = getSupabase();
+
+  // Atomic claim — prevent overlapping poll ticks from double-sending the
+  // same initial outreach. The loop body (rate limits + SMTP/Gmail send +
+  // DB writes) can exceed the 60s polling interval; before this claim, a
+  // second tick would re-SELECT the same status='pending' row (status isn't
+  // flipped to 'sent' until end-of-function) and fire another send.
+  // Pushing scheduled_at 10 minutes out, conditional on its current value,
+  // claims the row atomically — Postgres row-locks the UPDATE so only one
+  // tick matches; the loser's UPDATE returns zero rows and the function
+  // bails. On success, the post-send UPDATE flips status to 'sent' so the
+  // shifted scheduled_at never re-fires.
+  const originalScheduledAt = cl.scheduled_at as string;
+  const claimDeadline = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const { data: claimed, error: claimErr } = await supabase
+    .from('campaign_leads')
+    .update({ scheduled_at: claimDeadline })
+    .eq('id', cl.id)
+    .eq('status', 'pending')
+    .eq('scheduled_at', originalScheduledAt)
+    .select('id');
+  if (claimErr) {
+    console.error(`[CampaignScheduler] Claim error for ${cl.email_used}:`, claimErr.message);
+    return;
+  }
+  if (!claimed || claimed.length === 0) {
+    console.log(`[CampaignScheduler] Lost claim for ${cl.email_used} — another tick is processing this lead`);
+    return;
+  }
+
   const campaign = cl.campaigns as Record<string, unknown>;
   const lead = cl.leads as Record<string, unknown>;
+
+  // Idempotency guard — initial sends record their email_sent note WITHOUT
+  // a step_number key. If a previous tick sent the email but crashed before
+  // flipping status='sent', the 10-minute claim window would expire and the
+  // row would be re-eligible. This check refuses to send if any prior
+  // email_sent note for this (lead, campaign) tuple exists without a
+  // step_number — meaning we've already done the initial send once.
+  // The DB-side unique partial index on lead_notes (migration 044) provides
+  // the same guarantee at the storage layer if this code path is bypassed.
+  const { data: existingInitialNote } = await supabase
+    .from('lead_notes')
+    .select('id')
+    .eq('lead_id', lead.id as string)
+    .eq('type', 'email_sent')
+    .eq('metadata->>campaign_id', campaign.id as string)
+    .is('metadata->>step_number', null)
+    .limit(1)
+    .maybeSingle();
+  if (existingInitialNote) {
+    console.warn(`[CampaignScheduler] Refusing duplicate initial send — note exists for ${cl.email_used} in campaign ${campaign.id}; flipping status to sent`);
+    await supabase
+      .from('campaign_leads')
+      .update({ status: 'sent', sent_at: new Date().toISOString() })
+      .eq('id', cl.id);
+    return;
+  }
 
   const subject = renderAndSpin(String(campaign.template_subject || ''), lead);
   const html    = renderAndSpin(String(campaign.template_body    || ''), lead);
@@ -331,12 +386,24 @@ async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefi
       .from('campaign_leads')
       .update(updatePayload)
       .eq('id', cl.id);
-    // If sender_email column missing (pre-migration), retry without it so the send still gets marked
-    if (updateErr && /sender_email/.test(updateErr.message ?? '')) {
-      await supabase
+    // Post-send UPDATE failure is the stuck-row failure mode from the
+    // 2026-05 incident: any error here would have left status='pending'
+    // with scheduled_at sitting 10 minutes in the future (the claim
+    // marker), so once the claim expired the row got picked up and re-
+    // sent — repeatedly, for as long as the underlying error persisted.
+    // The original handler only retried for the sender_email-missing-
+    // column case and silently swallowed everything else. Now: always
+    // attempt the minimal status='sent' fallback on ANY failure, and
+    // log loud if even the fallback fails so an operator can see it.
+    if (updateErr) {
+      console.warn(`[CampaignScheduler] Primary post-send UPDATE failed for ${cl.email_used}: ${updateErr.message}. Falling back to minimal status='sent' update.`);
+      const { error: fallbackErr } = await supabase
         .from('campaign_leads')
         .update({ status: 'sent', sent_at: updatePayload.sent_at })
         .eq('id', cl.id);
+      if (fallbackErr) {
+        console.error(`[CampaignScheduler] CRITICAL: post-send fallback UPDATE failed for ${cl.email_used}. Email was sent but row remains in pending state. Manual reconciliation needed.`, fallbackErr.message);
+      }
     }
 
     // Store Gmail thread/message IDs so the reply tracker and bounce tracker can cross-reference

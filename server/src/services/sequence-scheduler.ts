@@ -101,10 +101,72 @@ async function processDueFollowUps() {
  */
 async function sendFollowUp(cl: Record<string, unknown>) {
   const supabase = getSupabase();
+  const id = cl.id as string;
+  const originalNextStepAt = cl.next_step_at as string;
+
+  // Atomic claim — prevent overlapping poll ticks from double-sending the
+  // same follow-up. The loop body (rate-limiter wait + SMTP send + IMAP
+  // append + DB writes) routinely exceeds the 60s polling interval; before
+  // this claim, a second tick would re-SELECT the same row (its next_step_at
+  // wasn't updated until end-of-function) and fire another send. Postgres
+  // row-locks the UPDATE, so only one tick's conditional WHERE matches; the
+  // loser's UPDATE affects zero rows and bails. The 10-minute claim window
+  // auto-retries any send that dies mid-flight without manual intervention.
+  const claimDeadline = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const { data: claimed, error: claimErr } = await supabase
+    .from('campaign_leads')
+    .update({ next_step_at: claimDeadline })
+    .eq('id', id)
+    .eq('next_step_at', originalNextStepAt)
+    .select('id');
+  if (claimErr) {
+    console.error(`[SequenceScheduler] Claim error for ${cl.email_used}:`, claimErr.message);
+    return;
+  }
+  if (!claimed || claimed.length === 0) {
+    console.log(`[SequenceScheduler] Lost claim for ${cl.email_used} — another tick is processing this lead`);
+    return;
+  }
+
   const campaignId = cl.campaign_id as string;
   const currentStep = (cl.current_step as number) || 1;
   const nextStepNumber = currentStep + 1;
   const lead = cl.leads as Record<string, unknown>;
+
+  // Idempotency guard — refuse to send if an email_sent note already exists
+  // for this exact (lead, campaign, step_number) tuple. The claim above
+  // prevents *concurrent* duplicates; this catches the offline failure
+  // where a previous tick sent the email but crashed before its post-send
+  // UPDATE — the row would otherwise be re-eligible after the 10-minute
+  // claim expires and double-send. The DB-side unique partial index on
+  // lead_notes (migration 044) provides the same guarantee at the storage
+  // layer if this application check is ever bypassed.
+  const { data: existingNote } = await supabase
+    .from('lead_notes')
+    .select('id')
+    .eq('lead_id', cl.lead_id as string)
+    .eq('type', 'email_sent')
+    .eq('metadata->>campaign_id', campaignId)
+    .eq('metadata->>step_number', String(nextStepNumber))
+    .limit(1)
+    .maybeSingle();
+  if (existingNote) {
+    console.warn(`[SequenceScheduler] Refusing duplicate send — note exists for ${cl.email_used} step ${nextStepNumber}; advancing row to clear from queue`);
+    const stepsForAdvance = await getCampaignSteps(campaignId);
+    const nextNextStep = stepsForAdvance.find((s) => s.step_number === nextStepNumber + 1);
+    const nextStepAt = nextNextStep
+      ? new Date(Date.now() + nextNextStep.delay_days * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+    await supabase
+      .from('campaign_leads')
+      .update({
+        current_step: nextStepNumber,
+        next_step_at: nextStepAt,
+        sequence_completed: !nextNextStep,
+      })
+      .eq('id', id);
+    return;
+  }
 
   // Check if lead has already replied — auto-pause sequence
   if (cl.status === 'replied') {
@@ -234,10 +296,31 @@ async function sendFollowUp(cl: Record<string, unknown>) {
     if (sentBySenderEmail && !recordedSenderEmail) {
       updatePayload.sender_email = sentBySenderEmail;
     }
-    await supabase
+    const { error: updateErr } = await supabase
       .from('campaign_leads')
       .update(updatePayload)
       .eq('id', cl.id);
+    // Post-send UPDATE failure is the stuck-row failure mode from the
+    // 2026-05 incident: any error here would have left next_step_at sitting
+    // 10 minutes in the future (the claim marker), so once the claim
+    // expired the row got picked up and re-sent — repeatedly. Always
+    // attempt the minimal advance-step fallback so the row exits the
+    // queue; log loud if even the fallback fails so an operator can see it.
+    if (updateErr) {
+      console.warn(`[SequenceScheduler] Primary post-send UPDATE failed for ${cl.email_used}: ${updateErr.message}. Falling back to minimal step-advance update.`);
+      const { error: fallbackErr } = await supabase
+        .from('campaign_leads')
+        .update({
+          current_step: nextStepNumber,
+          next_step_at: nextStepAt,
+          sequence_completed: !nextNextStep,
+          sent_at: updatePayload.sent_at,
+        })
+        .eq('id', cl.id);
+      if (fallbackErr) {
+        console.error(`[SequenceScheduler] CRITICAL: post-send fallback UPDATE failed for ${cl.email_used} step ${nextStepNumber}. Email was sent but row remains in claimed state. Manual reconciliation needed.`, fallbackErr.message);
+      }
+    }
 
     // Update campaign totals
     const campaigns = await supabase
