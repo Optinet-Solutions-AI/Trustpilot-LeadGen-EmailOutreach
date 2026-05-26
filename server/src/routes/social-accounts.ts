@@ -15,8 +15,15 @@ import { config } from '../config.js';
 
 const router = Router();
 
-const PYTHON = config.pythonPath || 'python';
+// Resolve PYTHON to an absolute path. Windows' CreateProcess (which Node's
+// spawn calls under the hood) is finicky about relative .exe paths even when
+// cwd is set — observed locally that '.venv/Scripts/python.exe' spawns a
+// dead process with no output, but the absolute path works fine.
 const PROJECT_ROOT = config.projectRoot;
+const PYTHON_RAW = config.pythonPath || 'python';
+const PYTHON = path.isAbsolute(PYTHON_RAW)
+  ? PYTHON_RAW
+  : path.resolve(PROJECT_ROOT, PYTHON_RAW);
 
 type Platform = 'facebook' | 'instagram';
 
@@ -132,18 +139,56 @@ function streamLoginFlow(
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  const args = ['-m', 'tools.scraper.shared.login_flows', '--account-id', accountId];
+  // -u forces unbuffered stdout/stderr at the Python interpreter level.
+  // Belt + suspenders with PYTHONUNBUFFERED=1 below: on Windows, pipe
+  // stdout from a subprocess is fully-buffered by default, and Python
+  // can die before its first print line flushes. Combined with
+  // PYTHONIOENCODING for UTF-8 stage names.
+  const args = ['-u', '-m', 'tools.scraper.shared.login_flows', '--account-id', accountId];
   if (recover) args.push('--recover');
 
-  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUNBUFFERED: '1',
+    PYTHONIOENCODING: 'utf-8',
+  };
   if (creds?.username && creds?.password) {
     childEnv.SOCIAL_LOGIN_USERNAME = creds.username;
     childEnv.SOCIAL_LOGIN_PASSWORD = creds.password;
   }
 
+  console.log(`[social-accounts] PYTHON=${PYTHON} args=${args.slice(0, 5).join(' ')} cwd=${PROJECT_ROOT}`);
+
+  const send = (event: string, data: unknown) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
   const child = spawn(PYTHON, args, {
     cwd: PROJECT_ROOT,
     env: childEnv,
+    shell: false,
+    windowsHide: false,
+    // Explicit stdio: 'ignore' for stdin (Python doesn't read it),
+    // 'pipe' for stdout + stderr. Default 'pipe' for all was leaving
+    // stdin open which can cause Python to wait for input on certain
+    // initialization paths.
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  console.log(`[social-accounts] spawned pid=${child.pid}`);
+  // CRITICAL: handle the 'error' event. Without this listener, a spawn
+  // failure (e.g. python.exe not found) crashes the entire API process
+  // with an uncaught EventEmitter error rather than surfacing.
+  child.on('error', (err) => {
+    console.error('[social-accounts] spawn error:', err.message);
+    send('stderr', { line: `spawn error: ${err.message}` });
+    send('exit', { code: -1, error: err.message });
+    try { res.end(); } catch { /* ignore */ }
+  });
+  // Also log when child closes (separate from exit) so we can see what
+  // Windows reports.
+  child.on('close', (code, signal) => {
+    console.log(`[social-accounts] pid=${child.pid} close code=${code} signal=${signal}`);
   });
   // Zero our local handle to the password so a heap dump of this process
   // doesn't keep it around. The spawn() call has already copied it into
@@ -153,14 +198,11 @@ function streamLoginFlow(
     creds.username = undefined;
   }
 
-  const send = (event: string, data: unknown) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
   let buffer = '';
   child.stdout.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString('utf8');
+    const raw = chunk.toString('utf8');
+    console.log('[social-accounts] PY STDOUT chunk:', JSON.stringify(raw.slice(0, 200)));
+    buffer += raw;
     let nl: number;
     while ((nl = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, nl).trim();
@@ -178,7 +220,9 @@ function streamLoginFlow(
   });
 
   child.stderr.on('data', (chunk: Buffer) => {
-    send('stderr', { line: chunk.toString('utf8') });
+    const line = chunk.toString('utf8');
+    console.log('[social-accounts] PY STDERR:', line.slice(0, 500));
+    send('stderr', { line });
   });
 
   child.on('exit', (code) => {
