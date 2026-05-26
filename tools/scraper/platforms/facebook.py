@@ -141,6 +141,43 @@ def _flag_checkpoint(account_id: str, reason: str) -> None:
     _emit(None, 'failed', kind='checkpoint', account=account_id, reason=reason)
 
 
+def _extract_country_from_excerpt(text: str) -> Optional[str]:
+    """Best-effort: scan a post excerpt for a city/region name and map to a
+    country ISO code. Returns None when no known city is found. The map is
+    intentionally narrow — only places we've actually seen leads in. Expand
+    as new regions surface in real scrapes.
+
+    For the dental-services-in-Cebu test data the cities Liloan, Mandaue,
+    Mactan, Lapu-Lapu, Cebu all signal PH; the same pattern works for any
+    region — add (city, country) pairs as you find them.
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+    # Order: most specific multi-word cities first so 'lapu-lapu city' matches
+    # before a generic 'cebu' substring would.
+    CITY_TO_COUNTRY = [
+        # Philippines
+        ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
+        ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
+        ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
+        ('quezon city', 'PH'), ('davao', 'PH'),
+        # US (samples — expand as needed)
+        ('new york', 'US'), ('los angeles', 'US'), ('chicago', 'US'),
+        ('san francisco', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
+        # UK
+        ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
+        # Singapore
+        ('singapore', 'SG'),
+        # Australia
+        ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
+    ]
+    for needle, country in CITY_TO_COUNTRY:
+        if needle in lowered:
+            return country
+    return None
+
+
 def _detect_chrome_major_version() -> Optional[int]:
     """Read installed Chrome's major version so chromedriver matches."""
     import re
@@ -422,6 +459,11 @@ class FacebookScraper(SocialPlatformScraper):
                     # industry slug; for social leads the analogous useful
                     # field is the keyword.
                     'category': query,
+                    # Country inferred from city names in the post text.
+                    # Returns None when no known city is found — that's OK,
+                    # the Lead Matrix shows '—' and the operator can filter
+                    # out blanks later.
+                    'country': _extract_country_from_excerpt(s.get('content_excerpt', '')),
                 })
             # Mirror the legacy listing-done signal so the existing UI counter
             # increments — it listens for PROGRESS:category_done.

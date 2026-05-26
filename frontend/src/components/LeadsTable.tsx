@@ -151,7 +151,7 @@ const COL_WIDTHS: Record<ColKey, number> = {
   trustpilot_email: 200, website_email: 200, affiliate_email: 200,
   rating: 90, tags: 160, claimed: 100, scraped: 110,
   screenshot: 64, status: 130,
-  social_profile: 180, social_handle: 160, social_action: 130,
+  social_profile: 180, social_handle: 160, social_action: 100,
 };
 const CHECKBOX_COL_WIDTH = 44;
 const ACTIONS_COL_WIDTH = 56;
@@ -707,16 +707,20 @@ export default function LeadsTable({
         } else {
           return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
         }
+        // Compact icon-only button with the full action title in a tooltip.
+        // Keeps the row scannable and lets the column be narrower (90px vs 130px).
         return (
           <td key={col} className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
             <a
               href={dmHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs font-bold text-white bg-[#b0004a] hover:bg-[#900040] px-2.5 py-1.5 rounded-md transition-colors"
+              title={dmLabel}
+              aria-label={dmLabel}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors"
             >
-              <span className="material-symbols-outlined text-[14px]">send</span>
-              {dmLabel}
+              <span className="material-symbols-outlined text-[13px]">send</span>
+              Message
             </a>
           </td>
         );
