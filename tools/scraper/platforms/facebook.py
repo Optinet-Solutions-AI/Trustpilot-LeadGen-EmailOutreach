@@ -151,7 +151,13 @@ BUSINESS_PATTERNS = [
     "contact us", "call us", "visit our", "our location",
     "assigned dentists", "branch:", "services include",
     "open from", "operating hours", "promo", "discount",
-    "follow us", "like our page", "page", "official page",
+    "follow us", "like our page", "official page",
+    # Hiring / recruitment ads — these are businesses RECRUITING dentists,
+    # not consumers asking for dental services. Same effect — drop them.
+    "we are hiring", "now hiring", "we're hiring", "job opening",
+    "associate dentist", "to join our team", "to join our growing team",
+    "send your resume", "qualifications:", "applicant", "applicants",
+    "cv to", "send cv", "send your cv", "interested applicants",
 ]
 
 # STRONG asking signals — phrases that almost always mean the author is
@@ -184,6 +190,12 @@ POST_EXPERIENCE_PATTERNS = [
     "shoutout to dr", "shoutout to doc",
     "i recommend", "i highly recommend", "highly recommend dr",
     "i went", "i had", "we went", "we had",
+    # Past-tense asking narratives — someone describing that they used to
+    # be looking, not that they ARE looking now. "JL Moncada was looking
+    # for recommendations" is the user telling a story, often followed by
+    # "and found Dr. X" — they're already settled.
+    "was looking", "were looking", "had been looking", "was searching",
+    "was in search", "used to look",
 ]
 
 
