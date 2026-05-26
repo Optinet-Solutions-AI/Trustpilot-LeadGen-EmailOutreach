@@ -840,44 +840,76 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
     }
 
     // On-demand reply-body fetch — covers replies that older versions of
-    // reply-tracker.imap.ts flipped to status='replied' before the
-    // per-reply snippet save landed. When status='replied' but
-    // reply_snippet is empty, do a single IMAP search in the sender
-    // account's INBOX for messages FROM the lead, parse the first match,
-    // and cache its body back to the row so subsequent loads are instant.
-    // Failures are swallowed — the placeholder tile below still surfaces
-    // the fact that a reply exists.
+    // reply-tracker flipped to status='replied' before the per-reply
+    // snippet save landed. When status='replied' but reply_snippet is
+    // empty, do a single search in the sender account's mailbox for
+    // messages FROM the lead, parse the first match, and cache its body
+    // back to the row so subsequent loads are instant.
+    //
+    // Branches on the sender account's auth_type:
+    //   smtp           → IMAP FROM-search via imap-reply-fetcher
+    //   gmail_oauth    → Gmail API q=from:lead via gmail-reply-fetcher
+    //   app_password   → Gmail SMTP+IMAP, use IMAP path (same as smtp)
+    //
+    // Every branch logs WHY it skipped or what it found so the Cloud Run
+    // logs make the failure mode obvious instead of silent.
     if (cl.status === 'replied' && !cl.reply_snippet && cl.sender_email && cl.email_used) {
+      const logTag = `[rendered-send:${(cl.id as string).slice(0, 8)}]`;
       try {
         const { data: acc } = await supabase
           .from('email_accounts')
-          .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass')
+          .select('email, auth_type, status, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
           .ilike('email', cl.sender_email as string)
-          .eq('status', 'active')
           .maybeSingle();
-        if (acc && acc.auth_type === 'smtp' && acc.imap_host && acc.imap_user && acc.imap_pass) {
-          const { fetchReplyBodyFromImap } = await import('../services/imap-reply-fetcher.js');
-          const snippet = await fetchReplyBodyFromImap(
-            {
-              imap_host: acc.imap_host as string,
-              imap_port: (acc.imap_port as number | null) ?? 993,
-              imap_user: acc.imap_user as string,
-              imap_pass: acc.imap_pass as string,
-            },
-            cl.email_used as string,
-            (cl.replied_at as string | null) ?? (cl.sent_at as string | null) ?? null,
-          );
+        if (!acc) {
+          console.warn(`${logTag} reply-body fetch: no email_accounts row for sender ${cl.sender_email}`);
+        } else if (acc.status && acc.status !== 'active') {
+          console.warn(`${logTag} reply-body fetch: sender account ${cl.sender_email} is ${acc.status} (not active)`);
+        } else {
+          const authType = (acc.auth_type as string | null) ?? 'unknown';
+          const replyAnchor = (cl.replied_at as string | null) ?? (cl.sent_at as string | null) ?? null;
+          let snippet: string | null = null;
+          if ((authType === 'smtp' || authType === 'app_password') && acc.imap_host && acc.imap_user && acc.imap_pass) {
+            console.log(`${logTag} reply-body fetch: IMAP path for ${cl.sender_email} (auth=${authType})`);
+            const { fetchReplyBodyFromImap } = await import('../services/imap-reply-fetcher.js');
+            snippet = await fetchReplyBodyFromImap(
+              {
+                imap_host: acc.imap_host as string,
+                imap_port: (acc.imap_port as number | null) ?? 993,
+                imap_user: acc.imap_user as string,
+                imap_pass: acc.imap_pass as string,
+              },
+              cl.email_used as string,
+              replyAnchor,
+            );
+          } else if (authType === 'gmail_oauth' && acc.gmail_refresh_token) {
+            console.log(`${logTag} reply-body fetch: Gmail API path for ${cl.sender_email}`);
+            const { fetchReplyBodyFromGmail } = await import('../services/gmail-reply-fetcher.js');
+            snippet = await fetchReplyBodyFromGmail(
+              {
+                clientId: (acc.gmail_client_id as string | null) ?? config.gmail?.clientId ?? null,
+                clientSecret: (acc.gmail_client_secret as string | null) ?? config.gmail?.clientSecret ?? null,
+                refreshToken: acc.gmail_refresh_token as string,
+              },
+              cl.email_used as string,
+              replyAnchor,
+            );
+          } else {
+            console.warn(`${logTag} reply-body fetch: no matching path for auth_type=${authType} (need imap creds or gmail refresh token)`);
+          }
           if (snippet) {
-            // Cache so the next open doesn't pay the IMAP cost.
+            console.log(`${logTag} reply-body fetch: captured ${snippet.length} chars, caching to row`);
             await supabase
               .from('campaign_leads')
               .update({ reply_snippet: snippet })
               .eq('id', cl.id);
             (cl as Record<string, unknown>).reply_snippet = snippet;
+          } else {
+            console.warn(`${logTag} reply-body fetch: search returned no body for ${cl.email_used}`);
           }
         }
       } catch (e) {
-        console.warn(`[rendered-send] on-demand reply fetch failed for ${cl.id}:`, e instanceof Error ? e.message : e);
+        console.warn(`${logTag} reply-body fetch threw:`, e instanceof Error ? e.message : e);
       }
     }
 
