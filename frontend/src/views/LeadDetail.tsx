@@ -71,13 +71,30 @@ export default function LeadDetail() {
     if (!id || id === '_id') return;
     setLeadLoading(true);
     setLoadError(null);
+    // Local AbortController — independent of axios's global timeout so the
+    // skeleton can't sit indefinitely if anything in the interceptor chain
+    // swallows the timeout error. 12s is long enough for a warm Cloud Run
+    // request + DB round trip, short enough that a cold start or upstream
+    // stall surfaces the retry UI quickly.
+    const controller = new AbortController();
+    const timeoutMs = 12_000;
+    const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await api.get(`/leads/${id}`);
+      const res = await api.get(`/leads/${id}`, { signal: controller.signal });
       setLead(res.data.data);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } }; message?: string };
-      setLoadError(e?.response?.data?.error || e?.message || 'Failed to load lead');
+      const e = err as { response?: { data?: { error?: string } }; message?: string; name?: string; code?: string };
+      const aborted = controller.signal.aborted
+        || e?.name === 'CanceledError'
+        || e?.code === 'ERR_CANCELED'
+        || e?.code === 'ECONNABORTED';
+      setLoadError(
+        aborted
+          ? `Lead lookup timed out after ${timeoutMs / 1000}s. The API may be cold-starting or degraded — try Retry.`
+          : (e?.response?.data?.error || e?.message || 'Failed to load lead'),
+      );
     } finally {
+      clearTimeout(abortTimer);
       setLeadLoading(false);
     }
   }, [id]);
