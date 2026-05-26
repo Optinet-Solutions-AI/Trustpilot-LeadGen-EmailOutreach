@@ -169,31 +169,42 @@ CONSUMER_PATTERNS = [
 
 def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
     """Return True when the post LOOKS like a business advertising rather than
-    a consumer asking. Conservative: a post that contains BOTH business
-    patterns AND consumer patterns counts as consumer (consumers often
-    mention 'branch' or 'clinic' when asking for one). Pure business posts
-    have only the business patterns.
+    a consumer asking.
 
-    Also flags obvious business-handle suffixes (dental, clinic, etc.).
+    Three strength levels of business signal:
+      1. STRONG handle — the FB handle itself contains a clinic/business
+         token (arriesgado.dentalclinic, neardentalclinics, etc.).
+         Drop regardless of post text — businesses often phrase ads as
+         'Looking for a dentist? We've got you!' which matches consumer
+         patterns and would otherwise sneak through.
+      2. STRONG text — 2 or more business phrases in the excerpt
+         ('book an appointment' + 'our team' + 'branch:' clearly an ad).
+         Drop regardless of consumer phrases.
+      3. WEAK signals — 1 business phrase. Only drops if no consumer
+         phrases are present.
     """
     text = (excerpt or '').lower()
     handle = (author_handle or '').lower()
 
-    has_business_signal = any(p in text for p in BUSINESS_PATTERNS)
-    has_consumer_signal = any(p in text for p in CONSUMER_PATTERNS)
-
-    # If the handle itself reads like a clinic, that's a strong signal even
-    # without business phrases in the excerpt (the excerpt might just be the
-    # business's brief intro).
     BUSINESS_HANDLE_TOKENS = (
         'clinic', 'dental', 'dentist', 'dds', 'orthodontic', 'aesthetic',
         'studio', 'spa', 'salon', 'medspa', 'wellness', 'pharmacy',
+        'optical', 'medical', 'health',
     )
-    handle_looks_business = any(tok in handle for tok in BUSINESS_HANDLE_TOKENS)
-
-    if handle_looks_business and not has_consumer_signal:
+    # Strong: handle clearly identifies a business. Always drop.
+    if any(tok in handle for tok in BUSINESS_HANDLE_TOKENS):
         return True
-    return has_business_signal and not has_consumer_signal
+
+    business_hits = sum(1 for p in BUSINESS_PATTERNS if p in text)
+    has_consumer_signal = any(p in text for p in CONSUMER_PATTERNS)
+
+    # Strong: 2+ business phrases beats any single consumer phrase.
+    if business_hits >= 2:
+        return True
+    # Weak: 1 business phrase + no consumer phrase = drop.
+    if business_hits >= 1 and not has_consumer_signal:
+        return True
+    return False
 
 
 def _extract_country_from_excerpt(text: str) -> Optional[str]:
@@ -882,6 +893,16 @@ class FacebookScraper(SocialPlatformScraper):
                         else:
                             tail = profile_url.rstrip('/').split('/')[-1]
                             display_name = tail.replace('.', ' ').replace('_', ' ').title() if tail else 'Unknown'
+
+                    # Second-pass business filter using the recovered display name.
+                    # Handles cases like /profile.php?id=N where the handle gave
+                    # no signal but og:title revealed 'RCA Dental Clinic' etc.
+                    biz_tokens = ('clinic', 'dental', 'dentist', 'dds', 'orthodontic',
+                                  'studio', 'spa', 'salon', 'medspa', 'wellness',
+                                  'pharmacy', 'medical', 'pediatric')
+                    if any(tok in display_name.lower() for tok in biz_tokens):
+                        _emit(on_progress, 'enrich_skipped_business', name=display_name, url=profile_url)
+                        continue
                     # Bio link — the first external anchor in the intro section.
                     bio_link = None
                     try:
@@ -899,6 +920,11 @@ class FacebookScraper(SocialPlatformScraper):
                         'author_handle': posts[0].get('author_handle'),
                         'display_name': display_name,
                         'company_name': display_name,  # mapped to leads.company_name by upsert
+                        # Carry country + category from the listing stub (which
+                        # extracted them from the post excerpt + query keyword).
+                        # Without this both fields land NULL in the leads table.
+                        'country': posts[0].get('country'),
+                        'category': posts[0].get('category'),
                         'website_url': bio_link,
                         'email': None,
                         'location': None,
