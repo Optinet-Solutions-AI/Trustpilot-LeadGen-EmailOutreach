@@ -16,14 +16,19 @@
  * the EMAIL_SENDING_PAUSED_UNTIL kill switch before volume gets ugly.
  *
  * Two delivery channels are supported and can be combined:
- *   DUPLICATE_SEND_MONITOR_EMAIL        — recipient address; uses the
- *                                          app's existing sendEmail facade
- *                                          (env-default Gmail OAuth). Send
- *                                          alerts to a mailbox that is NOT
- *                                          on the cold-outreach domain so
- *                                          a reputation incident on
- *                                          optiratesolutions.net doesn't
- *                                          silence its own alerts.
+ *   DUPLICATE_SEND_MONITOR_EMAIL        — recipient address for alerts.
+ *                                          Use a mailbox NOT on the cold-
+ *                                          outreach domain so a reputation
+ *                                          incident on optiratesolutions.net
+ *                                          can't silence its own alerts.
+ *   DUPLICATE_SEND_MONITOR_FROM_EMAIL   — sender mailbox (must be an active
+ *                                          row in email_accounts with valid
+ *                                          creds). REQUIRED when EMAIL is
+ *                                          set — the monitor refuses to
+ *                                          fall back to the legacy env-only
+ *                                          Gmail path, since that path
+ *                                          historically resolved to a now-
+ *                                          retired mailbox.
  *   DUPLICATE_SEND_MONITOR_WEBHOOK_URL  — POST target for Slack-compatible
  *                                          JSON payloads. Optional; useful
  *                                          when the team prefers a chat
@@ -38,6 +43,7 @@
 
 import { getSupabase } from '../lib/supabase.js';
 import { sendEmail } from './email-sender.js';
+import { getSenderAccountByEmail } from './sender-loader.js';
 
 const POLL_INTERVAL_MS = Number(process.env.DUPLICATE_SEND_MONITOR_INTERVAL_MS) || 5 * 60 * 1000;
 const WINDOW_MINUTES   = Number(process.env.DUPLICATE_SEND_MONITOR_WINDOW_MIN) || 5;
@@ -216,6 +222,24 @@ async function postEmail(
   duplicates: Array<DuplicateTuple & { key: string }>,
   summary: string,
 ): Promise<boolean> {
+  // Require an explicit sender. The legacy 3-arg sendEmail() call would fall
+  // through to the env-default Gmail OAuth path (config.gmail.fromEmail), but
+  // that env var historically pointed at a retired mailbox
+  // (angelicarose549@gmail.com). Better to refuse to send than silently put a
+  // dead address in the From header of alert mail (which is itself a
+  // deliverability signal — recipient ESPs flag retired senders with hard
+  // bounces against their domain reputation).
+  const fromEmail = process.env.DUPLICATE_SEND_MONITOR_FROM_EMAIL;
+  if (!fromEmail) {
+    console.error('[DuplicateSendMonitor] DUPLICATE_SEND_MONITOR_FROM_EMAIL not set — refusing to send alert via env-default Gmail (which is retired). Set it to the email of an active row in email_accounts.');
+    return false;
+  }
+  const senderAccount = await getSenderAccountByEmail(fromEmail);
+  if (!senderAccount) {
+    console.error(`[DuplicateSendMonitor] Sender ${fromEmail} not found in email_accounts or not loadable — refusing to send alert. Confirm the row exists with status='active' and valid creds.`);
+    return false;
+  }
+
   const rows = duplicates.slice(0, 50).map((d) => {
     const stepLabel = d.step_number === null ? 'initial' : `step ${d.step_number}`;
     const span = (new Date(d.last_send).getTime() - new Date(d.first_send).getTime()) / 1000;
@@ -269,12 +293,12 @@ async function postEmail(
 </body></html>`;
 
   try {
-    const result = await sendEmail(toAddr, subject, html);
+    const result = await sendEmail(toAddr, subject, html, {}, senderAccount);
     if (!result.success) {
-      console.error(`[DuplicateSendMonitor] Email alert to ${toAddr} failed:`, result.error ?? 'unknown error');
+      console.error(`[DuplicateSendMonitor] Email alert from ${fromEmail} to ${toAddr} failed:`, result.error ?? 'unknown error');
       return false;
     }
-    console.log(`[DuplicateSendMonitor] Email alert sent to ${toAddr} (${duplicates.length} tuples)`);
+    console.log(`[DuplicateSendMonitor] Email alert sent from ${fromEmail} to ${toAddr} (${duplicates.length} tuples)`);
     return true;
   } catch (err) {
     console.error('[DuplicateSendMonitor] Email send threw:', err instanceof Error ? err.message : err);
