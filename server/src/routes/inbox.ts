@@ -42,10 +42,12 @@ async function getAllConnectedGmailClients(): Promise<GmailClientEntry[]> {
 
   // DB-stored OAuth accounts
   try {
+    // INCLUDE paused accounts — this client list powers read-only thread
+    // reconstruction. Pause stops outgoing mail; it must NOT lock the
+    // operator out of viewing reply history for already-sent campaigns.
     const { data: dbAccounts } = await getSupabase()
       .from('email_accounts')
       .select('email, gmail_client_id, gmail_client_secret, gmail_refresh_token')
-      .eq('status', 'active')
       .not('gmail_refresh_token', 'is', null);
 
     for (const acc of dbAccounts ?? []) {
@@ -593,15 +595,21 @@ router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) =
       return;
     }
 
+    // Read-only thread reconstruction must work even when the operator has
+    // paused the cold sender (status='paused') — pausing stops outgoing
+    // mail, it should NOT make the inbox forget how to display history.
+    // Dropping the status='active' filter here is what makes paused-
+    // mailbox threads pull from real IMAP instead of falling through to
+    // the rendered-template stub (which shows a re-rendered initial with
+    // no screenshot and no actual follow-up content).
     const { data: account, error: accErr } = await supabase
       .from('email_accounts')
-      .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass')
+      .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass, status')
       .eq('email', cl.sender_email)
-      .eq('status', 'active')
       .single();
 
     if (accErr || !account) {
-      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found or inactive` });
+      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found in email_accounts` });
       return;
     }
     if (account.auth_type !== 'smtp') {
@@ -716,12 +724,15 @@ router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response)
       }
     }
 
-    // 2) Try every connected IMAP/SMTP account
+    // 2) Try every connected IMAP/SMTP account — INCLUDING paused ones.
+    // Pause stops outgoing sending; it doesn't (and shouldn't) lock the
+    // operator out of reading reply history. Without this, the inbox
+    // falls through to the rendered-template stub for any lead whose
+    // sender account got paused during the 2026-05 reputation incident.
     const { data: imapAccounts } = await supabase
       .from('email_accounts')
       .select('email, imap_host, imap_port, imap_user, imap_pass')
       .eq('auth_type', 'smtp')
-      .eq('status', 'active')
       .not('imap_host', 'is', null)
       .not('imap_user', 'is', null)
       .not('imap_pass', 'is', null);
