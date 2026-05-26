@@ -50,6 +50,19 @@ export function startSequenceScheduler() {
  * Find all campaign_leads with a due next_step_at and process them.
  */
 async function processDueFollowUps() {
+  // Hard kill switch — set EMAIL_SENDING_PAUSED_UNTIL=YYYY-MM-DDTHH:MM:SSZ on
+  // the Cloud Run service to halt every tick until that timestamp passes.
+  // Used during deliverability incidents so the scheduler can't accidentally
+  // resume sending if some DB state gets flipped back to active.
+  const pauseUntil = process.env.EMAIL_SENDING_PAUSED_UNTIL;
+  if (pauseUntil) {
+    const pauseDate = new Date(pauseUntil);
+    if (!Number.isNaN(pauseDate.getTime()) && pauseDate.getTime() > Date.now()) {
+      console.log(`[SequenceScheduler] Sending paused until ${pauseDate.toISOString()} — skipping tick`);
+      return;
+    }
+  }
+
   const supabase = getSupabase();
 
   // Find leads with due follow-ups
