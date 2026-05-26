@@ -839,6 +839,48 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
       return;
     }
 
+    // On-demand reply-body fetch — covers replies that older versions of
+    // reply-tracker.imap.ts flipped to status='replied' before the
+    // per-reply snippet save landed. When status='replied' but
+    // reply_snippet is empty, do a single IMAP search in the sender
+    // account's INBOX for messages FROM the lead, parse the first match,
+    // and cache its body back to the row so subsequent loads are instant.
+    // Failures are swallowed — the placeholder tile below still surfaces
+    // the fact that a reply exists.
+    if (cl.status === 'replied' && !cl.reply_snippet && cl.sender_email && cl.email_used) {
+      try {
+        const { data: acc } = await supabase
+          .from('email_accounts')
+          .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass')
+          .ilike('email', cl.sender_email as string)
+          .eq('status', 'active')
+          .maybeSingle();
+        if (acc && acc.auth_type === 'smtp' && acc.imap_host && acc.imap_user && acc.imap_pass) {
+          const { fetchReplyBodyFromImap } = await import('../services/imap-reply-fetcher.js');
+          const snippet = await fetchReplyBodyFromImap(
+            {
+              imap_host: acc.imap_host as string,
+              imap_port: (acc.imap_port as number | null) ?? 993,
+              imap_user: acc.imap_user as string,
+              imap_pass: acc.imap_pass as string,
+            },
+            cl.email_used as string,
+            (cl.replied_at as string | null) ?? (cl.sent_at as string | null) ?? null,
+          );
+          if (snippet) {
+            // Cache so the next open doesn't pay the IMAP cost.
+            await supabase
+              .from('campaign_leads')
+              .update({ reply_snippet: snippet })
+              .eq('id', cl.id);
+            (cl as Record<string, unknown>).reply_snippet = snippet;
+          }
+        }
+      } catch (e) {
+        console.warn(`[rendered-send] on-demand reply fetch failed for ${cl.id}:`, e instanceof Error ? e.message : e);
+      }
+    }
+
     // Supabase's `.select(... campaigns(...), leads(...))` types these as
     // arrays-or-single depending on the join cardinality; at runtime both come
     // back as a single object, so normalize here.

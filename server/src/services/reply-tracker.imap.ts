@@ -163,7 +163,7 @@ export async function checkRepliesImap(
           return { matched: ok, isAuto: true };
         }
 
-        const ok = await markReplied(lead, opts);
+        const ok = await markReplied(lead, opts, parsedBody.body);
         if (ok) {
           dropLead(lead);
 
@@ -192,10 +192,22 @@ export async function checkRepliesImap(
       const markReplied = async (
         lead: LeadRef,
         opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy },
+        body: string,
       ): Promise<boolean> => {
+        // Persist a snippet of the body so the Inbox can render the reply
+        // without a second IMAP fetch on every open. Cap at 4000 chars —
+        // enough for any realistic short reply but bounded so a 10 MB
+        // quoted-history thread doesn't bloat the row. Strip leading /
+        // trailing whitespace because IMAP-parsed bodies often start with
+        // blank lines from MIME boundaries.
+        const snippet = (body || '').trim().slice(0, 4000) || null;
         const { error: updateErr } = await supabase
           .from('campaign_leads')
-          .update({ status: 'replied', replied_at: new Date().toISOString() })
+          .update({
+            status: 'replied',
+            replied_at: new Date().toISOString(),
+            reply_snippet: snippet,
+          })
           .eq('id', lead.id)
           .eq('status', 'sent');
         if (updateErr) return false;
