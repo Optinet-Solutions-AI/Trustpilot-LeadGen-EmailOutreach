@@ -416,6 +416,12 @@ class FacebookScraper(SocialPlatformScraper):
                     'profile_url': author_url,
                     'name': s.get('author_handle') or author_url.rstrip('/').split('/')[-1] or 'Unknown',
                     'rating': None,
+                    # Store the search keyword as the lead's "category" so the
+                    # Lead Matrix shows WHAT FOUND this person, instead of a
+                    # blank cell. Review-platform leads use category for the
+                    # industry slug; for social leads the analogous useful
+                    # field is the keyword.
+                    'category': query,
                 })
             # Mirror the legacy listing-done signal so the existing UI counter
             # increments — it listens for PROGRESS:category_done.
@@ -674,30 +680,46 @@ class FacebookScraper(SocialPlatformScraper):
                         _flag_checkpoint(account['id'], 'captcha-during-enrich')
                         break
 
-                    # Display name. The page <title> is usually "Name | Facebook"
-                    # but on private/blocked/just-logged-in profiles it can be
-                    # just "Facebook" or "(N) Facebook" — useless. Fall back to
-                    # the <h1> tag, then to the author_handle from the URL.
-                    raw_title = driver.title or ''
-                    display_name = raw_title.split(' | ')[0].split(' - ')[0].strip()
-                    bad_titles = {'facebook', '', 'log in to facebook', 'log into facebook'}
-                    if display_name.lower() in bad_titles or 'facebook' == display_name.lower().rstrip(')').lstrip('(0123456789 '):
+                    # Display name. Try in order:
+                    #   1. <meta property="og:title"> — FB sets this to the
+                    #      page owner's name even on profiles where <title>
+                    #      degrades to just "Facebook".
+                    #   2. <title> — usually "Name | Facebook"
+                    #   3. <h1> — first non-trivial heading
+                    #   4. URL-derived handle (last-resort)
+                    bad_titles = {'facebook', '', 'log in to facebook', 'log into facebook', 'meta'}
+                    def _is_bad(name: str) -> bool:
+                        s = (name or '').strip().lower()
+                        return s in bad_titles or s.rstrip(')').lstrip('(0123456789 ') == 'facebook'
+
+                    display_name = ''
+                    # 1. og:title
+                    try:
+                        og = driver.find_elements('css selector', 'meta[property="og:title"]')
+                        if og:
+                            display_name = (og[0].get_attribute('content') or '').strip()
+                    except Exception:
+                        pass
+                    # 2. document.title fallback
+                    if _is_bad(display_name):
+                        raw_title = driver.title or ''
+                        display_name = raw_title.split(' | ')[0].split(' - ')[0].strip()
+                    # 3. h1 fallback
+                    if _is_bad(display_name):
                         try:
-                            h1 = driver.find_elements('css selector', 'h1')
-                            for el in h1:
+                            for el in driver.find_elements('css selector', 'h1'):
                                 txt = (el.text or '').strip()
-                                if txt and txt.lower() not in bad_titles:
+                                if not _is_bad(txt):
                                     display_name = txt
                                     break
                         except Exception:
                             pass
-                    if display_name.lower() in bad_titles:
-                        # Last-resort: pull a handle out of the profile URL.
-                        # /<handle>/ → handle; /profile.php?id=X → "user X"
+                    # 4. URL-derived last resort
+                    if _is_bad(display_name):
                         if '/profile.php' in profile_url:
                             import re as _re
                             m = _re.search(r'[?&]id=(\d+)', profile_url)
-                            display_name = f'User {m.group(1)}' if m else 'Unknown'
+                            display_name = f'FB User {m.group(1)}' if m else 'Unknown'
                         else:
                             tail = profile_url.rstrip('/').split('/')[-1]
                             display_name = tail.replace('.', ' ').replace('_', ' ').title() if tail else 'Unknown'

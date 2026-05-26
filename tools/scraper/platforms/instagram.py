@@ -126,6 +126,7 @@ class InstagramScraper(SocialPlatformScraper):
                     'profile_url': author_url,
                     'name': s.get('author_handle') or author_url.rstrip('/').split('/')[-1] or 'Unknown',
                     'rating': None,
+                    'category': query,  # store hashtag/keyword for the Lead Matrix
                 })
             _emit(on_progress, 'category_done', count=len(reshaped))
             return reshaped
