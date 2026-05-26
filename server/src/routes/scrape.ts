@@ -9,6 +9,7 @@ import {
   type TaxonomyProgressEvent,
 } from '../services/taxonomy-discovery.js';
 import { config } from '../config.js';
+import { getSupabase } from '../lib/supabase.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -409,9 +410,21 @@ router.post('/', async (req: Request, res: Response) => {
       // status polling until the worker can stream events back.
       console.log(`[Scrape] enqueued ${platform} job=${job.id} (remote worker will pick up)`);
     } else {
-      // Inline mode (legacy): fire scraper asynchronously on this Cloud Run
-      // instance. runScrapeJob branches on `platform`: trustpilot uses the
-      // 3-script pipeline, everything else routes through run.py.
+      // Inline mode: fire scraper asynchronously on THIS server. Pre-claim
+      // the row with worker_id='local-inline' BEFORE we fire so the EC2
+      // worker's claim RPC (which polls every ~30s) sees the row is taken
+      // and skips it. Without this, EC2 can win a 50ms race against us on
+      // first POST and run the job remotely — where it has neither the
+      // social account cookies nor the latest code.
+      try {
+        await getSupabase()
+          .from('scrape_jobs')
+          .update({ worker_id: 'local-inline', claimed_at: new Date().toISOString() })
+          .eq('id', job.id)
+          .is('worker_id', null);
+      } catch (e) {
+        console.warn('[Scrape] pre-claim failed, EC2 may race us:', e instanceof Error ? e.message : e);
+      }
       runScrapeJob({
         jobId: job.id,
         country: country ?? '',
