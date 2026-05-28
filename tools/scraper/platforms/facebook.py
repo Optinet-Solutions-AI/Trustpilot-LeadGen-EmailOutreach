@@ -212,6 +212,38 @@ STRONG_BUSINESS_PATTERNS = [
     # Agency / sales pitches to dental practices
     "lead gen agency", "marketing agency", "growth agency",
     "for a case study",
+    "wants a website", "want a website", "needs a website",
+    "websites for dentists", "websites for plumbers",
+    "leads for dentists", "leads for plumbers",
+    "marketing for dentists", "marketing for plumbers",
+    # Practitioner-to-peer networking (not a consumer searching)
+    "fellow plumbers", "fellow dentists", "fellow hygienists",
+    "fellow electricians", "fellow tradies", "fellow tradesmen",
+    "looking for advice on how to get",
+    "advice on getting leads", "advice on how to get leads",
+    "how to find clients", "how to get clients",
+    # Recruiter framing without explicit "join" — clinic offering work
+    "to take on jobs", "to take on a few", "to take on extra",
+    "take on a few extra", "take on extra jobs", "extra work per day",
+    "extra jobs per day", "jobs per day",
+    # Job-seeker CV openers (very common Filipino/African expat pattern
+    # in trade-network groups). These authors are looking for WORK, not
+    # services.
+    "looking for work", "looking for employment", "seeking work",
+    "seeking employment", "available for hire", "available for work",
+    "i have a diploma", "i have a degree in",
+    "i have experience in electrical", "i have experience in plumbing",
+    "i have experience in dental",
+    # Service-provider ad copy — when a post lists out services it's
+    # almost always a clinic/contractor advertising, not a consumer.
+    "all plumbing work", "all electrical work", "all dental work",
+    "all plumbing services", "all electrical services",
+    "emergency call out", "emergency callouts", "24/7 service",
+    "fast and reliable service", "fully insured and qualified",
+    "look no further", "you can count on", "fast, friendly",
+    "fast and friendly", "no job too big", "no job too small",
+    "free estimates", "free quotes", "competitive prices",
+    "repairs, installations", "installations, repairs",
     # B2B coordination / hiring phrases — universal English, drop everywhere
     "reliever work", "for hiring", "to connect",
     "for relievers", "looking to hire", "now accepting",
