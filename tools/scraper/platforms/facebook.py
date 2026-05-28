@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -158,6 +159,12 @@ BUSINESS_PATTERNS = [
     "associate dentist", "to join our team", "to join our growing team",
     "send your resume", "qualifications:", "applicant", "applicants",
     "cv to", "send cv", "send your cv", "interested applicants",
+    # Clinics recruiting subjects/patients — these match consumer
+    # patterns ('looking for') but the inverse direction.
+    "looking for patient", "looking for a patient", "looking for patients",
+    "looking for a model", "looking for models",
+    "looking for volunteers", "looking for a volunteer",
+    "looking for subjects", "free service in exchange",
 ]
 
 # STRONG asking signals — phrases that almost always mean the author is
@@ -497,6 +504,104 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
     return posts
 
 
+def _extract_posts_from_group_search(driver, group: dict) -> list['PostStub']:
+    """Extract post stubs from a group's in-group search page.
+
+    Differs from open-feed extraction in three ways:
+      1. Post URLs are mostly `/stories/<id>/...` (text) or
+         `/photo/?fbid=...&set=gm.<id>&idorvanity=<gid>` (photo).
+      2. Author links are `/groups/<gid>/user/<uid>/` — must be
+         transformed to /profile.php?id=<uid> for outreach.
+      3. Some posts are "Anonymous participant" — flagged with
+         author_handle='anonymous-<hash>' and profile_url=None.
+    """
+    import hashlib
+    out: list[PostStub] = []
+    try:
+        cards = driver.find_elements('css selector', 'div[role="feed"] > div')
+    except Exception:
+        cards = []
+    if not cards:
+        return out
+
+    # Group-post URL patterns
+    GROUP_POST_RE = re.compile(
+        r'/stories/\d+/[A-Za-z0-9]+|'
+        r'/photo/?\?[^"]*set=gm\.\d+|'
+        r'/groups/[^/]+/posts/[0-9a-zA-Z]+|'
+        r'/groups/[^/]+/permalink/\d+'
+    )
+
+    for idx, card in enumerate(cards[:30]):
+        try:
+            text = (card.text or '').strip()
+            if not text:
+                continue
+
+            # Find author. In-group post anchors look like:
+            #   https://www.facebook.com/groups/<gid>/user/<uid>/
+            # Treat 'Anonymous participant' specially.
+            is_anonymous = 'Anonymous participant' in text or text.lower().startswith('anonymous')
+            author_url: Optional[str] = None
+            author_handle: Optional[str] = None
+
+            if not is_anonymous:
+                for a in card.find_elements('css selector', 'a[href*="/user/"]'):
+                    h = (a.get_attribute('href') or '')
+                    m = re.search(rf'/groups/{group["group_id"]}/user/(\d+)/', h)
+                    if m:
+                        uid = m.group(1)
+                        author_url = f'{FB_BASE}/profile.php?id={uid}'
+                        author_handle = f'profile.php:{uid}'
+                        break
+
+            if is_anonymous or not author_url:
+                # Synthesize anon identity from excerpt hash so dedup still works
+                digest = hashlib.sha1(text[:200].encode('utf-8')).hexdigest()[:12]
+                author_handle = f'anonymous-{digest}'
+                author_url = None
+
+            # Find real post permalink in the card
+            post_url: Optional[str] = None
+            for a in card.find_elements('css selector', 'a[href]'):
+                h = (a.get_attribute('href') or '')
+                if not h or 'facebook.com' not in h:
+                    continue
+                if GROUP_POST_RE.search(h):
+                    # Strip tracking
+                    base, _, qs = h.partition('?')
+                    if qs:
+                        kept = [p for p in qs.split('&')
+                                if not p.startswith('__') and not p.startswith('eav')
+                                and p.split('=')[0] not in ('ref', '_rdr', 'mibextid')]
+                        post_url = base + (('?' + '&'.join(kept)) if kept else '')
+                    else:
+                        post_url = base
+                    post_url = post_url.split('#')[0]
+                    break
+            if not post_url:
+                # Fallback: synthetic so (platform, post_url) stays unique
+                digest = hashlib.sha1(text[:200].encode('utf-8')).hexdigest()[:12]
+                anchor = author_url or f'{FB_BASE}/groups/{group["group_id"]}'
+                post_url = f'{anchor}#post-{digest}'
+
+            out.append({
+                'platform': 'facebook',
+                'post_url': post_url,
+                'author_handle': author_handle,
+                'author_profile_url': author_url,
+                'content_excerpt': text[:500],
+                'posted_at': None,
+                'group_id': group['group_id'],
+                'group_name': group.get('name'),
+                'is_anonymous': is_anonymous or (author_url is None),
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f'DEBUG: group card[{idx}] parse error: {exc}', file=sys.stderr)
+            continue
+    return out
+
+
 def _extract_pages_from_category(driver) -> list[dict]:
     """Pull Page stubs from /pages/category/* listing pages."""
     out: list[dict] = []
@@ -544,15 +649,175 @@ class FacebookScraper(SocialPlatformScraper):
              {'value': 'consumers', 'label': 'People asking for a service (post authors)'},
              {'value': 'businesses', 'label': 'Businesses in a niche (page owners)'},
          ]},
-        # Consumer mode fields
-        {'name': 'query', 'type': 'text', 'label': 'Keyword / phrase'},
-        {'name': 'groups_only', 'type': 'boolean', 'label': 'Search inside groups only', 'default': False},
-        {'name': 'date_from', 'type': 'text', 'label': 'Date from (YYYY-MM-DD)'},
-        {'name': 'date_to', 'type': 'text', 'label': 'Date to (YYYY-MM-DD)'},
+        # Consumer mode fields — split into niche + location
+        {'name': 'niche',    'type': 'text', 'label': 'Niche / service', 'required': True},
+        {'name': 'location', 'type': 'text', 'label': 'Location / city',  'required': True},
         # Business mode fields
         {'name': 'category', 'type': 'text', 'label': 'Page category (slug)'},
-        {'name': 'country', 'type': 'select', 'label': 'Country', 'options_source': 'taxonomy:countries'},
+        {'name': 'country',  'type': 'select', 'label': 'Country', 'options_source': 'taxonomy:countries'},
     ]
+
+    # ── Group-first consumer scraping (spec 2026-05-27) ──────────────
+    def _sync_discover_groups(self, niche: str, location: str, on_progress: ProgressCallback) -> list[dict]:
+        """Hit /search/groups/?q=<niche+location>, return ALL discovered
+        groups: each {group_id, name, member_count, url, snippet}. No
+        cap — operator opted for full coverage.
+        """
+        account = self._claim_or_raise()
+        driver = self._open_session(account)
+        groups: list[dict] = []
+        try:
+            qparts = [p for p in (niche, location) if p]
+            qstr = quote_plus(' '.join(qparts).strip())
+            url = f'{FB_BASE}/search/groups/?q={qstr}'
+            _emit(on_progress, 'groups_search_start', query=' '.join(qparts))
+            driver.get(url)
+            time.sleep(4)
+            if _is_checkpoint(driver):
+                _flag_checkpoint(account['id'], 'captcha-during-groups-search')
+                return []
+            # Scroll a little to surface more groups
+            for _ in range(2):
+                driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+                time.sleep(SCROLL_PAUSE)
+            try:
+                cards = driver.find_elements('css selector', 'div[role="feed"] > div')
+                if not cards:
+                    cards = driver.find_elements('css selector', 'div[role="article"]')
+            except Exception:
+                cards = []
+            print(f'DEBUG: groups page url={driver.current_url} title={driver.title!r} cards_found={len(cards)}', file=sys.stderr)
+            try:
+                debug_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '.tmp'))
+                os.makedirs(debug_dir, exist_ok=True)
+                driver.save_screenshot(os.path.join(debug_dir, 'fb_groups_discovery.png'))
+                with open(os.path.join(debug_dir, 'fb_groups_discovery.html'), 'w', encoding='utf-8') as f:
+                    f.write(driver.page_source)
+            except Exception as exc:
+                print(f'DEBUG: screenshot failed: {exc}', file=sys.stderr)
+            seen = set()
+            dbg_inspected = 0
+            for c in cards:
+                try:
+                    text = (c.text or '').strip()
+                    # Cache anchors ONCE so we don't trigger stale-element
+                    # exceptions calling find_elements twice on the same card.
+                    anchors = c.find_elements('css selector', 'a[href*="/groups/"]')
+                    if dbg_inspected < 3:
+                        print(f'DEBUG: card text={text[:80]!r} group_anchors={len(anchors)}', file=sys.stderr)
+                    if not text:
+                        continue
+                    gid = None; gurl = None
+                    hrefs_seen: list = []
+                    for a in anchors:
+                        try:
+                            h = (a.get_attribute('href') or '')
+                        except Exception as exc:
+                            h = ''
+                            if dbg_inspected <= 3:
+                                print(f'DEBUG:    anchor stale: {exc!s:.80}', file=sys.stderr)
+                        hrefs_seen.append(h[:120])
+                        m = re.search(r'/groups/([0-9a-zA-Z._-]+)/?', h)
+                        if m:
+                            gid_candidate = m.group(1)
+                            if gid_candidate not in {'search', 'feed', 'discover'}:
+                                gid = gid_candidate
+                                gurl = f'{FB_BASE}/groups/{gid}/'
+                                break
+                    if dbg_inspected < 3:
+                        print(f'DEBUG:   -> hrefs={hrefs_seen!s:.300} gid={gid}', file=sys.stderr)
+                        dbg_inspected += 1
+                    if not gid or gid in seen:
+                        continue
+                    seen.add(gid)
+                    lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+                    name = lines[0] if lines else '?'
+                    members_m = re.search(r'([\d,.]+\s*[KMkm]?)\s*member', text, re.IGNORECASE)
+                    members = members_m.group(1) if members_m else None
+                    is_public = 'public' in text.lower()[:80]
+                    groups.append({
+                        'group_id': gid,
+                        'name': name,
+                        'member_count_text': members,
+                        'is_public': is_public,
+                        'url': gurl,
+                        'snippet': text[:200],
+                    })
+                except Exception as exc:
+                    print(f'DEBUG: per-card exception: {type(exc).__name__}: {str(exc)[:150]}', file=sys.stderr)
+                    continue
+            _bump_counters(account['id'], delta_today=1, delta_hour=1)
+            _emit(on_progress, 'groups_found', count=len(groups))
+            return groups
+        finally:
+            try: driver.quit()
+            except Exception: pass
+
+    def _sync_group_first_scrape(
+        self,
+        niche: str,
+        location: str,
+        on_progress: ProgressCallback,
+    ) -> list:
+        """Orchestrate the discovery → per-group search → aggregate flow.
+        Sequential and cancellable; partial results persist if the parent
+        process is killed mid-flight (each in-group search is a complete
+        unit). Returns aggregated PostStubs across all discovered groups.
+        """
+        groups = self._sync_discover_groups(niche, location, on_progress)
+        if not groups:
+            _emit(on_progress, 'groups_found', count=0)
+            return []
+        in_group_keyword = f'looking for a {niche}'
+        account = self._claim_or_raise()
+        aggregated: list = []
+        for i, g in enumerate(groups, 1):
+            _emit(on_progress, 'group_progress', n=i, total=len(groups),
+                  group_name=g.get('name', '?')[:60], group_id=g['group_id'])
+            try:
+                # Re-claim if the previous in-group search bumped the cap
+                # past hourly threshold (defensive — usually still active).
+                stubs = self._sync_search_inside_group(account, g, in_group_keyword, on_progress)
+                if stubs:
+                    aggregated.extend(stubs)
+                    _emit(on_progress, 'group_posts_kept', count=len(stubs), group_name=g.get('name'))
+            except Exception as exc:  # noqa: BLE001 — keep going on per-group errors
+                _emit(on_progress, 'group_failed', group_id=g['group_id'], reason=str(exc)[:120])
+        _emit(on_progress, 'search_done', total=len(aggregated))
+        return aggregated
+
+    def _sync_search_inside_group(
+        self,
+        account: dict,
+        group: dict,
+        keyword: str,
+        on_progress: ProgressCallback,
+    ) -> list[PostStub]:
+        """Run an in-group post search inside one group. Returns PostStubs
+        with the in-group URL patterns (set=gm.<id>, /stories/<id>/, etc).
+        Caller is responsible for filtering and account-claiming.
+        """
+        driver = self._open_session(account)
+        results: list[PostStub] = []
+        try:
+            url = f'{FB_BASE}/groups/{group["group_id"]}/search/?q={quote_plus(keyword)}'
+            driver.get(url)
+            time.sleep(SCROLL_PAUSE * 2)
+            if _is_checkpoint(driver):
+                _flag_checkpoint(account['id'], f'captcha-in-group-{group["group_id"]}')
+                return results
+            # Scroll a couple of times to load lazy content
+            for _ in range(2):
+                driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+                time.sleep(SCROLL_PAUSE)
+            posts = _extract_posts_from_group_search(driver, group)
+            for p in posts:
+                results.append(p)
+            _bump_counters(account['id'], delta_today=1, delta_hour=1)
+            return results
+        finally:
+            try: driver.quit()
+            except Exception: pass
 
     # ── BasePlatformScraper interface ────────────────────────────────
     async def scrape_listing(
@@ -573,21 +838,27 @@ class FacebookScraper(SocialPlatformScraper):
         lead_type = (filters.get('lead_type') or 'consumers').lower()
 
         if lead_type == 'consumers':
-            query = (filters.get('query') or '').strip()
-            if not query:
-                raise ValueError("Consumer-mode Facebook scrapes require a 'query' filter")
-            # NOTE: FB's `/search/posts/?q=...&filters=groups` URL returns
-            # zero results — there is no global "posts inside groups"
-            # search. The Groups tab in FB's search UI shows groups
-            # themselves, not posts within them. To actually scope a
-            # search to group posts, we'd need to (a) find groups via
-            # search_groups, then (b) visit each group's own search
-            # endpoint (/groups/<id>/search/?q=...). That's a future
-            # enhancement. For now we rely on the strict asking-only
-            # filter below to clean the open-feed results.
-            post_stubs = await self.search_posts(
-                query, filters, max_results=max_results, on_progress=on_progress,
-            )
+            # NEW: group-first flow (spec 2026-05-27).
+            # Accept either the new (niche + location) shape OR the legacy
+            # single `query` field for back-compat.
+            niche = (filters.get('niche') or '').strip()
+            location = (filters.get('location') or '').strip()
+            legacy_query = (filters.get('query') or '').strip()
+            if not niche and legacy_query:
+                niche = legacy_query  # back-compat
+            if not niche:
+                raise ValueError("Consumer-mode Facebook scrapes require 'niche' (and ideally 'location') filters")
+
+            # Escape hatch: groups_only=false uses the old open-feed flow.
+            if filters.get('groups_only') is False:
+                query = ' '.join(p for p in (niche, location) if p)
+                post_stubs = await self.search_posts(
+                    query, filters, max_results=max_results, on_progress=on_progress,
+                )
+            else:
+                post_stubs = await asyncio.to_thread(
+                    self._sync_group_first_scrape, niche, location, on_progress,
+                )
             # Two-layer consumer-only filter:
             #  1. Drop business/ad posts (clinic handles, ad copy).
             #  2. Keep only posts that look like someone ACTIVELY ASKING
@@ -616,33 +887,43 @@ class FacebookScraper(SocialPlatformScraper):
                 post_stubs = kept
 
             # Reshape PostStubs into profile-stub form so the list→enrich
-            # orchestrator can drive them. We keep the original PostStub
-            # fields intact (post_url, content_excerpt, …) so enrich_profiles
-            # can detect this and pivot to enrich_authors.
+            # orchestrator can drive them. Anonymous posts (group asks
+            # from users we can't DM) get a synthetic identity instead
+            # of a real profile URL — they ride through the pipeline but
+            # land with outreach_status='lost' so they don't pollute the
+            # actionable lead queue.
             reshaped: list[dict] = []
             for s in post_stubs:
                 author_url = s.get('author_profile_url')
-                if not author_url:
-                    continue
+                handle = s.get('author_handle') or 'anonymous'
+                is_anon = s.get('is_anonymous') or author_url is None
+
+                if is_anon and not author_url:
+                    # Anonymous group ask — synthesize a stable identity.
+                    # profile_url stays None; UI will render as unreachable.
+                    profile_url = f'{FB_BASE}/groups/{s.get("group_id","unknown")}#anon-{handle.split("-",1)[-1]}'
+                else:
+                    profile_url = author_url
+
                 reshaped.append({
                     **s,
-                    'profile_url': author_url,
-                    'name': s.get('author_handle') or author_url.rstrip('/').split('/')[-1] or 'Unknown',
+                    'profile_url': profile_url,
+                    'name': handle if not is_anon else 'Anonymous group ask',
                     'rating': None,
-                    # Store the search keyword as the lead's "category" so the
-                    # Lead Matrix shows WHAT FOUND this person, instead of a
-                    # blank cell. Review-platform leads use category for the
-                    # industry slug; for social leads the analogous useful
-                    # field is the keyword.
-                    'category': query,
-                    # Country inferred from city names in the post text.
-                    # Returns None when no known city is found — that's OK,
-                    # the Lead Matrix shows '—' and the operator can filter
-                    # out blanks later.
-                    'country': _extract_country_from_excerpt(s.get('content_excerpt', '')),
+                    # Category = what found this person (niche keyword). For
+                    # group scrapes this is the niche field; for legacy
+                    # open-feed escape-hatch it's the original query.
+                    'category': niche or legacy_query,
+                    # Country = the location we asked for + a fallback to
+                    # excerpt-based extraction in case location is a region
+                    # name we don't directly map.
+                    'country': (
+                        _extract_country_from_excerpt(location)
+                        or _extract_country_from_excerpt(s.get('content_excerpt', ''))
+                    ),
+                    'is_anonymous': is_anon,
+                    'outreach_status': 'lost' if is_anon else None,
                 })
-            # Mirror the legacy listing-done signal so the existing UI counter
-            # increments — it listens for PROGRESS:category_done.
             _emit(on_progress, 'category_done', count=len(reshaped))
             return reshaped
 

@@ -53,14 +53,12 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [yMinReviewCount, setYMinReviewCount] = useState(5);
 
   // Facebook fields — two modes (consumers/businesses) toggled by leadType.
+  // Consumer mode is now group-first: niche + location → discover groups
+  // → in-group search. The legacy single-query open-feed path is the
+  // escape hatch (groups_only=false).
   const [fbLeadType, setFbLeadType] = useState<'consumers' | 'businesses'>('consumers');
-  const [fbQuery, setFbQuery] = useState('');
-  // FB's groups-only search URL filter doesn't actually work — verified
-  // 'We didn't find any results' empty state. Default to false; strict
-  // asking-only post-filter does the heavy lifting upstream.
-  const [fbGroupsOnly, setFbGroupsOnly] = useState(false);
-  const [fbDateFrom, setFbDateFrom] = useState('');
-  const [fbDateTo, setFbDateTo] = useState('');
+  const [fbNiche, setFbNiche] = useState('');
+  const [fbLocation, setFbLocation] = useState('');
   const [fbCategory, setFbCategory] = useState('dentist');
   const [fbCountry, setFbCountry] = useState('US');
 
@@ -110,7 +108,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         platform: 'facebook',
         lead_type: fbLeadType,
         ...(fbLeadType === 'consumers'
-          ? { query: fbQuery, groups_only: fbGroupsOnly, date_from: fbDateFrom || undefined, date_to: fbDateTo || undefined }
+          ? { niche: fbNiche, location: fbLocation }
           : { category: fbCategory, country: fbCountry }),
         enrich,
         verify,
@@ -282,59 +280,40 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
 
             {fbLeadType === 'consumers' && (
               <>
-                <div className="sm:col-span-2 lg:col-span-2">
-                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-query">
-                    Keyword / phrase
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-niche">
+                    Niche / service
                   </label>
                   <input
-                    id="fb-query"
+                    id="fb-niche"
                     type="text"
-                    placeholder='e.g. "looking for a dentist"'
-                    value={fbQuery}
-                    onChange={(e) => setFbQuery(e.target.value)}
+                    placeholder='e.g. "dentist", "plumber", "tutor"'
+                    value={fbNiche}
+                    onChange={(e) => setFbNiche(e.target.value)}
                     disabled={busy}
                     className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
                 </div>
-                <div className="flex items-end">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={fbGroupsOnly}
-                      onChange={(e) => setFbGroupsOnly(e.target.checked)}
-                      disabled={busy}
-                    />
-                    Groups-only
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-location">
+                    Location / city
                   </label>
-                  <p className="text-[11px] text-amber-700 ml-6 mt-0.5">
-                    ⚠ FB&apos;s groups-search URL returns zero results — leave unchecked. Asking-only post-filter handles cleaning upstream.
+                  <input
+                    id="fb-location"
+                    type="text"
+                    placeholder='e.g. "Cebu", "Mandaue", "Brooklyn"'
+                    value={fbLocation}
+                    onChange={(e) => setFbLocation(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                </div>
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <p className="text-[11px] text-on-surface-variant">
+                    Group-first flow: we&apos;ll find every public FB group matching <strong>{fbNiche || '<niche>'} {fbLocation || '<location>'}</strong>,
+                    then run an in-group post search for <strong>&quot;looking for a {fbNiche || '<niche>'}&quot;</strong> across all of them.
+                    Streams live; you can cancel mid-flight. Expect 10-25 min wall time.
                   </p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-date-from">
-                    Date from
-                  </label>
-                  <input
-                    id="fb-date-from"
-                    type="date"
-                    value={fbDateFrom}
-                    onChange={(e) => setFbDateFrom(e.target.value)}
-                    disabled={busy}
-                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-date-to">
-                    Date to
-                  </label>
-                  <input
-                    id="fb-date-to"
-                    type="date"
-                    value={fbDateTo}
-                    onChange={(e) => setFbDateTo(e.target.value)}
-                    disabled={busy}
-                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-                  />
                 </div>
               </>
             )}

@@ -46,11 +46,18 @@ export interface YelpScrapeParams {
 export interface FacebookScrapeParams {
   platform: 'facebook';
   lead_type: 'consumers' | 'businesses';
-  // Consumer mode
+  // Consumer mode (group-first flow). Niche + location get
+  // concatenated server-side for the groups discovery query;
+  // each discovered group is then searched for posts matching
+  // 'looking for a <niche>'.
+  niche?: string;
+  location?: string;
+  // Legacy single-query field, still accepted for back-compat
+  // (the Python plugin falls back to it when niche is empty).
   query?: string;
+  // Escape hatch: setting groups_only=false reverts to the
+  // legacy open-feed search (kept for debugging).
   groups_only?: boolean;
-  date_from?: string;
-  date_to?: string;
   // Business mode
   category?: string;
   country?: string;
