@@ -198,12 +198,12 @@ STRONG_BUSINESS_PATTERNS = [
     "join our growing practice", "join the practice", "join the team",
     "to join the team", "to join the practice",
     "qualified dental nurse", "qualified hygienist",
-    # Staff-role names — no consumer searching for "a dentist" types these.
-    # When any of these appears, the post is a clinic recruiter or an
-    # industry-internal discussion, not a service-seeker.
-    "dental nurse", "dental hygienist", "dental therapist",
-    "dental technician", "dental assistant", "dental receptionist",
-    "dental surgeon required", "dentist required", "hygienist required",
+    # Staff-role recruiter framing is also matched by STAFF_RECRUITER_RE
+    # below — this list keeps the unambiguous variants for grep-friendliness.
+    # Bare role mentions ("my dental hygienist said I should see a dentist")
+    # appear in genuine consumer posts and must NOT trigger a drop.
+    "dental nurse to join", "dental hygienist to join",
+    "dental therapist to join", "dental technician to join",
     "bds dental surgeon",
     # Job-listing markers
     "position:", "full-time / part-time", "full time / part time",
@@ -264,6 +264,24 @@ def _is_actively_asking(excerpt: str) -> bool:
     return has_asking and not has_past
 
 
+# Recruiter framing around staff roles. Matches:
+#   "looking for a [modifier]* [dental ]nurse|hygienist|therapist|..."
+#   "[dental ]nurse|hygienist|... [is ]?required"
+# The modifier slot covers full-time/part-time/qualified/registered/etc.
+# without us enumerating every combination as a literal substring.
+_STAFF_RECRUITER_RE = re.compile(
+    r'looking for (?:a |an )?'
+    r'(?:(?:full[- ]time|part[- ]time|qualified|registered|experienced|trainee|associate|gdc[- ]registered|new) )*'
+    r'(?:dental )?'
+    r'(?:nurse|hygienist|therapist|technician|assistant|receptionist|surgeon)'
+    r'|'
+    r'(?:dental )?'
+    r'(?:nurse|hygienist|therapist|technician|assistant|receptionist|surgeon)s? '
+    r'(?:is |are )?required',
+    re.I,
+)
+
+
 def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
     """Return True when the post LOOKS like a business advertising rather than
     a consumer asking.
@@ -287,6 +305,12 @@ def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
     # STRONG business signal — wins regardless of any 'looking for a'
     # consumer phrase the same post may also contain.
     if any(p in text for p in STRONG_BUSINESS_PATTERNS):
+        return True
+
+    # Staff-role recruiter framing via regex — handles modifier variants
+    # like "looking for a full-time dental nurse" without enumerating all
+    # modifier combinations as substrings.
+    if _STAFF_RECRUITER_RE.search(text):
         return True
 
     business_hits = sum(1 for p in BUSINESS_PATTERNS if p in text)
