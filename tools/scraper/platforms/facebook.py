@@ -1098,13 +1098,21 @@ class FacebookScraper(SocialPlatformScraper):
         return account
 
     def _open_session(self, account: dict):
-        """Open a driver and hydrate it with the account's saved cookies."""
+        """Open a driver and hydrate it with the account's saved cookies.
+
+        Three-second sleeps after each home navigation: without them FB
+        sometimes returns a tiny 'Not Found' stub on subsequent searches
+        (verified live — cookies need a beat to be trusted by the edge
+        before we navigate away).
+        """
         driver = _open_driver()
         driver.get(FB_BASE)
+        time.sleep(3)
         jar = load_cookies(account['id'])
         if jar:
             _inject_cookies(driver, jar)
             driver.get(FB_BASE)  # re-navigate so injected cookies stick
+            time.sleep(3)
         # Cheap sanity: if we're still on /login/, the cookies are bad.
         if '/login' in driver.current_url:
             driver.quit()
