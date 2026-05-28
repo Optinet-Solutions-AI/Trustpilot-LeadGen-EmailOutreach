@@ -761,6 +761,66 @@ paths:
       responses:
         "200":
           description: OK
+  /api/social-accounts:
+    get:
+      operationId: listSocialAccounts
+      security: []
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createSocialAccount
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/{id}:
+    patch:
+      operationId: updateSocialAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: deleteSocialAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/{id}/connect:
+    post:
+      operationId: connectSocialAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/{id}/recover:
+    post:
+      operationId: recoverSocialAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/dns-health/{domain}:
     get:
       operationId: getDnsHealth
