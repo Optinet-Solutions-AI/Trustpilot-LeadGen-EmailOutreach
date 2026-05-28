@@ -64,15 +64,24 @@ export default function Scrape() {
     const platform = (job.platform || 'trustpilot').toLowerCase();
     params.set('platform', platform);
 
-    // 2. For non-Trustpilot jobs the top-level country/category columns
-    //    are placeholders (_yelp_ / _tripadvisor_ / all) — the real values
-    //    live in `filters` jsonb. Read the real ones for the Lead Matrix
-    //    query, otherwise the filter would match nothing.
-    const f = (job.filters || null) as { country?: string; category?: string } | null;
+    // 2. Pull the real country/category from filters jsonb (top-level
+    //    columns are placeholders for non-Trustpilot rows). For Facebook
+    //    consumer mode the filters jsonb uses {niche, location} — those
+    //    map onto the leads table's {category, country} because that's
+    //    how scrape_listing reshapes them before upsert. The Lead Matrix
+    //    query reads leads.category/country, so we have to translate.
+    const f = (job.filters || null) as {
+      country?: string;
+      category?: string;
+      niche?: string;
+      location?: string;
+    } | null;
     const realCountry =
-      job.country && !job.country.startsWith('_') ? job.country : f?.country;
+      job.country && !job.country.startsWith('_') ? job.country
+      : f?.country ?? f?.location;
     const realCategory =
-      job.category && job.category !== 'all' ? job.category : f?.category;
+      job.category && job.category !== 'all' ? job.category
+      : f?.category ?? f?.niche;
     if (realCountry) params.set('country', realCountry);
     if (realCategory) params.set('category', realCategory);
 
@@ -341,20 +350,47 @@ export default function Scrape() {
                     : 'neutral';
                   const platKey = (job.platform || 'trustpilot').toLowerCase();
                   const platMeta = PLATFORM_BADGE[platKey] ?? { label: platKey, bg: 'bg-slate-100', fg: 'text-slate-600' };
-                  // For non-Trustpilot jobs the legacy country/category
-                  // columns hold placeholders ('_yelp_' / '_tripadvisor_'
-                  // / 'all'); the real values live in `filters` jsonb.
-                  // Without this fallback the row shows "all / _yelp_"
-                  // even though the scrape actually targeted plumbing/AU.
-                  const f = (job.filters || null) as { country?: string; category?: string } | null;
-                  const displayCountry =
-                    job.country && !job.country.startsWith('_')
-                      ? job.country
-                      : f?.country ?? job.country ?? '';
-                  const displayCategory =
-                    job.category && job.category !== 'all'
-                      ? job.category
-                      : f?.category ?? job.category ?? '';
+                  // Platform-aware Target + Rating columns. The legacy
+                  // country/category columns on scrape_jobs hold
+                  // Trustpilot-shaped data ('_facebook_' / 'all'
+                  // placeholders for everyone else); the real shape per
+                  // platform lives in `filters` jsonb:
+                  //   trustpilot/tripadvisor/yelp -> {country, category}
+                  //   facebook consumers          -> {niche, location}
+                  //   facebook businesses         -> {category, country}
+                  // Rating range is a Trustpilot/TripAdvisor/Yelp concept;
+                  // Facebook has none, so we render '—' for those rows.
+                  const f = (job.filters || null) as {
+                    country?: string;
+                    category?: string;
+                    niche?: string;
+                    location?: string;
+                    lead_type?: 'consumers' | 'businesses';
+                  } | null;
+                  let displayPrimary: string;
+                  let displaySecondary: string;
+                  let displayRating: string | null;
+                  if (platKey === 'facebook') {
+                    const leadType = f?.lead_type ?? 'consumers';
+                    if (leadType === 'consumers') {
+                      displayPrimary = f?.niche || '—';
+                      displaySecondary = f?.location || '—';
+                    } else {
+                      displayPrimary = f?.category || '—';
+                      displaySecondary = f?.country || '—';
+                    }
+                    displayRating = null;
+                  } else {
+                    displayPrimary =
+                      job.category && job.category !== 'all'
+                        ? job.category
+                        : f?.category ?? job.category ?? '';
+                    displaySecondary =
+                      job.country && !job.country.startsWith('_')
+                        ? job.country
+                        : f?.country ?? job.country ?? '';
+                    displayRating = `${job.min_rating}–${job.max_rating}★`;
+                  }
                   return (
                     <tr
                       key={job.id}
@@ -373,12 +409,12 @@ export default function Scrape() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex flex-col">
-                          <span className="font-bold text-sm text-on-surface leading-tight">{displayCategory}</span>
-                          <span className="text-[11px] text-secondary mt-0.5">{displayCountry}</span>
+                          <span className="font-bold text-sm text-on-surface leading-tight">{displayPrimary}</span>
+                          <span className="text-[11px] text-secondary mt-0.5">{displaySecondary}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-secondary whitespace-nowrap">
-                        {job.min_rating}–{job.max_rating}★
+                        {displayRating ?? '—'}
                       </td>
                       <td className="px-6 py-4">
                         <Pill variant={statusVariant} size="sm">{job.status}</Pill>
@@ -421,7 +457,7 @@ export default function Scrape() {
                             tone="danger"
                             size="sm"
                             onClick={() => {
-                              if (confirm(`Delete this ${job.category} / ${job.country} scrape job from the list? Leads already saved are kept.`)) {
+                              if (confirm(`Delete this ${displayPrimary} / ${displaySecondary} scrape job from the list? Leads already saved are kept.`)) {
                                 deleteJob(job.id);
                               }
                             }}
