@@ -404,6 +404,45 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     if (config.useRemoteWorker) {
+      // Social platforms (Facebook, Instagram) can only run on a host
+      // that has (a) Google Chrome installed and (b) the operator's
+      // social_account cookies on disk. The Cloud Run container has
+      // neither — Playwright Chromium isn't the same binary that
+      // undetected-chromedriver needs, and cookies live in the
+      // operator's local Supabase session_store. Letting the EC2
+      // worker grab the job and crash on a stale-code traceback was
+      // the previous failure mode (see jobs with worker_id=ec2-sg-1
+      // returning `Script exited with code 1` on FB consumer mode).
+      //
+      // Fail fast with a clear message instead. The job row is still
+      // created (so the operator sees it in the history with a
+      // helpful error) but no worker will try to run it.
+      const isSocial = platform === 'facebook' || platform === 'instagram';
+      if (isSocial) {
+        const reason =
+          `${platform === 'facebook' ? 'Facebook' : 'Instagram'} scrapes must be ` +
+          `run from the operator's local machine (http://localhost:3001). The Cloud Run ` +
+          `host doesn't carry the social-account session cookies the scraper needs. ` +
+          `Open the local app and re-submit this scrape there.`;
+        try {
+          await getSupabase()
+            .from('scrape_jobs')
+            .update({
+              status: 'failed',
+              worker_id: 'cloudrun-blocked',
+              claimed_at: new Date().toISOString(),
+              completed_at: new Date().toISOString(),
+              error: reason,
+              last_error: reason,
+            })
+            .eq('id', job.id);
+        } catch (e) {
+          console.warn('[Scrape] could not mark social job as blocked:', e instanceof Error ? e.message : e);
+        }
+        res.status(409).json({ success: false, error: reason, data: { jobId: job.id, platform } });
+        return;
+      }
+
       // Remote-worker mode: the row stays status='pending' and the EC2 worker
       // claims it within ~30s via claim_next_pending_scrape_job. Nothing else
       // to do here. SSE progress for the manual scrape page will degrade to
