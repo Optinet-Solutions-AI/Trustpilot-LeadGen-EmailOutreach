@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams } from '../types/scrape';
 import CountryPicker from './CountryPicker';
+import LocationPicker from './LocationPicker';
 import CategoryPicker from './CategoryPicker';
 import PlatformPicker, { type PlatformManifest } from './PlatformPicker';
 import Button from '../ui/Button';
@@ -72,7 +73,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   // escape hatch (groups_only=false).
   const [fbLeadType, setFbLeadType] = useState<'consumers' | 'businesses'>('consumers');
   const [fbNiche, setFbNiche] = useState('');
-  const [fbLocation, setFbLocation] = useState('');
+  const [fbLocation, setFbLocation] = useState('London');
   const [fbCategory, setFbCategory] = useState('dentist');
   const [fbCountry, setFbCountry] = useState('GB');
 
@@ -312,82 +313,12 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-location">
                     Location / city
                   </label>
-                  <input
+                  <LocationPicker
                     id="fb-location"
-                    list="fb-location-suggestions"
-                    type="text"
-                    placeholder='e.g. "London", "Berlin", "Paris"'
                     value={fbLocation}
-                    onChange={(e) => setFbLocation(e.target.value)}
+                    onChange={setFbLocation}
                     disabled={busy}
-                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
-                  {/* European-focused list. Matches the CITY_TO_COUNTRY map
-                      in tools/scraper/platforms/facebook.py so picks
-                      align with the country-mismatch filter. Keep these
-                      two lists in sync when adding cities. */}
-                  <datalist id="fb-location-suggestions">
-                    {/* United Kingdom */}
-                    <option value="London" />
-                    <option value="Manchester" />
-                    <option value="Birmingham" />
-                    <option value="Leeds" />
-                    <option value="Liverpool" />
-                    <option value="Bristol" />
-                    <option value="Edinburgh" />
-                    <option value="Glasgow" />
-                    {/* Ireland */}
-                    <option value="Dublin" />
-                    <option value="Cork" />
-                    {/* Germany */}
-                    <option value="Berlin" />
-                    <option value="Munich" />
-                    <option value="Hamburg" />
-                    <option value="Frankfurt" />
-                    <option value="Cologne" />
-                    {/* France */}
-                    <option value="Paris" />
-                    <option value="Marseille" />
-                    <option value="Lyon" />
-                    <option value="Nice" />
-                    {/* Spain */}
-                    <option value="Madrid" />
-                    <option value="Barcelona" />
-                    <option value="Valencia" />
-                    <option value="Seville" />
-                    {/* Italy */}
-                    <option value="Rome" />
-                    <option value="Milan" />
-                    <option value="Naples" />
-                    <option value="Florence" />
-                    {/* Netherlands */}
-                    <option value="Amsterdam" />
-                    <option value="Rotterdam" />
-                    <option value="The Hague" />
-                    {/* Belgium */}
-                    <option value="Brussels" />
-                    <option value="Antwerp" />
-                    {/* Portugal */}
-                    <option value="Lisbon" />
-                    <option value="Porto" />
-                    {/* Switzerland */}
-                    <option value="Zurich" />
-                    <option value="Geneva" />
-                    {/* Austria */}
-                    <option value="Vienna" />
-                    {/* Czech Republic */}
-                    <option value="Prague" />
-                    {/* Poland */}
-                    <option value="Warsaw" />
-                    <option value="Krakow" />
-                    {/* Scandinavia */}
-                    <option value="Stockholm" />
-                    <option value="Copenhagen" />
-                    <option value="Oslo" />
-                    <option value="Helsinki" />
-                    {/* Greece */}
-                    <option value="Athens" />
-                  </datalist>
                 </div>
                 <div className="sm:col-span-2 lg:col-span-3">
                   <p className="text-[11px] text-on-surface-variant">
