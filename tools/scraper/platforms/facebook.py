@@ -339,19 +339,51 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     # Order: most specific multi-word cities first so 'lapu-lapu city' matches
     # before a generic 'cebu' substring would.
     CITY_TO_COUNTRY = [
-        # Philippines
+        # United Kingdom (operator focus — primary outreach market)
+        ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
+        ('leeds', 'GB'), ('liverpool', 'GB'), ('bristol', 'GB'),
+        ('edinburgh', 'GB'), ('glasgow', 'GB'),
+        # Ireland
+        ('dublin', 'IE'), ('cork', 'IE'),
+        # Germany
+        ('berlin', 'DE'), ('munich', 'DE'), ('hamburg', 'DE'),
+        ('frankfurt', 'DE'), ('cologne', 'DE'),
+        # France
+        ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'), ('nice', 'FR'),
+        # Spain
+        ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'), ('seville', 'ES'),
+        # Italy
+        ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'), ('florence', 'IT'),
+        # Netherlands
+        ('amsterdam', 'NL'), ('rotterdam', 'NL'), ('the hague', 'NL'),
+        # Belgium
+        ('brussels', 'BE'), ('antwerp', 'BE'),
+        # Portugal
+        ('lisbon', 'PT'), ('porto', 'PT'),
+        # Switzerland
+        ('zurich', 'CH'), ('zürich', 'CH'), ('geneva', 'CH'),
+        # Austria
+        ('vienna', 'AT'),
+        # Czech Republic
+        ('prague', 'CZ'),
+        # Poland
+        ('warsaw', 'PL'), ('krakow', 'PL'), ('kraków', 'PL'),
+        # Scandinavia
+        ('stockholm', 'SE'), ('copenhagen', 'DK'),
+        ('oslo', 'NO'), ('helsinki', 'FI'),
+        # Greece
+        ('athens', 'GR'),
+        # Legacy non-European entries kept so manual scrapes against
+        # these cities still benefit from the country-mismatch filter.
+        # Order: most specific multi-word cities first so 'lapu-lapu city'
+        # matches before a generic 'cebu' substring would.
         ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
         ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
         ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
         ('quezon city', 'PH'), ('davao', 'PH'),
-        # US (samples — expand as needed)
         ('new york', 'US'), ('los angeles', 'US'), ('chicago', 'US'),
         ('san francisco', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
-        # UK
-        ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
-        # Singapore
         ('singapore', 'SG'),
-        # Australia
         ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
     ]
     for needle, country in CITY_TO_COUNTRY:
@@ -364,9 +396,30 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
 # Word-boundary-anchored regex patterns — keep them strict so 'phone' doesn't
 # match 'PH' and 'auspicious' doesn't match 'AU'.
 _COUNTRY_NAME_TOKENS = {
+    # European primary markets
+    'GB': re.compile(r'\b(uk|u\.k|united kingdom|britain|british|england|english|scotland|scottish|wales|welsh)\b', re.I),
+    'IE': re.compile(r'\b(ireland|irish|eire)\b', re.I),
+    'DE': re.compile(r'\b(germany|german|deutschland|deutsch)\b', re.I),
+    'FR': re.compile(r'\b(france|french|français|francais)\b', re.I),
+    'ES': re.compile(r'\b(spain|spanish|españa|espana|español)\b', re.I),
+    'IT': re.compile(r'\b(italy|italian|italia|italiano)\b', re.I),
+    'NL': re.compile(r'\b(netherlands|dutch|holland|nederland)\b', re.I),
+    'BE': re.compile(r'\b(belgium|belgian|belgique|belgië)\b', re.I),
+    'PT': re.compile(r'\b(portugal|portuguese|português)\b', re.I),
+    'CH': re.compile(r'\b(switzerland|swiss|schweiz|suisse|svizzera)\b', re.I),
+    'AT': re.compile(r'\b(austria|austrian|österreich|osterreich)\b', re.I),
+    'CZ': re.compile(r'\b(czech|česko|cesko|czechia)\b', re.I),
+    'PL': re.compile(r'\b(poland|polish|polska)\b', re.I),
+    'SE': re.compile(r'\b(sweden|swedish|sverige)\b', re.I),
+    'DK': re.compile(r'\b(denmark|danish|danmark)\b', re.I),
+    'NO': re.compile(r'\b(norway|norwegian|norge)\b', re.I),
+    'FI': re.compile(r'\b(finland|finnish|suomi)\b', re.I),
+    'GR': re.compile(r'\b(greece|greek|hellas|hellenic)\b', re.I),
+    # Legacy non-European tokens — kept so manual scrapes against these
+    # cities still benefit from the filter even though they're no longer
+    # in the dropdown.
     'PH': re.compile(r'\b(ph|philippines|pinoy|filipino|filipina|pilipinas)\b', re.I),
     'US': re.compile(r'\b(usa|u\.s\.a|u\.s|united states|american)\b', re.I),
-    'GB': re.compile(r'\b(uk|u\.k|united kingdom|britain|british|england|english|scotland|scottish|wales|welsh)\b', re.I),
     'AU': re.compile(r'\b(australia|australian|aussie|aussies|nsw|vic|qld)\b', re.I),
     'CA': re.compile(r'\b(canada|canadian)\b', re.I),
     'SG': re.compile(r'\bsingapore(an)?\b', re.I),
@@ -422,10 +475,13 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
         'dental md', 'dentist group',
         # Filipino + tech tokens spotted in live data:
         # 'tiange' = flea market / vendor stalls (B2B equipment trading);
-        # 'dentista' = profession-name forums (peer chat);
         # 'tech' / 'technicians' = lab tech / dental-tech communities;
         # 'clinics' (plural) = clinic-business networking forums.
-        'tiange', 'dentista', ' tech', 'technicians',
+        # NOTE: 'dentista' was here but removed when we expanded to Europe —
+        # Spanish "Dentistas Madrid" is a legit consumer group. PH-specific
+        # peer-forum drops now ride on the 'ph' country token in
+        # _COUNTRY_NAME_TOKENS, which catches "DENTISTA PH" etc.
+        'tiange', ' tech', 'technicians',
         'dental clinics', 'clinic owners', 'practice owners',
     )
     padded = f' {name} '

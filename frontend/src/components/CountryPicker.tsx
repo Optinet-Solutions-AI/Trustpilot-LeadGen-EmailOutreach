@@ -23,11 +23,15 @@ interface Props {
    *  Trustpilot). Without this, Yelp's 13-country list would be shown
    *  as Trustpilot's 80-country list. */
   platform?: string;
+  /** When set, only show countries whose ISO code is in this allowlist.
+   *  Used by the Trustpilot + Facebook-businesses pickers to keep the
+   *  dropdown aligned with the operator's Europe-focused outreach scope. */
+  restrict?: string[];
 }
 
 interface TaxonomyCountry { code: string; name: string }
 
-export default function CountryPicker({ value, onChange, disabled, id, platform }: Props) {
+export default function CountryPicker({ value, onChange, disabled, id, platform, restrict }: Props) {
   const ctx = useTaxonomy();
   const [override, setOverride] = useState<TaxonomyCountry[] | null>(null);
   const [overrideLoading, setOverrideLoading] = useState(false);
@@ -54,14 +58,21 @@ export default function CountryPicker({ value, onChange, disabled, id, platform 
   const countries = override ?? ctx.countries;
   const loading = override === null ? ctx.loading : overrideLoading;
 
+  const restrictSet = useMemo(
+    () => (restrict ? new Set(restrict.map((c) => c.toUpperCase())) : null),
+    [restrict],
+  );
+
   const options = useMemo<ComboboxOption[]>(
     () =>
-      countries.map((c) => ({
-        value: c.code,
-        label: c.name,
-        searchText: c.code,
-      })),
-    [countries],
+      countries
+        .filter((c) => !restrictSet || restrictSet.has(c.code.toUpperCase()))
+        .map((c) => ({
+          value: c.code,
+          label: c.name,
+          searchText: c.code,
+        })),
+    [countries, restrictSet],
   );
 
   return (

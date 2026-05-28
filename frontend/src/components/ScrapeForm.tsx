@@ -12,6 +12,20 @@ import RangeInput from '../ui/RangeInput';
 import Combobox from '../ui/Combobox';
 import ScrapeCostAdvisory from './ScrapeCostAdvisory';
 
+// Europe-focused outreach scope. Restricts the Trustpilot + Facebook
+// businesses country dropdowns to the same set that maps cleanly onto
+// the country-mismatch group filter in tools/scraper/platforms/facebook.py.
+// Keep these ISO codes in sync with CITY_TO_COUNTRY + _COUNTRY_NAME_TOKENS
+// in that file.
+const EUROPE_COUNTRY_CODES = [
+  'GB', 'IE',
+  'DE', 'FR', 'ES', 'IT',
+  'NL', 'BE', 'PT', 'CH', 'AT',
+  'CZ', 'PL',
+  'SE', 'DK', 'NO', 'FI',
+  'GR',
+];
+
 interface Props {
   onSubmit: (params: ScrapeParams) => void;
   loading?: boolean;
@@ -30,13 +44,13 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [activeManifest, setActiveManifest] = useState<PlatformManifest | null>(null);
 
   // Trustpilot fields
-  const [country, setCountry] = useState('US');
+  const [country, setCountry] = useState('GB');
   const [category, setCategory] = useState('casino');
   const [minRating, setMinRating] = useState(1.0);
   const [maxRating, setMaxRating] = useState(3.5);
 
   // TripAdvisor fields — mirrors Trustpilot's shape on purpose
-  const [taCountry, setTaCountry] = useState('US');
+  const [taCountry, setTaCountry] = useState('GB');
   const [taCategory, setTaCategory] = useState<'hotels' | 'restaurants' | 'attractions'>('hotels');
   const [taMinRating, setTaMinRating] = useState(1.0);
   const [taMaxRating, setTaMaxRating] = useState(3.0);
@@ -46,7 +60,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   // curated yelp_categories.json seed, plus a Yelp-specific
   // min_review_count filter to drop businesses with too few reviews
   // to be worth cold-outreach.
-  const [yCountry, setYCountry] = useState('US');
+  const [yCountry, setYCountry] = useState('GB');
   const [yCategory, setYCategory] = useState('plumbers');
   const [yMinRating, setYMinRating] = useState(1.0);
   const [yMaxRating, setYMaxRating] = useState(3.5);
@@ -60,7 +74,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [fbNiche, setFbNiche] = useState('');
   const [fbLocation, setFbLocation] = useState('');
   const [fbCategory, setFbCategory] = useState('dentist');
-  const [fbCountry, setFbCountry] = useState('US');
+  const [fbCountry, setFbCountry] = useState('GB');
 
   // Shared flags
   const [enrich, setEnrich] = useState(false);
@@ -179,7 +193,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="scrape-country">
                 Country
               </label>
-              <CountryPicker id="scrape-country" value={country} onChange={setCountry} disabled={busy} />
+              <CountryPicker id="scrape-country" value={country} onChange={setCountry} disabled={busy} restrict={EUROPE_COUNTRY_CODES} />
             </div>
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="scrape-category">
@@ -209,7 +223,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-country">
                 Country
               </label>
-              <CountryPicker id="ta-country" value={taCountry} onChange={setTaCountry} disabled={busy} />
+              <CountryPicker id="ta-country" value={taCountry} onChange={setTaCountry} disabled={busy} restrict={EUROPE_COUNTRY_CODES} />
             </div>
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-category">
@@ -302,46 +316,77 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                     id="fb-location"
                     list="fb-location-suggestions"
                     type="text"
-                    placeholder='e.g. "Cebu", "Mandaue", "Brooklyn"'
+                    placeholder='e.g. "London", "Berlin", "Paris"'
                     value={fbLocation}
                     onChange={(e) => setFbLocation(e.target.value)}
                     disabled={busy}
                     className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
-                  {/* Suggestions match the country-mismatch filter's
-                      CITY_TO_COUNTRY map in tools/scraper/platforms/facebook.py.
-                      Keep this list in sync when adding new cities there. */}
+                  {/* European-focused list. Matches the CITY_TO_COUNTRY map
+                      in tools/scraper/platforms/facebook.py so picks
+                      align with the country-mismatch filter. Keep these
+                      two lists in sync when adding cities. */}
                   <datalist id="fb-location-suggestions">
-                    {/* Philippines */}
-                    <option value="Cebu" />
-                    <option value="Cebu City" />
-                    <option value="Mandaue" />
-                    <option value="Mandaue City" />
-                    <option value="Lapu-Lapu" />
-                    <option value="Lapu-Lapu City" />
-                    <option value="Liloan" />
-                    <option value="Mactan" />
-                    <option value="Manila" />
-                    <option value="Makati" />
-                    <option value="Quezon City" />
-                    <option value="Davao" />
-                    {/* United States */}
-                    <option value="New York" />
-                    <option value="Brooklyn" />
-                    <option value="Manhattan" />
-                    <option value="Los Angeles" />
-                    <option value="Chicago" />
-                    <option value="San Francisco" />
                     {/* United Kingdom */}
                     <option value="London" />
                     <option value="Manchester" />
                     <option value="Birmingham" />
-                    {/* Australia */}
-                    <option value="Sydney" />
-                    <option value="Melbourne" />
-                    <option value="Brisbane" />
-                    {/* Singapore */}
-                    <option value="Singapore" />
+                    <option value="Leeds" />
+                    <option value="Liverpool" />
+                    <option value="Bristol" />
+                    <option value="Edinburgh" />
+                    <option value="Glasgow" />
+                    {/* Ireland */}
+                    <option value="Dublin" />
+                    <option value="Cork" />
+                    {/* Germany */}
+                    <option value="Berlin" />
+                    <option value="Munich" />
+                    <option value="Hamburg" />
+                    <option value="Frankfurt" />
+                    <option value="Cologne" />
+                    {/* France */}
+                    <option value="Paris" />
+                    <option value="Marseille" />
+                    <option value="Lyon" />
+                    <option value="Nice" />
+                    {/* Spain */}
+                    <option value="Madrid" />
+                    <option value="Barcelona" />
+                    <option value="Valencia" />
+                    <option value="Seville" />
+                    {/* Italy */}
+                    <option value="Rome" />
+                    <option value="Milan" />
+                    <option value="Naples" />
+                    <option value="Florence" />
+                    {/* Netherlands */}
+                    <option value="Amsterdam" />
+                    <option value="Rotterdam" />
+                    <option value="The Hague" />
+                    {/* Belgium */}
+                    <option value="Brussels" />
+                    <option value="Antwerp" />
+                    {/* Portugal */}
+                    <option value="Lisbon" />
+                    <option value="Porto" />
+                    {/* Switzerland */}
+                    <option value="Zurich" />
+                    <option value="Geneva" />
+                    {/* Austria */}
+                    <option value="Vienna" />
+                    {/* Czech Republic */}
+                    <option value="Prague" />
+                    {/* Poland */}
+                    <option value="Warsaw" />
+                    <option value="Krakow" />
+                    {/* Scandinavia */}
+                    <option value="Stockholm" />
+                    <option value="Copenhagen" />
+                    <option value="Oslo" />
+                    <option value="Helsinki" />
+                    {/* Greece */}
+                    <option value="Athens" />
                   </datalist>
                 </div>
                 <div className="sm:col-span-2 lg:col-span-3">
@@ -359,7 +404,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-country">
                     Country
                   </label>
-                  <CountryPicker id="fb-country" value={fbCountry} onChange={setFbCountry} disabled={busy} />
+                  <CountryPicker id="fb-country" value={fbCountry} onChange={setFbCountry} disabled={busy} restrict={EUROPE_COUNTRY_CODES} />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-category">
@@ -397,6 +442,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 onChange={setYCountry}
                 disabled={busy}
                 platform="yelp"
+                restrict={EUROPE_COUNTRY_CODES}
               />
             </div>
             <div>
