@@ -770,21 +770,40 @@ class FacebookScraper(SocialPlatformScraper):
             return []
         in_group_keyword = f'looking for a {niche}'
         account = self._claim_or_raise()
+
+        # Reuse ONE Chrome session across all in-group searches. Spawning
+        # a fresh chromedriver per group costs 5-10s and 42 groups means
+        # 4-7 wasted minutes per scrape. _open_session hydrates cookies
+        # once; subsequent driver.get() calls just navigate.
+        driver = self._open_session(account)
         aggregated: list = []
-        for i, g in enumerate(groups, 1):
-            _emit(on_progress, 'group_progress', n=i, total=len(groups),
-                  group_name=g.get('name', '?')[:60], group_id=g['group_id'])
-            try:
-                # Re-claim if the previous in-group search bumped the cap
-                # past hourly threshold (defensive — usually still active).
-                stubs = self._sync_search_inside_group(account, g, in_group_keyword, on_progress)
-                if stubs:
-                    aggregated.extend(stubs)
-                    _emit(on_progress, 'group_posts_kept', count=len(stubs), group_name=g.get('name'))
-            except Exception as exc:  # noqa: BLE001 — keep going on per-group errors
-                _emit(on_progress, 'group_failed', group_id=g['group_id'], reason=str(exc)[:120])
-        _emit(on_progress, 'search_done', total=len(aggregated))
-        return aggregated
+        try:
+            for i, g in enumerate(groups, 1):
+                _emit(on_progress, 'group_progress', n=i, total=len(groups),
+                      group_name=g.get('name', '?')[:60], group_id=g['group_id'])
+                try:
+                    url = f'{FB_BASE}/groups/{g["group_id"]}/search/?q={quote_plus(in_group_keyword)}'
+                    driver.get(url)
+                    time.sleep(SCROLL_PAUSE)
+                    if _is_checkpoint(driver):
+                        _flag_checkpoint(account['id'], f'captcha-in-group-{g["group_id"]}')
+                        _emit(on_progress, 'group_failed', group_id=g['group_id'], reason='captcha')
+                        break
+                    # Light scroll for lazy content
+                    driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+                    time.sleep(SCROLL_PAUSE)
+                    stubs = _extract_posts_from_group_search(driver, g)
+                    if stubs:
+                        aggregated.extend(stubs)
+                        _emit(on_progress, 'group_posts_kept', count=len(stubs), group_name=g.get('name'))
+                    _bump_counters(account['id'], delta_today=1, delta_hour=1)
+                except Exception as exc:  # noqa: BLE001
+                    _emit(on_progress, 'group_failed', group_id=g['group_id'], reason=str(exc)[:120])
+            _emit(on_progress, 'search_done', total=len(aggregated))
+            return aggregated
+        finally:
+            try: driver.quit()
+            except Exception: pass
 
     def _sync_search_inside_group(
         self,
