@@ -13,7 +13,7 @@ import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { ImapFlow } from 'imapflow';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
-import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache } from '../services/imap-thread-fetcher.js';
+import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache, dedupBurstDuplicates } from '../services/imap-thread-fetcher.js';
 import { extractContacts } from '../services/auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 import { renderAndSpin } from '../services/template-engine.js';
@@ -42,10 +42,12 @@ async function getAllConnectedGmailClients(): Promise<GmailClientEntry[]> {
 
   // DB-stored OAuth accounts
   try {
+    // INCLUDE paused accounts — this client list powers read-only thread
+    // reconstruction. Pause stops outgoing mail; it must NOT lock the
+    // operator out of viewing reply history for already-sent campaigns.
     const { data: dbAccounts } = await getSupabase()
       .from('email_accounts')
       .select('email, gmail_client_id, gmail_client_secret, gmail_refresh_token')
-      .eq('status', 'active')
       .not('gmail_refresh_token', 'is', null);
 
     for (const acc of dbAccounts ?? []) {
@@ -378,9 +380,17 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
       }
     }
 
+    // Post-incident burst dedup — collapses duplicate same-direction
+    // sends within 5 minutes of each other (the 2026-05 scheduler race
+    // shipped multiple physical sends per legitimate send; the Message-ID
+    // dedup above doesn't catch them because each duplicate has a unique
+    // RFC822 Message-ID). Replies and genuine separate sends days apart
+    // survive untouched.
+    const dedupedMessages = dedupBurstDuplicates(messages);
+
     res.json({
       success: true,
-      data: { threadId, messages, senderAccount: entry.email },
+      data: { threadId, messages: dedupedMessages, senderAccount: entry.email },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -492,95 +502,26 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       ? messages.filter((m) => m.campaign_type === campaignTypeFilter)
       : messages;
 
-    // Fan out per-send rows for the Sent folder so the inbox mirrors the
-    // user's mental model — one row per outbound email rather than one row
-    // per (campaign, lead). Replies folder stays collapsed: there's only
-    // ever one reply state per pair, and duplicating it by step would be
-    // confusing.
-    //
-    // Source of truth for per-send timestamps is lead_notes (type=email_sent).
-    // campaign-scheduler writes one row per step-1 send; sequence-scheduler
-    // writes one per follow-up step. Each synthetic message keeps the
-    // canonical campaign_lead_id under a sibling field so reply tracking,
-    // mark-read, promote, and the thread endpoints still resolve correctly
-    // regardless of which step the user clicked.
+    // One row per (campaign, lead) in BOTH folders. Earlier iterations
+    // fanned out the Sent folder into per-step rows ("INITIAL", "FOLLOW-UP
+    // #1", "FOLLOW-UP #2"...), but operators reported the resulting
+    // duplicate-looking rows confused them — same lead, same campaign,
+    // multiple sidebar entries with subtly different rendered subjects.
+    // Now the sidebar always shows one row per pair; total_steps reflects
+    // the current_step value so the chip "3 / 5" still shows where this
+    // lead is in its sequence, but the conversation lives in a single
+    // thread view that the IMAP fetcher reconstructs end-to-end.
     type Msg = typeof filtered[number];
     type ExpandedMsg = Msg & { campaign_lead_id: string; step_number: number; total_steps: number };
-    const expandedMessages: ExpandedMsg[] = [];
-    if (folder === 'sent') {
-      const leadIds = Array.from(new Set(
-        filtered.map((m) => (m.lead_id as string | null) ?? null).filter((v): v is string => !!v),
-      ));
-      const notesByKey = new Map<string, string[]>();
-      if (leadIds.length > 0) {
-        // Include manual replies sent through the Inbox composer
-        // (type='email_replied_manually') alongside scheduler-driven sends
-        // (type='email_sent'). Both are outbound messages the user expects
-        // to see as its own row, and both already carry campaign_id in
-        // their metadata so the grouping key resolves uniformly.
-        const { data: notes } = await getSupabase()
-          .from('lead_notes')
-          .select('lead_id, metadata, created_at')
-          .in('lead_id', leadIds)
-          .in('type', ['email_sent', 'email_replied_manually'])
-          .order('created_at', { ascending: true });
-        for (const n of notes ?? []) {
-          const meta = (n.metadata as Record<string, unknown> | null) ?? null;
-          const cidRaw = meta?.campaign_id;
-          if (!cidRaw) continue;
-          const key = `${n.lead_id}|${String(cidRaw)}`;
-          const arr = notesByKey.get(key) ?? [];
-          arr.push(n.created_at as string);
-          notesByKey.set(key, arr);
-        }
-      }
-      for (const msg of filtered) {
-        const key = `${msg.lead_id}|${msg.campaign_id}`;
-        const sendTimes = notesByKey.get(key) ?? [];
-        const canonicalId = msg.id as string;
-        // Effective send count is the max of the activity-log entries and the
-        // campaign_lead's current_step. lead_notes is the authoritative
-        // per-send log when complete, but historical rows that pre-date the
-        // per-send logging (or sends issued through paths that didn't write
-        // the note) can leave it short of reality. current_step is updated
-        // every time the sequence scheduler advances and is reliable for
-        // anything sequence-driven. Taking the max means a follow-up that
-        // current_step records but the note log doesn't still surfaces as
-        // its own row — the user sees the right total count even when the
-        // timestamps for missing steps fall back to the campaign_lead's
-        // sent_at.
-        const currentStep = (msg as { current_step?: number }).current_step ?? 1;
-        const effectiveCount = Math.max(sendTimes.length, currentStep);
-        if (effectiveCount <= 1) {
-          expandedMessages.push({ ...msg, campaign_lead_id: canonicalId, step_number: 1, total_steps: 1 });
-          continue;
-        }
-        const fallbackTime = (msg.sent_at as string | null) ?? null;
-        for (let i = 0; i < effectiveCount; i++) {
-          const isLatest = i === effectiveCount - 1;
-          // Prefer the note timestamp when one exists for this step; fall
-          // back to the campaign_lead's sent_at so the row still sorts into
-          // roughly the right place when notes are missing.
-          const stepTime = sendTimes[i] ?? fallbackTime;
-          expandedMessages.push({
-            ...msg,
-            id: `${canonicalId}:step${i + 1}`,
-            campaign_lead_id: canonicalId,
-            step_number: i + 1,
-            total_steps: effectiveCount,
-            sent_at: stepTime,
-            status: isLatest ? msg.status : 'sent',
-            replied_at: isLatest ? msg.replied_at : null,
-            reply_read_at: isLatest ? msg.reply_read_at : null,
-            reply_snippet: isLatest ? msg.reply_snippet : null,
-          });
-        }
-      }
-    } else {
-      for (const msg of filtered) {
-        expandedMessages.push({ ...msg, campaign_lead_id: msg.id as string, step_number: 1, total_steps: 1 });
-      }
-    }
+    const expandedMessages: ExpandedMsg[] = filtered.map((msg) => {
+      const currentStep = (msg as { current_step?: number }).current_step ?? 1;
+      return {
+        ...msg,
+        campaign_lead_id: msg.id as string,
+        step_number: currentStep,
+        total_steps: currentStep,
+      };
+    });
 
     if (groupBy === 'campaign') {
       // Group flat messages by campaign_id so the frontend can render a
@@ -654,15 +595,21 @@ router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) =
       return;
     }
 
+    // Read-only thread reconstruction must work even when the operator has
+    // paused the cold sender (status='paused') — pausing stops outgoing
+    // mail, it should NOT make the inbox forget how to display history.
+    // Dropping the status='active' filter here is what makes paused-
+    // mailbox threads pull from real IMAP instead of falling through to
+    // the rendered-template stub (which shows a re-rendered initial with
+    // no screenshot and no actual follow-up content).
     const { data: account, error: accErr } = await supabase
       .from('email_accounts')
-      .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass')
+      .select('email, auth_type, imap_host, imap_port, imap_user, imap_pass, status')
       .eq('email', cl.sender_email)
-      .eq('status', 'active')
       .single();
 
     if (accErr || !account) {
-      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found or inactive` });
+      res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found in email_accounts` });
       return;
     }
     if (account.auth_type !== 'smtp') {
@@ -770,19 +717,22 @@ router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response)
           };
         });
 
-        res.json({ success: true, data: { threadId, messages, senderAccount: email } });
+        res.json({ success: true, data: { threadId, messages: dedupBurstDuplicates(messages), senderAccount: email } });
         return;
       } catch (e) {
         console.warn(`[search-thread] Gmail miss on ${email}:`, e instanceof Error ? e.message : e);
       }
     }
 
-    // 2) Try every connected IMAP/SMTP account
+    // 2) Try every connected IMAP/SMTP account — INCLUDING paused ones.
+    // Pause stops outgoing sending; it doesn't (and shouldn't) lock the
+    // operator out of reading reply history. Without this, the inbox
+    // falls through to the rendered-template stub for any lead whose
+    // sender account got paused during the 2026-05 reputation incident.
     const { data: imapAccounts } = await supabase
       .from('email_accounts')
       .select('email, imap_host, imap_port, imap_user, imap_pass')
       .eq('auth_type', 'smtp')
-      .eq('status', 'active')
       .not('imap_host', 'is', null)
       .not('imap_user', 'is', null)
       .not('imap_pass', 'is', null);
@@ -861,11 +811,20 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
           .select('email, auth_type, status, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
           .ilike('email', cl.sender_email as string)
           .maybeSingle();
+        // Deliberately NOT gating on status='active'. 'paused' /
+        // 'disabled' means stop sending NEW mail — it must not block
+        // read access to historical replies on the same mailbox.
+        // Reply lookups are downstream of sending decisions and the
+        // operator typically pauses a sender for warmup or
+        // deliverability reasons, not because they want to lose access
+        // to the inbox. Re-activating the account is a separate
+        // operation handled on the Email Accounts page.
         if (!acc) {
           console.warn(`${logTag} reply-body fetch: no email_accounts row for sender ${cl.sender_email}`);
-        } else if (acc.status && acc.status !== 'active') {
-          console.warn(`${logTag} reply-body fetch: sender account ${cl.sender_email} is ${acc.status} (not active)`);
         } else {
+          if (acc.status && acc.status !== 'active') {
+            console.log(`${logTag} reply-body fetch: sender account ${cl.sender_email} is ${acc.status} — proceeding with read-only fetch anyway`);
+          }
           const authType = (acc.auth_type as string | null) ?? 'unknown';
           const replyAnchor = (cl.replied_at as string | null) ?? (cl.sent_at as string | null) ?? null;
           let snippet: string | null = null;

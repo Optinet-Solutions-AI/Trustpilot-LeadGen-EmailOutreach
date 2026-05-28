@@ -233,11 +233,18 @@ function TopBarSearch() {
   }, [isInbox, searchParams]);
 
   const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && query.trim()) {
-      const target = isInbox ? '/inbox' : '/leads';
-      router.push(`${target}?search=${encodeURIComponent(query.trim())}`);
-      setQuery('');
+    if (e.key !== 'Enter') return;
+    const target = isInbox ? '/inbox' : '/leads';
+    const trimmed = query.trim();
+    if (trimmed) {
+      router.push(`${target}?search=${encodeURIComponent(trimmed)}`);
+    } else {
+      // Empty input + Enter = clear the search filter. Without this the
+      // URL ?search= param sticks around forever and the sidebar chip
+      // keeps the filter active even when the input looks empty.
+      router.push(target);
     }
+    setQuery('');
   };
 
   return (

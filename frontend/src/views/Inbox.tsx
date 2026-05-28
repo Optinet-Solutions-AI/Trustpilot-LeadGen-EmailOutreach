@@ -65,6 +65,106 @@ function canonicalId(msg: Pick<CampaignMessage, 'id' | 'campaign_lead_id'>): str
   return msg.campaign_lead_id ?? msg.id;
 }
 
+// Split an email body into reply text + quoted history. Gmail / Outlook /
+// most clients prefix quoted lines with "> " (possibly nested "> >") and
+// usually precede the quote with an attribution line ("On ..., ... wrote:"
+// or "<sender> schreef op ...:"). Catching either signal lets us collapse
+// the quote into a Gmail-style "Show quoted content" toggle rather than
+// dumping the whole conversation history inline. Handles plain bodies
+// (the common case for IMAP/Gmail replies) and the HTML output from our
+// own rendered-send endpoint; richer MUA HTML quoting (<blockquote>) is
+// left as-is — those messages already look fine.
+const ATTRIBUTION_REGEX = /^(.{0,120}?)\b(wrote|écrit|schrieb|escribió|schreef|wrote on|wrote:|escribi(ó|o)|geschrieben)\b.{0,80}:?$/i;
+function splitReplyFromQuote(rawBody: string, bodyType: 'html' | 'plain'): { main: string; quote: string | null; quoteLineCount: number } {
+  // Only attempt to split plain bodies — HTML messages with blockquotes
+  // are already structured and our regex would chop them mid-tag.
+  if (bodyType !== 'plain') {
+    return { main: rawBody, quote: null, quoteLineCount: 0 };
+  }
+  const lines = rawBody.split(/\r?\n/);
+  let splitIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].replace(/^\s+/, '');
+    if (trimmed.startsWith('>')) {
+      // Walk backwards through blank lines to find an attribution line.
+      // Anchor the quote at the attribution so the "On <date> wrote:" line
+      // ends up inside the collapsed block, not above it.
+      let attribIdx = i - 1;
+      while (attribIdx >= 0 && lines[attribIdx].trim() === '') attribIdx--;
+      if (attribIdx >= 0 && ATTRIBUTION_REGEX.test(lines[attribIdx].trim())) {
+        splitIdx = attribIdx;
+      } else {
+        splitIdx = i;
+      }
+      break;
+    }
+    if (ATTRIBUTION_REGEX.test(lines[i].trim())) {
+      // Attribution without `>` lines (rare — happens when the user quoted
+      // with indentation instead of >). Treat as the split point too.
+      splitIdx = i;
+      break;
+    }
+  }
+  if (splitIdx === -1) return { main: rawBody, quote: null, quoteLineCount: 0 };
+  // Trim trailing blanks off the main so the boundary doesn't read empty.
+  let mainEnd = splitIdx;
+  while (mainEnd > 0 && lines[mainEnd - 1].trim() === '') mainEnd--;
+  const mainText = lines.slice(0, mainEnd).join('\n');
+  const quoteText = lines.slice(splitIdx).join('\n');
+  return { main: mainText, quote: quoteText, quoteLineCount: quoteText.split('\n').length };
+}
+function plainToHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
+// Render a quoted email block: strip the leading "> " markers each line
+// carries, group adjacent lines by nesting depth (one ">" = level 1, ">>"
+// = level 2, etc.), and emit each group as a <blockquote> indented in
+// proportion to its depth. Attribution / non-quoted lines (e.g. "Optirate
+// schreef op 2026-05-25 22:41:") render as plain paragraphs so the reader
+// can see who wrote what before each indented block.
+function renderQuoteHtml(rawQuote: string): string {
+  const lines = rawQuote.split(/\r?\n/);
+  type Group = { kind: 'attribution' | 'blockquote'; depth: number; lines: string[] };
+  const groups: Group[] = [];
+  let current: Group | null = null;
+  for (const line of lines) {
+    const stripped = line.replace(/^\s+/, '');
+    let depth = 0;
+    let body = stripped;
+    while (body.startsWith('>')) {
+      depth++;
+      body = body.slice(1).replace(/^\s+/, '');
+    }
+    if (depth === 0) {
+      if (!current || current.kind !== 'attribution') {
+        current = { kind: 'attribution', depth: 0, lines: [] };
+        groups.push(current);
+      }
+      current.lines.push(body);
+    } else {
+      if (!current || current.kind !== 'blockquote' || current.depth !== depth) {
+        current = { kind: 'blockquote', depth, lines: [] };
+        groups.push(current);
+      }
+      current.lines.push(body);
+    }
+  }
+  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return groups.map((g) => {
+    const html = g.lines.map(escape).join('<br>');
+    if (g.kind === 'attribution') {
+      return `<p style="margin:8px 0 4px;color:#5f5e5e;font-size:11px;font-style:italic;">${html}</p>`;
+    }
+    const tone = g.depth === 1 ? '#5f5e5e' : '#8a8989';
+    return `<blockquote style="margin:0 0 8px 0;padding-left:12px;border-left:3px solid #e1e3e4;color:${tone};font-size:12px;line-height:1.5;">${html}</blockquote>`;
+  }).join('');
+}
+
 interface ThreadMessage {
   id: string;
   threadId: string;
@@ -573,36 +673,14 @@ export default function Inbox() {
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
 
-  // Keep the sidebar filter in sync with the URL ?search= param so a fresh
-  // top-bar search while already on /inbox updates the filter. Only applies
-  // when the param actually changes — clearing the param does NOT clobber a
-  // filter the user typed locally.
+  // URL ?search= is now the single source of truth — the TopBar search
+  // input is the only user-facing entry point (the duplicate sidebar
+  // search input was removed). Sync any URL change (including clearing
+  // the param) into the local filter state.
   useEffect(() => {
-    if (searchParam !== null) setSearchText(searchParam);
+    setSearchText(searchParam ?? '');
   }, [searchParam]);
 
-  // Inverse sync: when the user types in the sidebar filter, mirror the
-  // value into the URL ?search= param after a short debounce. The top-bar
-  // search input reads the same param via usePathname/useSearchParams, so
-  // this is how the two stay in lockstep without sharing component state.
-  // Debounced (220ms) to avoid spamming router.replace on every keystroke.
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      const current = searchParams?.get('search') ?? '';
-      // No-op when nothing actually changed — saves an unnecessary
-      // router.replace and the implicit re-render it triggers.
-      if (current === searchText) return;
-      const params = new URLSearchParams(searchParams?.toString() ?? '');
-      if (searchText.trim()) {
-        params.set('search', searchText);
-      } else {
-        params.delete('search');
-      }
-      const qs = params.toString();
-      router.replace(qs ? `/inbox?${qs}` : '/inbox', { scroll: false });
-    }, 220);
-    return () => clearTimeout(handle);
-  }, [searchText, router, searchParams]);
 
   // Manual mailbox poll — hits /gmail/check-replies which runs the same
   // Gmail + IMAP scan the 10-min background job does, then refreshes the list
@@ -875,21 +953,31 @@ export default function Inbox() {
           })}
         </nav>
 
-        {/* Filter bar — moved into the sidebar so it's persistent and out of
-            the way of the message list. Each control narrows or sorts the
-            visible messages without ever changing the underlying fetch. */}
+        {/* Filter bar — campaign + sort + type filters live here. The
+            free-text search input was removed; the TopBar's "Search inbox…"
+            is now the single source of truth and writes to URL ?search=,
+            which this sidebar reads via the searchText state. */}
         <div className="px-3 py-3 border-t border-slate-100 space-y-2">
           <p className="text-[10px] font-bold uppercase tracking-wider text-secondary mb-1">Filters</p>
-          <div className="relative">
-            <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[15px]">search</span>
-            <input
-              type="text"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Search company, campaign, email..."
-              className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-white rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#b0004a]/20 focus:border-transparent focus:outline-none"
-            />
-          </div>
+          {searchText.trim() ? (
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-[#b0004a]/5 border border-[#b0004a]/15 rounded-lg text-xs">
+              <span className="material-symbols-outlined text-[#b0004a] text-[15px]">search</span>
+              <span className="truncate text-on-surface" title={searchText}>{searchText}</span>
+              <button
+                onClick={() => {
+                  const params = new URLSearchParams(searchParams?.toString() ?? '');
+                  params.delete('search');
+                  const qs = params.toString();
+                  router.replace(qs ? `/inbox?${qs}` : '/inbox', { scroll: false });
+                }}
+                title="Clear search"
+                aria-label="Clear search"
+                className="ml-auto text-secondary hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[16px]">close</span>
+              </button>
+            </div>
+          ) : null}
           <select
             value={campaignIdFilter}
             onChange={(e) => setCampaignIdFilter(e.target.value)}
@@ -1349,18 +1437,42 @@ export default function Inbox() {
                                 {(() => {
                                   const t = translations[msg.id];
                                   const showTranslated = t?.status === 'done' && t.visible && t.text;
-                                  const bodyHtml = showTranslated
-                                    ? (t!.text as string)
-                                    : msg.bodyType === 'html'
-                                      ? msg.body
-                                      : msg.body.replace(/\n/g, '<br>');
+                                  // Translated bodies come back as HTML so we
+                                  // skip the quote-collapser for them — the
+                                  // translator already handles formatting and
+                                  // running plain-text heuristics over a
+                                  // translated string would over-match.
+                                  let mainHtml: string;
+                                  let quoteHtml: string | null = null;
+                                  if (showTranslated) {
+                                    mainHtml = t!.text as string;
+                                  } else if (msg.bodyType === 'html') {
+                                    mainHtml = msg.body;
+                                  } else {
+                                    const parts = splitReplyFromQuote(msg.body, 'plain');
+                                    mainHtml = plainToHtml(parts.main);
+                                    if (parts.quote) {
+                                      // Render quoted history as styled blockquotes
+                                      // (one per nesting level) instead of dumping
+                                      // the raw "> Line" prefix text. The "> "
+                                      // markers get stripped during grouping.
+                                      quoteHtml = renderQuoteHtml(parts.quote);
+                                    }
+                                  }
                                   return (
                                     <>
                                       <div
                                         className="email-body text-secondary text-xs overflow-auto"
                                         style={{ maxHeight: '400px' }}
-                                        dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                                        dangerouslySetInnerHTML={{ __html: mainHtml }}
                                       />
+                                      {quoteHtml && (
+                                        <div
+                                          className="mt-3 text-xs overflow-auto"
+                                          style={{ maxHeight: '400px' }}
+                                          dangerouslySetInnerHTML={{ __html: quoteHtml }}
+                                        />
+                                      )}
                                       <div className="mt-2 flex items-center gap-2 text-[11px]">
                                         {t?.status === 'loading' && (
                                           <span className="inline-flex items-center gap-1 text-secondary">
