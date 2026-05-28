@@ -286,6 +286,46 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     return None
 
 
+def _is_consumer_facing_group(group_name: str) -> bool:
+    """Decide whether a discovered FB group is consumer-facing.
+
+    Three-stage decision:
+      1. STRONG POSITIVE — name contains 'free', 'affordable', 'cheap',
+         'budget', 'barato' (Filipino for cheap). These ARE consumer
+         groups even if they also contain a generic token like 'clinic'.
+         KEEP regardless of negatives.
+      2. STRONG NEGATIVE — name clearly indicates a professional / B2B
+         space: job board, supplier directory, lab, association,
+         marketplace. DROP.
+      3. DEFAULT — ambiguous, KEEP and rely on per-post asking-only
+         filter to clean things up.
+    """
+    name = (group_name or '').lower()
+
+    POSITIVE_TOKENS = (
+        'free', 'affordable', 'cheap', 'budget', 'barato', 'mura',
+        'help', 'community', 'recommendation', 'buy and sell',
+    )
+    if any(tok in name for tok in POSITIVE_TOKENS):
+        return True
+
+    NEGATIVE_TOKENS = (
+        ' job', 'jobs', ' career', 'careers',
+        'hiring', 'recruiter', 'reliever', 'recruitment',
+        'society', 'association', 'professionals',
+        'practitioners', 'licensed',
+        'supplies', 'suppliers', ' supply', 'marketplace',
+        'equipment', 'distributor',
+        'laboratory', ' lab ', ' md', ' md ',
+        # 'dental md' / 'dentist group of' = practitioner clubs
+        'dental md', 'dentist group',
+    )
+    padded = f' {name} '
+    if any(tok in padded for tok in NEGATIVE_TOKENS):
+        return False
+    return True
+
+
 def _detect_chrome_major_version() -> Optional[int]:
     """Read installed Chrome's major version so chromedriver matches."""
     import re
@@ -764,7 +804,18 @@ class FacebookScraper(SocialPlatformScraper):
         process is killed mid-flight (each in-group search is a complete
         unit). Returns aggregated PostStubs across all discovered groups.
         """
-        groups = self._sync_discover_groups(niche, location, on_progress)
+        groups_raw = self._sync_discover_groups(niche, location, on_progress)
+        if not groups_raw:
+            _emit(on_progress, 'groups_found', count=0)
+            return []
+        # Filter out professional / job / supplier / association groups.
+        # Their 'looking for X' posts are job seekers and clinic recruiters,
+        # not consumers. Cuts both noise and wall time dramatically.
+        groups = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''))]
+        dropped_pro = len(groups_raw) - len(groups)
+        if dropped_pro:
+            _emit(on_progress, 'groups_filtered', dropped=dropped_pro, kept=len(groups),
+                  reason='professional/job/supplier groups removed')
         if not groups:
             _emit(on_progress, 'groups_found', count=0)
             return []
