@@ -186,6 +186,9 @@ STRONG_BUSINESS_PATTERNS = [
     "your clinic", "your dental clinic", "your practice",
     "for your clinic", "to your patients",
     "associate dentist", "reliever dentist", "licensed dentist",
+    # B2B coordination / hiring phrases — universal English, drop everywhere
+    "reliever work", "for hiring", "to connect",
+    "for relievers", "looking to hire", "now accepting",
 ]
 
 
@@ -1007,17 +1010,15 @@ class FacebookScraper(SocialPlatformScraper):
                     'profile_url': profile_url,
                     'name': handle if not is_anon else 'Anonymous group ask',
                     'rating': None,
-                    # Category = what found this person (niche keyword). For
-                    # group scrapes this is the niche field; for legacy
-                    # open-feed escape-hatch it's the original query.
+                    # Category = the niche the operator searched for.
                     'category': niche or legacy_query,
-                    # Country = the location we asked for + a fallback to
-                    # excerpt-based extraction in case location is a region
-                    # name we don't directly map.
-                    'country': (
-                        _extract_country_from_excerpt(location)
-                        or _extract_country_from_excerpt(s.get('content_excerpt', ''))
-                    ),
+                    # Country = the location field the operator typed,
+                    # verbatim. Previously we tried to auto-detect a country
+                    # code from a hardcoded city list (PH-biased, useless
+                    # for Brooklyn / London / Sydney). Operator-provided
+                    # text is the ground truth — Lead Matrix surfaces it
+                    # as-is.
+                    'country': location or None,
                     'is_anonymous': is_anon,
                     'outreach_status': 'lost' if is_anon else None,
                 })
