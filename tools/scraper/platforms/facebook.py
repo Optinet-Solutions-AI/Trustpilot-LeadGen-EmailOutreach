@@ -184,8 +184,20 @@ STRONG_BUSINESS_PATTERNS = [
     "looking for a model", "looking for models", "looking for a volunteer",
     "established client base", "practice for sale", "clinic for sale",
     "your clinic", "your dental clinic", "your practice",
-    "for your clinic", "to your patients",
+    "your dental practice", "your dental office",
+    "for your clinic", "for your practice",
+    "for your dental practice", "for your dental office",
+    "to your patients",
     "associate dentist", "reliever dentist", "licensed dentist",
+    # Recruiter / "join us" phrasing — clinics looking for staff, not
+    # consumers looking for service. "Looking for a qualified dental
+    # nurse to join our private practice" matches CONSUMER ('looking
+    # for a') but is clearly a job ad — these patterns kill it.
+    "to join our team", "to join our growing team",
+    "join our practice", "join our private practice", "join our clinic",
+    "join our growing practice", "join the practice", "join the team",
+    "to join the team", "to join the practice",
+    "qualified dental nurse", "qualified hygienist",
     # B2B coordination / hiring phrases — universal English, drop everywhere
     "reliever work", "for hiring", "to connect",
     "for relievers", "looking to hire", "now accepting",
@@ -310,21 +322,49 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     return None
 
 
-def _is_consumer_facing_group(group_name: str) -> bool:
+# Country-token map for the "drop name-mismatched country groups" filter.
+# Word-boundary-anchored regex patterns — keep them strict so 'phone' doesn't
+# match 'PH' and 'auspicious' doesn't match 'AU'.
+_COUNTRY_NAME_TOKENS = {
+    'PH': re.compile(r'\b(ph|philippines|pinoy|filipino|filipina|pilipinas)\b', re.I),
+    'US': re.compile(r'\b(usa|u\.s\.a|u\.s|united states|american)\b', re.I),
+    'GB': re.compile(r'\b(uk|u\.k|united kingdom|britain|british|england|english|scotland|scottish|wales|welsh)\b', re.I),
+    'AU': re.compile(r'\b(australia|australian|aussie|aussies|nsw|vic|qld)\b', re.I),
+    'CA': re.compile(r'\b(canada|canadian)\b', re.I),
+    'SG': re.compile(r'\bsingapore(an)?\b', re.I),
+}
+
+
+def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
-    Three-stage decision:
-      1. STRONG POSITIVE — name contains 'free', 'affordable', 'cheap',
+    Four-stage decision (order matters):
+      1. COUNTRY MISMATCH — when the operator's location maps to a known
+         country and the group name carries tokens for a *different*
+         country, DROP. Runs FIRST so a generic POSITIVE token like
+         'free' can't keep a foreign-country group ("Free Legal Advice
+         Philippines" on a Brooklyn search).
+      2. STRONG POSITIVE — name contains 'free', 'affordable', 'cheap',
          'budget', 'barato' (Filipino for cheap). These ARE consumer
          groups even if they also contain a generic token like 'clinic'.
          KEEP regardless of negatives.
-      2. STRONG NEGATIVE — name clearly indicates a professional / B2B
+      3. STRONG NEGATIVE — name clearly indicates a professional / B2B
          space: job board, supplier directory, lab, association,
          marketplace. DROP.
-      3. DEFAULT — ambiguous, KEEP and rely on per-post asking-only
+      4. DEFAULT — ambiguous, KEEP and rely on per-post asking-only
          filter to clean things up.
     """
     name = (group_name or '').lower()
+
+    # Stage 1: country mismatch.
+    if operator_location:
+        operator_country = _extract_country_from_excerpt(operator_location)
+        if operator_country:
+            for country, pattern in _COUNTRY_NAME_TOKENS.items():
+                if country == operator_country:
+                    continue
+                if pattern.search(group_name or ''):
+                    return False
 
     POSITIVE_TOKENS = (
         'free', 'affordable', 'cheap', 'budget', 'barato', 'mura',
@@ -353,6 +393,7 @@ def _is_consumer_facing_group(group_name: str) -> bool:
     padded = f' {name} '
     if any(tok in padded for tok in NEGATIVE_TOKENS):
         return False
+
     return True
 
 
@@ -434,6 +475,52 @@ def _is_checkpoint(driver) -> bool:
 # Facebook re-randomizes class names regularly. We lean on stable
 # attributes (role=article, aria-label, hrefs that match canonical
 # patterns) instead. Update these helpers when FB ships a redesign.
+
+# Selectors that isolate the actual post body, in priority order. FB
+# applies a char-randomization defense to the surrounding UI furniture
+# ("Sponsored", timestamps) by splitting it into one-char-per-span with
+# random DOM order — `.text` on the whole card returns gibberish. But
+# the post body itself is rendered inside one of these stable wrappers
+# in normal-reading order.
+_POST_BODY_SELECTORS = (
+    'div[data-ad-rendering-role="story_message"]',
+    'div[data-ad-preview="message"]',
+    'div[data-ad-comet-preview="message"]',
+)
+
+
+def _extract_post_body(card_el) -> str:
+    """Return the post body text from a feed card, bypassing FB's
+    char-randomized UI furniture. Falls back to the longest dir=auto
+    block if the named wrappers aren't present (DOM drift)."""
+    for sel in _POST_BODY_SELECTORS:
+        try:
+            elems = card_el.find_elements('css selector', sel)
+        except Exception:  # noqa: BLE001
+            continue
+        for el in elems:
+            try:
+                t = (el.text or '').strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if t:
+                return t
+    # Fallback — pick the longest visible dir=auto block, which on
+    # text-only posts is almost always the body. Skip very short
+    # blocks (author names, "See more", timestamps).
+    try:
+        candidates = card_el.find_elements('css selector', 'div[dir="auto"]')
+    except Exception:  # noqa: BLE001
+        candidates = []
+    longest = ''
+    for c in candidates:
+        try:
+            t = (c.text or '').strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if len(t) > len(longest) and len(t) >= 20:
+            longest = t
+    return longest
 
 def _extract_posts_from_search_page(driver) -> list[dict]:
     """Pull post stubs out of a Facebook search results page.
@@ -540,7 +627,12 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
             if not author_url:
                 continue
 
-            excerpt = (article.text or '').strip()[:500]
+            # Use the dedicated story_message wrapper to bypass FB's
+            # char-randomized UI furniture; fall back to article.text
+            # if the wrapper isn't present (defense against DOM drift).
+            body = _extract_post_body(article)
+            raw_text = (article.text or '').strip()
+            excerpt = (body or raw_text)[:500]
             if not excerpt:
                 continue
 
@@ -604,9 +696,14 @@ def _extract_posts_from_group_search(driver, group: dict) -> list['PostStub']:
 
     for idx, card in enumerate(cards[:30]):
         try:
+            # `text` is only used for dedup hashing + anonymous-poster
+            # detection. The DISPLAYABLE post body comes from
+            # _extract_post_body, which bypasses FB's char-randomized
+            # UI furniture.
             text = (card.text or '').strip()
             if not text:
                 continue
+            body = _extract_post_body(card)
 
             # Find author. In-group post anchors look like:
             #   https://www.facebook.com/groups/<gid>/user/<uid>/
@@ -660,7 +757,7 @@ def _extract_posts_from_group_search(driver, group: dict) -> list['PostStub']:
                 'post_url': post_url,
                 'author_handle': author_handle,
                 'author_profile_url': author_url,
-                'content_excerpt': text[:500],
+                'content_excerpt': (body or text)[:500],
                 'posted_at': None,
                 'group_id': group['group_id'],
                 'group_name': group.get('name'),
@@ -841,7 +938,7 @@ class FacebookScraper(SocialPlatformScraper):
         # Filter out professional / job / supplier / association groups.
         # Their 'looking for X' posts are job seekers and clinic recruiters,
         # not consumers. Cuts both noise and wall time dramatically.
-        groups = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''))]
+        groups = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''), location)]
         dropped_pro = len(groups_raw) - len(groups)
         if dropped_pro:
             _emit(on_progress, 'groups_filtered', dropped=dropped_pro, kept=len(groups),
