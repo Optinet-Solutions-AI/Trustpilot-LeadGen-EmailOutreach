@@ -198,6 +198,20 @@ STRONG_BUSINESS_PATTERNS = [
     "join our growing practice", "join the practice", "join the team",
     "to join the team", "to join the practice",
     "qualified dental nurse", "qualified hygienist",
+    # Staff-role names — no consumer searching for "a dentist" types these.
+    # When any of these appears, the post is a clinic recruiter or an
+    # industry-internal discussion, not a service-seeker.
+    "dental nurse", "dental hygienist", "dental therapist",
+    "dental technician", "dental assistant", "dental receptionist",
+    "dental surgeon required", "dentist required", "hygienist required",
+    "bds dental surgeon",
+    # Job-listing markers
+    "position:", "full-time / part-time", "full time / part time",
+    # Clinic ads disguised as asks
+    "we are your partner", "comprehensive services",
+    # Agency / sales pitches to dental practices
+    "lead gen agency", "marketing agency", "growth agency",
+    "for a case study",
     # B2B coordination / hiring phrases — universal English, drop everywhere
     "reliever work", "for hiring", "to connect",
     "for relievers", "looking to hire", "now accepting",
