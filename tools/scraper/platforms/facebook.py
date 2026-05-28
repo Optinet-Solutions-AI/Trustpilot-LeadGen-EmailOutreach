@@ -339,50 +339,115 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     # Order: most specific multi-word cities first so 'lapu-lapu city' matches
     # before a generic 'cebu' substring would.
     CITY_TO_COUNTRY = [
-        # United Kingdom (operator focus — primary outreach market)
+        # Order matters: multi-word cities first so 'cluj-napoca' matches
+        # before a generic 'cluj' substring would, and 'new york' before
+        # the word 'york' shows up in any other context.
+
+        # ─── United Kingdom ─────────────────────────────────────
         ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
         ('leeds', 'GB'), ('liverpool', 'GB'), ('bristol', 'GB'),
         ('edinburgh', 'GB'), ('glasgow', 'GB'),
-        # Ireland
-        ('dublin', 'IE'), ('cork', 'IE'),
-        # Germany
+        ('belfast', 'GB'), ('cardiff', 'GB'),
+        # ─── Ireland ────────────────────────────────────────────
+        ('dublin', 'IE'), ('cork', 'IE'), ('galway', 'IE'),
+        # ─── Germany ────────────────────────────────────────────
         ('berlin', 'DE'), ('munich', 'DE'), ('hamburg', 'DE'),
-        ('frankfurt', 'DE'), ('cologne', 'DE'),
-        # France
-        ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'), ('nice', 'FR'),
-        # Spain
-        ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'), ('seville', 'ES'),
-        # Italy
-        ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'), ('florence', 'IT'),
-        # Netherlands
+        ('frankfurt', 'DE'), ('cologne', 'DE'), ('stuttgart', 'DE'),
+        ('düsseldorf', 'DE'), ('dusseldorf', 'DE'), ('leipzig', 'DE'),
+        # ─── France ─────────────────────────────────────────────
+        ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'),
+        ('toulouse', 'FR'), ('nice', 'FR'), ('bordeaux', 'FR'),
+        ('nantes', 'FR'),
+        # ─── Spain ──────────────────────────────────────────────
+        ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'),
+        ('seville', 'ES'), ('bilbao', 'ES'), ('málaga', 'ES'),
+        ('malaga', 'ES'),
+        # ─── Italy ──────────────────────────────────────────────
+        ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'),
+        ('florence', 'IT'), ('turin', 'IT'), ('bologna', 'IT'),
+        ('venice', 'IT'),
+        # ─── Netherlands ────────────────────────────────────────
         ('amsterdam', 'NL'), ('rotterdam', 'NL'), ('the hague', 'NL'),
-        # Belgium
-        ('brussels', 'BE'), ('antwerp', 'BE'),
-        # Portugal
-        ('lisbon', 'PT'), ('porto', 'PT'),
-        # Switzerland
+        ('utrecht', 'NL'), ('eindhoven', 'NL'),
+        # ─── Belgium ────────────────────────────────────────────
+        ('brussels', 'BE'), ('antwerp', 'BE'), ('ghent', 'BE'),
+        # ─── Luxembourg ─────────────────────────────────────────
+        ('luxembourg city', 'LU'), ('luxembourg', 'LU'),
+        # ─── Portugal ───────────────────────────────────────────
+        ('lisbon', 'PT'), ('porto', 'PT'), ('braga', 'PT'),
+        # ─── Switzerland ────────────────────────────────────────
         ('zurich', 'CH'), ('zürich', 'CH'), ('geneva', 'CH'),
-        # Austria
-        ('vienna', 'AT'),
-        # Czech Republic
-        ('prague', 'CZ'),
-        # Poland
+        ('basel', 'CH'), ('bern', 'CH'),
+        # ─── Austria ────────────────────────────────────────────
+        ('vienna', 'AT'), ('salzburg', 'AT'), ('graz', 'AT'),
+        # ─── Czech Republic ─────────────────────────────────────
+        ('prague', 'CZ'), ('brno', 'CZ'),
+        # ─── Slovakia ───────────────────────────────────────────
+        ('bratislava', 'SK'),
+        # ─── Poland ─────────────────────────────────────────────
         ('warsaw', 'PL'), ('krakow', 'PL'), ('kraków', 'PL'),
-        # Scandinavia
-        ('stockholm', 'SE'), ('copenhagen', 'DK'),
-        ('oslo', 'NO'), ('helsinki', 'FI'),
-        # Greece
-        ('athens', 'GR'),
-        # Legacy non-European entries kept so manual scrapes against
+        ('wrocław', 'PL'), ('wroclaw', 'PL'), ('gdańsk', 'PL'), ('gdansk', 'PL'),
+        # ─── Hungary ────────────────────────────────────────────
+        ('budapest', 'HU'),
+        # ─── Romania ────────────────────────────────────────────
+        ('cluj-napoca', 'RO'), ('bucharest', 'RO'),
+        # ─── Bulgaria ───────────────────────────────────────────
+        ('sofia', 'BG'), ('plovdiv', 'BG'),
+        # ─── Sweden ─────────────────────────────────────────────
+        ('stockholm', 'SE'), ('gothenburg', 'SE'), ('malmö', 'SE'),
+        ('malmo', 'SE'),
+        # ─── Denmark ────────────────────────────────────────────
+        ('copenhagen', 'DK'), ('aarhus', 'DK'),
+        # ─── Norway ─────────────────────────────────────────────
+        ('oslo', 'NO'), ('bergen', 'NO'),
+        # ─── Finland ────────────────────────────────────────────
+        ('helsinki', 'FI'), ('tampere', 'FI'),
+        # ─── Iceland ────────────────────────────────────────────
+        ('reykjavik', 'IS'),
+        # ─── Greece ─────────────────────────────────────────────
+        ('athens', 'GR'), ('thessaloniki', 'GR'),
+        # ─── Balkans ────────────────────────────────────────────
+        ('zagreb', 'HR'), ('split', 'HR'),
+        ('ljubljana', 'SI'),
+        ('belgrade', 'RS'),
+        ('sarajevo', 'BA'),
+        ('tirana', 'AL'),
+        ('skopje', 'MK'),
+        ('podgorica', 'ME'),
+        # ─── Baltics + Moldova + Ukraine ────────────────────────
+        ('vilnius', 'LT'),
+        ('riga', 'LV'),
+        ('tallinn', 'EE'),
+        ('chișinău', 'MD'), ('chisinau', 'MD'),
+        ('kyiv', 'UA'), ('kiev', 'UA'), ('lviv', 'UA'),
+        # ─── Mediterranean ──────────────────────────────────────
+        ('valletta', 'MT'),
+        ('nicosia', 'CY'), ('limassol', 'CY'),
+        # ─── Türkiye ────────────────────────────────────────────
+        ('istanbul', 'TR'), ('ankara', 'TR'), ('izmir', 'TR'),
+        # ─── United States ──────────────────────────────────────
+        ('new york', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
+        ('queens', 'US'), ('bronx', 'US'),
+        ('los angeles', 'US'), ('san diego', 'US'), ('san francisco', 'US'),
+        ('san jose', 'US'), ('sacramento', 'US'),
+        ('chicago', 'US'), ('houston', 'US'), ('dallas', 'US'),
+        ('austin', 'US'), ('san antonio', 'US'),
+        ('phoenix', 'US'), ('las vegas', 'US'), ('denver', 'US'),
+        ('seattle', 'US'), ('portland', 'US'),
+        ('philadelphia', 'US'), ('boston', 'US'), ('washington', 'US'),
+        ('baltimore', 'US'), ('atlanta', 'US'),
+        ('miami', 'US'), ('orlando', 'US'), ('tampa', 'US'),
+        ('charlotte', 'US'), ('nashville', 'US'),
+        ('detroit', 'US'), ('minneapolis', 'US'),
+        ('columbus', 'US'), ('indianapolis', 'US'),
+        ('cleveland', 'US'), ('pittsburgh', 'US'),
+
+        # Legacy non-Europe/US entries kept so manual scrapes against
         # these cities still benefit from the country-mismatch filter.
-        # Order: most specific multi-word cities first so 'lapu-lapu city'
-        # matches before a generic 'cebu' substring would.
         ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
         ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
         ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
         ('quezon city', 'PH'), ('davao', 'PH'),
-        ('new york', 'US'), ('los angeles', 'US'), ('chicago', 'US'),
-        ('san francisco', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
         ('singapore', 'SG'),
         ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
     ]
@@ -396,30 +461,57 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
 # Word-boundary-anchored regex patterns — keep them strict so 'phone' doesn't
 # match 'PH' and 'auspicious' doesn't match 'AU'.
 _COUNTRY_NAME_TOKENS = {
-    # European primary markets
+    # ─── Western & Central Europe ─────────────────────────
     'GB': re.compile(r'\b(uk|u\.k|united kingdom|britain|british|england|english|scotland|scottish|wales|welsh)\b', re.I),
-    'IE': re.compile(r'\b(ireland|irish|eire)\b', re.I),
+    'IE': re.compile(r'\b(ireland|irish|eire|éire)\b', re.I),
     'DE': re.compile(r'\b(germany|german|deutschland|deutsch)\b', re.I),
     'FR': re.compile(r'\b(france|french|français|francais)\b', re.I),
-    'ES': re.compile(r'\b(spain|spanish|españa|espana|español)\b', re.I),
+    'ES': re.compile(r'\b(spain|spanish|españa|espana|español|espanol)\b', re.I),
     'IT': re.compile(r'\b(italy|italian|italia|italiano)\b', re.I),
     'NL': re.compile(r'\b(netherlands|dutch|holland|nederland)\b', re.I),
-    'BE': re.compile(r'\b(belgium|belgian|belgique|belgië)\b', re.I),
-    'PT': re.compile(r'\b(portugal|portuguese|português)\b', re.I),
+    'BE': re.compile(r'\b(belgium|belgian|belgique|belgië|belgie)\b', re.I),
+    'LU': re.compile(r'\b(luxembourg|luxembourgish|luxembourgeois)\b', re.I),
+    'PT': re.compile(r'\b(portugal|portuguese|português|portugues)\b', re.I),
     'CH': re.compile(r'\b(switzerland|swiss|schweiz|suisse|svizzera)\b', re.I),
     'AT': re.compile(r'\b(austria|austrian|österreich|osterreich)\b', re.I),
+    # ─── Central-Eastern Europe ───────────────────────────
     'CZ': re.compile(r'\b(czech|česko|cesko|czechia)\b', re.I),
     'PL': re.compile(r'\b(poland|polish|polska)\b', re.I),
+    'SK': re.compile(r'\b(slovakia|slovak|slovensko)\b', re.I),
+    'HU': re.compile(r'\b(hungary|hungarian|magyar|magyarország|magyarorszag)\b', re.I),
+    'RO': re.compile(r'\b(romania|romanian|românia|romania)\b', re.I),
+    'BG': re.compile(r'\b(bulgaria|bulgarian|българия)\b', re.I),
+    # ─── Nordics ──────────────────────────────────────────
     'SE': re.compile(r'\b(sweden|swedish|sverige)\b', re.I),
     'DK': re.compile(r'\b(denmark|danish|danmark)\b', re.I),
     'NO': re.compile(r'\b(norway|norwegian|norge)\b', re.I),
     'FI': re.compile(r'\b(finland|finnish|suomi)\b', re.I),
-    'GR': re.compile(r'\b(greece|greek|hellas|hellenic)\b', re.I),
-    # Legacy non-European tokens — kept so manual scrapes against these
-    # cities still benefit from the filter even though they're no longer
-    # in the dropdown.
-    'PH': re.compile(r'\b(ph|philippines|pinoy|filipino|filipina|pilipinas)\b', re.I),
+    'IS': re.compile(r'\b(iceland|icelandic|ísland|island)\b', re.I),
+    # ─── Balkans ──────────────────────────────────────────
+    'HR': re.compile(r'\b(croatia|croatian|hrvatska)\b', re.I),
+    'SI': re.compile(r'\b(slovenia|slovenian|slovenija)\b', re.I),
+    'RS': re.compile(r'\b(serbia|serbian|srbija)\b', re.I),
+    'BA': re.compile(r'\b(bosnia|bosnian|herzegovina|bosna)\b', re.I),
+    'AL': re.compile(r'\b(albania|albanian|shqipëria|shqiperia)\b', re.I),
+    'MK': re.compile(r'\b(north macedonia|macedonian|makedonija)\b', re.I),
+    'ME': re.compile(r'\b(montenegro|montenegrin|crna gora)\b', re.I),
+    # ─── Baltics + Moldova + Ukraine ──────────────────────
+    'LT': re.compile(r'\b(lithuania|lithuanian|lietuva)\b', re.I),
+    'LV': re.compile(r'\b(latvia|latvian|latvija)\b', re.I),
+    'EE': re.compile(r'\b(estonia|estonian|eesti)\b', re.I),
+    'MD': re.compile(r'\b(moldova|moldovan)\b', re.I),
+    'UA': re.compile(r'\b(ukraine|ukrainian|україна|український)\b', re.I),
+    # ─── Southern fringe ──────────────────────────────────
+    'GR': re.compile(r'\b(greece|greek|hellas|hellenic|ελλάδα)\b', re.I),
+    'MT': re.compile(r'\b(malta|maltese)\b', re.I),
+    'CY': re.compile(r'\b(cyprus|cypriot|κύπρος|kypros)\b', re.I),
+    'TR': re.compile(r'\b(turkey|türkiye|turkiye|turkish)\b', re.I),
+    # ─── North America ────────────────────────────────────
     'US': re.compile(r'\b(usa|u\.s\.a|u\.s|united states|american)\b', re.I),
+    # ─── Legacy / non-outreach ────────────────────────────
+    # Kept so manual scrapes against these regions still get
+    # cross-country leakage protection.
+    'PH': re.compile(r'\b(ph|philippines|pinoy|filipino|filipina|pilipinas)\b', re.I),
     'AU': re.compile(r'\b(australia|australian|aussie|aussies|nsw|vic|qld)\b', re.I),
     'CA': re.compile(r'\b(canada|canadian)\b', re.I),
     'SG': re.compile(r'\bsingapore(an)?\b', re.I),

@@ -3,11 +3,14 @@
 import { useMemo } from 'react';
 import Combobox, { type ComboboxOption } from '../ui/Combobox';
 
-// Europe-focused city → ISO-country map. Mirrors CITY_TO_COUNTRY in
+// Full Europe + US city → ISO-country map. Mirrors CITY_TO_COUNTRY in
 // tools/scraper/platforms/facebook.py — keep these two lists in sync
 // when adding cities so the operator pick maps cleanly onto the
-// country-mismatch group filter.
-const EUROPEAN_CITIES: Array<{ city: string; country: string }> = [
+// country-mismatch group filter. Facebook itself has no location
+// allowlist; this list is purely UX scaffolding. Add more cities by
+// dropping a {city, country} row here AND in the Python map.
+const LOCATION_CITIES: Array<{ city: string; country: string }> = [
+  // ─── United Kingdom ───────────────────────────────────────────
   { city: 'London',       country: 'GB' },
   { city: 'Manchester',   country: 'GB' },
   { city: 'Birmingham',   country: 'GB' },
@@ -16,43 +19,170 @@ const EUROPEAN_CITIES: Array<{ city: string; country: string }> = [
   { city: 'Bristol',      country: 'GB' },
   { city: 'Edinburgh',    country: 'GB' },
   { city: 'Glasgow',      country: 'GB' },
+  { city: 'Belfast',      country: 'GB' },
+  { city: 'Cardiff',      country: 'GB' },
+  // ─── Ireland ──────────────────────────────────────────────────
   { city: 'Dublin',       country: 'IE' },
   { city: 'Cork',         country: 'IE' },
+  { city: 'Galway',       country: 'IE' },
+  // ─── Germany ──────────────────────────────────────────────────
   { city: 'Berlin',       country: 'DE' },
   { city: 'Munich',       country: 'DE' },
   { city: 'Hamburg',      country: 'DE' },
   { city: 'Frankfurt',    country: 'DE' },
   { city: 'Cologne',      country: 'DE' },
+  { city: 'Stuttgart',    country: 'DE' },
+  { city: 'Düsseldorf',   country: 'DE' },
+  { city: 'Leipzig',      country: 'DE' },
+  // ─── France ───────────────────────────────────────────────────
   { city: 'Paris',        country: 'FR' },
   { city: 'Marseille',    country: 'FR' },
   { city: 'Lyon',         country: 'FR' },
+  { city: 'Toulouse',     country: 'FR' },
   { city: 'Nice',         country: 'FR' },
+  { city: 'Bordeaux',     country: 'FR' },
+  { city: 'Nantes',       country: 'FR' },
+  // ─── Spain ────────────────────────────────────────────────────
   { city: 'Madrid',       country: 'ES' },
   { city: 'Barcelona',    country: 'ES' },
   { city: 'Valencia',     country: 'ES' },
   { city: 'Seville',      country: 'ES' },
+  { city: 'Bilbao',       country: 'ES' },
+  { city: 'Málaga',       country: 'ES' },
+  // ─── Italy ────────────────────────────────────────────────────
   { city: 'Rome',         country: 'IT' },
   { city: 'Milan',        country: 'IT' },
   { city: 'Naples',       country: 'IT' },
   { city: 'Florence',     country: 'IT' },
+  { city: 'Turin',        country: 'IT' },
+  { city: 'Bologna',      country: 'IT' },
+  { city: 'Venice',       country: 'IT' },
+  // ─── Netherlands ──────────────────────────────────────────────
   { city: 'Amsterdam',    country: 'NL' },
   { city: 'Rotterdam',    country: 'NL' },
   { city: 'The Hague',    country: 'NL' },
+  { city: 'Utrecht',      country: 'NL' },
+  { city: 'Eindhoven',    country: 'NL' },
+  // ─── Belgium ──────────────────────────────────────────────────
   { city: 'Brussels',     country: 'BE' },
   { city: 'Antwerp',      country: 'BE' },
+  { city: 'Ghent',        country: 'BE' },
+  // ─── Portugal ─────────────────────────────────────────────────
   { city: 'Lisbon',       country: 'PT' },
   { city: 'Porto',        country: 'PT' },
+  { city: 'Braga',        country: 'PT' },
+  // ─── Switzerland ──────────────────────────────────────────────
   { city: 'Zurich',       country: 'CH' },
   { city: 'Geneva',       country: 'CH' },
+  { city: 'Basel',        country: 'CH' },
+  { city: 'Bern',         country: 'CH' },
+  // ─── Austria ──────────────────────────────────────────────────
   { city: 'Vienna',       country: 'AT' },
+  { city: 'Salzburg',     country: 'AT' },
+  { city: 'Graz',         country: 'AT' },
+  // ─── Czech Republic ───────────────────────────────────────────
   { city: 'Prague',       country: 'CZ' },
+  { city: 'Brno',         country: 'CZ' },
+  // ─── Poland ───────────────────────────────────────────────────
   { city: 'Warsaw',       country: 'PL' },
   { city: 'Krakow',       country: 'PL' },
+  { city: 'Wrocław',      country: 'PL' },
+  { city: 'Gdańsk',       country: 'PL' },
+  // ─── Sweden ───────────────────────────────────────────────────
   { city: 'Stockholm',    country: 'SE' },
+  { city: 'Gothenburg',   country: 'SE' },
+  { city: 'Malmö',        country: 'SE' },
+  // ─── Denmark ──────────────────────────────────────────────────
   { city: 'Copenhagen',   country: 'DK' },
+  { city: 'Aarhus',       country: 'DK' },
+  // ─── Norway ───────────────────────────────────────────────────
   { city: 'Oslo',         country: 'NO' },
+  { city: 'Bergen',       country: 'NO' },
+  // ─── Finland ──────────────────────────────────────────────────
   { city: 'Helsinki',     country: 'FI' },
+  { city: 'Tampere',      country: 'FI' },
+  // ─── Greece ───────────────────────────────────────────────────
   { city: 'Athens',       country: 'GR' },
+  { city: 'Thessaloniki', country: 'GR' },
+  // ─── Luxembourg ───────────────────────────────────────────────
+  { city: 'Luxembourg City', country: 'LU' },
+  // ─── Iceland ──────────────────────────────────────────────────
+  { city: 'Reykjavik',    country: 'IS' },
+  // ─── Hungary ──────────────────────────────────────────────────
+  { city: 'Budapest',     country: 'HU' },
+  // ─── Romania ──────────────────────────────────────────────────
+  { city: 'Bucharest',    country: 'RO' },
+  { city: 'Cluj-Napoca',  country: 'RO' },
+  // ─── Bulgaria ─────────────────────────────────────────────────
+  { city: 'Sofia',        country: 'BG' },
+  { city: 'Plovdiv',      country: 'BG' },
+  // ─── Croatia ──────────────────────────────────────────────────
+  { city: 'Zagreb',       country: 'HR' },
+  { city: 'Split',        country: 'HR' },
+  // ─── Slovenia ─────────────────────────────────────────────────
+  { city: 'Ljubljana',    country: 'SI' },
+  // ─── Slovakia ─────────────────────────────────────────────────
+  { city: 'Bratislava',   country: 'SK' },
+  // ─── Baltics ──────────────────────────────────────────────────
+  { city: 'Vilnius',      country: 'LT' },
+  { city: 'Riga',         country: 'LV' },
+  { city: 'Tallinn',      country: 'EE' },
+  // ─── Mediterranean ────────────────────────────────────────────
+  { city: 'Valletta',     country: 'MT' },
+  { city: 'Nicosia',      country: 'CY' },
+  { city: 'Limassol',     country: 'CY' },
+  // ─── Western Balkans ──────────────────────────────────────────
+  { city: 'Belgrade',     country: 'RS' },
+  { city: 'Sarajevo',     country: 'BA' },
+  { city: 'Tirana',       country: 'AL' },
+  { city: 'Skopje',       country: 'MK' },
+  { city: 'Podgorica',    country: 'ME' },
+  // ─── Moldova ──────────────────────────────────────────────────
+  { city: 'Chișinău',     country: 'MD' },
+  // ─── Ukraine ──────────────────────────────────────────────────
+  { city: 'Kyiv',         country: 'UA' },
+  { city: 'Lviv',         country: 'UA' },
+  // ─── Türkiye ──────────────────────────────────────────────────
+  { city: 'Istanbul',     country: 'TR' },
+  { city: 'Ankara',       country: 'TR' },
+  { city: 'Izmir',        country: 'TR' },
+  // ─── United States ────────────────────────────────────────────
+  { city: 'New York',     country: 'US' },
+  { city: 'Brooklyn',     country: 'US' },
+  { city: 'Manhattan',    country: 'US' },
+  { city: 'Queens',       country: 'US' },
+  { city: 'Bronx',        country: 'US' },
+  { city: 'Los Angeles',  country: 'US' },
+  { city: 'San Diego',    country: 'US' },
+  { city: 'San Francisco',country: 'US' },
+  { city: 'San Jose',     country: 'US' },
+  { city: 'Sacramento',   country: 'US' },
+  { city: 'Chicago',      country: 'US' },
+  { city: 'Houston',      country: 'US' },
+  { city: 'Dallas',       country: 'US' },
+  { city: 'Austin',       country: 'US' },
+  { city: 'San Antonio',  country: 'US' },
+  { city: 'Phoenix',      country: 'US' },
+  { city: 'Las Vegas',    country: 'US' },
+  { city: 'Denver',       country: 'US' },
+  { city: 'Seattle',      country: 'US' },
+  { city: 'Portland',     country: 'US' },
+  { city: 'Philadelphia', country: 'US' },
+  { city: 'Boston',       country: 'US' },
+  { city: 'Washington',   country: 'US' },
+  { city: 'Baltimore',    country: 'US' },
+  { city: 'Atlanta',      country: 'US' },
+  { city: 'Miami',        country: 'US' },
+  { city: 'Orlando',      country: 'US' },
+  { city: 'Tampa',        country: 'US' },
+  { city: 'Charlotte',    country: 'US' },
+  { city: 'Nashville',    country: 'US' },
+  { city: 'Detroit',      country: 'US' },
+  { city: 'Minneapolis',  country: 'US' },
+  { city: 'Columbus',     country: 'US' },
+  { city: 'Indianapolis', country: 'US' },
+  { city: 'Cleveland',    country: 'US' },
+  { city: 'Pittsburgh',   country: 'US' },
 ];
 
 function flagEmoji(code: string): string {
@@ -73,7 +203,7 @@ interface Props {
 export default function LocationPicker({ value, onChange, disabled, id }: Props) {
   const options = useMemo<ComboboxOption[]>(
     () =>
-      EUROPEAN_CITIES.map(({ city, country }) => ({
+      LOCATION_CITIES.map(({ city, country }) => ({
         value: city,
         label: city,
         // Country code + flag emoji aren't directly searchable in the label,
@@ -85,7 +215,7 @@ export default function LocationPicker({ value, onChange, disabled, id }: Props)
   );
 
   const selectedCountry = useMemo(
-    () => EUROPEAN_CITIES.find((c) => c.city === value)?.country ?? '',
+    () => LOCATION_CITIES.find((c) => c.city === value)?.country ?? '',
     [value],
   );
 
@@ -107,7 +237,7 @@ export default function LocationPicker({ value, onChange, disabled, id }: Props)
         </span>
       )}
       renderOption={(opt) => {
-        const country = EUROPEAN_CITIES.find((c) => c.city === opt.value)?.country ?? '';
+        const country = LOCATION_CITIES.find((c) => c.city === opt.value)?.country ?? '';
         return (
           <>
             <span aria-hidden className="text-base leading-none w-5 text-center">

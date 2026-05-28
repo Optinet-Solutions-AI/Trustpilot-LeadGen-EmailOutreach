@@ -13,18 +13,29 @@ import RangeInput from '../ui/RangeInput';
 import Combobox from '../ui/Combobox';
 import ScrapeCostAdvisory from './ScrapeCostAdvisory';
 
-// Europe-focused outreach scope. Restricts the Trustpilot + Facebook
-// businesses country dropdowns to the same set that maps cleanly onto
-// the country-mismatch group filter in tools/scraper/platforms/facebook.py.
+// Outreach country scope. Restricts the Trustpilot, TripAdvisor, Yelp,
+// and FB businesses country dropdowns to the same set that maps cleanly
+// onto the country-mismatch group filter in
+// tools/scraper/platforms/facebook.py. Covers full Europe + United States.
 // Keep these ISO codes in sync with CITY_TO_COUNTRY + _COUNTRY_NAME_TOKENS
-// in that file.
-const EUROPE_COUNTRY_CODES = [
+// in that Python file.
+const OUTREACH_COUNTRY_CODES = [
+  // Western & Central Europe
   'GB', 'IE',
   'DE', 'FR', 'ES', 'IT',
-  'NL', 'BE', 'PT', 'CH', 'AT',
-  'CZ', 'PL',
-  'SE', 'DK', 'NO', 'FI',
-  'GR',
+  'NL', 'BE', 'LU', 'PT', 'CH', 'AT',
+  // Central-Eastern Europe
+  'CZ', 'PL', 'SK', 'HU', 'RO', 'BG',
+  // Nordics
+  'SE', 'DK', 'NO', 'FI', 'IS',
+  // Balkans
+  'HR', 'SI', 'RS', 'BA', 'AL', 'MK', 'ME',
+  // Baltics + Moldova + Ukraine
+  'LT', 'LV', 'EE', 'MD', 'UA',
+  // Southern fringe
+  'GR', 'MT', 'CY', 'TR',
+  // North America
+  'US',
 ];
 
 interface Props {
@@ -194,7 +205,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="scrape-country">
                 Country
               </label>
-              <CountryPicker id="scrape-country" value={country} onChange={setCountry} disabled={busy} restrict={EUROPE_COUNTRY_CODES} />
+              <CountryPicker id="scrape-country" value={country} onChange={setCountry} disabled={busy} restrict={OUTREACH_COUNTRY_CODES} />
             </div>
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="scrape-category">
@@ -224,7 +235,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-country">
                 Country
               </label>
-              <CountryPicker id="ta-country" value={taCountry} onChange={setTaCountry} disabled={busy} restrict={EUROPE_COUNTRY_CODES} />
+              <CountryPicker id="ta-country" value={taCountry} onChange={setTaCountry} disabled={busy} restrict={OUTREACH_COUNTRY_CODES} />
             </div>
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ta-category">
@@ -335,7 +346,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-country">
                     Country
                   </label>
-                  <CountryPicker id="fb-country" value={fbCountry} onChange={setFbCountry} disabled={busy} restrict={EUROPE_COUNTRY_CODES} />
+                  <CountryPicker id="fb-country" value={fbCountry} onChange={setFbCountry} disabled={busy} restrict={OUTREACH_COUNTRY_CODES} />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-category">
@@ -373,7 +384,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 onChange={setYCountry}
                 disabled={busy}
                 platform="yelp"
-                restrict={EUROPE_COUNTRY_CODES}
+                restrict={OUTREACH_COUNTRY_CODES}
               />
             </div>
             <div>
