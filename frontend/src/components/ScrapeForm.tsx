@@ -300,6 +300,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   </label>
                   <input
                     id="fb-location"
+                    list="fb-location-suggestions"
                     type="text"
                     placeholder='e.g. "Cebu", "Mandaue", "Brooklyn"'
                     value={fbLocation}
@@ -307,6 +308,41 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                     disabled={busy}
                     className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
+                  {/* Suggestions match the country-mismatch filter's
+                      CITY_TO_COUNTRY map in tools/scraper/platforms/facebook.py.
+                      Keep this list in sync when adding new cities there. */}
+                  <datalist id="fb-location-suggestions">
+                    {/* Philippines */}
+                    <option value="Cebu" />
+                    <option value="Cebu City" />
+                    <option value="Mandaue" />
+                    <option value="Mandaue City" />
+                    <option value="Lapu-Lapu" />
+                    <option value="Lapu-Lapu City" />
+                    <option value="Liloan" />
+                    <option value="Mactan" />
+                    <option value="Manila" />
+                    <option value="Makati" />
+                    <option value="Quezon City" />
+                    <option value="Davao" />
+                    {/* United States */}
+                    <option value="New York" />
+                    <option value="Brooklyn" />
+                    <option value="Manhattan" />
+                    <option value="Los Angeles" />
+                    <option value="Chicago" />
+                    <option value="San Francisco" />
+                    {/* United Kingdom */}
+                    <option value="London" />
+                    <option value="Manchester" />
+                    <option value="Birmingham" />
+                    {/* Australia */}
+                    <option value="Sydney" />
+                    <option value="Melbourne" />
+                    <option value="Brisbane" />
+                    {/* Singapore */}
+                    <option value="Singapore" />
+                  </datalist>
                 </div>
                 <div className="sm:col-span-2 lg:col-span-3">
                   <p className="text-[11px] text-on-surface-variant">
