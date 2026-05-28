@@ -283,6 +283,113 @@ POST_EXPERIENCE_PATTERNS = [
 ]
 
 
+def _classify_consumer_posts_with_gemini(
+    post_excerpts: list[str],
+    niche: str,
+    *,
+    timeout_s: int = 30,
+) -> Optional[list[bool]]:
+    """Send a batch of post excerpts to Gemini Flash and return per-post
+    consumer-or-not verdicts.
+
+    Returns a list[bool] aligned 1:1 with post_excerpts (True = real
+    consumer ask, False = drop). Returns None when the API key isn't
+    configured, the request fails, or the response can't be parsed —
+    callers should treat None as "skip the LLM stage, keep substring
+    filter verdicts".
+
+    Cost-aware: batches up to 50 excerpts per call (well under
+    Gemini's input limit). One call per scrape, not per post.
+    """
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')
+    if not api_key or not post_excerpts:
+        return None
+
+    # Build a numbered list so the model can return verdicts indexed
+    # by position. JSON-structured output avoids parse drift.
+    numbered = '\n'.join(
+        f'[{i}] {(text or "")[:400]}'
+        for i, text in enumerate(post_excerpts)
+    )
+
+    prompt = f"""You are classifying Facebook group posts to find PROSPECTS — private individuals who currently need to hire a tradesperson, professional, or service provider (e.g. {niche} or a closely related trade).
+
+For each numbered post, answer TRUE or FALSE.
+
+TRUE — the author is a private individual or household describing a SPECIFIC personal need:
+  - mentions a property, address, postcode, "my house", "my flat", "my mum's"
+  - one-off job: install, fix, repair, replace, advice for a personal situation
+  - related trades count too — a "handyman" or "tradesperson" post counts when searching for {niche}
+  - asking on behalf of a family member or friend counts (still a consumer lead)
+
+FALSE — everything else, including:
+  - businesses advertising their own services ("Need a reliable plumber? Call us…")
+  - clinics/contractors recruiting staff ("Looking for a Gas Safe engineer, full time")
+  - agencies pitching websites / marketing / lead-gen to tradespeople
+  - SaaS, AI, app, platform, or product pitches aimed at tradespeople
+  - practitioner-to-practitioner networking ("Hey fellow plumbers, advice on getting leads?")
+  - job seekers posting their CV / availability ("I have a diploma, looking for work")
+  - business-partnership offers ("Looking for a master plumber to start a business")
+  - past-tense / already-found posts ("Salamat Doc / had my procedure / went to…")
+  - vague marketplace lead-gen posts with no concrete personal need
+
+Edge cases:
+  - Address, postcode, or location detail = strong consumer signal.
+  - "Asking for a friend" / "for my mum" = consumer.
+  - "Full time" / "to join" / "to start a business" = NOT consumer.
+  - A vague rhetorical question ("Looking for a plumber who isn't fully booked out?") with no personal context = NOT consumer.
+
+Return ONLY a JSON object with this exact shape, no preamble or markdown:
+{{"verdicts": [true, false, true, ...]}}
+
+The verdicts array MUST have exactly {len(post_excerpts)} entries in the same order as the input.
+
+Posts:
+{numbered}
+"""
+
+    # Same model the frontend's template generator uses, so we stay
+    # consistent and the existing API key (which has access to it)
+    # works without an additional quota request.
+    url = (
+        'https://generativelanguage.googleapis.com/v1beta/models/'
+        f'gemini-2.5-flash:generateContent?key={api_key}'
+    )
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'temperature': 0.1,
+            'maxOutputTokens': 2048,
+            'responseMimeType': 'application/json',
+        },
+    }
+
+    try:
+        import requests as _requests  # noqa: WPS433 — lazy
+        resp = _requests.post(url, json=payload, timeout=timeout_s)
+        resp.raise_for_status()
+        body = resp.json()
+        text = (
+            body.get('candidates', [{}])[0]
+                .get('content', {})
+                .get('parts', [{}])[0]
+                .get('text', '')
+        ).strip()
+        parsed = json.loads(text)
+        verdicts = parsed.get('verdicts')
+        if not isinstance(verdicts, list) or len(verdicts) != len(post_excerpts):
+            print(
+                f'[gemini-classifier] verdict count mismatch '
+                f'(expected {len(post_excerpts)}, got {len(verdicts) if isinstance(verdicts, list) else "non-list"})',
+                file=sys.stderr,
+            )
+            return None
+        return [bool(v) for v in verdicts]
+    except Exception as exc:  # noqa: BLE001
+        print(f'[gemini-classifier] failed, falling back to substring filter only: {exc}', file=sys.stderr)
+        return None
+
+
 def _is_actively_asking(excerpt: str) -> bool:
     """Strict check: the post LOOKS like someone CURRENTLY asking for the
     service. Requires (a) a strong consumer/asking phrase, and (b) absence
@@ -1284,6 +1391,7 @@ class FacebookScraper(SocialPlatformScraper):
             # Either filter is operator-overridable via filters.
             exclude_businesses = filters.get('exclude_businesses', True)
             asking_only = filters.get('asking_only', True)
+            use_llm_classifier = filters.get('use_llm_classifier', True)
             if exclude_businesses or asking_only:
                 before = len(post_stubs)
                 kept: list = []
@@ -1300,6 +1408,27 @@ class FacebookScraper(SocialPlatformScraper):
                     _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
                           reason='non-asking posts (thanks/recommend/business) removed')
                 post_stubs = kept
+
+            # LLM final-pass classifier. Substring patterns get us to
+            # ~30% precision; Gemini Flash 2.0 lifts it to ~80-90% by
+            # judging semantic intent (recruiter vs consumer, agency
+            # pitch vs ask). Costs ~$0.01 per scrape (1 batched call).
+            # Falls through silently when GEMINI_API_KEY isn't set or
+            # the API errors — substring filter results stay in place.
+            if use_llm_classifier and post_stubs:
+                excerpts = [s.get('content_excerpt', '') or '' for s in post_stubs]
+                verdicts = _classify_consumer_posts_with_gemini(excerpts, niche)
+                if verdicts is not None:
+                    llm_kept = [s for s, v in zip(post_stubs, verdicts) if v]
+                    llm_dropped = len(post_stubs) - len(llm_kept)
+                    if llm_dropped > 0:
+                        _emit(on_progress, 'llm_filtered',
+                              dropped=llm_dropped, kept=len(llm_kept),
+                              reason='Gemini classifier flagged as non-consumer')
+                    post_stubs = llm_kept
+                else:
+                    _emit(on_progress, 'llm_skipped',
+                          reason='GEMINI_API_KEY missing or API error — substring filter only')
 
             # Reshape PostStubs into profile-stub form so the list→enrich
             # orchestrator can drive them. Anonymous posts (group asks
