@@ -173,6 +173,22 @@ BUSINESS_PATTERNS = [
 # patterns that previously kept post-experience thank-you posts in the lead
 # list (e.g. Alcantara MTherese's 'Salamat Doc GV Niña' after a dentist
 # visit — she has a dentist, she's not looking for one).
+
+# STRONG business signals — these ALWAYS drop the post, even when a
+# consumer-asking pattern is also present in the same text. Example:
+# 'Looking for a patient free cleaning' matches 'looking for a' (consumer)
+# AND 'looking for a patient' (clinic recruiting patient) — the latter
+# wins because the post is clearly from a dental student / clinic.
+STRONG_BUSINESS_PATTERNS = [
+    "looking for a patient", "looking for patient", "looking for patients",
+    "looking for a model", "looking for models", "looking for a volunteer",
+    "established client base", "practice for sale", "clinic for sale",
+    "your clinic", "your dental clinic", "your practice",
+    "for your clinic", "to your patients",
+    "associate dentist", "reliever dentist", "licensed dentist",
+]
+
+
 CONSUMER_PATTERNS = [
     "looking for a", "looking for an", "looking for any", "looking for some",
     "looking for someone",
@@ -237,6 +253,11 @@ def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
         'optical', 'medical', 'health',
     )
     if any(tok in handle for tok in BUSINESS_HANDLE_TOKENS):
+        return True
+
+    # STRONG business signal — wins regardless of any 'looking for a'
+    # consumer phrase the same post may also contain.
+    if any(p in text for p in STRONG_BUSINESS_PATTERNS):
         return True
 
     business_hits = sum(1 for p in BUSINESS_PATTERNS if p in text)
@@ -317,8 +338,14 @@ def _is_consumer_facing_group(group_name: str) -> bool:
         'supplies', 'suppliers', ' supply', 'marketplace',
         'equipment', 'distributor',
         'laboratory', ' lab ', ' md', ' md ',
-        # 'dental md' / 'dentist group of' = practitioner clubs
         'dental md', 'dentist group',
+        # Filipino + tech tokens spotted in live data:
+        # 'tiange' = flea market / vendor stalls (B2B equipment trading);
+        # 'dentista' = profession-name forums (peer chat);
+        # 'tech' / 'technicians' = lab tech / dental-tech communities;
+        # 'clinics' (plural) = clinic-business networking forums.
+        'tiange', 'dentista', ' tech', 'technicians',
+        'dental clinics', 'clinic owners', 'practice owners',
     )
     padded = f' {name} '
     if any(tok in padded for tok in NEGATIVE_TOKENS):
