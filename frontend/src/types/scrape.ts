@@ -93,6 +93,12 @@ export interface ScrapeJob {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  // Last ~30 PROGRESS events emitted during the scrape (migration 042).
+  // Persisted by scrape-runner.ts so the polling fallback can render Live
+  // Activity even when the API Gateway swallows the SSE stream. Each
+  // entry: {stage, detail, ts}. ActiveScrapeCard merges these into its
+  // local progress buffer on every poll, deduped by timestamp.
+  recent_events?: Array<{ stage: string; detail: string; ts: string }>;
 }
 
 export interface ScrapeProgress {

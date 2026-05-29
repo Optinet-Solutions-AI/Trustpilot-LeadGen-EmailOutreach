@@ -26,6 +26,68 @@ export const scrapeEvents = new EventEmitter();
 // Track active Python processes for cancellation
 const activeProcesses = new Map<string, ChildProcess>();
 
+// ── Recent-events buffer + DB flush ─────────────────────────────────
+// Google API Gateway swallows long-lived SSE streams in front of Cloud
+// Run, so the ActiveScrapeCard's EventSource never receives live events
+// in production. To keep the UI honest, every PROGRESS event also gets
+// persisted to scrape_jobs.recent_events (migration 042) where the
+// polling fallback can pick it up. The buffer caps at 30 entries per
+// job, the flush is debounced 2s to avoid hammering Supabase, and we
+// flush IMMEDIATELY on terminal events so the final summary is
+// available the moment the card mounts post-completion.
+type RecentEvent = { stage: string; detail: string; ts: string };
+const RECENT_EVENTS_MAX = 30;
+const FLUSH_DEBOUNCE_MS = 2000;
+const recentEventsByJob = new Map<string, RecentEvent[]>();
+const pendingFlushes = new Set<string>();
+let flushTimer: NodeJS.Timeout | null = null;
+
+async function flushRecentEvents(jobId: string): Promise<void> {
+  const events = recentEventsByJob.get(jobId);
+  if (!events) return;
+  try {
+    await getSupabase()
+      .from('scrape_jobs')
+      .update({ recent_events: events })
+      .eq('id', jobId);
+  } catch (e) {
+    console.warn(
+      `[scrape-runner] recent_events flush failed for job=${jobId}:`,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+}
+
+function scheduleFlush(jobId: string): void {
+  pendingFlushes.add(jobId);
+  if (flushTimer) return;
+  flushTimer = setTimeout(async () => {
+    flushTimer = null;
+    const ids = [...pendingFlushes];
+    pendingFlushes.clear();
+    await Promise.all(ids.map(flushRecentEvents));
+  }, FLUSH_DEBOUNCE_MS);
+}
+
+scrapeEvents.on('progress', (event: { jobId: string; stage: string; detail: string; timestamp: string }) => {
+  const { jobId, stage, detail, timestamp } = event;
+  const buf = recentEventsByJob.get(jobId) ?? [];
+  buf.push({ stage, detail, ts: timestamp });
+  if (buf.length > RECENT_EVENTS_MAX) {
+    buf.splice(0, buf.length - RECENT_EVENTS_MAX);
+  }
+  recentEventsByJob.set(jobId, buf);
+
+  const isTerminal = stage === 'completed' || stage === 'failed';
+  if (isTerminal) {
+    void flushRecentEvents(jobId).then(() => {
+      recentEventsByJob.delete(jobId);
+    });
+    return;
+  }
+  scheduleFlush(jobId);
+});
+
 // Heartbeat interval — written to scrape_jobs.last_heartbeat_at while a job is
 // running so the startup orphan-reaper can distinguish live jobs (possibly
 // running on another Cloud Run instance) from genuinely dead ones.

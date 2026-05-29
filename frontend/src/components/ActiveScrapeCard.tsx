@@ -22,6 +22,40 @@ interface Props {
 
 const MAX_PROGRESS_ENTRIES = 200;
 const POLL_INTERVAL_MS = 5000;
+
+/**
+ * Merge persisted recent_events (from scrape_jobs.recent_events,
+ * migration 042) into the local SSE-style progress buffer. Deduped by
+ * `(stage, timestamp)` so the same event re-applied across polls
+ * doesn't compound. Result is sorted oldest-to-newest so JobProgress
+ * renders the Live Activity feed chronologically.
+ */
+function mergeProgress(
+  prev: ScrapeProgress[],
+  incoming: Array<{ stage: string; detail: string; ts: string }>,
+  jobId: string,
+): ScrapeProgress[] {
+  const seen = new Set(prev.map((p) => `${p.stage}|${p.timestamp ?? ''}`));
+  const additions: ScrapeProgress[] = [];
+  for (const ev of incoming) {
+    const key = `${ev.stage}|${ev.ts}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    additions.push({ jobId, stage: ev.stage, detail: ev.detail, timestamp: ev.ts });
+  }
+  if (additions.length === 0) return prev;
+  const merged = [...prev, ...additions].sort((a, b) => {
+    const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return ta - tb;
+  });
+  // Cap at MAX_PROGRESS_ENTRIES so a long-running scrape doesn't grow the
+  // array indefinitely — keep the newest tail.
+  return merged.length > MAX_PROGRESS_ENTRIES
+    ? merged.slice(merged.length - MAX_PROGRESS_ENTRIES)
+    : merged;
+}
+
 // Auto-dismiss finished cards so the page doesn't pile up old results. The
 // job still lives in the Recent Jobs table below — only the live card goes.
 const AUTO_DISMISS_MS = 60_000;
@@ -80,8 +114,29 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
     if (realCategory && !category) setCategory(realCategory);
     if (initialJob.started_at && !startedAt) setStartedAt(initialJob.started_at);
     if (initialJob.completed_at && !completedAt) setCompletedAt(initialJob.completed_at);
+    // Hydrate counters too. When fetchJobs() resolves after the card
+    // mounted (or after the page was refreshed mid-scrape), liveJob
+    // stays at 0/0 because nothing else seeds it post-mount. Without
+    // this, a completed FB scrape with total_found=33 / total_scraped=29
+    // displayed as "Companies Found: 0" on refresh until the operator
+    // pressed F5 again. Always trust the DB row when we have one.
+    if (initialJob.total_found != null || initialJob.total_scraped != null) {
+      setLiveJob({
+        total_found: initialJob.total_found ?? 0,
+        total_scraped: initialJob.total_scraped ?? 0,
+      });
+    }
+    // Hydrate the progress feed from the persisted recent_events ring
+    // buffer (migration 042). Cloud Run / API Gateway swallows SSE, so
+    // these events are the ONLY way the deployed Live Activity panel
+    // populates. Re-applied on each initialJob change so a poll-driven
+    // jobs refresh continues to top up the panel.
+    const recent = (initialJob as { recent_events?: Array<{ stage: string; detail: string; ts: string }> }).recent_events;
+    if (recent && Array.isArray(recent) && recent.length > 0) {
+      setProgress((prev) => mergeProgress(prev, recent, jobId));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialJob?.id, initialJob?.platform, initialJob?.country, initialJob?.category]);
+  }, [initialJob?.id, initialJob?.platform, initialJob?.country, initialJob?.category, initialJob?.total_found, initialJob?.total_scraped, initialJob?.recent_events]);
 
   // Open SSE + start polling fallback
   useEffect(() => {
@@ -192,6 +247,13 @@ export default function ActiveScrapeCard({ jobId, initialJob, onDismiss }: Props
         if (realCategory && !category) setCategory(realCategory);
         if (j.started_at && !startedAt) setStartedAt(j.started_at);
         setLiveJob({ total_found: j.total_found ?? 0, total_scraped: j.total_scraped ?? 0 });
+        // Pull persisted progress events into the local feed (migration 042).
+        // Cloud Run + API Gateway swallows long-lived SSE, so this poll is
+        // the ONLY path that fills the Live Activity panel in production.
+        const recent = (j as { recent_events?: Array<{ stage: string; detail: string; ts: string }> }).recent_events;
+        if (recent && Array.isArray(recent) && recent.length > 0) {
+          setProgress((prev) => mergeProgress(prev, recent, jobId));
+        }
         // Mirror the DB status into local state — without this, a card
         // initialised at 'pending' would never advance to 'running' for
         // an EC2-claimed job.
