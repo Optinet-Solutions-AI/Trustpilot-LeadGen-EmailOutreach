@@ -997,6 +997,33 @@ def _open_driver():
     return driver
 
 
+def _dismiss_fb_cookie_banner(driver) -> bool:
+    """Dismiss FB's GDPR cookie banner if present. The banner is an
+    overlay that blocks all other clicks (including the trust-gate
+    Continue button) until the operator chooses Decline or Allow.
+    Verified DOM (Chrome 148, Virgin Media UK IP, 2026-05-29):
+
+        <div role="button" aria-label="Decline optional cookies">
+        <div role="button" aria-label="Allow all cookies">
+
+    We choose Decline to avoid persisting tracking cookies the scraper
+    doesn't need; Allow would work just as well to dismiss the banner.
+    """
+    for locator in (
+        ('xpath', '//div[@role="button"][@aria-label="Decline optional cookies"]'),
+        ('xpath', '//div[@role="button"][@aria-label="Allow all cookies"]'),
+    ):
+        try:
+            elem = driver.find_element(*locator)
+            elem.click()
+            time.sleep(3)
+            print('INFO: dismissed FB cookie banner', file=sys.stderr)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def _bypass_fb_trust_gate(driver) -> bool:
     """Click 'Continue as <name>' if FB is showing the new-IP trust gate.
 
@@ -1016,6 +1043,15 @@ def _bypass_fb_trust_gate(driver) -> bool:
     click on 'Continue' establishes trust for the new IP and the
     session works normally afterward.
 
+    Verified DOM (Chrome 148, Virgin Media UK IP, 2026-05-29):
+
+        <div role="button" aria-label="Continue James Optirate">
+
+    The aria-label suffixes the account's display name, so we match on
+    aria-label starting with 'Continue'. We also dismiss the EU cookie
+    banner first because its overlay blocks clicks on the Continue
+    button underneath.
+
     Returns True if we clicked Continue, False if no gate was present.
     """
     try:
@@ -1026,10 +1062,19 @@ def _bypass_fb_trust_gate(driver) -> bool:
     # 'Create new account'. Plain Facebook home pages don't show those.
     if 'Continue' not in body or ('Use another profile' not in body and 'Create new account' not in body):
         return False
+
+    # Step 1: dismiss the cookie banner if present — its overlay blocks
+    # all other clicks. Safe no-op when the banner isn't shown.
+    _dismiss_fb_cookie_banner(driver)
+
+    # Step 2: click the Continue button. FB uses div[role=button] with
+    # aria-label='Continue <Display Name>' — match by aria-label prefix
+    # so it works for any account name.
     for locator in (
-        ('xpath', '//div[@role="button"][.//span[normalize-space()="Continue"]]'),
+        ('xpath', '//div[@role="button"][starts-with(@aria-label, "Continue ")]'),
+        ('xpath', '//div[@role="button"][@aria-label="Continue"]'),
+        ('xpath', '//div[@role="button"][.//*[normalize-space()="Continue"]]'),
         ('xpath', '//button[normalize-space()="Continue"]'),
-        ('xpath', '//div[@role="button"][normalize-space()="Continue"]'),
         ('xpath', '//a[normalize-space()="Continue"]'),
     ):
         try:
