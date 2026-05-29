@@ -25,7 +25,11 @@ lxml>=5.0.0
 # cryptography — AES-256-GCM for social_accounts.encrypted_cookies.
 # Required by tools/scraper/shared/encryption.py; cookies must round-trip
 # byte-compatibly with server/src/lib/encryption.ts (Node built-in crypto).
-cryptography>=42.0.0
+# Pinned <42 because pyOpenSSL 23.3.x (which we hold to keep selenium-wire's
+# bundled mitmproxy working — see pyOpenSSL pin below) requires
+# cryptography>=41.0.5,<42 in its metadata. AESGCM has been stable since
+# cryptography 38, so 41.x is functionally identical for our use.
+cryptography>=41.0.5,<42
 
 # undetected-chromedriver — anti-fingerprint Chrome driver for Facebook/
 # Instagram. Required by tools/scraper/shared/login_flows.py (operator
