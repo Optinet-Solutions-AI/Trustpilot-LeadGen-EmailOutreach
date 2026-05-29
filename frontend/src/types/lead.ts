@@ -72,6 +72,11 @@ export interface Lead {
     content_excerpt: string | null;
     posted_at: string | null;
     scraped_at: string | null;
+    // FB group context — used by the Lead Matrix to build a deep-link
+    // back to the in-group search when post_url is synthetic (text-only
+    // posts don't expose a true permalink in FB's group-search DOM).
+    group_id: string | null;
+    group_name: string | null;
   }>;
 }
 

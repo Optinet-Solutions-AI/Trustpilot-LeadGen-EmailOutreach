@@ -654,12 +654,27 @@ export default function LeadsTable({
         const p = lead.lead_platform_presences?.[0];
         if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
         const post = lead.lead_platform_posts?.[0];
+        // Three-tier fallback for the link target:
+        //   1. Real post permalink (photo / story / posts/<id>) → land
+        //      directly on the post.
+        //   2. Synthetic post URL BUT we have the group_id → land on
+        //      the in-group search for "looking for a <niche>" — the
+        //      same query the scraper used, so the actual post is
+        //      visible at or near the top of the results.
+        //   3. No group_id (anonymous + missing context) → fall back
+        //      to the author's profile so the operator at least has
+        //      *somewhere* to start.
         const isRealPostUrl = post?.post_url && !post.post_url.includes('#post-');
-        const targetUrl = isRealPostUrl ? post!.post_url : p.profile_url;
-        // For text-only posts (where FB doesn't expose a permalink in the
-        // search-result card) we show a 'Find on profile' link + the
-        // excerpt below it as a hint, so the operator knows what post to
-        // scroll for when they land on the timeline.
+        const niche = (lead.category || '').trim();
+        const groupSearchUrl = post?.group_id && niche
+          ? `https://www.facebook.com/groups/${post.group_id}/search/?q=${encodeURIComponent('looking for a ' + niche)}`
+          : null;
+        const targetUrl = isRealPostUrl
+          ? post!.post_url
+          : (groupSearchUrl ?? p.profile_url);
+        const linkLabel = isRealPostUrl
+          ? '📝 View post'
+          : (groupSearchUrl ? '🔎 Find in group' : '👤 View profile');
         // Strip the OCR-noise FB renders inside posts (random letters
         // separated by newlines/spaces from accessibility text overlays).
         const cleanExcerpt = (post?.content_excerpt || '')
@@ -667,7 +682,6 @@ export default function LeadsTable({
           .replace(/(?:[a-zA-Z0-9](?:\s[a-zA-Z0-9]){4,})/g, '')  // drop runs of single letters
           .trim()
           .slice(0, 110);
-        const linkLabel = isRealPostUrl ? '📝 View post' : '👤 Find on profile';
         return (
           <td key={col} className="px-4 py-3 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
             <a
