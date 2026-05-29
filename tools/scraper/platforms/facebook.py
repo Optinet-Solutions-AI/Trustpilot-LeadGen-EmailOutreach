@@ -723,23 +723,45 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
 
 
 def _detect_chrome_major_version() -> Optional[int]:
-    """Read installed Chrome's major version so chromedriver matches."""
+    """Read installed Chrome's major version so chromedriver matches.
+
+    Supports Windows (typical dev machine) and Linux (EC2 worker / Cloud
+    Run). On Linux, Chrome was installed via `apt install
+    google-chrome-stable_current_amd64.deb` so the binary lives at
+    /usr/bin/google-chrome. We call it with --version because Linux
+    binaries don't expose VersionInfo the way Windows PEs do.
+    """
     import re
     import subprocess
-    candidates = [
+    win_candidates = [
         r'C:\Program Files\Google\Chrome\Application\chrome.exe',
         r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
     ]
+    linux_candidates = [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+    ]
+    candidates = linux_candidates if sys.platform.startswith('linux') else win_candidates
     chrome_path = next((p for p in candidates if os.path.isfile(p)), None)
     if not chrome_path:
         return None
     try:
-        out = subprocess.check_output(
-            ['powershell', '-NoProfile', '-Command',
-             f"(Get-Item '{chrome_path}').VersionInfo.ProductVersion"],
-            text=True, timeout=5,
-        ).strip()
-        m = re.match(r'(\d+)\.', out)
+        if sys.platform.startswith('linux'):
+            out = subprocess.check_output(
+                [chrome_path, '--version'],
+                text=True, timeout=5,
+            ).strip()
+        else:
+            out = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command',
+                 f"(Get-Item '{chrome_path}').VersionInfo.ProductVersion"],
+                text=True, timeout=5,
+            ).strip()
+        # Linux output: "Google Chrome 148.0.7778.215"
+        # Windows output: "148.0.7778.215"
+        m = re.search(r'(\d+)\.', out)
         return int(m.group(1)) if m else None
     except Exception:  # noqa: BLE001
         return None
@@ -756,6 +778,16 @@ def _open_driver():
     options.add_argument('--window-size=1280,900')
     options.add_argument('--lang=en-US,en')
     options.add_argument('--disable-blink-features=AutomationControlled')
+    # Linux-server essentials. Chrome's renderer process crashes
+    # without these on headless EC2 / Cloud Run hosts because the
+    # sandbox needs user-namespace cloning (not always available),
+    # /dev/shm is tiny on most containers, and there's no GPU.
+    # These flags are harmless on Windows dev machines but only
+    # appended on Linux to keep dev-mode security checks intact.
+    if sys.platform.startswith('linux'):
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
     # Pin chromedriver to installed Chrome major version so we don't get
     # the version-149-but-Chrome-148 mismatch.
     version_main: Optional[int] = None
