@@ -98,3 +98,22 @@ export const SENDER_CADENCE_MS = {
   min: 45 * 60 * 1000,
   max: 50 * 60 * 1000,
 } as const;
+
+/**
+ * Daily volume ramp per sender.
+ *
+ * Day 1 = base sends per sender. Each subsequent Mon-Fri WORKDAY adds `step`
+ * to the daily target until `max` is reached.
+ *
+ * Workday 1 = first workday on or after COLLEAGUE_WARMUP_START_DATE.
+ * If today is before COLLEAGUE_WARMUP_START_DATE (or it's unset), the
+ * scheduler does NOT plan or dispatch.
+ *
+ * Example with base=5, step=1, max=20:
+ *   Workday 1: 5,  Workday 2: 6, ..., Workday 16+: 20
+ */
+export const VOLUME_RAMP = {
+  base: 5,
+  step: 1,
+  max: 20,
+} as const;

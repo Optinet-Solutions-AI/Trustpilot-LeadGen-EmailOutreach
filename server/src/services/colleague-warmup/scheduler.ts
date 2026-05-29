@@ -23,6 +23,7 @@ import { sendEmail } from '../email-sender.js';
 import { getAccountForUtilitySend, type SenderAccountWithCaps } from '../sender-loader.js';
 import { CATHY_NOTIFICATION_EMAIL, NOTIFIER_FROM_EMAIL } from './config.js';
 import { planDay, type ScheduledSend } from './plan.js';
+import { dailyTargetForWorkday, getWorkdayIndex } from './ramp.js';
 import { getManilaParts, isInWorkdayWindow } from './schedule-window.js';
 import { sendCathyDailyPreview } from './notifier.js';
 
@@ -35,6 +36,8 @@ interface DayState {
   /** YYYY-MM-DD in Manila local — used to detect day rollover. */
   dateKey: string;
   weekdayLabel: string;
+  workdayIndex: number;
+  dailyTarget: number;
   plan: ScheduledSend[];
   /** True once we've emailed Cathy the preview for this date. */
   cathyNotified: boolean;
@@ -54,6 +57,10 @@ let tickInFlight = false;
 
 function isEnabled(): boolean {
   return (process.env.COLLEAGUE_WARMUP_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+
+function getStartDateKey(): string {
+  return process.env.COLLEAGUE_WARMUP_START_DATE?.trim() ?? '';
 }
 
 // ─── DB: load the 9 cold-sender accounts ──────────────────────────────────────
@@ -99,12 +106,37 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 /** (Re)build dayState for today, optionally restricting to remainder-of-day. */
 async function buildPlanForToday(now: Date, remainderOnly: boolean): Promise<void> {
   const manila = getManilaParts(now);
+  const startDateKey = getStartDateKey();
+  const workdayIndex = getWorkdayIndex(startDateKey, manila.dateKey);
+  const dailyTarget = dailyTargetForWorkday(workdayIndex);
+
+  if (!startDateKey) {
+    console.warn(`${TAG} COLLEAGUE_WARMUP_START_DATE is unset — nothing will be planned. Set YYYY-MM-DD (Manila local).`);
+  }
+
+  if (workdayIndex === 0) {
+    console.log(
+      `${TAG} ${manila.dateKey} is before start date ${startDateKey || '(unset)'} — no plan today.`,
+    );
+    dayState = {
+      dateKey: manila.dateKey,
+      weekdayLabel: WEEKDAY_LABELS[manila.weekday] ?? '?',
+      workdayIndex: 0,
+      dailyTarget: 0,
+      plan: [],
+      cathyNotified: false,
+    };
+    return;
+  }
+
   const senders = await loadColdSenders();
   if (senders.length === 0) {
     console.warn(`${TAG} No active is_cold_sender accounts — nothing to plan.`);
     dayState = {
       dateKey: manila.dateKey,
       weekdayLabel: WEEKDAY_LABELS[manila.weekday] ?? '?',
+      workdayIndex,
+      dailyTarget,
       plan: [],
       cathyNotified: false,
     };
@@ -114,19 +146,23 @@ async function buildPlanForToday(now: Date, remainderOnly: boolean): Promise<voi
   const plan = planDay({
     manila,
     senders: senders.map((s) => ({ email: s.email, from_name: s.from_name })),
+    dailyTarget,
     earliestSendUtc: remainderOnly ? now : undefined,
   });
 
   dayState = {
     dateKey: manila.dateKey,
     weekdayLabel: WEEKDAY_LABELS[manila.weekday] ?? '?',
+    workdayIndex,
+    dailyTarget,
     plan,
     cathyNotified: false,
   };
 
   console.log(
-    `${TAG} Planned ${plan.length} sends across ${senders.length} senders for ${dayState.dateKey} ` +
-    `(${dayState.weekdayLabel}, ${remainderOnly ? 'remainder' : 'full'})`,
+    `${TAG} Planned ${plan.length} sends across ${senders.length} senders ` +
+    `(workday #${workdayIndex}, target=${dailyTarget}/sender) ` +
+    `for ${dayState.dateKey} (${dayState.weekdayLabel}, ${remainderOnly ? 'remainder' : 'full'})`,
   );
 }
 

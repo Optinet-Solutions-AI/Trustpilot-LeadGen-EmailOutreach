@@ -11,11 +11,23 @@ Intended duration: **~3 weeks**, then disable.
 The `startColleagueWarmupScheduler()` in [server/src/services/colleague-warmup/scheduler.ts](../server/src/services/colleague-warmup/scheduler.ts) wakes every 60 seconds and:
 
 1. **Guards** — skips the tick if `COLLEAGUE_WARMUP_ENABLED !== 'true'` or if it's outside the Mon–Fri 3:00pm–10:00pm Asia/Manila window. **Does NOT honor `EMAIL_SENDING_PAUSED_UNTIL`** — that flag pauses cold outreach campaigns, but the whole point of this warm-up is to rehabilitate sender reputation during exactly those incidents.
-2. **Plans the day** — once per Manila day (at the 3:00pm tick or on cold-start), generates ~80 randomized `(sender, recipient, subject, send_at_utc)` rows. Per-sender cadence is 45–50 min uniformly jittered.
-3. **Emails Cathy** — at the 3:00pm tick, sends ONE HTML preview from `jhonquillycampilanan@gmail.com` to `cathylyn@optinetsolutions.com` listing every planned send for the day. Cold-starts mid-workday do NOT re-notify.
+2. **Plans the day** — once per Manila day, computes the **workday index** from `COLLEAGUE_WARMUP_START_DATE` (today included if today is Mon-Fri and on/after that date). Daily target per sender = `5 + (workdayIndex - 1)`, capped at 20. **Each sender independently shuffles the 25-recipient pool and picks the next N in rotation** (no repeats within a sender's day until the rotation wraps). Sends are spaced 45–50 min apart per sender, randomly jittered, with a small per-sender initial offset so the 9 senders don't fire in lockstep.
+3. **Emails Cathy** — when a plan exists for the day (workdayIndex >= 1 with senders available), sends ONE HTML preview from `jhonquillycampilanan@gmail.com` to `cathylyn@optinetsolutions.com` listing every planned send.
 4. **Dispatches due rows** — any plan rows whose `send_at_utc` has arrived are sent via [server/src/services/email-sender.ts](../server/src/services/email-sender.ts).
 
 The 9 senders are loaded from `email_accounts` where `is_cold_sender = true AND status = 'active'`. The 25 recipients and ~30 subject lines are inlined in [server/src/services/colleague-warmup/config.ts](../server/src/services/colleague-warmup/config.ts).
+
+### Volume ramp (per sender, per workday)
+
+| Workday | Sends/sender | Total across 9 senders |
+|---:|---:|---:|
+| 1 | 5 | 45 |
+| 2 | 6 | 54 |
+| 5 | 9 | 81 |
+| 10 | 14 | 126 |
+| 16+ | 20 (cap) | 180 |
+
+Workdays count Mon-Fri only — Sat/Sun are skipped.
 
 ## What humans do (this is the whole point)
 
@@ -34,19 +46,22 @@ Cathy reviews the daily preview at 3:00pm Manila and coordinates with colleagues
 
 ### Pre-launch checklist
 
-- [ ] `jhonquillycampilanan@gmail.com` exists in `email_accounts` with valid Gmail OAuth credentials (used only for Cathy notifications)
-- [ ] At least one — ideally nine — `email_accounts` rows have `is_cold_sender = true` AND `status = 'active'`
+- [ ] `jhonquillycampilanan@gmail.com` exists in `email_accounts` with valid SMTP credentials (used only for Cathy notifications)
+- [ ] All 9 `is_cold_sender=true` accounts have `status='active'` in `email_accounts`
 - [ ] `cathylyn@optinetsolutions.com` mailbox is reachable
 - [ ] All 25 colleagues have been briefed on the human protocol (Reply + Forward, NO "Not Spam")
-- [ ] `EMAIL_SENDING_PAUSED_UNTIL` is unset or in the past
+- [ ] `COLLEAGUE_WARMUP_START_DATE` is set (Manila YYYY-MM-DD). The first Mon-Fri on/after this date becomes Workday 1 (5 sends/sender).
 
 ### Enable
 
+Set both env vars together so the start date and the on switch land in the same revision:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --project=trustpilot-leadgen --update-env-vars 'COLLEAGUE_WARMUP_ENABLED=true' --quiet"
+powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --project=trustpilot-leadgen --update-env-vars 'COLLEAGUE_WARMUP_ENABLED=true,COLLEAGUE_WARMUP_START_DATE=2026-06-01' --quiet"
 ```
 
-Watch the first Cathy preview land at the next 3:00pm Manila tick. First real warmup send follows within ~47 min.
+If today is on/after the start date AND it's Mon-Fri 3pm–10pm Manila: Cathy receives the daily preview within ~60s, first real warmup send fires within ~47 min.
+If today is before the start date OR a weekend: scheduler ticks but logs `no plan today` and sends nothing.
 
 ### Disable (after ~3 weeks)
 
@@ -77,9 +92,16 @@ That table IS the audit trail — there's no separate DB log. If a row never app
 ## Daily volume
 
 - Window: 7 hours (3pm–10pm Asia/Manila)
-- Cadence: 45–50 min per sender → ~8–9 sends per sender per workday
-- Total: ~72–81 emails per workday across the 9 senders
-- Per colleague: ~3 received per workday on average
+- Cadence: 45–50 min between sends per sender (jittered)
+- Daily target per sender: ramped via `COLLEAGUE_WARMUP_START_DATE` — 5 on Workday 1, +1 per workday, capped at 20
+- Total across 9 senders: 45 emails on Workday 1 → 180 emails/workday at cap
+- Per colleague (25 in pool): ~1.8 received/workday on Workday 1 → ~7.2/workday at cap
+
+### Recipient rotation
+
+Each sender independently shuffles the 25 recipients at the start of each workday and picks the next N in rotation. So:
+- A single sender's daily sends are to DISTINCT recipients (until the rotation wraps when `dailyTarget > 25`).
+- Different senders may hit the same recipient on the same day (independent shuffles).
 
 ## Editing the colleague list or subject bank
 

@@ -1,11 +1,15 @@
 /**
- * Pure planner — given the day's senders, recipients, subjects, and the
- * Manila workday window, produce the full sequence of ScheduledSend rows
- * for the day. Caller decides what to do with them (execute, log, email
- * to Cathy).
+ * Pure planner — given the day's senders, recipients, subjects, the Manila
+ * workday window, and the daily per-sender target (from the ramp), produce
+ * the full sequence of ScheduledSend rows for the day.
  *
  * The randomization is the only impurity. Pass a `random` function for
  * deterministic tests.
+ *
+ * Recipient rotation: each sender independently shuffles the recipient list
+ * and pops in order. So a sender's `dailyTarget` sends go to DISTINCT
+ * recipients (no repeats within the same sender's day, until rotation
+ * exhausts the list and wraps).
  */
 
 import { RECIPIENTS, SUBJECTS, SENDER_CADENCE_MS, WORKDAY } from './config.js';
@@ -30,6 +34,8 @@ export interface ScheduledSend {
 export interface PlanInput {
   manila: ManilaParts;
   senders: Array<{ email: string; from_name: string }>;
+  /** Max sends per sender today (from the ramp). 0 = plan nothing. */
+  dailyTarget: number;
   /** Override the recipient list — defaults to RECIPIENTS. */
   recipients?: Array<{ email: string; first_name: string }>;
   /** Override the subject bank — defaults to SUBJECTS. */
@@ -41,6 +47,16 @@ export interface PlanInput {
   random?: () => number;
 }
 
+/** Fisher-Yates shuffle, in place, using a supplied PRNG. */
+function shuffle<T>(arr: T[], rand: () => number): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function pick<T>(arr: T[], rand: () => number): T {
   return arr[Math.floor(rand() * arr.length)];
 }
@@ -49,18 +65,26 @@ function pick<T>(arr: T[], rand: () => number): T {
  * Build the day's send plan.
  *
  * For each sender independently:
- *   - Compute the start time = max(earliestSendUtc, workdayStartUtc + random initial jitter 0..cadenceMin)
- *   - Loop: pick subject + recipient at random, schedule send, advance time by 45–50 min jitter
- *   - Stop when next send would land at or after workdayEndUtc
+ *   - Shuffle the recipient list (fresh per sender → senders pick different
+ *     orderings; same sender doesn't double-hit a recipient until it wraps).
+ *   - Initial jitter 0..cadenceMin so the 9 senders don't all fire at 3:00pm.
+ *   - Loop while: under dailyTarget AND next slot fits before workday end.
+ *     Each slot: pop the next recipient in rotation, pick a random subject,
+ *     advance cursor by 45-50min jitter.
  *
- * Result is sorted by send_at_utc ascending so the scheduler tick can dispatch in order.
+ * Result sorted by send_at_utc ascending so the tick can dispatch in order.
  */
 export function planDay(input: PlanInput): ScheduledSend[] {
   const rand = input.random ?? Math.random;
   const recipients = input.recipients ?? RECIPIENTS;
   const subjects = input.subjects ?? SUBJECTS;
 
-  if (input.senders.length === 0 || recipients.length === 0 || subjects.length === 0) {
+  if (
+    input.senders.length === 0 ||
+    recipients.length === 0 ||
+    subjects.length === 0 ||
+    input.dailyTarget <= 0
+  ) {
     return [];
   }
 
@@ -74,12 +98,19 @@ export function planDay(input: PlanInput): ScheduledSend[] {
   const sends: ScheduledSend[] = [];
 
   for (const sender of input.senders) {
+    // Per-sender independent shuffle — recipient rotation.
+    const rotation = shuffle(recipients, rand);
+    let rotIdx = 0;
+
     // Per-sender initial jitter so the 9 senders don't all fire at 3:00pm sharp.
     const initialJitterMs = Math.floor(rand() * SENDER_CADENCE_MS.min);
     let cursor = new Date(earliest.getTime() + initialJitterMs);
 
-    while (cursor < workdayEnd) {
-      const recipient = pick(recipients, rand);
+    let count = 0;
+    while (count < input.dailyTarget && cursor < workdayEnd) {
+      const recipient = rotation[rotIdx % rotation.length];
+      rotIdx++;
+
       const subject = pick(subjects, rand);
       const body = renderBody({
         recipient_name: recipient.first_name,
@@ -96,6 +127,8 @@ export function planDay(input: PlanInput): ScheduledSend[] {
         send_at_utc: cursor,
         status: 'pending',
       });
+
+      count++;
 
       const gapMs = SENDER_CADENCE_MS.min
         + Math.floor(rand() * (SENDER_CADENCE_MS.max - SENDER_CADENCE_MS.min));
