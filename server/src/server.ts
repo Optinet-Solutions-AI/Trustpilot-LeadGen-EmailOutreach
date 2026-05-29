@@ -203,6 +203,17 @@ const server = app.listen(config.port, async () => {
     console.warn('[Startup] Warmup scheduler error (non-fatal):', e instanceof Error ? e.message : e);
   }
 
+  // Colleague-network warmup scheduler — sends neutral admin-style emails from
+  // the 9 is_cold_sender accounts to a fixed list of internal colleagues,
+  // pacing per-sender at 45–50 min Mon–Fri 3pm–10pm Asia/Manila. Cathy gets
+  // ONE daily preview email at the 3pm tick. Gated by COLLEAGUE_WARMUP_ENABLED.
+  try {
+    const { startColleagueWarmupScheduler } = await import('./services/colleague-warmup/scheduler.js');
+    startColleagueWarmupScheduler();
+  } catch (e) {
+    console.warn('[Startup] Colleague warmup scheduler error (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
   // Email scheduler gate — set SCHEDULERS_ENABLED=false on the main API
   // service to suppress both the sequence-scheduler and campaign-scheduler
   // loops here, so they run ONLY on a dedicated Cloud Run service deployed
