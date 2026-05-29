@@ -176,31 +176,25 @@ export async function runColleagueWarmupTick(now: Date = new Date()): Promise<vo
     const manila = getManilaParts(now);
     if (!isInWorkdayWindow(manila)) return;
 
-    // Detect day rollover OR first plan after restart.
+    // Detect day rollover OR first plan in this process. Cloud Run runs with
+    // minScale=1, so a fresh dayState in memory either means start-of-Manila-day
+    // or a new deploy mid-day — both warrant a fresh Cathy preview against the
+    // newly-generated plan.
     const dayChanged = !dayState || dayState.dateKey !== manila.dateKey;
     if (dayChanged) {
-      const isFreshDay = !dayState; // never planned in this process
-      await buildPlanForToday(now, isFreshDay /* remainderOnly when restarting mid-day */);
+      const isFirstPlanInProcess = !dayState;
+      // remainderOnly=true whenever we're planning past workday start (which is
+      // any time after 3:00pm Manila on the current day) so we don't schedule
+      // sends in the past.
+      await buildPlanForToday(now, isFirstPlanInProcess);
 
-      // Send Cathy preview only if we didn't already today.
-      // Heuristic for restart: if we just planned 'remainder' (fewer than the
-      // full ~80 sends and earliest_send was the restart instant), assume the
-      // previous instance already emailed Cathy this morning and stay quiet.
-      // For a brand-new day at the 3pm tick boundary we DO notify.
-      if (dayState && !dayState.cathyNotified) {
-        const startedAtWorkdayStart = manila.hour === 15 && manila.minute < 2;
-        if (startedAtWorkdayStart) {
-          const ok = await sendCathyDailyPreview({
-            dateKey: dayState.dateKey,
-            weekdayLabel: dayState.weekdayLabel,
-            plan: dayState.plan,
-          });
-          dayState.cathyNotified = ok;
-        } else {
-          // Cold-start mid-workday — don't re-notify, just resume sending.
-          console.log(`${TAG} Cold-start at ${manila.hour}:${String(manila.minute).padStart(2, '0')} Manila — resuming silently (no Cathy preview).`);
-          dayState.cathyNotified = true;
-        }
+      if (dayState && !dayState.cathyNotified && dayState.plan.length > 0) {
+        const ok = await sendCathyDailyPreview({
+          dateKey: dayState.dateKey,
+          weekdayLabel: dayState.weekdayLabel,
+          plan: dayState.plan,
+        });
+        dayState.cathyNotified = ok;
       }
     }
 
