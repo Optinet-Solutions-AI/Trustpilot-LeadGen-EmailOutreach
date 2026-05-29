@@ -41,3 +41,18 @@ cryptography>=42.0.0
 setuptools<81
 undetected-chromedriver>=3.5.5
 selenium>=4.18.0
+
+# selenium-wire — runs a local intercepting proxy that handles upstream
+# proxy authentication in Python instead of relying on a Chrome Manifest
+# V2 extension. Required when routing FB scrapes through a residential
+# proxy (RESIDENTIAL_PROXY_* env vars in facebook.py): Chrome 128+
+# silently disables V2 extensions in --headless=new mode, breaking the
+# webRequest.onAuthRequired auth-injection pattern, so the connection
+# returns 407 and Chrome renders an empty body. selenium-wire bypasses
+# that entirely by accepting Proxy-Authorization in its Python proxy.
+# undetected-chromedriver auto-detects the `seleniumwire_options` kwarg
+# and swaps to selenium-wire's driver subclass — no other code changes.
+selenium-wire>=5.1.0
+# blinker pin: selenium-wire 5.1 imports blinker.base.WeakNamespace which
+# was removed in blinker 1.8. Pin until selenium-wire updates upstream.
+blinker<1.8

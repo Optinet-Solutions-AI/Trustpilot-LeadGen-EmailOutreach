@@ -920,19 +920,35 @@ def _open_driver():
         (sys.platform.startswith('linux') or proxy_force)
         and proxy_host and proxy_port and proxy_user and proxy_pass
     )
+    seleniumwire_options: Optional[dict] = None
     if proxy_active:
         cc = _resolve_proxy_country(_CURRENT_LOCATION)
         proxy_user_rewritten = _apply_proxy_country(proxy_user, cc)
         proxy_pass_rewritten = _apply_proxy_country_password(proxy_pass, cc)
-        ext_path = _build_proxy_auth_extension(
-            proxy_host, proxy_port, proxy_user_rewritten, proxy_pass_rewritten,
-        )
-        options.add_extension(ext_path)
-        # Chrome ALSO needs the --proxy-server flag pointed at the same
-        # host:port — the extension only handles auth and per-tab config.
-        options.add_argument(f'--proxy-server=http://{proxy_host}:{proxy_port}')
+        # selenium-wire intercepts traffic locally and handles proxy auth
+        # in Python — required because Manifest V2 auth extensions are
+        # silently disabled by Chrome 128+ in --headless=new mode (the
+        # blank page we got from api.ipify.org through the proxy was
+        # Chrome receiving a 407, no extension responding, page erroring
+        # to ""). undetected-chromedriver detects seleniumwire_options
+        # and uses selenium-wire's driver internally — same uc.Chrome
+        # call, just with an extra kwarg.
+        proxy_url = f'http://{proxy_user_rewritten}:{proxy_pass_rewritten}@{proxy_host}:{proxy_port}'
+        seleniumwire_options = {
+            'proxy': {
+                'http': proxy_url,
+                'https': proxy_url,
+                'no_proxy': 'localhost,127.0.0.1',
+            },
+            # selenium-wire MITMs HTTPS to inspect requests — accepting
+            # its self-signed CA is required for Chrome to trust the
+            # intercepted certs. The CA is generated per process; no
+            # security risk because nothing else trusts it.
+            'verify_ssl': False,
+            'disable_capture': True,
+        }
         print(
-            f'INFO: residential proxy active {proxy_host}:{proxy_port} cc={cc}',
+            f'INFO: residential proxy active {proxy_host}:{proxy_port} cc={cc} (selenium-wire)',
             file=sys.stderr,
         )
 
@@ -946,7 +962,15 @@ def _open_driver():
         version_main = _detect_chrome_major_version()
     if version_main:
         print(f'INFO: pinning chromedriver to Chrome major version {version_main}', file=sys.stderr)
-    driver = uc.Chrome(options=options, use_subprocess=True, version_main=version_main)
+    if seleniumwire_options:
+        driver = uc.Chrome(
+            options=options,
+            seleniumwire_options=seleniumwire_options,
+            use_subprocess=True,
+            version_main=version_main,
+        )
+    else:
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=version_main)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     return driver
 
