@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams } from '../types/scrape';
 import CountryPicker from './CountryPicker';
@@ -100,6 +100,21 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   // Async guard for the TripAdvisor cost-confirmation dialog. The advisory
   // component populates this whenever the country changes.
   const guardRef = useRef<(() => Promise<boolean>) | null>(null);
+
+  // Is the user currently on a localhost-served frontend? If not, FB scrapes
+  // can't actually run from this browser because Cloud Run / EC2 IPs get
+  // captcha'd by Facebook on sight — see server/src/routes/scrape.ts and
+  // memory:feedback_social_scrapes_blocked_on_cloudrun. We swap the Start
+  // button for an "Open in local app" link to take the operator straight
+  // to the localhost copy without first eating a 409.
+  const [isLocalHost, setIsLocalHost] = useState(true); // SSR-safe default
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname;
+      setIsLocalHost(host === 'localhost' || host === '127.0.0.1');
+    }
+  }, []);
+  const showLocalRedirect = platform === 'facebook' && !isLocalHost;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -460,15 +475,34 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
       </div>
 
       <div className="pt-1">
-        <Button
-          type="submit"
-          variant="primary"
-          size="md"
-          loading={busy}
-          leadingIcon={<Search size={16} />}
-        >
-          {busy ? 'Scraping…' : 'Start scrape'}
-        </Button>
+        {showLocalRedirect ? (
+          <div className="space-y-2">
+            <p className="text-[12px] text-amber-700 dark:text-amber-400 max-w-xl">
+              Facebook scrapes can only run from your local machine — Facebook
+              blocks Cloud Run / EC2 IPs on sight. Open the local app to run
+              this scrape.
+            </p>
+            <a
+              href="http://localhost:3000/scrape"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#b0004a] text-white text-sm font-bold hover:bg-[#90003b] transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+              Open in local app
+            </a>
+          </div>
+        ) : (
+          <Button
+            type="submit"
+            variant="primary"
+            size="md"
+            loading={busy}
+            leadingIcon={<Search size={16} />}
+          >
+            {busy ? 'Scraping…' : 'Start scrape'}
+          </Button>
+        )}
       </div>
     </form>
   );
