@@ -10,7 +10,7 @@ Intended duration: **~3 weeks**, then disable.
 
 The `startColleagueWarmupScheduler()` in [server/src/services/colleague-warmup/scheduler.ts](../server/src/services/colleague-warmup/scheduler.ts) wakes every 60 seconds and:
 
-1. **Guards** — skips the tick if `COLLEAGUE_WARMUP_ENABLED !== 'true'`, if `EMAIL_SENDING_PAUSED_UNTIL` is in the future, or if it's outside the Mon–Fri 3:00pm–10:00pm Asia/Manila window.
+1. **Guards** — skips the tick if `COLLEAGUE_WARMUP_ENABLED !== 'true'` or if it's outside the Mon–Fri 3:00pm–10:00pm Asia/Manila window. **Does NOT honor `EMAIL_SENDING_PAUSED_UNTIL`** — that flag pauses cold outreach campaigns, but the whole point of this warm-up is to rehabilitate sender reputation during exactly those incidents.
 2. **Plans the day** — once per Manila day (at the 3:00pm tick or on cold-start), generates ~80 randomized `(sender, recipient, subject, send_at_utc)` rows. Per-sender cadence is 45–50 min uniformly jittered.
 3. **Emails Cathy** — at the 3:00pm tick, sends ONE HTML preview from `jhonquillycampilanan@gmail.com` to `cathylyn@optinetsolutions.com` listing every planned send for the day. Cold-starts mid-workday do NOT re-notify.
 4. **Dispatches due rows** — any plan rows whose `send_at_utc` has arrived are sent via [server/src/services/email-sender.ts](../server/src/services/email-sender.ts).
@@ -56,13 +56,11 @@ powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpil
 
 ### Emergency stop (immediate)
 
-Same as the cold-outreach kill switch:
+Flip the dedicated colleague-warmup kill switch. `EMAIL_SENDING_PAUSED_UNTIL` does NOT pause colleague warm-up (by design — see Guards section above).
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --project=trustpilot-leadgen --update-env-vars 'EMAIL_SENDING_PAUSED_UNTIL=2026-12-31T23:59:59Z' --quiet"
+powershell -ExecutionPolicy Bypass -Command "gcloud run services update trustpilot-crm --region us-central1 --project=trustpilot-leadgen --update-env-vars 'COLLEAGUE_WARMUP_ENABLED=false' --quiet"
 ```
-
-The colleague-warmup scheduler honors this kill switch in addition to the existing cold-outreach scheduler.
 
 ## How to read Cathy's daily preview
 
@@ -93,6 +91,6 @@ Both are inlined in [server/src/services/colleague-warmup/config.ts](../server/s
 |---|---|
 | No Cathy email at 3pm | Check Cloud Run logs for `[ColleagueWarmup/Notifier]` — likely `jhonquillycampilanan@gmail.com` is missing from `email_accounts` or its OAuth refresh token is invalid. Reconnect via the Email Accounts page. |
 | `No active is_cold_sender accounts` log | No rows match `is_cold_sender = true AND status = 'active'`. Mark the 9 cold-sender accounts via the Email Accounts admin UI or directly in `email_accounts`. |
-| Scheduler tick logs `EMAIL_SENDING_PAUSED_UNTIL active — skipping tick` | The cold-outreach incident kill switch is on. Unset it once the incident is resolved. |
+| Need to stop sends immediately during a deliverability scare | Use `COLLEAGUE_WARMUP_ENABLED=false`. The cold-outreach kill switch (`EMAIL_SENDING_PAUSED_UNTIL`) does NOT affect this scheduler. |
 | Cold-start mid-day; Cathy didn't get a re-notification | By design. Cathy already received the morning preview from the previous instance. Look at logs for `Cold-start at HH:MM Manila — resuming silently`. |
 | Some sends marked `failed` in logs | Per-account auth issue. Inspect the specific sender via `GET /api/warmup/status` and/or the Email Accounts page; reconnect the account. The scheduler does not retry within the same day. |

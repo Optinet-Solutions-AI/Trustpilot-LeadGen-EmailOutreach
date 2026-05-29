@@ -44,14 +44,13 @@ let dayState: DayState | null = null;
 let tickInFlight = false;
 
 // ─── Guards ───────────────────────────────────────────────────────────────────
-
-function isPaused(): boolean {
-  const pauseUntil = process.env.EMAIL_SENDING_PAUSED_UNTIL;
-  if (!pauseUntil) return false;
-  const pauseDate = new Date(pauseUntil);
-  if (Number.isNaN(pauseDate.getTime())) return false;
-  return pauseDate.getTime() > Date.now();
-}
+//
+// Note: this scheduler intentionally does NOT honor EMAIL_SENDING_PAUSED_UNTIL.
+// That kill switch pauses cold OUTREACH campaigns (campaign-scheduler.ts) after
+// deliverability incidents — but the whole purpose of the colleague warmup is
+// to rehabilitate sender reputation during exactly those incidents. Pausing
+// both would defeat the rehab. COLLEAGUE_WARMUP_ENABLED is the dedicated kill
+// switch for this loop.
 
 function isEnabled(): boolean {
   return (process.env.COLLEAGUE_WARMUP_ENABLED ?? 'false').toLowerCase() === 'true';
@@ -173,10 +172,6 @@ export async function runColleagueWarmupTick(now: Date = new Date()): Promise<vo
   tickInFlight = true;
   try {
     if (!isEnabled()) return;
-    if (isPaused()) {
-      console.log(`${TAG} EMAIL_SENDING_PAUSED_UNTIL active — skipping tick`);
-      return;
-    }
 
     const manila = getManilaParts(now);
     if (!isInWorkdayWindow(manila)) return;
@@ -218,9 +213,8 @@ export async function runColleagueWarmupTick(now: Date = new Date()): Promise<vo
 
     const senderCache = new Map<string, SenderAccountWithCaps | null>();
     for (const row of due) {
-      // Stop early if we got paused mid-loop or disabled.
-      if (isPaused() || !isEnabled()) {
-        console.log(`${TAG} Pause/disable detected mid-tick — stopping dispatch.`);
+      if (!isEnabled()) {
+        console.log(`${TAG} Disabled mid-tick — stopping dispatch.`);
         break;
       }
       await dispatchSend(row, senderCache);
