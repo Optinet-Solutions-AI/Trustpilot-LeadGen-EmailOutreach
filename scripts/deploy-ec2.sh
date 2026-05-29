@@ -96,7 +96,15 @@ if [[ -n "${SUPABASE_URL:-}" ]] && [[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; th
         -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
         -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
         "$SUPABASE_URL/rest/v1/scrape_jobs?select=id,started_at&status=eq.running&worker_id=eq.ec2-sg-1" 2>>"$LOG_FILE" || echo '[]')
-    BUSY_COUNT=$(echo "$BUSY_JSON" | grep -o '"id"' | wc -l)
+    # grep exits 1 when there are no matches and `set -o pipefail` would
+    # then propagate that into the command substitution, tripping `set -e`
+    # and silently aborting the whole deploy. The `|| true` swallows
+    # grep's no-match exit so an EMPTY busy-job list correctly reads as
+    # BUSY_COUNT=0 instead of silently killing the script. This bit us
+    # for 4 days (2026-05-25 → 2026-05-29): every cron tick after the
+    # last running job finished hit this same exit and bailed without
+    # logging a thing, freezing EC2 on stale code.
+    BUSY_COUNT=$(echo "$BUSY_JSON" | { grep -o '"id"' || true; } | wc -l)
     if [[ "$BUSY_COUNT" -gt 0 ]]; then
         # Check oldest started_at against the 45-min override
         OLDEST_START=$(echo "$BUSY_JSON" | grep -oE '"started_at":"[^"]+"' | sed 's/.*:"//;s/"//' | sort | head -1)
