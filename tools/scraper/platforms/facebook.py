@@ -963,7 +963,19 @@ def _open_driver():
     if version_main:
         print(f'INFO: pinning chromedriver to Chrome major version {version_main}', file=sys.stderr)
     if seleniumwire_options:
-        driver = uc.Chrome(
+        # selenium-wire ships its own undetected-chromedriver wrapper —
+        # plain `uc.Chrome(seleniumwire_options=...)` accepts the kwarg
+        # but doesn't actually wire selenium-wire's interceptor in
+        # (uc.Chrome forwards **kwargs to selenium's Chrome which then
+        # silently drops the unknown kwarg). The Singapore EC2 IP we
+        # got back from api.ipify.org through the proxy was the
+        # signature: selenium-wire was being skipped, Chrome went
+        # direct. The seleniumwire.undetected_chromedriver wrapper
+        # registers the local intercepting proxy and patches Chrome's
+        # --proxy-server flag to point at it, before delegating to
+        # undetected-chromedriver for the stealth patches.
+        from seleniumwire.undetected_chromedriver import Chrome as WireUCChrome  # noqa: WPS433
+        driver = WireUCChrome(
             options=options,
             seleniumwire_options=seleniumwire_options,
             use_subprocess=True,
