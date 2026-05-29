@@ -947,6 +947,16 @@ def _open_driver():
             'verify_ssl': False,
             'disable_capture': True,
         }
+        # Chrome refuses to load HTTPS pages through selenium-wire by
+        # default because the MITM cert is signed by an unknown CA
+        # (selenium-wire generates a per-process root CA in
+        # ~/.mitmproxy and signs per-domain leaves). The proper fix is
+        # to install that CA in the OS trust store, but for a scraper
+        # process we just trust everything — the only "attacker" in
+        # the cert chain is our own local interceptor.
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--ignore-ssl-errors=yes')
+        options.add_argument('--allow-running-insecure-content')
         print(
             f'INFO: residential proxy active {proxy_host}:{proxy_port} cc={cc} (selenium-wire)',
             file=sys.stderr,
