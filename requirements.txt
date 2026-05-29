@@ -56,3 +56,10 @@ selenium-wire>=5.1.0
 # blinker pin: selenium-wire 5.1 imports blinker.base.WeakNamespace which
 # was removed in blinker 1.8. Pin until selenium-wire updates upstream.
 blinker<1.8
+# pyOpenSSL pin: selenium-wire 5.1's bundled mitmproxy still calls
+# X509.get_extension(i), which pyOpenSSL 24.0 deprecated and 26.x
+# REMOVED. Without this pin, every TLS handshake through selenium-wire's
+# local interceptor crashes with `AttributeError: 'X509' object has no
+# attribute 'get_extension'`. 23.3.0 is the last version that exposes
+# the old API. Re-evaluate when selenium-wire ships a newer mitmproxy.
+pyOpenSSL>=23.3.0,<24.0
