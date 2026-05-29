@@ -997,6 +997,53 @@ def _open_driver():
     return driver
 
 
+def _bypass_fb_trust_gate(driver) -> bool:
+    """Click 'Continue as <name>' if FB is showing the new-IP trust gate.
+
+    When saved cookies arrive from an IP different from the one they
+    were minted on (e.g. residential proxy session originally captured
+    from operator's home IP), FB serves an account-selector page:
+
+        Explore the things you love.
+        <Display Name>
+        Continue
+        Use another profile
+        Create new account
+
+    Page is *not* /login/ so our existing 'rejected cookies' check
+    misses it, and the scraper proceeds to /search/groups/?q=... which
+    redirects right back to this gate, returning zero results. One
+    click on 'Continue' establishes trust for the new IP and the
+    session works normally afterward.
+
+    Returns True if we clicked Continue, False if no gate was present.
+    """
+    try:
+        body = (driver.execute_script('return document.body.innerText') or '')
+    except Exception:  # noqa: BLE001
+        return False
+    # Gate signature: 'Continue' alongside 'Use another profile' /
+    # 'Create new account'. Plain Facebook home pages don't show those.
+    if 'Continue' not in body or ('Use another profile' not in body and 'Create new account' not in body):
+        return False
+    for locator in (
+        ('xpath', '//div[@role="button"][.//span[normalize-space()="Continue"]]'),
+        ('xpath', '//button[normalize-space()="Continue"]'),
+        ('xpath', '//div[@role="button"][normalize-space()="Continue"]'),
+        ('xpath', '//a[normalize-space()="Continue"]'),
+    ):
+        try:
+            elem = driver.find_element(*locator)
+            elem.click()
+            time.sleep(5)
+            print('INFO: bypassed FB trust gate (Continue as <name>)', file=sys.stderr)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    print('WARN: trust gate detected but no Continue button matched any selector', file=sys.stderr)
+    return False
+
+
 def _inject_cookies(driver, jar: list[dict]) -> None:
     """Restore a saved cookie jar after navigating to a domain page."""
     for cookie in jar:
@@ -1785,6 +1832,14 @@ class FacebookScraper(SocialPlatformScraper):
         sometimes returns a tiny 'Not Found' stub on subsequent searches
         (verified live — cookies need a beat to be trusted by the edge
         before we navigate away).
+
+        When the session was originally captured from one IP and we're
+        now arriving from another (e.g. residential proxy in a new
+        country), Facebook intercepts with a 'Continue as <name>' trust
+        gate before letting us reach the real homepage. We detect that
+        gate and click Continue programmatically — one extra click,
+        then the session is established for the new IP and subsequent
+        requests proceed normally.
         """
         driver = _open_driver()
         driver.get(FB_BASE)
@@ -1793,7 +1848,8 @@ class FacebookScraper(SocialPlatformScraper):
         if jar:
             _inject_cookies(driver, jar)
             driver.get(FB_BASE)  # re-navigate so injected cookies stick
-            time.sleep(3)
+            time.sleep(4)
+            _bypass_fb_trust_gate(driver)
         # Cheap sanity: if we're still on /login/, the cookies are bad.
         if '/login' in driver.current_url:
             driver.quit()
