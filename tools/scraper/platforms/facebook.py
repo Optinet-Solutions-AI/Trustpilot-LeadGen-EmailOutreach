@@ -892,9 +892,23 @@ def _open_driver():
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy
 
     headless = os.getenv('PLAYWRIGHT_HEADLESS', 'false').lower() == 'true'
+    # Persistent-profile mode (2026-05-30): when FB_PROFILE_DIR is set,
+    # Chrome loads its entire user-data-dir from disk (cookies +
+    # localStorage + IndexedDB + fingerprint state). The profile is
+    # minted once by the operator via scripts/ec2-fb-login-session.sh
+    # and reused by every subsequent scrape — same Chrome instance,
+    # same fingerprint, no cross-machine cookie transplant for FB to
+    # flag as a new device. FB_PROFILE_HEADFUL=true forces headful
+    # (used by the login flow); scraping honors PLAYWRIGHT_HEADLESS.
+    profile_dir = os.environ.get('FB_PROFILE_DIR')
+    if profile_dir and os.environ.get('FB_PROFILE_HEADFUL', '').lower() == 'true':
+        headless = False
     options = uc.ChromeOptions()
     if headless:
         options.add_argument('--headless=new')
+    if profile_dir:
+        options.add_argument(f'--user-data-dir={profile_dir}')
+        print(f'INFO: using persistent Chrome profile at {profile_dir}', file=sys.stderr)
     options.add_argument('--window-size=1280,900')
     options.add_argument('--lang=en-US,en')
     options.add_argument('--disable-blink-features=AutomationControlled')
@@ -1889,12 +1903,19 @@ class FacebookScraper(SocialPlatformScraper):
         driver = _open_driver()
         driver.get(FB_BASE)
         time.sleep(3)
-        jar = load_cookies(account['id'])
-        if jar:
-            _inject_cookies(driver, jar)
-            driver.get(FB_BASE)  # re-navigate so injected cookies stick
-            time.sleep(4)
+        # Persistent-profile mode skips the DB cookie jar entirely — the
+        # profile dir already holds a self-consistent session from the
+        # one-time interactive login. Injecting old DB cookies on top
+        # would just stomp the fresh profile cookies.
+        if os.environ.get('FB_PROFILE_DIR'):
             _bypass_fb_trust_gate(driver)
+        else:
+            jar = load_cookies(account['id'])
+            if jar:
+                _inject_cookies(driver, jar)
+                driver.get(FB_BASE)  # re-navigate so injected cookies stick
+                time.sleep(4)
+                _bypass_fb_trust_gate(driver)
         # Cheap sanity: if we're still on /login/, the cookies are bad.
         if '/login' in driver.current_url:
             driver.quit()
