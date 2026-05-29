@@ -767,8 +767,128 @@ def _detect_chrome_major_version() -> Optional[int]:
         return None
 
 
+# Module-level "current scrape context" — set by scrape_listing() at
+# the top of each scrape and consumed by _open_driver() when it needs
+# to pick a country code for the residential proxy. This avoids
+# threading `location` through nine call sites (_open_session,
+# _sync_discover_groups, _sync_group_first_scrape, ...). Each FB
+# scrape runs in its own Python subprocess, so the global is process-
+# scoped and safe from cross-job leakage.
+_CURRENT_LOCATION: Optional[str] = None
+
+
+def _build_proxy_auth_extension(host: str, port: str, username: str, password: str) -> str:
+    """Generate a temporary Chrome extension that auto-fills proxy auth.
+
+    Chrome's --proxy-server flag intentionally rejects user:pass@host:port
+    URLs (security-by-design; the dialog has to be filled by the user OR
+    by an extension). The well-known workaround is a tiny extension that
+    registers a webRequest.onAuthRequired listener and answers with the
+    credentials. We generate one per driver session, drop it in /tmp,
+    and load it via options.add_extension().
+    """
+    import zipfile
+    import tempfile
+    import textwrap
+
+    manifest = textwrap.dedent('''
+        {
+            "version": "1.0.0",
+            "manifest_version": 2,
+            "name": "Residential Proxy Auth",
+            "permissions": [
+                "proxy", "tabs", "unlimitedStorage", "storage",
+                "<all_urls>", "webRequest", "webRequestBlocking"
+            ],
+            "background": {"scripts": ["background.js"]},
+            "minimum_chrome_version": "22.0.0"
+        }
+    ''').strip()
+    background = textwrap.dedent(f'''
+        var config = {{
+            mode: "fixed_servers",
+            rules: {{
+                singleProxy: {{
+                    scheme: "http",
+                    host: "{host}",
+                    port: parseInt({port})
+                }},
+                bypassList: ["localhost"]
+            }}
+        }};
+        chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+        chrome.webRequest.onAuthRequired.addListener(
+            function(details) {{
+                return {{authCredentials: {{username: "{username}", password: "{password}"}}}};
+            }},
+            {{urls: ["<all_urls>"]}},
+            ['blocking']
+        );
+    ''').strip()
+    fd, path = tempfile.mkstemp(suffix='_proxy_auth.zip')
+    os.close(fd)
+    with zipfile.ZipFile(path, 'w') as zp:
+        zp.writestr('manifest.json', manifest)
+        zp.writestr('background.js', background)
+    return path
+
+
+def _resolve_proxy_country(location: Optional[str], fallback: str = 'AT') -> str:
+    """Pick the residential-proxy country code that matches the operator's
+    location. Falls back to whatever country code is baked into the
+    proxy credentials when we can't map the location.
+    """
+    if not location:
+        return fallback
+    cc = _extract_country_from_excerpt(location)
+    return cc if cc else fallback
+
+
+def _apply_proxy_country(username: str, cc: str) -> str:
+    """Swap the country code inside a residential-proxy username so the
+    proxy issues an IP from the requested country. Each provider has
+    a slightly different convention:
+
+      Proxy Lite : pl-XYZ_area-AT          -> pl-XYZ_area-GB
+      Proxio     : abc-region-AT           -> abc-region-GB
+      Bright Data: lum-customer-X-cc-at    -> lum-customer-X-cc-gb
+
+    We pattern-match the common ones rather than hard-coding a single
+    convention so swapping providers via env vars doesn't require code.
+    """
+    # _area-XX (Proxy Lite, Smartproxy variants)
+    out = re.sub(r'(?<=_area-)[A-Za-z]{2}\b', cc.upper(), username)
+    # -region-XX (Proxio)
+    out = re.sub(r'(?<=-region-)[A-Za-z]{2}\b', cc.upper(), out)
+    # _country-XX (Enigma format, but theirs is in the PASSWORD — see
+    # _apply_proxy_country_password). Include here for providers that
+    # use it in username too.
+    out = re.sub(r'(?<=_country-)[A-Za-z]{2}\b', cc.upper(), out)
+    # -cc-XX (some Bright Data variants)
+    out = re.sub(r'(?<=-cc-)[A-Za-z]{2}\b', cc.lower(), out)
+    return out
+
+
+def _apply_proxy_country_password(password: str, cc: str) -> str:
+    """Some providers put the country code in the PASSWORD slot
+    (Enigma: 58fc5cbc0ebf_country-AT). Same pattern set, applied
+    to the password string.
+    """
+    out = re.sub(r'(?<=_country-)[A-Za-z]{2}\b', cc.upper(), password)
+    out = re.sub(r'(?<=_area-)[A-Za-z]{2}\b', cc.upper(), out)
+    return out
+
+
 def _open_driver():
-    """Open an undetected-chromedriver, headless if PLAYWRIGHT_HEADLESS=true."""
+    """Open an undetected-chromedriver, headless if PLAYWRIGHT_HEADLESS=true.
+
+    On Linux hosts (EC2 worker / Cloud Run) AND when the
+    RESIDENTIAL_PROXY_* env vars are set, routes all Chrome traffic
+    through the residential proxy so Facebook sees a consumer IP
+    instead of a datacenter IP. Windows / local runs use the
+    operator's home IP directly — no point burning paid proxy
+    bandwidth when FB already trusts the residential connection.
+    """
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy
 
     headless = os.getenv('PLAYWRIGHT_HEADLESS', 'false').lower() == 'true'
@@ -788,6 +908,34 @@ def _open_driver():
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
+
+    # Residential proxy wiring. Only kicks in on Linux (server) AND when
+    # all four env vars are set. Local runs always use the host's own IP.
+    proxy_host = os.environ.get('RESIDENTIAL_PROXY_HOST')
+    proxy_port = os.environ.get('RESIDENTIAL_PROXY_PORT')
+    proxy_user = os.environ.get('RESIDENTIAL_PROXY_USERNAME')
+    proxy_pass = os.environ.get('RESIDENTIAL_PROXY_PASSWORD')
+    proxy_force = os.environ.get('RESIDENTIAL_PROXY_FORCE', '').lower() == 'true'
+    proxy_active = (
+        (sys.platform.startswith('linux') or proxy_force)
+        and proxy_host and proxy_port and proxy_user and proxy_pass
+    )
+    if proxy_active:
+        cc = _resolve_proxy_country(_CURRENT_LOCATION)
+        proxy_user_rewritten = _apply_proxy_country(proxy_user, cc)
+        proxy_pass_rewritten = _apply_proxy_country_password(proxy_pass, cc)
+        ext_path = _build_proxy_auth_extension(
+            proxy_host, proxy_port, proxy_user_rewritten, proxy_pass_rewritten,
+        )
+        options.add_extension(ext_path)
+        # Chrome ALSO needs the --proxy-server flag pointed at the same
+        # host:port — the extension only handles auth and per-tab config.
+        options.add_argument(f'--proxy-server=http://{proxy_host}:{proxy_port}')
+        print(
+            f'INFO: residential proxy active {proxy_host}:{proxy_port} cc={cc}',
+            file=sys.stderr,
+        )
+
     # Pin chromedriver to installed Chrome major version so we don't get
     # the version-149-but-Chrome-148 mismatch.
     version_main: Optional[int] = None
@@ -1389,6 +1537,16 @@ class FacebookScraper(SocialPlatformScraper):
         pipeline then routes each author through enrich_profiles, which
         detects the PostStub shape and pivots to author-enrichment.
         """
+        # Record the operator's location/country for the proxy-country
+        # resolver in _open_driver(). consumers-mode uses `location`
+        # (city), businesses-mode uses `country` (ISO code).
+        global _CURRENT_LOCATION
+        _CURRENT_LOCATION = (
+            (filters.get('location') or '').strip()
+            or (filters.get('country') or '').strip()
+            or None
+        )
+
         lead_type = (filters.get('lead_type') or 'consumers').lower()
 
         if lead_type == 'consumers':
