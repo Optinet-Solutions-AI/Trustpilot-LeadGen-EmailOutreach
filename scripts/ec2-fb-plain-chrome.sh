@@ -133,14 +133,27 @@ chown -R "$SCRAPER_USER:$SCRAPER_USER" "$EXT_DIR"
 # explicitly export the variables we need so HOME defaults to the
 # scraper user's actual home (~/home/scraper).
 SCRAPER_HOME=$(getent passwd "$SCRAPER_USER" | cut -d: -f6)
+# TZ=Asia/Manila aligns Chrome's JS-visible timezone with the PH proxy
+# IP. Without this, FB sees IP=PH (UTC+8) but Date.toString()="UTC" —
+# instant fraud flag.
+#
+# --force-webrtc-ip-handling-policy=disable_non_proxied_udp blocks
+# WebRTC's local STUN UDP queries, which otherwise leak the EC2's
+# real Singapore IP via JS even though all HTTP traffic goes through
+# the PH proxy. This is THE biggest fingerprint signal FB reads.
+#
+# --webrtc-stun-probe-trial=Enabled/disabled — additional belt-and-
+# suspenders for WebRTC IP discovery.
 sudo -u "$SCRAPER_USER" \
     DISPLAY="$DISPLAY_NUM" \
     HOME="$SCRAPER_HOME" \
+    TZ="Asia/Manila" \
     XDG_RUNTIME_DIR="/run/user/$(id -u "$SCRAPER_USER")" \
     nohup google-chrome \
     --user-data-dir="$PROFILE_DIR" \
     --proxy-server="http://${RESIDENTIAL_PROXY_HOST}:${RESIDENTIAL_PROXY_PORT}" \
     --load-extension="$EXT_DIR" \
+    --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
     --no-default-browser-check \
     --no-first-run \
     --window-size=1280,900 \
