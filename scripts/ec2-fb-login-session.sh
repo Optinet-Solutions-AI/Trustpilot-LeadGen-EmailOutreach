@@ -80,6 +80,12 @@ VNC_PORT="${VNC_PORT:-5900}"
 LOG_DIR="/var/log/scraper-fb-login"
 
 mkdir -p "$LOG_DIR"
+# The log dir is created by root (the script's effective UID via sudo)
+# but the Xvfb / fluxbox / x11vnc processes drop to the scraper user
+# below and need to write inside this dir. Without this chown, the
+# script exits silently because x11vnc fails to open its log file and
+# the port-5900 sanity check immediately fires.
+chown "$SCRAPER_USER:$SCRAPER_USER" "$LOG_DIR"
 
 # Install OS-level deps once.
 NEEDED=()
