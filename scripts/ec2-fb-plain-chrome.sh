@@ -69,6 +69,21 @@ if ! pgrep -f "Xvfb $DISPLAY_NUM" >/dev/null; then
     exit 1
 fi
 
+# Block WebRTC STUN leaks at the kernel layer. Chrome's
+# --force-webrtc-ip-handling-policy controls which candidates it USES
+# but doesn't stop Chrome from discovering them via UDP STUN. The
+# discovered IP (the EC2's real Singapore address) leaks into the
+# JS-readable RTCPeerConnection.localDescription regardless. Only way
+# to truly block: drop the outbound UDP packets at the netfilter
+# layer. DNS-via-loopback (systemd-resolved at 127.0.0.53) stays
+# allowed; everything else UDP from scraper UID is rejected.
+SCRAPER_UID=$(id -u "$SCRAPER_USER")
+if ! iptables -C OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp ! -d 127.0.0.0/8 -j REJECT 2>/dev/null; then
+    iptables -A OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp -d 127.0.0.0/8 -j ACCEPT
+    iptables -A OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp ! -d 127.0.0.0/8 -j REJECT
+    echo "INFO: installed iptables UDP block for $SCRAPER_USER (uid=$SCRAPER_UID)"
+fi
+
 # Kill any existing Chrome on this profile dir (selenium or plain).
 pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
 pkill -f "interactive_login" 2>/dev/null || true
