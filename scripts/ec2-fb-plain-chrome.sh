@@ -69,20 +69,28 @@ if ! pgrep -f "Xvfb $DISPLAY_NUM" >/dev/null; then
     exit 1
 fi
 
-# Block WebRTC STUN leaks at the kernel layer. Chrome's
-# --force-webrtc-ip-handling-policy controls which candidates it USES
-# but doesn't stop Chrome from discovering them via UDP STUN. The
-# discovered IP (the EC2's real Singapore address) leaks into the
-# JS-readable RTCPeerConnection.localDescription regardless. Only way
-# to truly block: drop the outbound UDP packets at the netfilter
-# layer. DNS-via-loopback (systemd-resolved at 127.0.0.53) stays
-# allowed; everything else UDP from scraper UID is rejected.
+# Block WebRTC STUN leaks at the kernel layer, surgically: only UDP
+# from the scraper UID, only at the TOP of the OUTPUT chain (so it
+# fires before UFW rules), and only blocking non-DNS UDP. Allowing
+# UDP/53 lets the scraper user's DNS lookups proceed; everything
+# else UDP from that UID (STUN, QUIC, WebRTC ICE) is rejected.
+# cloudflared and other root services are unaffected.
+#
+# We clean up any prior broad rules from earlier iterations first
+# so we never end up with conflicting rules. -I 1 puts the new rule
+# at the top of the OUTPUT chain so it fires before UFW's chains
+# (which is where prior -A rules got lost).
 SCRAPER_UID=$(id -u "$SCRAPER_USER")
-if ! iptables -C OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp ! -d 127.0.0.0/8 -j REJECT 2>/dev/null; then
-    iptables -A OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp -d 127.0.0.0/8 -j ACCEPT
-    iptables -A OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp ! -d 127.0.0.0/8 -j REJECT
-    echo "INFO: installed iptables UDP block for $SCRAPER_USER (uid=$SCRAPER_UID)"
-fi
+# Tear down any previously-installed variants so the chain stays clean.
+while iptables -D OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp ! -d 127.0.0.0/8 -j REJECT 2>/dev/null; do :; done
+while iptables -D OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp -d 127.0.0.0/8 -j ACCEPT 2>/dev/null; do :; done
+while iptables -D OUTPUT -m owner --uid-owner "$SCRAPER_UID" -p udp ! --dport 53 -j REJECT 2>/dev/null; do :; done
+while iptables -D OUTPUT -p udp -d 127.0.0.0/8 -j ACCEPT 2>/dev/null; do :; done
+while iptables -D OUTPUT -p udp -m udp --dport 443 -j ACCEPT 2>/dev/null; do :; done
+while iptables -D OUTPUT -p udp ! -d 127.0.0.0/8 -j REJECT 2>/dev/null; do :; done
+# Now install the surgical rule at the top of OUTPUT.
+iptables -I OUTPUT 1 -m owner --uid-owner "$SCRAPER_UID" -p udp ! --dport 53 -j REJECT
+echo "INFO: surgical UDP block installed for $SCRAPER_USER (uid=$SCRAPER_UID) at OUTPUT[1]"
 
 # Kill any existing Chrome on this profile dir (selenium or plain).
 pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
