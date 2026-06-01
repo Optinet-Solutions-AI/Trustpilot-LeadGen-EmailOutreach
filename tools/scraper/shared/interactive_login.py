@@ -59,8 +59,20 @@ def main() -> int:
     print('INFO: close the Chrome window when finished to save the profile.', file=sys.stderr)
 
     driver = fb._open_driver()
+    # Residential-proxy initial-page loads routinely run 30-120s while the
+    # proxy upstream warms up and selenium-wire MITMs every sub-resource.
+    # Without this bump, selenium's default ~30s page-load timeout kills
+    # the session before the operator ever sees the FB login form.
+    driver.set_page_load_timeout(180)
     try:
-        driver.get(LOGIN_URL)
+        try:
+            driver.get(LOGIN_URL)
+        except Exception as exc:  # noqa: BLE001 — slow load is OK
+            print(
+                f'INFO: initial page load returned exception ({exc}); '
+                'Chrome is still loading — operator can wait via VNC',
+                file=sys.stderr,
+            )
         # Idle loop: poll the driver. When the operator closes Chrome the
         # session goes invalid and current_url raises — that's our exit
         # signal. Use a short sleep so Ctrl-C from the bash wrapper also
