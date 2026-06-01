@@ -91,14 +91,17 @@ mkdir -p "$EXT_DIR"
 
 cat > "$EXT_DIR/manifest.json" <<EOF
 {
-  "manifest_version": 3,
+  "manifest_version": 2,
   "name": "fb-proxy-auth",
   "version": "1.0",
-  "permissions": ["proxy", "webRequest", "webRequestAuthProvider"],
-  "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "background.js" }
+  "permissions": ["proxy", "webRequest", "webRequestBlocking", "<all_urls>"],
+  "background": { "scripts": ["background.js"], "persistent": true }
 }
 EOF
+# MV2 instead of MV3 because MV3 dropped blocking webRequest, and we
+# need the synchronous callback to inject proxy credentials. Chrome's
+# WebStore stopped accepting new MV2 uploads, but local extensions
+# loaded via --load-extension still work in Chrome 148.
 
 cat > "$EXT_DIR/background.js" <<EOF
 chrome.webRequest.onAuthRequired.addListener(
@@ -123,7 +126,18 @@ chown -R "$SCRAPER_USER:$SCRAPER_USER" "$EXT_DIR"
 # Launch plain headful Chrome on the existing Xvfb. Drop ALL selenium
 # / undetected-chromedriver flags. Land on facebook.com (not /login)
 # so if cookies are valid it loads the homepage directly.
-sudo -u "$SCRAPER_USER" -E DISPLAY="$DISPLAY_NUM" nohup google-chrome \
+#
+# CRITICAL: -E here would preserve root's HOME=/root from the sudo
+# elevation, and Chrome would crash trying to write
+# /root/.local/share/applications/mimeapps.list. Instead, omit -E and
+# explicitly export the variables we need so HOME defaults to the
+# scraper user's actual home (~/home/scraper).
+SCRAPER_HOME=$(getent passwd "$SCRAPER_USER" | cut -d: -f6)
+sudo -u "$SCRAPER_USER" \
+    DISPLAY="$DISPLAY_NUM" \
+    HOME="$SCRAPER_HOME" \
+    XDG_RUNTIME_DIR="/run/user/$(id -u "$SCRAPER_USER")" \
+    nohup google-chrome \
     --user-data-dir="$PROFILE_DIR" \
     --proxy-server="http://${RESIDENTIAL_PROXY_HOST}:${RESIDENTIAL_PROXY_PORT}" \
     --load-extension="$EXT_DIR" \
