@@ -635,7 +635,37 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
 
     let rawData: Array<Record<string, unknown>> = [];
 
-    if (platform === 'tripadvisor') {
+    // FB consumer mode dispatches differently from FB business mode:
+    // - consumers mode = search FB posts for people asking about a service,
+    //   then enrich each post's author → AuthorLeads. Uses run.py's
+    //   `search-posts` + `enrich-authors` actions (added per M6 of the
+    //   social-platforms master plan).
+    // - businesses mode = enumerate FB Pages by category, then standard
+    //   `list` + `enrich` enrichment. Same dispatch as Trustpilot/Yelp/TA.
+    const fbFilters = (filters ?? {}) as Record<string, unknown>;
+    const isFbConsumerMode =
+      platform === 'facebook' && fbFilters.lead_type === 'consumers';
+
+    if (isFbConsumerMode) {
+      const maxResults = Number(fbFilters.max_results ?? 10);
+      const { promise: searchPromise } = runPython(jobId, 'tools/scraper/run.py', [
+        '--platform', platform,
+        '--action', 'search-posts',
+        '--filters', filtersJson,
+        '--output', rawOutput,
+        '--max-results', String(maxResults),
+      ]);
+      await searchPromise;
+
+      try {
+        rawData = JSON.parse(fs.readFileSync(rawOutput, 'utf-8'));
+        await updateJob(jobId, { total_found: rawData.length });
+        emitProgress(jobId, 'category_done', String(rawData.length));
+      } catch (err) {
+        console.error(`[facebook-consumers] failed reading search-posts output for job ${jobId}:`, err);
+        emitProgress(jobId, 'category_done', '0');
+      }
+    } else if (platform === 'tripadvisor') {
       // Fan out across the top-N seeded cities for the country, dedup'ing by
       // profile_url. Each city is a separate run.py spawn so cancellation
       // and watchdog logic stay per-process.
@@ -801,11 +831,17 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
     }
 
     // ── Phase 2: profile enrichment ──────────────────────────────
+    // FB consumer mode replaces `enrich` (visit business pages) with
+    // `enrich-authors` (visit each post author's profile) — the
+    // PostStubs we just wrote already point to author profile URLs,
+    // and the platform's enrich_authors() handles dedup against
+    // recent lead_platform_presences rows.
     const enrichedOutput = path.join(tmpDir, `${jobId}_enriched.json`);
     const screenshotsDir = path.join(tmpDir, 'screenshots');
+    const enrichAction = isFbConsumerMode ? 'enrich-authors' : 'enrich';
     const { promise: enrichPromise } = runPython(jobId, 'tools/scraper/run.py', [
       '--platform', platform,
-      '--action', 'enrich',
+      '--action', enrichAction,
       '--input', rawOutput,
       '--output', enrichedOutput,
       '--screenshots-dir', screenshotsDir,
