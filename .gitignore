@@ -33,3 +33,7 @@ GEMINI.md
 tp_combined.html
 DEFAULT --project*
 *.csv
+
+# AWS EC2 key pairs - never commit
+*.pem
+*.key
