@@ -135,11 +135,19 @@ export async function enqueueJob(params: {
 export async function claimNextPendingJob(
   workerId: string,
   maxConcurrent = 3,
+  platformFilter: string | null = null,
+  platformExclude: string | null = null,
 ): Promise<ScrapeJob | null> {
   const supabase = getSupabase();
+  // platform_filter / platform_exclude are post-migration-043 params.
+  // Both default to NULL on the SQL side, so passing null here is the
+  // pre-043 behavior. Windows EC2 worker sets platform_filter='facebook';
+  // Linux EC2 worker sets platform_exclude='facebook'.
   const { data, error } = await supabase.rpc('claim_next_pending_scrape_job', {
     p_worker_id: workerId,
     p_max_concurrent: maxConcurrent,
+    p_platform_filter: platformFilter,
+    p_platform_exclude: platformExclude,
   });
   if (error) throw new Error(error.message);
   // RPC declares RETURNS SETOF scrape_jobs so data is an array. Empty array

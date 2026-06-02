@@ -24,6 +24,17 @@ import { runScrapeJob, getActiveProcesses } from '../services/scrape-runner.js';
 const MAX_CONCURRENT = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS ?? 3));
 const POLL_INTERVAL_MS = Math.max(5_000, Number(process.env.POLL_INTERVAL_MS ?? 30_000));
 const WORKER_ID = process.env.WORKER_ID || `worker-${os.hostname()}-${process.pid}`;
+// Platform routing (added 2026-06-02 for the Windows EC2 worker).
+// PLATFORM_FILTER  — when set, this worker only claims jobs whose
+//                    scrape_jobs.platform matches (e.g. 'facebook' on
+//                    the Windows EC2 box).
+// PLATFORM_EXCLUDE — when set, this worker claims jobs whose platform
+//                    does NOT match (e.g. 'facebook' on the Linux EC2
+//                    box, which can't run FB scrapes).
+// Both default to undefined → null on the wire → no filtering applied
+// (preserves the pre-migration-043 behavior).
+const PLATFORM_FILTER = process.env.PLATFORM_FILTER || null;
+const PLATFORM_EXCLUDE = process.env.PLATFORM_EXCLUDE || null;
 const STALE_SWEEP_INTERVAL_MS = 5 * 60_000;
 const STALE_MAX_AGE_MIN = 10;
 const DRAIN_TIMEOUT_MS = 60_000;
@@ -85,7 +96,7 @@ async function pollOnce(): Promise<void> {
   while (!shuttingDown && inFlight.size < MAX_CONCURRENT) {
     let job: ScrapeJob | null;
     try {
-      job = await claimNextPendingJob(WORKER_ID, MAX_CONCURRENT);
+      job = await claimNextPendingJob(WORKER_ID, MAX_CONCURRENT, PLATFORM_FILTER, PLATFORM_EXCLUDE);
     } catch (err) {
       log(`claim error: ${err instanceof Error ? err.message : err}`);
       return;
@@ -138,7 +149,10 @@ async function drainOrAbandon(signal: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  log(`starting max_concurrent=${MAX_CONCURRENT} poll=${POLL_INTERVAL_MS}ms`);
+  log(
+    `starting max_concurrent=${MAX_CONCURRENT} poll=${POLL_INTERVAL_MS}ms ` +
+    `platform_filter=${PLATFORM_FILTER ?? '<none>'} platform_exclude=${PLATFORM_EXCLUDE ?? '<none>'}`,
+  );
 
   // Initial sweep so a fresh worker reclaims jobs orphaned by a previous one.
   await sweepStale();
