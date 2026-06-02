@@ -34,7 +34,29 @@ import time
 from pathlib import Path
 
 
-BRAVE_EXE = Path(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")
+def _find_brave() -> Path:
+    """Brave's install path varies — Chocolatey on Windows Server often
+    drops it per-user under %LOCALAPPDATA% instead of Program Files.
+    Try the common locations in order until we find brave.exe."""
+    import os
+    candidates = [
+        Path(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        Path(r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+        Path.home() / "AppData" / "Local" / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    # Last resort: PATH lookup
+    import shutil
+    on_path = shutil.which("brave")
+    if on_path:
+        return Path(on_path)
+    return Path(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")  # default for error message
+
+
+BRAVE_EXE = _find_brave()
 PROFILE_ROOT = Path(r"C:\fb-profiles")
 LOGIN_URL = "https://www.facebook.com/"
 

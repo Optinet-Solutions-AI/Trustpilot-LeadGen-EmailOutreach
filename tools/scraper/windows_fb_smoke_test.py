@@ -32,7 +32,29 @@ from typing import Optional
 
 
 PROFILE_ROOT = Path(r"C:\fb-profiles")
-BRAVE_BIN = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+
+
+def _find_brave() -> str:
+    """Chocolatey on Windows Server may install Brave under %LOCALAPPDATA%
+    rather than Program Files. Probe the usual locations."""
+    import os
+    import shutil
+    candidates = [
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(str(Path.home()), "AppData", "Local", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    ]
+    for c in candidates:
+        if c and Path(c).exists():
+            return c
+    on_path = shutil.which("brave")
+    if on_path:
+        return on_path
+    return candidates[0]  # default for error message
+
+
+BRAVE_BIN = _find_brave()
 
 PROXY_HOST = os.environ.get("RESIDENTIAL_PROXY_HOST", "resi.enigmaproxy.net")
 PROXY_PORT = os.environ.get("RESIDENTIAL_PROXY_PORT", "12321")
