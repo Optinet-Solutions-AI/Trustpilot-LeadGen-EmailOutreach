@@ -904,6 +904,28 @@ def _open_driver():
     if profile_dir and os.environ.get('FB_PROFILE_HEADFUL', '').lower() == 'true':
         headless = False
     options = uc.ChromeOptions()
+    # Browser binary resolution. By default undetected-chromedriver
+    # auto-detects Google Chrome in standard locations. On the Windows
+    # EC2 worker we use BRAVE instead (better fingerprint resistance,
+    # no Google Chrome installed), so we set options.binary_location
+    # explicitly. Order:
+    #   1. BROWSER_BIN env var (override)
+    #   2. Brave at common Windows paths (per-user LOCALAPPDATA first,
+    #      then Program Files variants)
+    #   3. Leave unset → uc auto-detects Chrome (Linux EC2 path)
+    browser_bin = os.environ.get('BROWSER_BIN')
+    if not browser_bin and sys.platform == 'win32':
+        for candidate in (
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+            r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe',
+            r'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe',
+        ):
+            if candidate and os.path.exists(candidate):
+                browser_bin = candidate
+                break
+    if browser_bin:
+        options.binary_location = browser_bin
+        print(f'INFO: using browser binary {browser_bin}', file=sys.stderr)
     if headless:
         options.add_argument('--headless=new')
     if profile_dir:
