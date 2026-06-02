@@ -43,9 +43,15 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Write-Host "[1/6] Chocolatey already installed." -ForegroundColor Green
 }
 
-# Step 2: Brave + Python + Git
-Write-Host "[2/6] Installing Brave, Python 3.12, Git..." -ForegroundColor Yellow
-choco install -y brave python --version=3.12.4 git --no-progress
+# Step 2: Brave + Python + Git (separate calls — choco's --version
+# applies to ALL listed packages when batched, which made brave/git
+# fail with "version 3.12.4 not found").
+Write-Host "[2/6] Installing Brave..." -ForegroundColor Yellow
+choco install -y brave --no-progress
+Write-Host "[2/6] Installing Python 3.12..." -ForegroundColor Yellow
+choco install -y python --version=3.12.4 --no-progress
+Write-Host "[2/6] Installing Git..." -ForegroundColor Yellow
+choco install -y git --no-progress
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 Write-Host "  brave: $(Get-Command brave -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)" -ForegroundColor DarkGray
 Write-Host "  python: $(python --version)" -ForegroundColor DarkGray
