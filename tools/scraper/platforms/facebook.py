@@ -929,6 +929,22 @@ def _open_driver():
     if headless:
         options.add_argument('--headless=new')
     if profile_dir:
+        # Clean up stale Brave/Chromium singleton lock files. When a prior
+        # Brave crashed (or was killed) it leaves SingletonLock/Cookie/Socket
+        # behind, and the next launch with --user-data-dir refuses to start.
+        # Manifests as `undetected_chromedriver!GetHandleVerifier` native
+        # crashes on the second invocation. Cleanup is safe because we only
+        # remove these files when we are about to start the only legitimate
+        # Brave that should be using this profile.
+        for stale in ('SingletonLock', 'SingletonCookie', 'SingletonSocket'):
+            stale_path = os.path.join(profile_dir, stale)
+            try:
+                os.remove(stale_path)
+                print(f'INFO: removed stale {stale} from profile', file=sys.stderr)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f'WARN: could not remove {stale_path}: {exc}', file=sys.stderr)
         options.add_argument(f'--user-data-dir={profile_dir}')
         print(f'INFO: using persistent Chrome profile at {profile_dir}', file=sys.stderr)
     options.add_argument('--window-size=1280,900')
