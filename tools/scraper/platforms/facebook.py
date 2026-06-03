@@ -950,6 +950,19 @@ def _open_driver():
     options.add_argument('--window-size=1280,900')
     options.add_argument('--lang=en-US,en')
     options.add_argument('--disable-blink-features=AutomationControlled')
+    # Grant clipboard read/write so _click_share_and_capture() can read
+    # the /share/p/<token>/ URL that FB writes when "Copy link" is clicked.
+    # Without this Chrome blocks navigator.clipboard.readText() with
+    # NotAllowedError. The "*" pattern grants for all origins (we're a
+    # single-purpose scraper instance).
+    options.add_experimental_option(
+        'prefs',
+        {
+            'profile.content_settings.exceptions.clipboard': {
+                '[*.]facebook.com,*': {'setting': 1},
+            },
+        },
+    )
     # Linux-server essentials. Chrome's renderer process crashes
     # without these on headless EC2 / Cloud Run hosts because the
     # sandbox needs user-namespace cloning (not always available),
@@ -1046,6 +1059,20 @@ def _open_driver():
     else:
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=version_main)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    # CDP-level clipboard grant. Required for navigator.clipboard.readText()
+    # to succeed in _click_share_and_capture(). The prefs route only covers
+    # fresh profiles — existing user-data-dir profiles ignore it. CDP grant
+    # applies to the live session unconditionally.
+    try:
+        driver.execute_cdp_cmd(
+            'Browser.grantPermissions',
+            {
+                'origin': 'https://www.facebook.com',
+                'permissions': ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f'WARN: clipboard CDP grant failed (Share->Copy link fallback will not work): {exc}', file=sys.stderr)
     return driver
 
 
@@ -1217,6 +1244,106 @@ def _extract_post_body(card_el) -> str:
             longest = t
     return longest
 
+def _click_share_and_capture(driver, article, post_url_re) -> Optional[str]:
+    """Click the Share button on a post and read the resolved /share/p/<token>/
+    URL from the system clipboard.
+
+    Facebook's search-result cards don't render the canonical share permalink
+    as a plain anchor — the URL is generated server-side only when the user
+    explicitly clicks "Copy link" inside the Share menu. We reproduce that
+    interaction headlessly and read clipboard via JS.
+
+    Costs ~1.5-2s per post (find share button + open menu + close).
+    Returns the captured URL on success, None on any failure — caller falls
+    back to the synthetic `#post-<digest>` URL.
+    """
+    try:
+        # The Share button uses aria-label="Send this to friends or post it
+        # on your profile." across most locales; some renders use just "Share".
+        # Match either via a substring CSS selector.
+        share_btns = article.find_elements(
+            'css selector',
+            'div[aria-label*="Send" i][role="button"], div[aria-label*="Share" i][role="button"]',
+        )
+        if not share_btns:
+            return None
+        btn = share_btns[0]
+
+        # Scroll into view so the menu doesn't render off-screen.
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+        time.sleep(0.3)
+
+        # Clear any prior clipboard contents so we don't read stale data
+        # if the click silently fails.
+        try:
+            driver.execute_script(
+                "if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText('');"
+            )
+        except Exception:
+            pass
+
+        btn.click()
+        time.sleep(1.2)
+
+        # The menu renders into <body>, not the article — look at document
+        # scope. Items are role="menuitem" with a descendant <span> whose
+        # text is the action ("Copy link", "Share to feed", etc.).
+        copy_clicked = False
+        for el in driver.find_elements('css selector', 'div[role="menuitem"], div[role="dialog"] div[role="button"]'):
+            try:
+                txt = (el.text or '').strip().lower()
+            except Exception:
+                continue
+            if 'copy link' in txt:
+                try:
+                    el.click()
+                    copy_clicked = True
+                    break
+                except Exception:
+                    continue
+
+        if not copy_clicked:
+            # Close any open dialog by sending Escape, then bail.
+            try:
+                driver.execute_script("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}));")
+            except Exception:
+                pass
+            return None
+
+        # FB usually shows a "Link copied to clipboard" toast 200-500ms after
+        # the click. Give the async clipboard write a moment to flush.
+        time.sleep(0.6)
+
+        captured = None
+        try:
+            captured = driver.execute_async_script(
+                """
+                const cb = arguments[arguments.length - 1];
+                if (!navigator.clipboard || !navigator.clipboard.readText) { cb(null); return; }
+                navigator.clipboard.readText().then(v => cb(v)).catch(() => cb(null));
+                """
+            )
+        except Exception:
+            captured = None
+
+        # Close any still-open dialog so the next article's scan isn't
+        # blocked by an overlay.
+        try:
+            driver.execute_script("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));")
+        except Exception:
+            pass
+        time.sleep(0.2)
+
+        if not captured:
+            return None
+        captured = captured.strip()
+        if 'facebook.com' not in captured or not post_url_re.search(captured):
+            return None
+        return captured
+    except Exception:
+        return None
+
+
 def _extract_posts_from_search_page(driver) -> list[dict]:
     """Pull post stubs out of a Facebook search results page.
 
@@ -1325,6 +1452,34 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
 
             if not author_url:
                 continue
+
+            # Layer 2: <a> anchors didn't expose a permalink. Try
+            # role="link" elements (FB wraps the timestamp in a role-link
+            # span/div whose href is set lazily after focus). Probe their
+            # `href`, `data-href`, and ancestor-anchor `href`.
+            if not real_post_url:
+                try:
+                    role_links = article.find_elements('css selector', '[role="link"]')
+                    for el in role_links:
+                        for attr in ('href', 'data-href', 'data-lynx-uri'):
+                            val = (el.get_attribute(attr) or '')
+                            if val and post_url_re.search(val):
+                                real_post_url = _clean_fb_url(val)
+                                break
+                        if real_post_url:
+                            break
+                except Exception:
+                    pass
+
+            # Layer 3: still no permalink. Click the Share button to open
+            # FB's share menu, then click "Copy link" — FB resolves the
+            # canonical /share/p/<token>/ URL only at this point. Read it
+            # back via navigator.clipboard.readText() (clipboard-read perm
+            # is granted in _open_driver via Chrome prefs).
+            if not real_post_url:
+                real_post_url = _click_share_and_capture(driver, article, post_url_re)
+                if real_post_url:
+                    real_post_url = _clean_fb_url(real_post_url)
 
             # Use the dedicated story_message wrapper to bypass FB's
             # char-randomized UI furniture; fall back to article.text
