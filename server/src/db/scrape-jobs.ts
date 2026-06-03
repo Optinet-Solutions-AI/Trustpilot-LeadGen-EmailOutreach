@@ -8,6 +8,10 @@ export interface ScrapeJob {
   // that future platforms (TripAdvisor etc.) will use exclusively.
   platform: string;
   filters: Record<string, unknown> | null;
+  // Multi-tenant social scraping (migration 039). When set, the scrape
+  // runner picks the right operator's profile dir (C:\fb-profiles\<id>)
+  // so multiple FB accounts can scrape concurrently from the same worker.
+  social_account_id: string | null;
   country: string;
   category: string;
   min_rating: number;

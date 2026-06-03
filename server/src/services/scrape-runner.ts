@@ -295,6 +295,12 @@ interface ScrapeParams {
   // run.py pipeline instead of the legacy three-script spawn chain.
   platform?: string;
   filters?: Record<string, unknown>;
+  // Multi-tenant FB scraping (migration 039 + Phase 4 wiring 2026-06-02).
+  // When the platform is 'facebook' and this is set, the per-job
+  // FB_PROFILE_DIR env var is derived as C:\fb-profiles\<id> so the
+  // worker uses the right operator's logged-in Brave profile.
+  // Falls back to the worker's default FB_PROFILE_DIR env when null.
+  socialAccountId?: string | null;
 }
 
 function emitProgress(jobId: string, stage: string, detail: string) {
@@ -310,6 +316,7 @@ function runPython(
   jobId: string,
   scriptPath: string,
   args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
 ): { promise: Promise<string>; proc: ChildProcess } {
   const pythonPath = path.isAbsolute(config.pythonPath)
     ? config.pythonPath
@@ -319,7 +326,7 @@ function runPython(
   console.log(`Running: ${pythonPath} ${fullScript} ${args.join(' ')}`);
   const proc = spawn(pythonPath, [fullScript, ...args], {
     cwd: config.projectRoot,
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ...extraEnv },
     // detached=true on Linux puts the child in its own process group so we can
     // kill the whole group (Python + Chromium) with process.kill(-pid, SIGKILL).
     // On Windows this has no meaningful effect since we use taskkill /T instead.
@@ -613,11 +620,22 @@ async function deduplicateLeads(
  * platform-aware) and the verify pass at the end of the job.
  */
 async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string }): Promise<void> {
-  const { jobId, platform, filters, enrich, verify } = params;
+  const { jobId, platform, filters, enrich, verify, socialAccountId } = params;
   const tmpDir = path.resolve(config.projectRoot, '.tmp');
   let totalSaved = 0;
   let totalEnriched = 0;
   let failedCount = 0;
+
+  // Multi-tenant FB profile routing. When the job carries a
+  // social_account_id, every Python subprocess in this job inherits
+  // FB_PROFILE_DIR=C:\fb-profiles\<id> so the right operator's
+  // logged-in Brave profile is used. Without an id, falls back to
+  // whatever FB_PROFILE_DIR is set in the worker's own env (the
+  // single-tenant default for the owner's profile).
+  const platformEnv: NodeJS.ProcessEnv = {};
+  if (platform === 'facebook' && socialAccountId) {
+    platformEnv.FB_PROFILE_DIR = `C:\\fb-profiles\\${socialAccountId}`;
+  }
 
   try {
     await updateJob(jobId, {
@@ -654,7 +672,7 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         '--filters', filtersJson,
         '--output', rawOutput,
         '--max-results', String(maxResults),
-      ]);
+      ], platformEnv);
       await searchPromise;
 
       try {
@@ -807,7 +825,7 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         '--action', 'list',
         '--filters', filtersJson,
         '--output', rawOutput,
-      ]);
+      ], platformEnv);
       await listPromise;
 
       try {
@@ -846,7 +864,7 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       '--output', enrichedOutput,
       '--screenshots-dir', screenshotsDir,
       '--parallel', '3',
-    ]);
+    ], platformEnv);
     await enrichPromise;
 
     // ── Phase 3: checkpoint upsert via the multi-platform path ───

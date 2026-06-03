@@ -75,6 +75,7 @@ async function processJob(job: ScrapeJob): Promise<void> {
       source: job.source,
       platform: job.platform,
       filters: job.filters ?? undefined,
+      socialAccountId: job.social_account_id,
     });
     log(`finished job=${job.id}`);
   } catch (err) {
