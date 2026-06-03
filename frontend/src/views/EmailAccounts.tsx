@@ -96,6 +96,11 @@ export default function EmailAccounts() {
   const [dnsRefreshingId, setDnsRefreshingId] = useState<string | null>(null);
   const [editCapsId, setEditCapsId] = useState<string | null>(null);
   const [capsDraft, setCapsDraft] = useState<{ dailyCap: string; hourlyCap: string }>({ dailyCap: '', hourlyCap: '' });
+  // Inline edit for the sender display name (the "From: <name>" that
+  // appears in recipients' inboxes). Stored as `from_name` server-side.
+  const [editNameId, setEditNameId] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState<string>('');
+  const [savingNameId, setSavingNameId] = useState<string | null>(null);
   const [savingCapsId, setSavingCapsId] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -165,6 +170,31 @@ export default function EmailAccounts() {
   const openCapsEditor = (account: EmailAccount) => {
     setEditCapsId(account.id);
     setCapsDraft({ dailyCap: String(account.dailyCap), hourlyCap: String(account.hourlyCap) });
+  };
+
+  const openNameEditor = (account: EmailAccount) => {
+    setEditNameId(account.id);
+    setNameDraft(account.from_name || '');
+  };
+  const cancelNameEditor = () => {
+    setEditNameId(null);
+    setNameDraft('');
+  };
+  const handleSaveName = async (accountId: string) => {
+    const next = nameDraft.trim();
+    if (!next) { cancelNameEditor(); return; }
+    setSavingNameId(accountId);
+    try {
+      await api.patch(`/email-accounts/${accountId}`, { fromName: next });
+      cancelNameEditor();
+      load();
+    } catch (e) {
+      const msg = (e as { message?: string; response?: { data?: { error?: string } } })?.response?.data?.error
+        || (e as Error)?.message || 'Failed to save display name';
+      alert(msg);
+    } finally {
+      setSavingNameId(null);
+    }
   };
 
   const handleSaveCaps = async (accountId: string) => {
@@ -535,7 +565,39 @@ export default function EmailAccounts() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-bold text-on-surface text-sm truncate">{account.email}</h3>
-                  <p className="text-xs text-slate-400 font-medium truncate">{account.from_name} · {account.provider}</p>
+                  {editNameId === account.id ? (
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <input
+                        autoFocus
+                        value={nameDraft}
+                        disabled={savingNameId === account.id}
+                        onChange={(e) => setNameDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); handleSaveName(account.id); }
+                          if (e.key === 'Escape') { e.preventDefault(); cancelNameEditor(); }
+                        }}
+                        onBlur={() => handleSaveName(account.id)}
+                        placeholder="Sender display name"
+                        className="text-xs font-medium text-slate-700 bg-white border border-[#b0004a]/40 rounded px-2 py-0.5 w-full min-w-0 focus:outline-none focus:ring-2 focus:ring-[#b0004a]/30"
+                      />
+                      {savingNameId === account.id && (
+                        <span className="material-symbols-outlined text-[12px] text-slate-400 animate-spin shrink-0">progress_activity</span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 font-medium truncate flex items-center gap-1">
+                      <span className="truncate">{account.from_name} · {account.provider}</span>
+                      {account.source === 'db' && (
+                        <button
+                          onClick={() => openNameEditor(account)}
+                          className="text-slate-300 hover:text-[#b0004a] transition-colors shrink-0"
+                          title="Edit sender display name"
+                        >
+                          <span className="material-symbols-outlined text-[12px]">edit</span>
+                        </button>
+                      )}
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
