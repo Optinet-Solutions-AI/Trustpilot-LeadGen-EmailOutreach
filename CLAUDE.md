@@ -494,6 +494,35 @@ After every set of changes, output this block at the end of your response (copy-
 
 ---
 
+## End-of-Task Report
+
+When the operator asks for an end-of-task / end-of-day / EOD report (any phrasing), produce this exact block — concise, not exhaustive. Skip change-by-change deploy logs; surface only outcomes and what the operator personally did or still needs to do.
+
+```
+## End-of-Task Report — <YYYY-MM-DD> <HH:MM>
+
+**Shipped**
+- <one-line outcome>
+- <one-line outcome>
+
+**Your action items — done today**
+- <thing the operator personally did, e.g. RDP'd into EC2, ran a DNS update>
+
+**Your action items — outstanding**
+- <pending thing the operator still owes, with the absolute-minimum context needed to act>
+
+**Notes** (optional, omit if empty)
+- <one-line caveat or follow-up>
+```
+
+Rules:
+- Max 5 bullets per section. If more, group / collapse.
+- No code blocks, no file paths, no deploy commands, no SHA's — those clutter the summary. The operator can read git log if they want detail.
+- "Your action items" means *the operator's hands*, not the agent's. A `gcloud deploy` I ran is NOT their action item; a DNS record they need to paste IS.
+- Outstanding items get the smallest possible payload that lets the operator act tomorrow without re-reading today's chat.
+
+---
+
 ## Quick Reference
 
 | Task | Command |
