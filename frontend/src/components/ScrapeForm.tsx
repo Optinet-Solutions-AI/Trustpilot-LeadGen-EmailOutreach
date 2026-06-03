@@ -130,11 +130,21 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         forceRescrape,
       } satisfies YelpScrapeParams;
     } else if (platform === 'facebook') {
+      // Consumer mode needs a `query` string for facebook.com/search/posts/?q=
+      // The operator-facing form asks for niche + location separately; we
+      // synthesize the query from them so the Python scraper gets a single
+      // search string. Phrasing mimics how consumers naturally post on FB
+      // ("looking for a dentist near brooklyn") to surface intent-signal
+      // posts rather than business listings.
+      const fbQuery =
+        fbLeadType === 'consumers'
+          ? `looking for ${fbNiche} ${fbLocation}`.trim().replace(/\s+/g, ' ')
+          : undefined;
       params = {
         platform: 'facebook',
         lead_type: fbLeadType,
         ...(fbLeadType === 'consumers'
-          ? { niche: fbNiche, location: fbLocation }
+          ? { niche: fbNiche, location: fbLocation, query: fbQuery }
           : { category: fbCategory, country: fbCountry }),
         enrich,
         verify,
