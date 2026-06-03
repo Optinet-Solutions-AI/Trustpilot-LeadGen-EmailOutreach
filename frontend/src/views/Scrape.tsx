@@ -328,8 +328,13 @@ export default function Scrape() {
 
           <div className="overflow-x-auto">
             <table className="w-full text-left">
-              <thead className="sticky top-14 lg:top-16 z-10 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
-                <tr className="bg-slate-50/95 backdrop-blur-sm">
+              {/* Non-sticky thead — sticky positioning was clipping row #1
+                  whenever the page was scrolled past the table's natural
+                  position. The first row (newest scrape) became an invisible
+                  thin strip behind the floating header. Keeping the thead
+                  in-flow guarantees every row renders in its declared spot. */}
+              <thead className="shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
+                <tr className="bg-slate-50">
                   {['Platform', 'Target', 'Rating', 'Status', 'Results', 'Date', ''].map((h, i) => (
                     <th
                       key={h || `col-${i}`}
