@@ -676,10 +676,18 @@ export default function LeadsTable({
           .replace(/(?:[a-zA-Z0-9](?:\s[a-zA-Z0-9]){4,})/g, '')  // drop runs of single letters
           .trim();
         // Fallback for synthetic post URLs: FB posts-search for the first
-        // ~6 cleaned excerpt words. The original post almost always surfaces
-        // top-of-results, letting the operator verify the inquiry is still
-        // live (or confirm it's gone) without hunting through the profile.
-        const excerptQuery = cleanExcerpt.split(' ').slice(0, 6).join(' ').trim();
+        // ~10 cleaned excerpt words + lead.country (location). Without the
+        // location, FB localizes results to whoever's browsing — a UK-plumber
+        // search from a PH browser returns Dumaguete posts. Appending the
+        // operator's scrape location keeps results geographically scoped.
+        // De-dupe: skip appending location if the excerpt already mentions it.
+        const excerptWords = cleanExcerpt.split(' ').slice(0, 10).join(' ').trim();
+        const location = (lead.country || '').trim();
+        const queryParts = [excerptWords];
+        if (location && !excerptWords.toLowerCase().includes(location.toLowerCase())) {
+          queryParts.push(location);
+        }
+        const excerptQuery = queryParts.filter(Boolean).join(' ').trim();
         const excerptSearchUrl = excerptQuery
           ? `https://www.facebook.com/search/posts/?q=${encodeURIComponent(excerptQuery)}`
           : null;
