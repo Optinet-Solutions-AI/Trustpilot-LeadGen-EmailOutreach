@@ -1247,15 +1247,19 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
     # Patterns that identify an anchor as pointing at a SPECIFIC POST (not
     # the author profile, not the group page, not a generic FB nav link).
     POST_URL_PATTERNS = [
-        r'/photo/?\?[^"]*fbid=',     # photo posts: /photo/?fbid=...&set=pcb.<post>
-        r'/photo\.php\?[^"]*fbid=',  # legacy photo URL
-        r'/posts/\d',                # /<handle>/posts/<id>
-        r'/permalink\.php\?',        # /permalink.php?story_fbid=...
+        r'/photo/?\?[^"]*fbid=',           # photo posts: /photo/?fbid=...&set=pcb.<post>
+        r'/photo\.php\?[^"]*fbid=',        # legacy photo URL
+        r'/posts/(?:pfbid)?[A-Za-z0-9]',   # /<handle>/posts/<id>  AND  /<handle>/posts/pfbid<token>
+        r'/permalink\.php\?',              # /permalink.php?story_fbid=...
         r'/groups/[^/]+/posts/',
         r'/groups/[^/]+/permalink/',
+        r'/groups/[^/]+/multi_permalinks/',
         r'/share/p/',
+        r'/share/v/',                      # video share permalinks
+        r'/share/r/',                      # reel share permalinks
         r'/videos/\d',
         r'/story\.php\?',
+        r'/people/[^/]+/posts/',           # /people/<name>/posts/<id>
     ]
     post_url_re = re.compile('|'.join(POST_URL_PATTERNS))
 
@@ -1885,9 +1889,22 @@ class FacebookScraper(SocialPlatformScraper):
         if not query:
             raise ValueError("search_posts requires a non-empty query")
         groups_only = bool(filters.get('groups_only'))
-        return await asyncio.to_thread(
+        stubs = await asyncio.to_thread(
             self._sync_search_posts, query, groups_only, max_results or 50, on_progress,
         )
+        # Stamp country/category from the operator's filters onto every stub.
+        # scrape-runner dispatches consumer-mode jobs via search-posts → enrich-authors
+        # (skipping scrape_listing's reshape), so without this the AuthorLead lands
+        # with country=null/category=null and the "Recent Scrape Jobs → row click"
+        # filter URL (which uses location/niche) shows zero results.
+        niche = (filters.get('niche') or filters.get('category') or '').strip() or None
+        location = (filters.get('location') or filters.get('country') or '').strip() or None
+        for s in stubs:
+            if niche and not s.get('category'):
+                s['category'] = niche
+            if location and not s.get('country'):
+                s['country'] = location
+        return stubs
 
     async def search_groups(
         self,

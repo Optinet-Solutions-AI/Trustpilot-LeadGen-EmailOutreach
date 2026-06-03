@@ -134,11 +134,11 @@ const DEFAULT_COLS: ColKey[] = ['company', 'social_profile', 'social_handle', 's
 const COL_STORAGE_KEY = 'leads_col_order_v8';
 
 const COL_LABELS: Record<ColKey, string> = {
-  company: 'Company', country: 'Country', category: 'Category',
+  company: 'Lead', country: 'Country', category: 'Category',
   trustpilot_email: 'TP Email', website_email: 'Site Email', affiliate_email: 'Affiliate Email',
   rating: 'Rating', tags: 'Tags', claimed: 'Claimed', scraped: 'Scraped',
   screenshot: 'Shot', status: 'Status',
-  social_profile: 'Profile', social_handle: 'Handle', social_action: 'Message',
+  social_profile: 'Source', social_handle: 'Handle', social_action: 'Message',
 };
 
 // Fixed column widths in px — both the sticky header table and the body
@@ -669,19 +669,29 @@ export default function LeadsTable({
         const groupSearchUrl = post?.group_id && niche
           ? `https://www.facebook.com/groups/${post.group_id}/search/?q=${encodeURIComponent('looking for a ' + niche)}`
           : null;
-        const targetUrl = isRealPostUrl
-          ? post!.post_url
-          : (groupSearchUrl ?? p.profile_url);
-        const linkLabel = isRealPostUrl
-          ? '📝 View post'
-          : (groupSearchUrl ? '🔎 Find in group' : '👤 View profile');
         // Strip the OCR-noise FB renders inside posts (random letters
         // separated by newlines/spaces from accessibility text overlays).
         const cleanExcerpt = (post?.content_excerpt || '')
           .replace(/\s+/g, ' ')
           .replace(/(?:[a-zA-Z0-9](?:\s[a-zA-Z0-9]){4,})/g, '')  // drop runs of single letters
-          .trim()
-          .slice(0, 110);
+          .trim();
+        // Fallback for synthetic post URLs: FB posts-search for the first
+        // ~6 cleaned excerpt words. The original post almost always surfaces
+        // top-of-results, letting the operator verify the inquiry is still
+        // live (or confirm it's gone) without hunting through the profile.
+        const excerptQuery = cleanExcerpt.split(' ').slice(0, 6).join(' ').trim();
+        const excerptSearchUrl = excerptQuery
+          ? `https://www.facebook.com/search/posts/?q=${encodeURIComponent(excerptQuery)}`
+          : null;
+        const targetUrl = isRealPostUrl
+          ? post!.post_url
+          : (groupSearchUrl ?? excerptSearchUrl ?? p.profile_url);
+        const linkLabel = isRealPostUrl
+          ? '📝 View post'
+          : (groupSearchUrl
+              ? '🔎 Find in group'
+              : (excerptSearchUrl ? '🔎 Find post' : '👤 View profile'));
+        const excerptDisplay = cleanExcerpt.slice(0, 110);
         return (
           <td key={col} className="px-4 py-3 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
             <a
@@ -694,12 +704,12 @@ export default function LeadsTable({
               <span className="truncate max-w-[200px]">{linkLabel}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
-            {cleanExcerpt && (
+            {excerptDisplay && (
               <p
                 className="mt-1 text-[10px] italic text-slate-500 leading-tight line-clamp-2"
                 title={post?.content_excerpt || ''}
               >
-                &ldquo;{cleanExcerpt}&hellip;&rdquo;
+                &ldquo;{excerptDisplay}&hellip;&rdquo;
               </p>
             )}
           </td>
