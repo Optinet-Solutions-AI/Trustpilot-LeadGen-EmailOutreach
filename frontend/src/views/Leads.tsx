@@ -74,6 +74,32 @@ export default function Leads() {
   const [categoryFilter, setCategoryFilter] = useState(() => searchParams?.get('category') ?? '');
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
+
+  // Sync filter state from URL on every navigation. Without this, clicking
+  // a scrape job links to /leads?country=Birmingham&category=plumber and
+  // the filters stick — clicking "Facebook Leads" in the sidebar afterwards
+  // doesn't reset them because useState initializers only run on first
+  // mount. Effect re-runs whenever searchParams changes, keeping the
+  // dropdowns + URL in lockstep.
+  const urlCountry = searchParams?.get('country') ?? '';
+  const urlCategory = searchParams?.get('category') ?? '';
+  const urlSearch = searchParams?.get('search') ?? '';
+  useEffect(() => {
+    setCountryFilter(urlCountry);
+    setCategoryFilter(urlCategory);
+    setSearch(urlSearch);
+    setPage(1);
+  }, [urlCountry, urlCategory, urlSearch]);
+
+  // Push filter changes back into the URL so the URL stays authoritative.
+  // Dropdown selections become bookmark / share-friendly, and the browser
+  // back button steps through filter history naturally.
+  const writeFilterToUrl = useCallback((key: 'country' | 'category' | 'search', value: string) => {
+    const params = new URLSearchParams(searchParams?.toString() ?? '');
+    if (value) params.set(key, value);
+    else params.delete(key);
+    router.replace(`/leads?${params.toString()}`);
+  }, [searchParams, router]);
   // ?platform=trustpilot|tripadvisor — drives the per-platform Lead Matrix pages.
   // Re-read on each render so navigation between sidebar entries refilters
   // without remounting the view.
@@ -777,21 +803,21 @@ export default function Leads() {
             <input
               type="text"
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              onChange={(e) => { setSearch(e.target.value); writeFilterToUrl('search', e.target.value); setPage(1); }}
               placeholder="Search companies..."
               className="w-full pl-10 pr-3 py-2.5 bg-surface-container rounded-lg text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             />
           </div>
           <select
             value={countryFilter}
-            onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
+            onChange={(e) => { setCountryFilter(e.target.value); writeFilterToUrl('country', e.target.value); setPage(1); }}
             className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           >
             {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
           </select>
           <select
             value={categoryFilter}
-            onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
+            onChange={(e) => { setCategoryFilter(e.target.value); writeFilterToUrl('category', e.target.value); setPage(1); }}
             className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           >
             {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
@@ -848,7 +874,7 @@ export default function Leads() {
               <input
                 type="text"
                 value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                onChange={(e) => { setSearch(e.target.value); writeFilterToUrl('search', e.target.value); setPage(1); }}
                 placeholder="Company name..."
                 className="w-full pl-10 pr-3 py-2.5 bg-surface-container rounded-lg text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
               />
@@ -858,7 +884,7 @@ export default function Leads() {
             <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Country</label>
             <select
               value={countryFilter}
-              onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
+              onChange={(e) => { setCountryFilter(e.target.value); writeFilterToUrl('country', e.target.value); setPage(1); }}
               className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
               {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
@@ -868,7 +894,7 @@ export default function Leads() {
             <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Category</label>
             <select
               value={categoryFilter}
-              onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
+              onChange={(e) => { setCategoryFilter(e.target.value); writeFilterToUrl('category', e.target.value); setPage(1); }}
               className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
               {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
