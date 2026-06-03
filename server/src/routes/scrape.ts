@@ -345,7 +345,7 @@ router.post('/', async (req: Request, res: Response) => {
           enrich,
           verify,
         }
-      : {
+      : (() => {
           // Non-review platforms (Facebook, Instagram) submit their filters
           // flat at the top level of the body (lead_type, query, date_from,
           // ...). Earlier versions only read body.filters and silently
@@ -354,15 +354,36 @@ router.post('/', async (req: Request, res: Response) => {
           //
           // Pick up every non-control field from the body, then layer
           // body.filters on top so the explicit envelope wins ties.
-          ...Object.fromEntries(
-            Object.entries(body).filter(([k]) =>
-              !['platform', 'forceRescrape', 'filters', 'enrich', 'verify'].includes(k),
+          const merged: Record<string, unknown> = {
+            ...Object.fromEntries(
+              Object.entries(body).filter(([k]) =>
+                !['platform', 'forceRescrape', 'filters', 'enrich', 'verify'].includes(k),
+              ),
             ),
-          ),
-          ...(rawFilters as Record<string, unknown>),
-          enrich,
-          verify,
-        };
+            ...(rawFilters as Record<string, unknown>),
+            enrich,
+            verify,
+          };
+          // Server-side fallback for FB consumer mode: tools/scraper/run.py
+          // requires a non-empty `query` for --action search-posts. If the
+          // frontend forgot to send one (old/cached form versions), derive
+          // it from niche + location the same way the frontend would.
+          // Without this, old browser sessions submit jobs that fail
+          // immediately at the Python layer (observed in production
+          // 2026-06-03 — three plumber UK jobs failed for this reason).
+          if (
+            platform === 'facebook' &&
+            merged.lead_type === 'consumers' &&
+            !(typeof merged.query === 'string' && merged.query.trim())
+          ) {
+            const niche = typeof merged.niche === 'string' ? merged.niche.trim() : '';
+            const location = typeof merged.location === 'string' ? merged.location.trim() : '';
+            if (niche || location) {
+              merged.query = `looking for ${niche} ${location}`.replace(/\s+/g, ' ').trim();
+            }
+          }
+          return merged;
+        })();
 
     const job = await createJob({
       // For TripAdvisor we mirror country + category to the top-level columns
