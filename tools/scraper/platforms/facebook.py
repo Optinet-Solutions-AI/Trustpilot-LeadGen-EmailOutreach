@@ -2140,8 +2140,18 @@ class FacebookScraper(SocialPlatformScraper):
                     #   4. URL-derived handle (last-resort)
                     bad_titles = {'facebook', '', 'log in to facebook', 'log into facebook', 'meta'}
                     def _is_bad(name: str) -> bool:
+                        # Brave shows the unread notification badge in <title>,
+                        # so a profile page may end up as "(2) Facebook" or
+                        # "(15) Facebook". Strip the leading "(N) " prefix
+                        # before comparing. Previous implementation used
+                        # lstrip('(0123456789 ') which forgot to include ')',
+                        # so it stopped after the digit and never matched
+                        # "facebook" — producing 5 leads with company_name=
+                        # "(2) Facebook" in the DB before this fix.
                         s = (name or '').strip().lower()
-                        return s in bad_titles or s.rstrip(')').lstrip('(0123456789 ') == 'facebook'
+                        if s in bad_titles:
+                            return True
+                        return re.sub(r'^\(\d+\)\s*', '', s).strip() == 'facebook'
 
                     display_name = ''
                     # 1. og:title
