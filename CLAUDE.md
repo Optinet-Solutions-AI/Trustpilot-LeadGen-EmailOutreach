@@ -496,7 +496,9 @@ After every set of changes, output this block at the end of your response (copy-
 
 ## End-of-Task Report
 
-When the operator asks for an end-of-task / end-of-day / EOD report (any phrasing), produce **exactly** this block — plain English, no jargon, no code blocks, no file paths, no SHAs.
+When the operator asks for an end-of-task / end-of-day / EOD report (any phrasing), produce **exactly** the block below — plain English, no jargon, no file paths, no SHAs.
+
+**Format**: emit the report inside a single fenced code block (triple backticks) so the operator can copy the whole thing in one click. The two sections — "task for today" and "in progress / pending" — must be visibly separated by a blank line so they're easy to scan.
 
 ```
 task for today:
@@ -506,7 +508,7 @@ task for today:
 - Result: <one-line summary of the net win>
 - Still to do next time: <next session's headline item>
 
-pending task:
+in progress / pending:
 - <thing the operator still needs to act on themselves>
 - <thing the operator still needs to act on themselves>
 ```
@@ -516,11 +518,11 @@ Style rules — match the user's preferred voice:
 - Outcomes only, not the steps. "Made the scraper grab real post URLs" not "Added _click_share_and_capture function with clipboard CDP grant"
 - Number facts when you have them (countries scraped, leads found, time saved) — they make the report feel real
 - One sentence per bullet. No bold, no headers inside bullets, no nested lists
-- 5-10 bullets max for "task for today". 1-5 for "pending task"
+- 5-10 bullets max for "task for today". 1-5 for "in progress / pending"
 - "task for today" = what got finished (whether you or the operator did it — both count, just stated as outcomes)
-- "pending task" = what the operator personally still owes (DNS to paste, button to click, decision to make) — NOT things the agent will do automatically next session
+- "in progress / pending" = open work the operator still needs to drive: things they personally owe (DNS to paste, decision to make) OR ongoing multi-session work that didn't finish today
 - "Result:" + "Still to do next time:" are conventional final lines of "task for today" — include them if there's a clear win and a clear next step
-- No closing prose after the block. The block IS the response.
+- No closing prose after the block. The fenced block IS the response.
 
 ---
 
