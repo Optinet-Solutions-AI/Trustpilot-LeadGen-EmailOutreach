@@ -11,7 +11,7 @@ Intended duration: **~3 weeks**, then disable.
 The `startColleagueWarmupScheduler()` in [server/src/services/colleague-warmup/scheduler.ts](../server/src/services/colleague-warmup/scheduler.ts) wakes every 60 seconds and:
 
 1. **Guards** — skips the tick if `COLLEAGUE_WARMUP_ENABLED !== 'true'` or if it's outside the Mon–Fri 3:00pm–10:00pm Asia/Manila window. **Does NOT honor `EMAIL_SENDING_PAUSED_UNTIL`** — that flag pauses cold outreach campaigns, but the whole point of this warm-up is to rehabilitate sender reputation during exactly those incidents.
-2. **Plans the day** — once per Manila day, computes the **workday index** from `COLLEAGUE_WARMUP_START_DATE` (today included if today is Mon-Fri and on/after that date). Daily target per sender = `5 + (workdayIndex - 1)`, capped at 20. **Each sender independently shuffles the 25-recipient pool and picks the next N in rotation** (no repeats within a sender's day until the rotation wraps). Sends are spaced 45–50 min apart per sender, randomly jittered, with a small per-sender initial offset so the 9 senders don't fire in lockstep.
+2. **Plans the day** — once per Manila day, computes the **workday index** from `COLLEAGUE_WARMUP_START_DATE` (today included if today is Mon-Fri and on/after that date). Daily target per sender = `5 + (workdayIndex - 1)`, capped at 20. **Each sender independently shuffles the 26-recipient pool and picks the next N in rotation** (no repeats within a sender's day until the rotation wraps). Sends are spaced 45–50 min apart per sender, randomly jittered, with a small per-sender initial offset so the 9 senders don't fire in lockstep.
 3. **Emails Cathy** — when a plan exists for the day (workdayIndex >= 1 with senders available), sends ONE HTML preview from `jhonquillycampilanan@gmail.com` to `cathylyn@optinetsolutions.com` listing every planned send.
 4. **Dispatches due rows** — any plan rows whose `send_at_utc` has arrived are sent via [server/src/services/email-sender.ts](../server/src/services/email-sender.ts).
 
@@ -49,7 +49,7 @@ Cathy reviews the daily preview at 3:00pm Manila and coordinates with colleagues
 - [ ] `jhonquillycampilanan@gmail.com` exists in `email_accounts` with valid SMTP credentials (used only for Cathy notifications)
 - [ ] All 9 `is_cold_sender=true` accounts have `status='active'` in `email_accounts`
 - [ ] `cathylyn@optinetsolutions.com` mailbox is reachable
-- [ ] All 25 colleagues have been briefed on the human protocol (Reply + Forward, NO "Not Spam")
+- [ ] All 26 colleagues have been briefed on the human protocol (Reply + Forward, NO "Not Spam")
 - [ ] `COLLEAGUE_WARMUP_START_DATE` is set (Manila YYYY-MM-DD). The first Mon-Fri on/after this date becomes Workday 1 (5 sends/sender).
 
 ### Enable
@@ -95,7 +95,7 @@ That table IS the audit trail — there's no separate DB log. If a row never app
 - Cadence: 45–50 min between sends per sender (jittered)
 - Daily target per sender: ramped via `COLLEAGUE_WARMUP_START_DATE` — 5 on Workday 1, +1 per workday, capped at 20
 - Total across 9 senders: 45 emails on Workday 1 → 180 emails/workday at cap
-- Per colleague (25 in pool): ~1.8 received/workday on Workday 1 → ~7.2/workday at cap
+- Per colleague (26 in pool): ~1.8 received/workday on Workday 1 → ~7.2/workday at cap
 
 ### Recipient rotation
 
