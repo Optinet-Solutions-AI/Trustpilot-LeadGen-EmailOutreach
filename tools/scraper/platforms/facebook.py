@@ -73,10 +73,17 @@ def _claim_account(platform: str = 'facebook') -> Optional[dict]:
     Returns the row dict, or None if no account is available (all
     capped or none connected). The caller increments counters via
     ``_bump_counters`` after each significant action.
+
+    Auto-rollover: when ``last_used_at`` is older than 1 hour / 24 hours,
+    the hour / day buckets are stale. Reset them in the DB before the
+    cap check so the account becomes usable on the natural boundary.
+    Without this, ``used_this_hour`` accumulates across hours and
+    permanently strands the account at the cap.
     """
+    from datetime import datetime, timezone, timedelta
     rows = (
         table('social_accounts')
-        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies')
+        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at')
         .eq('platform', platform)
         .eq('status', 'active')
         .order('used_today', desc=False)
@@ -84,7 +91,28 @@ def _claim_account(platform: str = 'facebook') -> Optional[dict]:
         .execute()
         .data
     )
+    now = datetime.now(timezone.utc)
     for row in rows:
+        # Roll over stale counters before checking caps.
+        last_used_raw = row.get('last_used_at')
+        if last_used_raw:
+            try:
+                last_used = datetime.fromisoformat(last_used_raw.replace('Z', '+00:00'))
+                age = now - last_used
+                resets: dict = {}
+                if age >= timedelta(hours=1) and (row.get('used_this_hour') or 0) > 0:
+                    row['used_this_hour'] = 0
+                    resets['used_this_hour'] = 0
+                if age >= timedelta(hours=24) and (row.get('used_today') or 0) > 0:
+                    row['used_today'] = 0
+                    resets['used_today'] = 0
+                if resets:
+                    try:
+                        table('social_accounts').update(resets).eq('id', row['id']).execute()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         if row['used_today'] >= row['daily_cap']:
             continue
         if row['used_this_hour'] >= row['hourly_cap']:
