@@ -496,30 +496,31 @@ After every set of changes, output this block at the end of your response (copy-
 
 ## End-of-Task Report
 
-When the operator asks for an end-of-task / end-of-day / EOD report (any phrasing), produce this exact block — concise, not exhaustive. Skip change-by-change deploy logs; surface only outcomes and what the operator personally did or still needs to do.
+When the operator asks for an end-of-task / end-of-day / EOD report (any phrasing), produce **exactly** this block — plain English, no jargon, no code blocks, no file paths, no SHAs.
 
 ```
-## End-of-Task Report — <YYYY-MM-DD> <HH:MM>
+task for today:
+- <plain-english outcome, past tense, no tech terms>
+- <plain-english outcome>
+- ...
+- Result: <one-line summary of the net win>
+- Still to do next time: <next session's headline item>
 
-**Shipped**
-- <one-line outcome>
-- <one-line outcome>
-
-**Your action items — done today**
-- <thing the operator personally did, e.g. RDP'd into EC2, ran a DNS update>
-
-**Your action items — outstanding**
-- <pending thing the operator still owes, with the absolute-minimum context needed to act>
-
-**Notes** (optional, omit if empty)
-- <one-line caveat or follow-up>
+pending task:
+- <thing the operator still needs to act on themselves>
+- <thing the operator still needs to act on themselves>
 ```
 
-Rules:
-- Max 5 bullets per section. If more, group / collapse.
-- No code blocks, no file paths, no deploy commands, no SHA's — those clutter the summary. The operator can read git log if they want detail.
-- "Your action items" means *the operator's hands*, not the agent's. A `gcloud deploy` I ran is NOT their action item; a DNS record they need to paste IS.
-- Outstanding items get the smallest possible payload that lets the operator act tomorrow without re-reading today's chat.
+Style rules — match the user's preferred voice:
+- Past-tense action verbs: "Built", "Made", "Set up", "Got", "Wired up", "Fixed"
+- Outcomes only, not the steps. "Made the scraper grab real post URLs" not "Added _click_share_and_capture function with clipboard CDP grant"
+- Number facts when you have them (countries scraped, leads found, time saved) — they make the report feel real
+- One sentence per bullet. No bold, no headers inside bullets, no nested lists
+- 5-10 bullets max for "task for today". 1-5 for "pending task"
+- "task for today" = what got finished (whether you or the operator did it — both count, just stated as outcomes)
+- "pending task" = what the operator personally still owes (DNS to paste, button to click, decision to make) — NOT things the agent will do automatically next session
+- "Result:" + "Still to do next time:" are conventional final lines of "task for today" — include them if there's a clear win and a clear next step
+- No closing prose after the block. The block IS the response.
 
 ---
 
