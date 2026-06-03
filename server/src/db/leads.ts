@@ -46,8 +46,13 @@ export async function getLeads(filters: LeadFilters = {}) {
     : supabase.from('leads').select('*', { count: 'exact' });
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
-  if (filters.country) query = query.eq('country', filters.country);
-  if (filters.category) query = query.eq('category', filters.category);
+  // country + category use ILIKE substring match so operator typos and
+  // partial typing still surface the right leads. Examples:
+  //   "dentis"   matches "dentist" and "dental services"
+  //   "plumb"    matches "plumber" and "plumbing"
+  //   "new york" matches "New York, USA"
+  if (filters.country) query = query.ilike('country', `%${filters.country}%`);
+  if (filters.category) query = query.ilike('category', `%${filters.category}%`);
   if (filters.minRating) query = query.gte('star_rating', filters.minRating);
   if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
   if (filters.search) {
@@ -120,8 +125,13 @@ export async function getLeadIds(
     : supabase.from('leads').select('id, primary_email');
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
-  if (filters.country) query = query.eq('country', filters.country);
-  if (filters.category) query = query.eq('category', filters.category);
+  // country + category use ILIKE substring match so operator typos and
+  // partial typing still surface the right leads. Examples:
+  //   "dentis"   matches "dentist" and "dental services"
+  //   "plumb"    matches "plumber" and "plumbing"
+  //   "new york" matches "New York, USA"
+  if (filters.country) query = query.ilike('country', `%${filters.country}%`);
+  if (filters.category) query = query.ilike('category', `%${filters.category}%`);
   if (filters.minRating) query = query.gte('star_rating', filters.minRating);
   if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
   if (filters.search) {
