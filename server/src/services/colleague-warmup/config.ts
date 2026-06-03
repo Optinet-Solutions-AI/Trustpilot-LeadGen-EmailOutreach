@@ -40,7 +40,7 @@ export const RECIPIENTS: Recipient[] = [
   { email: 'karenpamonag@yahoo.com', first_name: 'Karen' },
   { email: 'conchamichelle00@gmail.com', first_name: 'Michelle' },
   { email: 'andalescaren05@gmail.com', first_name: 'Caren' },
-  { email: 'anascojas@gmail.com', first_name: 'Ana' },
+  { email: 'anascojas@gmail.com', first_name: 'Jas' },
 ];
 
 export const SUBJECTS: string[] = [
