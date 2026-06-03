@@ -956,7 +956,6 @@ export default function Leads() {
             totalPages={totalPages}
             onPageChange={setPage}
             onStatusChange={handleStatusChange}
-            onUpdateField={async (id, patch) => { await updateLead(id, patch); }}
             onDelete={(id) => deleteLead(id)}
             selectedIds={selectedIds}
             onSelect={setSelectedIds}

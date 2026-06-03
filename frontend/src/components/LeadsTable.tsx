@@ -101,10 +101,6 @@ interface Props {
   totalPages: number;
   onPageChange: (page: number) => void;
   onStatusChange: (id: string, status: LeadStatus) => void;
-  // Generic field patch — used by the inline company-name editor and any
-  // future inline-edit columns. Returns a Promise so the caller can await
-  // the optimistic-then-confirmed update flow.
-  onUpdateField?: (id: string, patch: Record<string, unknown>) => Promise<void>;
   onDelete: (id: string) => void;
   selectedIds: string[];
   onSelect: (ids: string[]) => void;
@@ -207,7 +203,7 @@ function loadColOrder(): ColKey[] {
 
 export default function LeadsTable({
   leads, total, page, totalPages,
-  onPageChange, onStatusChange, onUpdateField, onDelete, selectedIds, onSelect, onLeadClick,
+  onPageChange, onStatusChange, onDelete, selectedIds, onSelect, onLeadClick,
   sortBy, sortDir, onSortChange,
   onDismissLinkFlag, onEditLinkUrl,
   extraColumns, extraRowActions, hideColumns,
@@ -225,37 +221,6 @@ export default function LeadsTable({
   const [previewName, setPreviewName] = useState<string>('');
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const dragCol = useRef<ColKey | null>(null);
-
-  // Inline-edit state for company name. Single edit at a time across the
-  // whole table. Double-click the name OR click the hover-pencil to enter
-  // edit mode; Enter / blur saves, Escape discards.
-  const [editingNameId, setEditingNameId] = useState<string | null>(null);
-  const [nameDraft, setNameDraft] = useState<string>('');
-  const [savingNameId, setSavingNameId] = useState<string | null>(null);
-
-  const beginEditName = (lead: Lead) => {
-    if (!onUpdateField) return;
-    setEditingNameId(lead.id);
-    setNameDraft(lead.company_name || '');
-  };
-  const cancelEditName = () => {
-    setEditingNameId(null);
-    setNameDraft('');
-  };
-  const commitEditName = async (lead: Lead) => {
-    const next = nameDraft.trim();
-    if (!onUpdateField || !next || next === lead.company_name) {
-      cancelEditName();
-      return;
-    }
-    setSavingNameId(lead.id);
-    try {
-      await onUpdateField(lead.id, { company_name: next });
-    } finally {
-      setSavingNameId(null);
-      cancelEditName();
-    }
-  };
 
   // Selection state lives in the parent; mirror it as a Set here for O(1)
   // membership checks. This is the single source of truth — pagination no
@@ -459,33 +424,8 @@ export default function LeadsTable({
     switch (col) {
       case 'company':
         return (
-          <td key={col} className="px-4 py-3 max-w-[220px] group/companycell">
+          <td key={col} className="px-4 py-3 max-w-[220px]">
             {(() => {
-              // Inline edit mode — operator double-clicked the name or
-              // clicked the hover-pencil. Renders an input that saves on
-              // Enter / blur and cancels on Escape.
-              if (editingNameId === lead.id) {
-                const isSaving = savingNameId === lead.id;
-                return (
-                  <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      autoFocus
-                      value={nameDraft}
-                      disabled={isSaving}
-                      onChange={(e) => setNameDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') { e.preventDefault(); commitEditName(lead); }
-                        if (e.key === 'Escape') { e.preventDefault(); cancelEditName(); }
-                      }}
-                      onBlur={() => commitEditName(lead)}
-                      className="text-sm font-bold text-on-surface bg-surface-container border border-[#b0004a]/40 rounded px-2 py-1 w-full max-w-[200px] focus:outline-none focus:ring-2 focus:ring-[#b0004a]/30"
-                    />
-                    {isSaving && (
-                      <span className="material-symbols-outlined text-[14px] text-secondary animate-spin">progress_activity</span>
-                    )}
-                  </div>
-                );
-              }
               // For social-platform leads, the company-name link points at the
               // joined platform-presence profile_url. Falls back to trustpilot_url
               // for review-platform leads (the legacy column).
@@ -494,41 +434,19 @@ export default function LeadsTable({
               const platformLabel = presence?.platform
                 ? presence.platform.charAt(0).toUpperCase() + presence.platform.slice(1)
                 : null;
-              const editPencil = onUpdateField ? (
-                <button
-                  type="button"
-                  title="Edit display name"
-                  onClick={(e) => { e.stopPropagation(); beginEditName(lead); }}
-                  className="opacity-0 group-hover/companycell:opacity-100 transition-opacity text-secondary hover:text-[#b0004a] shrink-0"
+              return linkHref ? (
+                <a
+                  href={linkHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="font-bold text-[#b0004a] hover:underline inline-flex items-center gap-1 text-sm leading-tight"
                 >
-                  <span className="material-symbols-outlined text-[14px]">edit</span>
-                </button>
-              ) : null;
-              const dblClickHandler = onUpdateField
-                ? (e: React.MouseEvent) => { e.stopPropagation(); beginEditName(lead); }
-                : undefined;
-              return (
-                <div className="inline-flex items-center gap-1.5 max-w-full">
-                  {linkHref ? (
-                    <a
-                      href={linkHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      onDoubleClick={dblClickHandler}
-                      className="font-bold text-[#b0004a] hover:underline inline-flex items-center gap-1 text-sm leading-tight"
-                    >
-                      <span className="truncate max-w-[190px]">{lead.company_name}</span>
-                      <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
-                    </a>
-                  ) : (
-                    <span
-                      className="font-bold text-on-surface text-sm"
-                      onDoubleClick={dblClickHandler}
-                    >{lead.company_name}</span>
-                  )}
-                  {editPencil}
-                </div>
+                  <span className="truncate max-w-[190px]">{lead.company_name}</span>
+                  <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
+                </a>
+              ) : (
+                <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
               );
             })()}
             {/* Social-platform extras live in their own dedicated columns
