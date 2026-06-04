@@ -26,6 +26,7 @@ import settingsRoutes from './routes/settings.js';
 import discoveredContactsRoutes, { leadDiscoveredContactsRouter } from './routes/discovered-contacts.js';
 import adminRoutes from './routes/admin.js';
 import tripadvisorRoutes from './routes/tripadvisor.js';
+import { startSocialConnectWorker } from './worker/social-connect-worker.js';
 
 const app = express();
 
@@ -265,6 +266,11 @@ const server = app.listen(config.port, async () => {
   } catch (e) {
     console.error('[Startup] Nightly scrape scheduler error:', e instanceof Error ? e.message : e);
   }
+
+  // Social-connect worker — polls for 'requested' social account connections,
+  // spawns the noVNC+Brave tunnel, and captures the session cookie. Gated by
+  // ENABLE_SOCIAL_CONNECT_WORKER=1 so Cloud Run and dev instances no-op.
+  startSocialConnectWorker();
 
   // Reply tracking poll — runs every 10 minutes for BOTH the legacy single
   // Gmail OAuth path (reply-tracker.ts, self-gated on EMAIL_MODE=gmail) AND
