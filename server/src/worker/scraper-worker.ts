@@ -20,6 +20,7 @@ import {
   type ScrapeJob,
 } from '../db/scrape-jobs.js';
 import { runScrapeJob, getActiveProcesses } from '../services/scrape-runner.js';
+import { startSocialConnectWorker } from './social-connect-worker.js';
 
 const MAX_CONCURRENT = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS ?? 3));
 const POLL_INTERVAL_MS = Math.max(5_000, Number(process.env.POLL_INTERVAL_MS ?? 30_000));
@@ -154,6 +155,12 @@ async function main(): Promise<void> {
     `starting max_concurrent=${MAX_CONCURRENT} poll=${POLL_INTERVAL_MS}ms ` +
     `platform_filter=${PLATFORM_FILTER ?? '<none>'} platform_exclude=${PLATFORM_EXCLUDE ?? '<none>'}`,
   );
+
+  // Social-connect worker runs alongside the scrape poll loop in this same
+  // process. It's the same box that hosts Brave + the connected social
+  // accounts, so it makes sense to share the service. Gated internally by
+  // ENABLE_SOCIAL_CONNECT_WORKER=1 — no-ops on dev/Cloud Run instances.
+  startSocialConnectWorker();
 
   // Initial sweep so a fresh worker reclaims jobs orphaned by a previous one.
   await sweepStale();
