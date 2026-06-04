@@ -809,6 +809,18 @@ paths:
       responses:
         "200":
           description: OK
+  /api/social-accounts/{id}/connect-status:
+    get:
+      operationId: getConnectStatus
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/social-accounts/{id}/recover:
     post:
       operationId: recoverSocialAccount
