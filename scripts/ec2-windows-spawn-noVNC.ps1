@@ -90,33 +90,50 @@ $wsProc = Start-Process -FilePath $PYTHON -ArgumentList $wsArgs -PassThru -Windo
 Write-Host "websockify started pid=$($wsProc.Id) on :6080"
 Start-Sleep -Seconds 1
 
-# 2. Start cloudflared quick tunnel pointing at :6080. Output goes to a temp
-#    file we tail for the public URL.
-$tunnelLog = [System.IO.Path]::GetTempFileName()
+# 2. Start cloudflared quick tunnel pointing at :6080. PowerShell's
+#    Start-Process forbids redirecting stdout+stderr to the SAME file —
+#    use two separate temp files and scan both. cloudflared writes its
+#    tunnel-ready banner to stderr (progress is stderr by convention),
+#    so the URL match usually lands in $tunnelLogErr.
+$tunnelLogOut = [System.IO.Path]::GetTempFileName()
+$tunnelLogErr = [System.IO.Path]::GetTempFileName()
 $cfArgs = @("tunnel", "--no-autoupdate", "--url", "http://localhost:6080")
 $cfProc = Start-Process -FilePath $CLOUDFLARED -ArgumentList $cfArgs -PassThru -WindowStyle Hidden `
-    -RedirectStandardOutput $tunnelLog -RedirectStandardError $tunnelLog
+    -RedirectStandardOutput $tunnelLogOut -RedirectStandardError $tunnelLogErr
 Write-Host "cloudflared started pid=$($cfProc.Id), waiting for tunnel URL..."
 
-# Tail the log for up to 30s waiting for the URL line. cloudflared prints
-# something like: "Your quick tunnel has been created! https://abc.trycloudflare.com"
+# Tail BOTH log files for up to 45s waiting for the URL line. Extended
+# from 30s because Singapore EC2 → Cloudflare edge sometimes needs more
+# than 30s to negotiate on first run after a system idle period.
 $tunnelUrl = $null
-$deadline = (Get-Date).AddSeconds(30)
+$deadline = (Get-Date).AddSeconds(45)
 while ((Get-Date) -lt $deadline -and -not $tunnelUrl) {
     Start-Sleep -Milliseconds 500
-    if (Test-Path $tunnelLog) {
-        $content = Get-Content $tunnelLog -Raw -ErrorAction SilentlyContinue
-        if ($content -match "https://[a-z0-9-]+\.trycloudflare\.com") {
-            $tunnelUrl = $Matches[0]
+    foreach ($logFile in @($tunnelLogErr, $tunnelLogOut)) {
+        if (Test-Path $logFile) {
+            $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if ($content -match "https://[a-z0-9-]+\.trycloudflare\.com") {
+                $tunnelUrl = $Matches[0]
+                break
+            }
         }
     }
 }
 
 if (-not $tunnelUrl) {
-    Write-Host "FATAL: cloudflared did not print a tunnel URL within 30s"
-    Stop-Process -Id $cfProc.Id -Force -ErrorAction SilentlyContinue
-    Stop-Process -Id $wsProc.Id -Force -ErrorAction SilentlyContinue
-    Remove-Item $tunnelLog -ErrorAction SilentlyContinue
+    # Dump what cloudflared actually wrote so the operator can diagnose.
+    Write-Host "FATAL: cloudflared did not print a tunnel URL within 45s"
+    Write-Host "--- cloudflared stderr tail ---"
+    if (Test-Path $tunnelLogErr) {
+        Get-Content $tunnelLogErr -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "cf-err: $_" }
+    }
+    Write-Host "--- cloudflared stdout tail ---"
+    if (Test-Path $tunnelLogOut) {
+        Get-Content $tunnelLogOut -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "cf-out: $_" }
+    }
+    if ($cfProc -and $cfProc.Id) { Stop-Process -Id $cfProc.Id -Force -ErrorAction SilentlyContinue }
+    if ($wsProc -and $wsProc.Id) { Stop-Process -Id $wsProc.Id -Force -ErrorAction SilentlyContinue }
+    Remove-Item $tunnelLogOut, $tunnelLogErr -ErrorAction SilentlyContinue
     exit 3
 }
 
@@ -157,5 +174,5 @@ try {
     Stop-Process -Id $braveProc.Id  -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $cfProc.Id     -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $wsProc.Id     -Force -ErrorAction SilentlyContinue
-    Remove-Item $tunnelLog -ErrorAction SilentlyContinue
+    Remove-Item $tunnelLogOut, $tunnelLogErr -ErrorAction SilentlyContinue
 }
