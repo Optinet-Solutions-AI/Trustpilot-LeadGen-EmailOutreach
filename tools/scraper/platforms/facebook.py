@@ -2087,6 +2087,64 @@ class FacebookScraper(SocialPlatformScraper):
                 s['category'] = niche
             if location and not s.get('country'):
                 s['country'] = location
+
+        # ── Consumer-only filter chain (was previously ONLY in scrape_listing) ──
+        #
+        # scrape-runner.ts dispatches FB consumer-mode jobs as `--action search-posts`
+        # → `--action enrich-authors`, completely bypassing scrape_listing. That
+        # meant the substring + Gemini filters never ran on production scrapes —
+        # the EC2 worker happily saved every noise post FB returned (Visayan
+        # "Snacks, sips, and sunshine" type content for non-PH queries, etc.).
+        # The "looking for plumber in Birmingham" runs happened to look clean
+        # only because FB returned mostly-relevant posts for common niches.
+        #
+        # Moving the chain HERE means every call path (scrape_listing AND the
+        # direct search-posts action) gets the filters. The duplicate filter
+        # block in scrape_listing becomes a no-op on already-clean stubs.
+        # Operator can disable via filters.exclude_businesses / asking_only /
+        # use_llm_classifier (all default True).
+        is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
+        if is_consumer_mode and stubs:
+            exclude_businesses = filters.get('exclude_businesses', True)
+            asking_only = filters.get('asking_only', True)
+            use_llm_classifier = filters.get('use_llm_classifier', True)
+
+            if exclude_businesses or asking_only:
+                before = len(stubs)
+                kept: list = []
+                for s in stubs:
+                    excerpt = s.get('content_excerpt', '') or ''
+                    handle = s.get('author_handle', '') or ''
+                    if exclude_businesses and _looks_like_business_post(excerpt, handle):
+                        continue
+                    if asking_only and not _is_actively_asking(excerpt):
+                        continue
+                    kept.append(s)
+                dropped = before - len(kept)
+                if dropped > 0:
+                    _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
+                          reason='non-asking posts (thanks/recommend/business) removed')
+                stubs = kept
+
+            # LLM final-pass — substring patterns are ~30% precision; Gemini Flash
+            # lifts to ~80-90% by judging semantic intent. Falls through silently
+            # when GEMINI_API_KEY isn't set or the API errors.
+            if use_llm_classifier and stubs:
+                excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
+                niche_for_llm = niche or query
+                verdicts = _classify_consumer_posts_with_gemini(excerpts, niche_for_llm)
+                if verdicts is not None:
+                    llm_kept = [s for s, v in zip(stubs, verdicts) if v]
+                    llm_dropped = len(stubs) - len(llm_kept)
+                    if llm_dropped > 0:
+                        _emit(on_progress, 'llm_filtered',
+                              dropped=llm_dropped, kept=len(llm_kept),
+                              reason='Gemini classifier flagged as non-consumer')
+                    stubs = llm_kept
+                else:
+                    _emit(on_progress, 'llm_skipped',
+                          reason='GEMINI_API_KEY missing or API error — substring filter only')
+
         return stubs
 
     async def search_groups(
