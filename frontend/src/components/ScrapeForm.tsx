@@ -180,7 +180,6 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   };
 
   const busy = !!(loading || isSubmitting);
-  const showProxyHint = activeManifest?.name === platform && activeManifest?.requires_proxy;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
@@ -202,11 +201,12 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               if (m) setActiveManifest(m);
             }}
           />
-          {showProxyHint && (
-            <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
-              This platform blocks Cloud Run / EC2 IPs. Run from local mode.
-            </p>
-          )}
+          {/* The "requires_proxy" manifest flag used to surface a "run from local
+              mode only" warning here. The Windows EC2 worker (commits 2026-06-03)
+              now runs scrapes for this platform via Brave + residential proxy +
+              persistent profile, so the warning is no longer accurate. The
+              "Requires at least one connected <platform> account" notice below
+              already tells the operator what they actually need to do. */}
         </div>
 
         {platform === 'trustpilot' && (
