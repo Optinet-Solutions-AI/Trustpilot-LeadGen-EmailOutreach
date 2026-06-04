@@ -12,6 +12,7 @@
  */
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
 import {
@@ -26,7 +27,23 @@ import { getSupabase } from '../lib/supabase.js';
 const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
 const PROFILES_ROOT = process.env.FB_PROFILES_ROOT ?? 'C:\\fb-profiles';
-const SPAWN_SCRIPT = path.join(process.cwd(), 'scripts', 'ec2-windows-spawn-noVNC.ps1');
+// Locate the PowerShell spawn script. The Node process's cwd depends on
+// where NSSM/npm started it (typically server/ on Windows EC2, repo root
+// on dev machines). The script lives at <repo>/scripts/ regardless. Probe
+// both candidates and pick the one that exists.
+function resolveSpawnScript(): string {
+  const candidates = [
+    path.resolve(process.cwd(), '..', 'scripts', 'ec2-windows-spawn-noVNC.ps1'),
+    path.resolve(process.cwd(), 'scripts', 'ec2-windows-spawn-noVNC.ps1'),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  // Return the first candidate so spawn fails with a clear "file not found"
+  // — better than a silent path-mangling bug.
+  return candidates[0];
+}
+const SPAWN_SCRIPT = resolveSpawnScript();
 const FB_SESSION_COOKIE = 'c_user';
 
 function log(msg: string): void {
