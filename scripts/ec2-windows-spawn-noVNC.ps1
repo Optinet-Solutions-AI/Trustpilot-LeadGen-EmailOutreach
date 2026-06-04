@@ -29,16 +29,41 @@ $ErrorActionPreference = "Continue"
 # websockify runs via Python (pip install websockify) instead of a
 # standalone .exe — the suchja/websockify-windows release is flaky and
 # Python is already installed on this box for the scrapers.
-$BRAVE       = "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+
+# Probe multiple Brave install paths — choco installs to %LOCALAPPDATA% on
+# Windows Server when run without elevated install scope, while
+# desktop installers default to C:\Program Files. Python scraper has the
+# same probe; mirror its order for consistency.
+function Find-Brave {
+    $candidates = @(
+        "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe",
+        "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        "C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+        "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return $c }
+    }
+    return $null
+}
+
+$BRAVE       = Find-Brave
 $PYTHON      = "C:\scraper\.venv\Scripts\python.exe"
 $CLOUDFLARED = "C:\tools\cloudflared\cloudflared.exe"
 
-foreach ($p in @($BRAVE, $PYTHON, $CLOUDFLARED)) {
+if (-not $BRAVE) {
+    Write-Host "FATAL: Brave not found in any known location. Tried LOCALAPPDATA, Program Files, Program Files (x86)."
+    exit 2
+}
+
+foreach ($p in @($PYTHON, $CLOUDFLARED)) {
     if (-not (Test-Path $p)) {
         Write-Host "FATAL: missing binary $p - run the one-time install steps in the plan"
         exit 2
     }
 }
+
+Write-Host "Brave: $BRAVE"
 
 # Verify Python websockify is importable (pip install websockify on first setup).
 & $PYTHON -c "import websockify" 2>$null
