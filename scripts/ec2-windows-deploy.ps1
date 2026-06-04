@@ -20,6 +20,30 @@ if (-not (Test-Path $STATE_DIR)) {
     New-Item -ItemType Directory -Path $STATE_DIR -Force | Out-Null
 }
 
+# Refresh PATH from Machine + User registry values. Without this, Task
+# Scheduler runs the script with a stale PATH (whatever was set when the
+# user that created the task last logged in). git / npm / nssm may have
+# been added to PATH later (e.g. via choco install) but the task never
+# picked them up — leading to silent failures where every git call exits
+# with $LASTEXITCODE unset, the head-comparison passes (both empty strings
+# are equal), and the script no-ops at "Cheap path: nothing new" every
+# tick. This refresh is what an interactive shell does automatically on
+# each new session.
+$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+            [Environment]::GetEnvironmentVariable("Path", "User")
+
+# Fail-fast if any required binary is still missing. Logs it loudly so
+# the operator can debug — the prior silent-fail mode hid this for hours.
+foreach ($bin in @('git', 'npm', 'nssm')) {
+    $found = Get-Command $bin -ErrorAction SilentlyContinue
+    if (-not $found) {
+        $msg = "FATAL: '$bin' not on PATH after refresh. " +
+               "PATH=$($env:Path.Substring(0, [Math]::Min(500, $env:Path.Length)))..."
+        Add-Content -Path $LOG_FILE -Value "[$((Get-Date -AsUTC).ToString('yyyy-MM-ddTHH:mm:ssZ'))] $msg" -Encoding utf8
+        exit 4
+    }
+}
+
 function Write-DeployLog {
     param([string]$Message)
     $stamp = (Get-Date -AsUTC).ToString("yyyy-MM-ddTHH:mm:ssZ")
