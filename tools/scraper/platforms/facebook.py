@@ -315,6 +315,7 @@ def _classify_consumer_posts_with_gemini(
     post_excerpts: list[str],
     niche: str,
     *,
+    location: Optional[str] = None,
     timeout_s: int = 30,
 ) -> Optional[list[bool]]:
     """Send a batch of post excerpts to Gemini Flash and return per-post
@@ -340,17 +341,37 @@ def _classify_consumer_posts_with_gemini(
         for i, text in enumerate(post_excerpts)
     )
 
-    prompt = f"""You are classifying Facebook group posts to find PROSPECTS — private individuals who currently need to hire a tradesperson, professional, or service provider (e.g. {niche} or a closely related trade).
+    location_clause = (
+        f'\n\nTARGET LOCATION: "{location}".\n'
+        f'  - The post must be about a job IN or NEAR {location}. A different city or '
+        f'    region in the same country (e.g. operator searched London, post is from '
+        f'    Manchester or Bury) is FALSE.\n'
+        f'  - Surrounding boroughs / suburbs / postcodes of {location} count as the same '
+        f'    location. Example: searching London, a post mentioning E1 / Croydon / '
+        f'    Camden / Greater London passes.\n'
+        f'  - A post with NO location mentioned at all (no city, postcode, area) can pass — '
+        f'    we cannot rule it out. Only drop on a CONFLICTING location.\n'
+        if location else ''
+    )
+
+    prompt = f"""You are classifying Facebook group posts to find PROSPECTS — private individuals who currently need to hire someone specifically for "{niche}".
 
 For each numbered post, answer TRUE or FALSE.
 
-TRUE — the author is a private individual or household describing a SPECIFIC personal need:
+NICHE MATCH (strict): the post must be asking for "{niche}" or an exact synonym, NOT a related trade.
+  - "Website builder" search: a post asking for a "website developer" or "web designer" passes. A post asking for a "bathroom builder", "house builder", or any physical-construction "builder" is FALSE — different service entirely, only the word matches.
+  - "Plumber" search: a post asking for a "plumbing engineer" or "heating engineer" passes. A "handyman" who happens to do plumbing as a side skill is FALSE unless they explicitly mention the plumbing job is the ask.
+  - "Dentist" search: orthodontist / dental hygienist / oral surgeon pass. GP, doctor, or unrelated medical specialist is FALSE.
+  - When in doubt about whether two services are the same, default to FALSE. We'd rather miss a marginal lead than send cold outreach to someone in the wrong industry.
+{location_clause}
+TRUE — the author is a private individual or household describing a SPECIFIC personal need FOR THE NICHE:
   - mentions a property, address, postcode, "my house", "my flat", "my mum's"
   - one-off job: install, fix, repair, replace, advice for a personal situation
-  - related trades count too — a "handyman" or "tradesperson" post counts when searching for {niche}
   - asking on behalf of a family member or friend counts (still a consumer lead)
 
 FALSE — everything else, including:
+  - WRONG NICHE — a builder when you wanted a website builder, etc. (see niche rules above)
+  - WRONG LOCATION — different city when the operator targeted a specific one (see location rules above)
   - businesses advertising their own services ("Need a reliable plumber? Call us…")
   - clinics/contractors recruiting staff ("Looking for a Gas Safe engineer, full time")
   - agencies pitching websites / marketing / lead-gen to tradespeople
@@ -360,12 +381,6 @@ FALSE — everything else, including:
   - business-partnership offers ("Looking for a master plumber to start a business")
   - past-tense / already-found posts ("Salamat Doc / had my procedure / went to…")
   - vague marketplace lead-gen posts with no concrete personal need
-
-Edge cases:
-  - Address, postcode, or location detail = strong consumer signal.
-  - "Asking for a friend" / "for my mum" = consumer.
-  - "Full time" / "to join" / "to start a business" = NOT consumer.
-  - A vague rhetorical question ("Looking for a plumber who isn't fully booked out?") with no personal context = NOT consumer.
 
 Return ONLY a JSON object with this exact shape, no preamble or markdown:
 {{"verdicts": [true, false, true, ...]}}
@@ -1984,7 +1999,9 @@ class FacebookScraper(SocialPlatformScraper):
             # the API errors — substring filter results stay in place.
             if use_llm_classifier and post_stubs:
                 excerpts = [s.get('content_excerpt', '') or '' for s in post_stubs]
-                verdicts = _classify_consumer_posts_with_gemini(excerpts, niche)
+                verdicts = _classify_consumer_posts_with_gemini(
+                    excerpts, niche, location=location,
+                )
                 if verdicts is not None:
                     llm_kept = [s for s, v in zip(post_stubs, verdicts) if v]
                     llm_dropped = len(post_stubs) - len(llm_kept)
@@ -2132,7 +2149,9 @@ class FacebookScraper(SocialPlatformScraper):
             if use_llm_classifier and stubs:
                 excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
                 niche_for_llm = niche or query
-                verdicts = _classify_consumer_posts_with_gemini(excerpts, niche_for_llm)
+                verdicts = _classify_consumer_posts_with_gemini(
+                    excerpts, niche_for_llm, location=location,
+                )
                 if verdicts is not None:
                     llm_kept = [s for s, v in zip(stubs, verdicts) if v]
                     llm_dropped = len(stubs) - len(llm_kept)
