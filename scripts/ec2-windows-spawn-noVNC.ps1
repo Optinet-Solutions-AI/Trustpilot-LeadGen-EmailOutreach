@@ -26,26 +26,42 @@ param(
 $ErrorActionPreference = "Continue"
 
 # Paths - operator-installed binaries. If any are missing, fail fast.
+# websockify runs via Python (pip install websockify) instead of a
+# standalone .exe — the suchja/websockify-windows release is flaky and
+# Python is already installed on this box for the scrapers.
 $BRAVE       = "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-$WEBSOCKIFY  = "C:\tools\websockify\websockify.exe"
+$PYTHON      = "C:\scraper\.venv\Scripts\python.exe"
 $CLOUDFLARED = "C:\tools\cloudflared\cloudflared.exe"
 
-foreach ($p in @($BRAVE, $WEBSOCKIFY, $CLOUDFLARED)) {
+foreach ($p in @($BRAVE, $PYTHON, $CLOUDFLARED)) {
     if (-not (Test-Path $p)) {
         Write-Host "FATAL: missing binary $p - run the one-time install steps in the plan"
         exit 2
     }
 }
 
+# Verify Python websockify is importable (pip install websockify on first setup).
+& $PYTHON -c "import websockify" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "FATAL: Python websockify module missing. Run: $PYTHON -m pip install websockify"
+    exit 2
+}
+
 # Single-flight: only one connect session at a time on this box. Kill any
-# leftovers from a previous session that exited uncleanly.
-Get-Process brave, websockify, cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# leftovers from a previous session that exited uncleanly. websockify now
+# runs inside a Python process, so we kill by the websocket port instead.
+Get-Process brave, cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Kill anything bound to :6080 (the previous websockify Python process, if any)
+$prevWs = Get-NetTCPConnection -LocalPort 6080 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+foreach ($pid in $prevWs) {
+    Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+}
 Start-Sleep -Seconds 1
 
-# 1. Start websockify - translates the noVNC HTML5 client's websocket on
-#    :6080 into a raw VNC connection on the local TightVNC server :5900.
-$wsArgs = @("--web", "C:\tools\noVNC", "6080", "localhost:5900")
-$wsProc = Start-Process -FilePath $WEBSOCKIFY -ArgumentList $wsArgs -PassThru -WindowStyle Hidden
+# 1. Start websockify (Python module) - translates the noVNC HTML5 client's
+#    websocket on :6080 into a raw VNC connection on the local TightVNC :5900.
+$wsArgs = @("-m", "websockify", "--web", "C:\tools\noVNC", "6080", "localhost:5900")
+$wsProc = Start-Process -FilePath $PYTHON -ArgumentList $wsArgs -PassThru -WindowStyle Hidden
 Write-Host "websockify started pid=$($wsProc.Id) on :6080"
 Start-Sleep -Seconds 1
 
