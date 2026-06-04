@@ -372,6 +372,7 @@ TRUE — the author is a private individual or household describing a SPECIFIC p
 FALSE — everything else, including:
   - WRONG NICHE — a builder when you wanted a website builder, etc. (see niche rules above)
   - WRONG LOCATION — different city when the operator targeted a specific one (see location rules above)
+  - RHETORICAL HEADLINES — "Looking for X?" / "Need a Y?" / "Want a Z?" with no personal context, no address, no "my house / my flat / for my mum" follow-up. These are ad creatives where the body (truncated by FB's "See more") would continue "...we can help! Call us today / DM us / visit our site." If the excerpt is ONLY a question + brand-tagline shape, classify FALSE. A genuine consumer ask always has personal detail attached (a postcode, "my", "asap", "for the bathroom in our flat", etc.).
   - businesses advertising their own services ("Need a reliable plumber? Call us…")
   - clinics/contractors recruiting staff ("Looking for a Gas Safe engineer, full time")
   - agencies pitching websites / marketing / lead-gen to tradespeople
@@ -2464,11 +2465,35 @@ class FacebookScraper(SocialPlatformScraper):
 
                     # Second-pass business filter using the recovered display name.
                     # Handles cases like /profile.php?id=N where the handle gave
-                    # no signal but og:title revealed 'RCA Dental Clinic' etc.
-                    biz_tokens = ('clinic', 'dental', 'dentist', 'dds', 'orthodontic',
-                                  'studio', 'spa', 'salon', 'medspa', 'wellness',
-                                  'pharmacy', 'medical', 'pediatric')
-                    if any(tok in display_name.lower() for tok in biz_tokens):
+                    # no signal but og:title revealed 'RCA Dental Clinic',
+                    # 'XLRT LTD', 'Acme Web Agency', etc.
+                    #
+                    # Generic biz suffixes (ltd/inc/llc/corp/...) catch profiles
+                    # that are clearly companies, not individuals. Medical-niche
+                    # tokens stay because plumber/handyman searches commonly
+                    # surface medical-clinic ads that happen to mention the niche.
+                    biz_suffixes = (
+                        # Company-form markers
+                        ' ltd', ' ltd.', ' limited', ' inc', ' inc.', ' llc',
+                        ' corp', ' corp.', ' corporation', ' co.', ' co ',
+                        ' plc', ' gmbh', ' s.r.l', ' pty', ' ag',
+                        # Common business-tail descriptors
+                        ' agency', ' agencies', ' services', ' solutions',
+                        ' consultancy', ' consulting', ' group',
+                        ' studios', ' studio',
+                    )
+                    biz_niche_tokens = (
+                        'clinic', 'dental', 'dentist', 'dds', 'orthodontic',
+                        'spa', 'salon', 'medspa', 'wellness',
+                        'pharmacy', 'medical', 'pediatric',
+                    )
+                    name_lower = display_name.lower()
+                    name_lower_padded = ' ' + name_lower + ' '
+                    matched_biz = (
+                        any(suffix in name_lower_padded for suffix in biz_suffixes)
+                        or any(tok in name_lower for tok in biz_niche_tokens)
+                    )
+                    if matched_biz:
                         _emit(on_progress, 'enrich_skipped_business', name=display_name, url=profile_url)
                         continue
                     # Bio link — the first external anchor in the intro section.
