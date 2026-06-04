@@ -30,7 +30,25 @@ interface SocialAccount {
   has_cookies: boolean;
 }
 
+// ── Connect flow (DB-row poll) ──────────────────────────────────────────
+// The Connect button writes a request row to the DB and the Windows EC2
+// worker fulfills it asynchronously. We poll /connect-status every 2s
+// for the tunnel URL, open it in a new tab when ready, and close the
+// modal when the worker captures the FB session cookie.
 interface ConnectStream {
+  kind: 'connect';
+  status: 'idle' | 'requesting' | 'provisioning' | 'ready' | 'captured' | 'failed' | 'expired';
+  tunnelUrl: string | null;
+  error?: string;
+  // Whether we've already opened the tab — guards against the polling
+  // loop re-opening it every tick once the URL appears.
+  tabOpened: boolean;
+}
+
+// ── Recover flow (SSE) ─────────────────────────────────────────────────
+// The /recover endpoint streams stage events over SSE. Shape unchanged.
+interface RecoverStream {
+  kind: 'recover';
   stages: { stage: string; detail: string | null }[];
   // Raw stdout/stderr lines for debugging silent failures (missing env
   // key, missing python dep, etc.). Surface in the UI so the operator
@@ -39,6 +57,8 @@ interface ConnectStream {
   status: 'idle' | 'streaming' | 'done' | 'failed';
   error?: string;
 }
+
+type AccountStream = ConnectStream | RecoverStream;
 
 const STATUS_VARIANT: Record<Status, 'success' | 'info' | 'error' | 'neutral'> = {
   active: 'success',
@@ -68,7 +88,7 @@ export default function SocialAccounts() {
     display_name: '',
     password: '',  // optional autofill; never stored in DB or persisted in browser state
   });
-  const [streams, setStreams] = useState<Record<string, ConnectStream>>({});
+  const [streams, setStreams] = useState<Record<string, AccountStream>>({});
   const eventSources = useRef<Record<string, EventSource>>({});
 
   // ── load ──
@@ -92,15 +112,91 @@ export default function SocialAccounts() {
     };
   }, [load]);
 
-  // ── connect / recover (SSE over POST via fetch) ──
-  // Generic driver — handles freshly-created accounts (via /connect with
-  // optional creds in body) and captcha recovery (/recover, no body).
+  // ── connect (DB-row poll) ────────────────────────────────────────────
+  // POST /connect to create the request row, then poll /connect-status
+  // every 2s. When the worker marks status=ready the tunnel URL is opened
+  // in a new tab. Polling self-terminates on captured/failed/expired.
+  const driveConnect = useCallback(async (accountId: string) => {
+    setStreams((prev) => ({
+      ...prev,
+      [accountId]: { kind: 'connect', status: 'requesting', tunnelUrl: null, tabOpened: false },
+    }));
+
+    try {
+      await api.post(`/social-accounts/${accountId}/connect`);
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        .response?.data?.error ?? (err as Error).message ?? 'Failed to start connect flow';
+      setStreams((prev) => ({
+        ...prev,
+        [accountId]: { kind: 'connect', status: 'failed', tunnelUrl: null, tabOpened: false, error: msg },
+      }));
+      return;
+    }
+
+    // Poll every 2s until terminal status.
+    const pollInterval = setInterval(() => {
+      void (async () => {
+        try {
+          const res = await api.get(`/social-accounts/${accountId}/connect-status`);
+          const view = res.data.data as {
+            connect_status: string | null;
+            connect_tunnel_url: string | null;
+            connect_error: string | null;
+          };
+          setStreams((prev) => {
+            const cur = prev[accountId];
+            if (!cur || cur.kind !== 'connect' || cur.status === 'idle') {
+              clearInterval(pollInterval);
+              return prev;
+            }
+            const next: ConnectStream = { ...cur };
+            const s = view.connect_status ?? 'requested';
+            if (s === 'requested') next.status = 'requesting';
+            else if (s === 'provisioning') next.status = 'provisioning';
+            else if (s === 'ready') next.status = 'ready';
+            else if (s === 'captured') next.status = 'captured';
+            else if (s === 'failed') { next.status = 'failed'; next.error = view.connect_error ?? 'unknown'; }
+            else if (s === 'expired') { next.status = 'expired'; next.error = 'login window expired (10 min)'; }
+
+            if (view.connect_tunnel_url && !cur.tabOpened) {
+              next.tunnelUrl = view.connect_tunnel_url;
+              next.tabOpened = true;
+              window.open(view.connect_tunnel_url, '_blank', 'noopener,noreferrer');
+            }
+
+            if (next.status === 'captured' || next.status === 'failed' || next.status === 'expired') {
+              clearInterval(pollInterval);
+              if (next.status === 'captured') {
+                // Refresh the accounts list so the new active status shows.
+                void load();
+              }
+            }
+            return { ...prev, [accountId]: next };
+          });
+        } catch (err) {
+          setStreams((prev) => ({
+            ...prev,
+            [accountId]: {
+              ...(prev[accountId] as ConnectStream),
+              status: 'failed',
+              error: (err as Error).message,
+            },
+          }));
+          clearInterval(pollInterval);
+        }
+      })();
+    }, 2_000);
+  }, [load]);
+
+  // ── recover (SSE over POST via fetch) ───────────────────────────────
+  // /recover streams stage events over SSE — shape unchanged from before.
   const driveLoginFlow = useCallback(async (
     id: string,
-    mode: 'connect' | 'recover',
+    mode: 'recover',
     creds?: { username?: string; password?: string },
   ) => {
-    setStreams((prev) => ({ ...prev, [id]: { stages: [], diagnostics: [], status: 'streaming' } }));
+    setStreams((prev) => ({ ...prev, [id]: { kind: 'recover', stages: [], diagnostics: [], status: 'streaming' } }));
 
     // Mirror the axios client's base resolution: NEXT_PUBLIC_API_BASE_URL + '/api'.
     // We can't use axios for SSE (it consumes the body as JSON), so this raw
@@ -122,6 +218,7 @@ export default function SocialAccounts() {
       setStreams((prev) => ({
         ...prev,
         [id]: {
+          kind: 'recover',
           stages: [],
           diagnostics: [{ kind: 'http', line: `HTTP ${resp.status} ${resp.statusText}` }],
           status: 'failed',
@@ -146,21 +243,22 @@ export default function SocialAccounts() {
           if (line.startsWith('event: ')) {
             lastEvent = line.slice(7).trim();
           } else if (line.startsWith('data: ')) {
-            const payload = JSON.parse(line.slice(6));
+            const payload = JSON.parse(line.slice(6)) as { stage?: string; detail?: string | null; line?: string; code?: number };
             setStreams((prev) => {
-              const cur = prev[id] ?? { stages: [], diagnostics: [], status: 'streaming' as const };
+              const cur = prev[id];
+              if (!cur || cur.kind !== 'recover') return prev;
               if (lastEvent === 'stage') {
                 return {
                   ...prev,
                   [id]: {
                     ...cur,
-                    stages: [...cur.stages, payload],
+                    stages: [...cur.stages, payload as { stage: string; detail: string | null }],
                     status: payload.stage === 'done'
                       ? 'done'
                       : payload.stage === 'failed'
                       ? 'failed'
                       : 'streaming',
-                    error: payload.stage === 'failed' ? payload.detail : cur.error,
+                    error: payload.stage === 'failed' ? (payload.detail ?? undefined) : cur.error,
                   },
                 };
               }
@@ -169,7 +267,7 @@ export default function SocialAccounts() {
                   ...prev,
                   [id]: {
                     ...cur,
-                    diagnostics: [...cur.diagnostics, { kind: lastEvent, line: payload.line }],
+                    diagnostics: [...cur.diagnostics, { kind: lastEvent as 'stdout' | 'stderr', line: payload.line ?? '' }],
                   },
                 };
               }
@@ -193,9 +291,8 @@ export default function SocialAccounts() {
   }, [load]);
 
   // ── create ── one click: write the row, then immediately start the
-  // login flow with optional username+password autofill. Password is
-  // POSTed once, never persisted in the DB or in browser state after
-  // the request resolves.
+  // connect flow. Password is POSTed once, never persisted in the DB or
+  // in browser state after the request resolves.
   const onCreate = async () => {
     try {
       const res = await api.post('/social-accounts', {
@@ -204,16 +301,12 @@ export default function SocialAccounts() {
         display_name: form.display_name.trim() || undefined,
       });
       const newId: string | undefined = res.data?.data?.id;
-      const password = form.password;
       // Reset form FIRST so the password leaves React state immediately.
       setForm({ platform: 'facebook', handle: '', display_name: '', password: '' });
       setShowCreate(false);
       await load();
       if (newId) {
-        void driveLoginFlow(newId, 'connect', {
-          username: form.handle.trim(),
-          password: password || undefined,
-        });
+        void driveConnect(newId);
       }
     } catch (err) {
       setError((err as Error).message);
@@ -256,7 +349,7 @@ export default function SocialAccounts() {
     <div className="p-6 max-w-5xl mx-auto">
       <SectionHeader
         title="Social Accounts"
-        subtitle="Connected Facebook and Instagram sessions used by the scraper. (build: v2-autofill)"
+        subtitle="Connected Facebook and Instagram sessions used by the scraper. (build: v3-poll)"
         actions={
           <Button onClick={() => setShowCreate((v) => !v)}>
             <span className="material-symbols-outlined text-[18px] mr-1">add</span>
@@ -321,14 +414,14 @@ export default function SocialAccounts() {
           </div>
           <div className="flex items-center justify-between gap-3 pt-1">
             <p className="text-xs text-slate-500 max-w-2xl">
-              <strong>Save & log in</strong> creates the row and immediately opens a real browser.
-              If you provide a password, the login form is auto-filled so you only need to handle
-              2FA / captcha. {' '}
-              <span className="text-amber-700">Password is sent through your local server once and never stored anywhere.</span>
+              <strong>Save &amp; connect</strong> creates the row and queues a remote browser session
+              on the Windows worker. A new tab will open automatically when the browser is ready —
+              log into Facebook there. {' '}
+              <span className="text-amber-700">Password field is unused in the new flow and will be removed shortly.</span>
             </p>
             <Button onClick={onCreate} disabled={!form.handle.trim()}>
               <span className="material-symbols-outlined text-[18px] mr-1">login</span>
-              Save &amp; log in
+              Save &amp; connect
             </Button>
           </div>
         </div>
@@ -351,8 +444,9 @@ export default function SocialAccounts() {
                   stream={streams[a.id]}
                   editingCaps={editCapsId === a.id}
                   capsDraft={capsDraft}
-                  onConnect={() => driveLoginFlow(a.id, 'connect')}
-                  onRecover={() => driveLoginFlow(a.id, 'recover')}
+                  onConnect={() => void driveConnect(a.id)}
+                  onRecover={() => void driveLoginFlow(a.id, 'recover')}
+                  onRetryConnect={() => void driveConnect(a.id)}
                   onEditCaps={() => {
                     setEditCapsId(a.id);
                     setCapsDraft({ daily_cap: a.daily_cap, hourly_cap: a.hourly_cap });
@@ -374,11 +468,12 @@ export default function SocialAccounts() {
 // ── AccountCard component ────────────────────────────────────────────
 interface AccountCardProps {
   account: SocialAccount;
-  stream: ConnectStream | undefined;
+  stream: AccountStream | undefined;
   editingCaps: boolean;
   capsDraft: { daily_cap: number; hourly_cap: number };
   onConnect: () => void;
   onRecover: () => void;
+  onRetryConnect: () => void;
   onEditCaps: () => void;
   onChangeCaps: (v: { daily_cap: number; hourly_cap: number }) => void;
   onSaveCaps: () => void;
@@ -388,11 +483,16 @@ interface AccountCardProps {
 
 function AccountCard({
   account: a, stream, editingCaps, capsDraft,
-  onConnect, onRecover, onEditCaps, onChangeCaps, onSaveCaps, onCancelCaps, onDelete,
+  onConnect, onRecover, onRetryConnect, onEditCaps, onChangeCaps, onSaveCaps, onCancelCaps, onDelete,
 }: AccountCardProps) {
   const lastSeen = a.last_login_at
     ? new Date(a.last_login_at).toLocaleString()
     : 'never';
+
+  // Derive disabled state for connect/recover buttons from stream activity.
+  const connectBusy = stream?.kind === 'connect' &&
+    (stream.status === 'requesting' || stream.status === 'provisioning' || stream.status === 'ready');
+  const recoverBusy = stream?.kind === 'recover' && stream.status === 'streaming';
 
   return (
     <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
@@ -417,17 +517,17 @@ function AccountCard({
         </div>
         <div className="flex gap-2">
           {!a.has_cookies && (
-            <Button onClick={onConnect} disabled={stream?.status === 'streaming'}>
+            <Button onClick={onConnect} disabled={connectBusy || recoverBusy}>
               Connect
             </Button>
           )}
           {a.status === 'checkpoint' && (
-            <Button onClick={onRecover} disabled={stream?.status === 'streaming'}>
+            <Button onClick={onRecover} disabled={connectBusy || recoverBusy}>
               Recover
             </Button>
           )}
           {a.has_cookies && a.status === 'active' && (
-            <Button onClick={onConnect} disabled={stream?.status === 'streaming'}>
+            <Button onClick={onConnect} disabled={connectBusy || recoverBusy}>
               Re-login
             </Button>
           )}
@@ -473,8 +573,42 @@ function AccountCard({
         )}
       </div>
 
-      {/* Stream progress */}
-      {stream && (stream.stages.length > 0 || stream.diagnostics.length > 0 || stream.status === 'streaming') && (
+      {/* Connect flow status (DB-row poll) */}
+      {stream?.kind === 'connect' && stream.status !== 'idle' && (
+        <div className="mt-3 rounded-lg border border-[#b0004a]/20 bg-[#ffd9de]/30 p-3 text-xs space-y-1">
+          {stream.status === 'requesting' && (
+            <p className="font-semibold text-[#b0004a]">Requesting a remote browser…</p>
+          )}
+          {stream.status === 'provisioning' && (
+            <p className="font-semibold text-[#b0004a]">Provisioning your remote browser on the worker (~15s)…</p>
+          )}
+          {stream.status === 'ready' && (
+            <>
+              <p className="font-semibold text-[#b0004a]">Browser opened in a new tab.</p>
+              <p className="text-slate-600">Log into Facebook in the new tab. This window will update automatically once your cookies are captured.</p>
+              {stream.tunnelUrl && (
+                <a href={stream.tunnelUrl} target="_blank" rel="noopener noreferrer" className="text-[#b0004a] underline">
+                  Re-open tab
+                </a>
+              )}
+            </>
+          )}
+          {stream.status === 'captured' && (
+            <p className="font-semibold text-emerald-700">✓ Cookies captured — account is active.</p>
+          )}
+          {(stream.status === 'failed' || stream.status === 'expired') && (
+            <>
+              <p className="font-semibold text-red-700">{stream.error ?? 'Connect failed.'}</p>
+              <button onClick={onRetryConnect} className="text-[#b0004a] underline">
+                Try again
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Recover flow status (SSE) */}
+      {stream?.kind === 'recover' && (stream.stages.length > 0 || stream.diagnostics.length > 0 || stream.status === 'streaming') && (
         <div className="mt-3 p-2 bg-slate-50 rounded text-xs space-y-0.5 font-mono">
           {stream.status === 'streaming' && stream.stages.length === 0 && (
             <div className="text-slate-500 italic">Starting…</div>
