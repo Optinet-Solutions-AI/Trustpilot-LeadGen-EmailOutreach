@@ -12,6 +12,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
+import { enqueueConnectRequest, getConnectRequestStatus } from '../db/social-connect-requests.js';
 
 const router = Router();
 
@@ -245,16 +246,39 @@ function streamLoginFlow(
   });
 }
 
-// ── POST /api/social-accounts/:id/connect (SSE) ──────────────────────
-// Body may include { username, password } for autofill — both optional;
-// when present, the Python child uses them once to pre-fill the form and
-// then discards them.
-router.post('/:id/connect', (req: Request, res: Response) => {
-  const body = (req.body ?? {}) as { username?: string; password?: string };
-  streamLoginFlow(String(req.params.id), false, req, res, {
-    username: body.username,
-    password: body.password,
-  });
+// ── POST /api/social-accounts/:id/connect ────────────────────────────
+// Writes a connect-request row to social_accounts. The Windows EC2
+// worker polls for these rows, spawns a remote Brave + noVNC + cloud-
+// flared session, and reports the public tunnel URL back via the
+// connect_tunnel_url column. The frontend polls GET /:id/connect-status
+// for that URL and opens it in a new tab.
+router.post('/:id/connect', async (req: Request, res: Response) => {
+  try {
+    const row = await enqueueConnectRequest(String(req.params.id));
+    res.status(202).json({
+      success: true,
+      data: {
+        connect_session_id: row.connect_session_id,
+        connect_status: row.connect_status,
+        connect_expires_at: row.connect_expires_at,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// ── GET /api/social-accounts/:id/connect-status ──────────────────────
+// Frontend polls this every ~2s while a connect modal is open.
+router.get('/:id/connect-status', async (req: Request, res: Response) => {
+  try {
+    const view = await getConnectRequestStatus(String(req.params.id));
+    res.json({ success: true, data: view });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: msg });
+  }
 });
 
 // ── POST /api/social-accounts/:id/recover (SSE) ──────────────────────
