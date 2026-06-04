@@ -145,12 +145,23 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
         resolve();
       };
 
+      // Rolling buffer of recent stdout+stderr lines. On non-zero exit we
+      // surface the tail in connect_error so the operator can diagnose
+      // PowerShell failures from the API without RDP'ing into the EC2.
+      const recentOutput: string[] = [];
+      const MAX_RECENT = 40;
+      const pushRecent = (tag: string, line: string): void => {
+        recentOutput.push(`${tag} ${line}`);
+        if (recentOutput.length > MAX_RECENT) recentOutput.shift();
+      };
+
       child.stdout.on('data', async (buf: Buffer) => {
         const lines = buf.toString('utf8').split(/\r?\n/);
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
           log(`[ps stdout] ${trimmed.slice(0, 200)}`);
+          pushRecent('out:', trimmed.slice(0, 200));
           // First trycloudflare.com URL we see is the public tunnel.
           // Capture the full path (e.g. /vnc.html?autoconnect=true&resize=remote)
           // so the frontend can open noVNC directly instead of the landing page.
@@ -169,7 +180,13 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
       });
 
       child.stderr.on('data', (buf: Buffer) => {
-        log(`[ps stderr] ${buf.toString('utf8').slice(0, 200).trim()}`);
+        const lines = buf.toString('utf8').split(/\r?\n/);
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          log(`[ps stderr] ${trimmed.slice(0, 200)}`);
+          pushRecent('err:', trimmed.slice(0, 200));
+        }
       });
 
       // Watch Brave's Cookies SQLite for the c_user marker. The cookies live at
@@ -231,11 +248,15 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
       child.on('exit', (code) => {
         if (!finalized) {
           // Browser/script died before we captured cookies. Mark failed unless we
-          // already marked expired above.
+          // already marked expired above. Surface the tail of stdout+stderr in
+          // connect_error so the operator can diagnose PowerShell failures from
+          // the API without needing to RDP/SSM into the EC2.
+          const tail = recentOutput.slice(-20).join(' | ');
+          const errMsg = `spawn exit=${code} | recent: ${tail}`.slice(0, 1800);
           log(`script exited code=${code} before capture; marking failed`);
           void updateConnectStatus(row.id, {
             connect_status: 'failed',
-            connect_error: `spawn script exited with code ${code}`,
+            connect_error: errMsg,
           });
         }
         finishSession();
