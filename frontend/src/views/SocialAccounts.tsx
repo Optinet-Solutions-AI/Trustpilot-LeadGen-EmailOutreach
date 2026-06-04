@@ -90,6 +90,7 @@ export default function SocialAccounts() {
   });
   const [streams, setStreams] = useState<Record<string, AccountStream>>({});
   const eventSources = useRef<Record<string, EventSource>>({});
+  const pollIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   // ── load ──
   const load = useCallback(async () => {
@@ -109,6 +110,9 @@ export default function SocialAccounts() {
     return () => {
       // Cleanup any open SSE streams on unmount.
       Object.values(eventSources.current).forEach((es) => es.close());
+      // Cleanup any in-flight polling intervals on unmount.
+      Object.values(pollIntervals.current).forEach(clearInterval);
+      pollIntervals.current = {};
     };
   }, [load]);
 
@@ -117,6 +121,12 @@ export default function SocialAccounts() {
   // every 2s. When the worker marks status=ready the tunnel URL is opened
   // in a new tab. Polling self-terminates on captured/failed/expired.
   const driveConnect = useCallback(async (accountId: string) => {
+    // Cancel any in-flight interval for this account before starting a new one.
+    if (pollIntervals.current[accountId]) {
+      clearInterval(pollIntervals.current[accountId]);
+      delete pollIntervals.current[accountId];
+    }
+
     setStreams((prev) => ({
       ...prev,
       [accountId]: { kind: 'connect', status: 'requesting', tunnelUrl: null, tabOpened: false },
@@ -147,7 +157,8 @@ export default function SocialAccounts() {
           setStreams((prev) => {
             const cur = prev[accountId];
             if (!cur || cur.kind !== 'connect' || cur.status === 'idle') {
-              clearInterval(pollInterval);
+              clearInterval(pollIntervals.current[accountId]);
+              delete pollIntervals.current[accountId];
               return prev;
             }
             const next: ConnectStream = { ...cur };
@@ -166,7 +177,8 @@ export default function SocialAccounts() {
             }
 
             if (next.status === 'captured' || next.status === 'failed' || next.status === 'expired') {
-              clearInterval(pollInterval);
+              clearInterval(pollIntervals.current[accountId]);
+              delete pollIntervals.current[accountId];
               if (next.status === 'captured') {
                 // Refresh the accounts list so the new active status shows.
                 void load();
@@ -175,18 +187,20 @@ export default function SocialAccounts() {
             return { ...prev, [accountId]: next };
           });
         } catch (err) {
-          setStreams((prev) => ({
-            ...prev,
-            [accountId]: {
-              ...(prev[accountId] as ConnectStream),
-              status: 'failed',
-              error: (err as Error).message,
-            },
-          }));
-          clearInterval(pollInterval);
+          setStreams((prev) => {
+            const cur = prev[accountId];
+            if (!cur || cur.kind !== 'connect') return prev;
+            return {
+              ...prev,
+              [accountId]: { ...cur, status: 'failed' as const, error: (err as Error).message },
+            };
+          });
+          clearInterval(pollIntervals.current[accountId]);
+          delete pollIntervals.current[accountId];
         }
       })();
     }, 2_000);
+    pollIntervals.current[accountId] = pollInterval;
   }, [load]);
 
   // ── recover (SSE over POST via fetch) ───────────────────────────────
