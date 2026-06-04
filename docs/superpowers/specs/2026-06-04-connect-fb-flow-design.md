@@ -103,10 +103,14 @@ Skip Playwright. Skip frontend snapshot tests. The Python helper tests catch ~80
 5. Trigger a scrape from the same operator's session and verify it succeeds using the freshly minted cookies.
 6. `pytest tests/scraper/test_facebook_helpers.py` passes.
 
-## Open questions for the operator (resolve before starting tomorrow)
+## Resolved design decisions (locked 2026-06-03 night)
 
-- noVNC vs RustDesk vs Apache Guacamole — noVNC is the assumed choice (HTML5-native, no client install), but if you've already standardized on something else for remote desktop, swap in.
-- Where does cloudflared run — on the EC2 (recommended, single binary), or do you have a Tailscale/Cloudflare Zero Trust setup that should be reused?
-- Should the tunnel URL be opened in a new tab (simpler, but operator loses dashboard context) or iframed (better UX, but FB's `X-Frame-Options` may block it — need to test)?
+1. **Remote-desktop tool: noVNC.** HTML5-native, zero operator install, runs as a Windows service on the EC2 alongside the existing scraper-worker. ~30 min setup, one-time.
+2. **Tunnel: cloudflared quick tunnel.** Single binary on the EC2, auto-generates `*.trycloudflare.com` URL per session, no Cloudflare account / DNS / certs needed. URL is unguessable + 10-min TTL.
+3. **Operator UX: new browser tab.** Dashboard opens noVNC URL in a fresh tab; modal shows "complete login in the new tab" with status indicator; tab closes itself when cookies are captured. Avoids iframe / `X-Frame-Options` edge cases. Acceptable context-switch since this is a once-per-account flow.
 
-These don't block kickoff but answers in the morning let me ship cleaner.
+Estimated tomorrow:
+- noVNC + cloudflared install on Windows EC2: ~30 min
+- Code (DB poll loop + spawn-noVNC.ps1 + frontend modal + Cloud Run route): ~3 hours
+- End-to-end test from fresh incognito browser: ~30 min
+- **Total: ~4 hours**
