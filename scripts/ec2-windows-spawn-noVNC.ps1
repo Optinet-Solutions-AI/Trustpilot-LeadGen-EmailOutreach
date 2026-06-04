@@ -85,12 +85,16 @@ $noVncUrl = "$tunnelUrl/vnc.html?autoconnect=true&resize=remote"
 Write-Host $noVncUrl
 
 # 3. Launch Brave at facebook.com with the operator's persistent profile dir.
+#    --remote-debugging-port=9222 enables the Chromium DevTools Protocol (CDP)
+#    so the Node worker can extract structured cookies via Network.getAllCookies
+#    instead of reading the raw SQLite binary file.
 $braveArgs = @(
     "--user-data-dir=$ProfileDir"
     "--no-first-run"
     "--no-default-browser-check"
     "--window-size=1280,900"
     "--window-position=0,0"
+    "--remote-debugging-port=9222"
     "https://www.facebook.com/"
 )
 $braveProc = Start-Process -FilePath $BRAVE -ArgumentList $braveArgs -PassThru

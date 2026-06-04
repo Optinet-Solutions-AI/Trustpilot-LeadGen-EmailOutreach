@@ -13,6 +13,7 @@
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import WebSocket from 'ws';
 import {
   ConnectRequestRow,
   claimPendingConnectRequest,
@@ -20,6 +21,7 @@ import {
   finalizeConnectRequest,
 } from '../db/social-connect-requests.js';
 import { encryptCookie } from '../lib/encryption.js';
+import { getSupabase } from '../lib/supabase.js';
 
 const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
@@ -48,6 +50,56 @@ function killProcessTree(pid: number | undefined): void {
   } catch (err) {
     log(`taskkill failed for pid ${pid}: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Fetches all facebook.com cookies from the running Brave instance via CDP.
+ * Returns Selenium-style cookie dicts (name, value, domain, path, secure, httpOnly)
+ * that session_store.py can deserialise with json.loads().
+ */
+async function fetchCookiesViaCDP(): Promise<Record<string, unknown>[]> {
+  const versionRes = await fetch('http://localhost:9222/json/version');
+  if (!versionRes.ok) throw new Error(`CDP /json/version returned ${versionRes.status}`);
+  const versionData = await versionRes.json() as { webSocketDebuggerUrl: string };
+  const wsUrl = versionData.webSocketDebuggerUrl;
+  if (!wsUrl) throw new Error('CDP /json/version did not return a webSocketDebuggerUrl');
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error('CDP timeout after 5s'));
+    }, 5_000);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ id: 1, method: 'Network.getAllCookies' }));
+    });
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as {
+          id: number;
+          result?: { cookies?: Record<string, unknown>[] };
+        };
+        if (msg.id === 1) {
+          clearTimeout(timer);
+          const all = msg.result?.cookies ?? [];
+          const fbCookies = all.filter(
+            (c) => typeof c['domain'] === 'string' && (c['domain'] as string).includes('facebook.com'),
+          );
+          ws.close();
+          resolve(fbCookies);
+        }
+      } catch (parseErr) {
+        clearTimeout(timer);
+        ws.close();
+        reject(parseErr);
+      }
+    });
+    ws.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
 }
 
 async function handleRequest(row: ConnectRequestRow): Promise<void> {
@@ -100,8 +152,10 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
           if (!trimmed) continue;
           log(`[ps stdout] ${trimmed.slice(0, 200)}`);
           // First trycloudflare.com URL we see is the public tunnel.
+          // Capture the full path (e.g. /vnc.html?autoconnect=true&resize=remote)
+          // so the frontend can open noVNC directly instead of the landing page.
           if (!tunnelUrl) {
-            const match = trimmed.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+            const match = trimmed.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com[^\s]*/i);
             if (match) {
               tunnelUrl = match[0];
               await updateConnectStatus(row.id, {
@@ -119,26 +173,37 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
       });
 
       // Watch Brave's Cookies SQLite for the c_user marker. The cookies live at
-      // <profileDir>\Default\Network\Cookies — a SQLite file. Polling its mtime
-      // is enough; when it changes, run an extract.
+      // <profileDir>\Default\Network\Cookies — a SQLite file. Polling its binary
+      // content for the FB_SESSION_COOKIE string acts as a cheap trigger; the
+      // actual cookie extraction goes through CDP so we get structured JSON that
+      // session_store.py can deserialise with json.loads() instead of raw SQLite.
       const cookiesPath = path.join(profileDir, 'Default', 'Network', 'Cookies');
       const watchInterval = setInterval(async () => {
         if (finalized) return;
         try {
           const stat = await fs.stat(cookiesPath);
           if (!stat.isFile()) return;
-          // Read the cookies file in binary form and check for the marker. SQLite
-          // stores strings as-is so a substring search works for our purposes.
+          // Cheap trigger: the SQLite file stores cookie names as plaintext,
+          // so we can detect c_user without parsing the binary format.
           const buf = await fs.readFile(cookiesPath);
           if (!buf.includes(FB_SESSION_COOKIE)) return;
-          // Capture. Encrypt the raw cookies file contents as the cookie jar — the
-          // scraper side already reads it as-is via session_store.py.
-          const encrypted = encryptCookie(buf.toString('base64'));
-          await finalizeConnectRequest(row.id, encrypted);
-          finalized = true;
-          log(`captured cookies for account=${row.id}, killing browser`);
-          killProcessTree(child.pid);
-          finishSession();
+          // c_user is present — extract structured cookies via CDP so the Python
+          // scraper receives a JSON array it can json.loads() directly.
+          try {
+            const fbCookies = await fetchCookiesViaCDP();
+            if (fbCookies.length === 0) {
+              log('CDP returned 0 facebook.com cookies — will retry next tick');
+              return;
+            }
+            const encrypted = encryptCookie(JSON.stringify(fbCookies));
+            await finalizeConnectRequest(row.id, encrypted);
+            finalized = true;
+            log(`captured ${fbCookies.length} cookies for account=${row.id}, killing browser`);
+            killProcessTree(child.pid);
+            finishSession();
+          } catch (cdpErr) {
+            log(`CDP cookie fetch failed (will retry next tick): ${(cdpErr as Error).message}`);
+          }
         } catch (err) {
           // Cookies file may not exist yet — that's fine, will appear once Brave starts.
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -193,12 +258,39 @@ async function pollOnce(platform: string): Promise<void> {
   }
 }
 
+/**
+ * On worker startup, any row still in `provisioning` whose `connect_expires_at`
+ * has already passed is a ghost from a previous crash — flip it to `failed` so
+ * the operator can retry without manual DB intervention.
+ * Rows whose expiry is still in the future are an actively-running session
+ * (unlikely if the process just started, but safe to leave alone).
+ */
+async function sweepStuckProvisioning(): Promise<void> {
+  const { error } = await getSupabase()
+    .from('social_accounts')
+    .update({
+      connect_status: 'failed',
+      connect_error: 'worker restarted mid-session',
+    })
+    .eq('platform', 'facebook')
+    .eq('connect_status', 'provisioning')
+    .lt('connect_expires_at', new Date().toISOString());
+  if (error) {
+    log(`startup sweep error: ${error.message}`);
+  } else {
+    log('startup sweep complete (any stuck provisioning rows marked failed)');
+  }
+}
+
 export function startSocialConnectWorker(): void {
   if (process.env.ENABLE_SOCIAL_CONNECT_WORKER !== '1') {
     log('disabled (set ENABLE_SOCIAL_CONNECT_WORKER=1 to enable)');
     return;
   }
   log(`starting; polling every ${POLL_INTERVAL_MS}ms`);
+  // Sweep any provisioning rows that survived a previous crash before we enter
+  // the poll loop.
+  void sweepStuckProvisioning();
   const timer = setInterval(() => { void pollOnce('facebook'); }, POLL_INTERVAL_MS);
   // First tick immediately.
   void pollOnce('facebook');
