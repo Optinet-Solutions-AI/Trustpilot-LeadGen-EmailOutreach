@@ -459,7 +459,11 @@ Return ONLY a JSON object with this exact shape:
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
             'temperature': 0.1,
-            'maxOutputTokens': 64,
+            # Gemini 2.5 Flash spends "thinking tokens" before output.
+            # 64 was too low — the budget ran out during thinking and the
+            # visible response came back empty. 512 leaves comfortable
+            # headroom (typical translation is 1-5 tokens of actual JSON).
+            'maxOutputTokens': 512,
             'responseMimeType': 'application/json',
         },
     }
@@ -475,6 +479,11 @@ Return ONLY a JSON object with this exact shape:
                 .get('parts', [{}])[0]
                 .get('text', '')
         ).strip()
+        if not text:
+            # Defensive: empty response means thinking-budget exhausted OR
+            # safety filter blocked it. Log the full response for diagnosis.
+            print(f'[niche-translate] empty response for "{niche}" -> {language}: {body!r}'[:500], file=sys.stderr)
+            return None
         parsed = json.loads(text)
         native = (parsed.get('native_term') or '').strip()
         if not native or len(native) > 60:
