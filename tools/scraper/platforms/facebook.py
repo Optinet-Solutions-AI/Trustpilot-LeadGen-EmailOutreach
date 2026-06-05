@@ -597,7 +597,13 @@ Posts:
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
             'temperature': 0.1,
-            'maxOutputTokens': 2048,
+            # Gemini 2.5 Flash spends "thinking tokens" before output.
+            # 2048 was empirically too low when classifying 30+ posts in a
+            # single call — the model burned the budget on reasoning and
+            # the visible JSON came back truncated/empty. 8192 leaves plenty
+            # of headroom (typical output is a list of ~30 booleans = ~200
+            # tokens of actual JSON).
+            'maxOutputTokens': 8192,
             'responseMimeType': 'application/json',
         },
     }
@@ -613,6 +619,16 @@ Posts:
                 .get('parts', [{}])[0]
                 .get('text', '')
         ).strip()
+        if not text:
+            # Defensive: empty response (thinking-budget exhausted OR safety
+            # filter blocked it). Surface the full response body so the
+            # caller can see in stderr/DB what Gemini actually returned.
+            print(
+                f'[gemini-classifier] empty response from Gemini (likely '
+                f'thinking-budget exhausted); body summary: {str(body)[:500]}',
+                file=sys.stderr,
+            )
+            return None
         parsed = json.loads(text)
         verdicts = parsed.get('verdicts')
         if not isinstance(verdicts, list) or len(verdicts) != len(post_excerpts):

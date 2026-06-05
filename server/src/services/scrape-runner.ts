@@ -399,8 +399,15 @@ function runPython(
     });
 
     proc.stderr.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      const text = data.toString();
+      stderr += text;
       lastActivityTime = Date.now(); // stderr counts as activity too
+      // Forward Python's stderr to the worker's own stderr so NSSM's
+      // log file captures it. Without this, all Python print(file=sys.stderr)
+      // gets eaten by this buffer and is only visible if Python exits
+      // non-zero — meaning successful runs with internal failures (e.g.
+      // Gemini classifier silently returning None) leave no trace.
+      process.stderr.write(text);
     });
 
     proc.on('close', (code) => {
