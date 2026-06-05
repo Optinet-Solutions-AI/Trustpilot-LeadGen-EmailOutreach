@@ -37,9 +37,8 @@ export default function ComboWarning({ niche, location }: Props) {
   if (nicheEntry && cityLanguage) {
     return (
       <div role="status" className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
-        💡 <strong>Language tip:</strong> posts in {location} are usually in {cityLanguage}.
-        Consider searching for the native {cityLanguage} term for "{nicheEntry.label}" — Gemini
-        filtering accepts both, but native-language niches surface more leads.
+        💡 <strong>Niche tip:</strong> try the native {cityLanguage} term for{' '}
+        "{nicheEntry.label}" — native-language niches surface more leads on FB groups.
       </div>
     );
   }
