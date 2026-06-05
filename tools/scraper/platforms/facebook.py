@@ -51,6 +51,26 @@ COUNTER_FLUSH_EVERY = 5
 
 FB_BASE = 'https://www.facebook.com'
 
+# Broad permalink regex used by _click_share_and_capture to validate the URL
+# FB returns to the clipboard. Mirrors the patterns defined inline at
+# _extract_posts_from_search_page:POST_URL_PATTERNS — kept at module scope so
+# both the open-feed extractor AND the in-group extractor can share it.
+_BROAD_POST_URL_RE = re.compile('|'.join([
+    r'/photo/?\?[^"]*fbid=',
+    r'/photo\.php\?[^"]*fbid=',
+    r'/posts/(?:pfbid)?[A-Za-z0-9]',
+    r'/permalink\.php\?',
+    r'/groups/[^/]+/posts/',
+    r'/groups/[^/]+/permalink/',
+    r'/groups/[^/]+/multi_permalinks/',
+    r'/share/p/',
+    r'/share/v/',
+    r'/share/r/',
+    r'/videos/\d',
+    r'/story\.php\?',
+    r'/people/[^/]+/posts/',
+]))
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -1638,7 +1658,12 @@ def _extract_posts_from_group_search(driver, group: dict) -> list['PostStub']:
                 author_handle = f'anonymous-{digest}'
                 author_url = None
 
-            # Find real post permalink in the card
+            # Find real post permalink in the card. Three-tier strategy:
+            #   1. Scan in-card anchors for known permalink patterns (cheap)
+            #   2. Click the Share button → "Copy link" → read clipboard
+            #      for FB's canonical /share/p/<token>/ URL (~1.5-2s/card,
+            #      but reliable across FB's frequent DOM changes)
+            #   3. Synthetic <author>#post-<hash> fallback (preserves dedup)
             post_url: Optional[str] = None
             for a in card.find_elements('css selector', 'a[href]'):
                 h = (a.get_attribute('href') or '')
@@ -1656,8 +1681,20 @@ def _extract_posts_from_group_search(driver, group: dict) -> list['PostStub']:
                         post_url = base
                     post_url = post_url.split('#')[0]
                     break
+
+            # Tier 2: ask FB for the share URL via clipboard. Uses the same
+            # broad permalink regex the open-feed scrape uses, so we accept
+            # `/share/p/`, `/groups/<gid>/multi_permalinks/`, etc.
             if not post_url:
-                # Fallback: synthetic so (platform, post_url) stays unique
+                try:
+                    real = _click_share_and_capture(driver, card, _BROAD_POST_URL_RE)
+                except Exception:
+                    real = None
+                if real:
+                    post_url = real.split('#')[0]
+
+            if not post_url:
+                # Tier 3: synthetic so (platform, post_url) stays unique
                 digest = hashlib.sha1(text[:200].encode('utf-8')).hexdigest()[:12]
                 anchor = author_url or f'{FB_BASE}/groups/{group["group_id"]}'
                 post_url = f'{anchor}#post-{digest}'
