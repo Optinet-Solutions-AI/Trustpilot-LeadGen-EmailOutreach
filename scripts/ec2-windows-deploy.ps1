@@ -39,14 +39,14 @@ foreach ($bin in @('git', 'npm', 'nssm')) {
     if (-not $found) {
         $msg = "FATAL: '$bin' not on PATH after refresh. " +
                "PATH=$($env:Path.Substring(0, [Math]::Min(500, $env:Path.Length)))..."
-        Add-Content -Path $LOG_FILE -Value "[$((Get-Date -AsUTC).ToString('yyyy-MM-ddTHH:mm:ssZ'))] $msg" -Encoding utf8
+        Add-Content -Path $LOG_FILE -Value "[$(((Get-Date).ToUniversalTime()).ToString('yyyy-MM-ddTHH:mm:ssZ'))] $msg" -Encoding utf8
         exit 4
     }
 }
 
 function Write-DeployLog {
     param([string]$Message)
-    $stamp = (Get-Date -AsUTC).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $stamp = ((Get-Date).ToUniversalTime()).ToString("yyyy-MM-ddTHH:mm:ssZ")
     Add-Content -Path $LOG_FILE -Value "[$stamp] $Message" -Encoding utf8
 }
 
