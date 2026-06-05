@@ -3,13 +3,26 @@
 import { useMemo } from 'react';
 import Combobox, { type ComboboxOption } from '../ui/Combobox';
 
+const NON_ENGLISH_LANGUAGES: Record<string, string> = {
+  DE: 'German',   FR: 'French',     IT: 'Italian',  ES: 'Spanish',
+  NL: 'Dutch',    BE: 'Dutch',      PT: 'Portuguese', BR: 'Portuguese',
+  MX: 'Spanish',  JP: 'Japanese',   KR: 'Korean',   RU: 'Russian',
+  CN: 'Chinese',  SE: 'Swedish',    NO: 'Norwegian',DK: 'Danish',
+  FI: 'Finnish',  PL: 'Polish',     CZ: 'Czech',    GR: 'Greek',
+  TR: 'Turkish',  AT: 'German',     CH: 'German',   HU: 'Hungarian',
+};
+
+interface CityEntry { city: string; country: string; language?: string }
+
 // Full Europe + US city → ISO-country map. Mirrors CITY_TO_COUNTRY in
 // tools/scraper/platforms/facebook.py — keep these two lists in sync
 // when adding cities so the operator pick maps cleanly onto the
 // country-mismatch group filter. Facebook itself has no location
 // allowlist; this list is purely UX scaffolding. Add more cities by
 // dropping a {city, country} row here AND in the Python map.
-const LOCATION_CITIES: Array<{ city: string; country: string }> = [
+// Raw curated list — country drives the language tag via the map above.
+// Keep this in sync with tools/scraper/platforms/facebook.py CITY_TO_COUNTRY.
+const _RAW_CITIES: Array<{ city: string; country: string }> = [
   // ─── United Kingdom ───────────────────────────────────────────
   { city: 'London',       country: 'GB' },
   { city: 'Manchester',   country: 'GB' },
@@ -185,6 +198,11 @@ const LOCATION_CITIES: Array<{ city: string; country: string }> = [
   { city: 'Pittsburgh',   country: 'US' },
 ];
 
+const LOCATION_CITIES: CityEntry[] = _RAW_CITIES.map((c) => ({
+  ...c,
+  language: NON_ENGLISH_LANGUAGES[c.country],
+}));
+
 function flagEmoji(code: string): string {
   if (!/^[A-Za-z]{2}$/.test(code)) return '';
   const A = 0x1f1e6;
@@ -219,37 +237,50 @@ export default function LocationPicker({ value, onChange, disabled, id }: Props)
     [value],
   );
 
+  const pickedLanguage = useMemo(
+    () => LOCATION_CITIES.find((c) => c.city === value)?.language,
+    [value],
+  );
+
   return (
-    <Combobox
-      id={id}
-      value={value}
-      onChange={onChange}
-      options={options}
-      placeholder="Pick a city"
-      searchPlaceholder="Search cities…"
-      disabled={disabled}
-      renderValue={(opt) => (
-        <span className="flex items-center gap-2 truncate">
-          <span aria-hidden className="text-base leading-none">
-            {selectedCountry ? flagEmoji(selectedCountry) : ''}
+    <div>
+      <Combobox
+        id={id}
+        value={value}
+        onChange={onChange}
+        options={options}
+        placeholder="Pick a city"
+        searchPlaceholder="Search cities…"
+        disabled={disabled}
+        renderValue={(opt) => (
+          <span className="flex items-center gap-2 truncate">
+            <span aria-hidden className="text-base leading-none">
+              {selectedCountry ? flagEmoji(selectedCountry) : ''}
+            </span>
+            <span className="truncate">{opt?.label ?? value}</span>
           </span>
-          <span className="truncate">{opt?.label ?? value}</span>
-        </span>
+        )}
+        renderOption={(opt) => {
+          const country = LOCATION_CITIES.find((c) => c.city === opt.value)?.country ?? '';
+          return (
+            <>
+              <span aria-hidden className="text-base leading-none w-5 text-center">
+                {flagEmoji(country)}
+              </span>
+              <span className="flex-1 truncate">{opt.label}</span>
+              <span className="text-[10px] font-mono uppercase text-slate-400 tracking-widest">
+                {country}
+              </span>
+            </>
+          );
+        }}
+      />
+      {pickedLanguage && (
+        <p className="mt-1 text-[11px] italic text-on-surface-variant">
+          Tip: posts in {value} are usually in {pickedLanguage}. The Gemini
+          filter accepts both, but native-language niches surface more leads.
+        </p>
       )}
-      renderOption={(opt) => {
-        const country = LOCATION_CITIES.find((c) => c.city === opt.value)?.country ?? '';
-        return (
-          <>
-            <span aria-hidden className="text-base leading-none w-5 text-center">
-              {flagEmoji(country)}
-            </span>
-            <span className="flex-1 truncate">{opt.label}</span>
-            <span className="text-[10px] font-mono uppercase text-slate-400 tracking-widest">
-              {country}
-            </span>
-          </>
-        );
-      }}
-    />
+    </div>
   );
 }
