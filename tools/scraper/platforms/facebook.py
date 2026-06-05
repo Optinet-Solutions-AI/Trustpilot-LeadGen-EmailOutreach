@@ -2284,11 +2284,13 @@ class FacebookScraper(SocialPlatformScraper):
         driver = self._open_session(account)
         results: list[PostStub] = []
         try:
-            # Facebook's search-posts URL pattern.
+            # Facebook's open-feed search-posts URL pattern. This is the
+            # FALLBACK path; group-first is handled by _sync_group_first_scrape.
+            # Note: the previous `&filters=groups` URL hint was empirically a
+            # no-op (verified 2026-06-05: 0 posts returned with the hint).
+            # The groups_only parameter is preserved on this function's
+            # signature for backwards compat but is no longer used here.
             search_url = f'{FB_BASE}/search/posts/?q={quote_plus(query)}'
-            if groups_only:
-                # The "in groups" filter has a stable URL hint.
-                search_url += '&filters=groups'
             driver.get(search_url)
             time.sleep(SCROLL_PAUSE)
 
