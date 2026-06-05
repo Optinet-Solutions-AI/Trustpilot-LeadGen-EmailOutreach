@@ -40,6 +40,12 @@ interface Props<V extends string> {
   emptyState?: ReactNode;
   className?: string;
   id?: string;
+  /**
+   * When true, pressing Enter with a non-empty query that doesn't match any
+   * option emits the raw query as the new value via onChange. Defaults to
+   * false — selection-only, the historical behaviour.
+   */
+  allowCustom?: boolean;
 }
 
 export default function Combobox<V extends string>({
@@ -52,6 +58,7 @@ export default function Combobox<V extends string>({
   searchPlaceholder = 'Search…',
   loading = false,
   disabled = false,
+  allowCustom = false,
   emptyState,
   className = '',
   id,
@@ -132,14 +139,21 @@ export default function Combobox<V extends string>({
       } else if (e.key === 'Enter') {
         e.preventDefault();
         const idx = selectableIndexes[activeIndex];
-        if (idx != null && filtered[idx]) commit(filtered[idx]);
+        if (idx != null && filtered[idx]) {
+          commit(filtered[idx]);
+        } else if (allowCustom && query.trim().length > 0) {
+          // No existing option matches — emit the typed text as a custom value.
+          onChange(query.trim() as V);
+          setOpen(false);
+          setQuery('');
+        }
       } else if (e.key === 'Escape') {
         e.preventDefault();
         setOpen(false);
         setQuery('');
       }
     },
-    [activeIndex, commit, filtered, selectableIndexes],
+    [activeIndex, allowCustom, commit, filtered, onChange, query, selectableIndexes],
   );
 
   const valueNode = selected ? (
