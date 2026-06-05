@@ -5,6 +5,8 @@ import { Search } from 'lucide-react';
 import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams } from '../types/scrape';
 import CountryPicker from './CountryPicker';
 import LocationPicker from './LocationPicker';
+import NichePicker from './NichePicker';
+import ComboWarning from './ComboWarning';
 import CategoryPicker from './CategoryPicker';
 import PlatformPicker, { type PlatformManifest } from './PlatformPicker';
 import Button from '../ui/Button';
@@ -320,14 +322,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-niche">
                     Niche / service
                   </label>
-                  <input
+                  <NichePicker
                     id="fb-niche"
-                    type="text"
-                    placeholder='e.g. "dentist", "plumber", "tutor"'
                     value={fbNiche}
-                    onChange={(e) => setFbNiche(e.target.value)}
+                    onChange={setFbNiche}
                     disabled={busy}
-                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
                 </div>
                 <div>
@@ -342,6 +341,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   />
                 </div>
                 <div className="sm:col-span-2 lg:col-span-3">
+                  <ComboWarning niche={fbNiche} location={fbLocation} />
                   <p className="text-[11px] text-on-surface-variant">
                     Group-first flow: we&apos;ll find every public FB group matching <strong>{fbNiche || '<niche>'} {fbLocation || '<location>'}</strong>,
                     then run an in-group post search for <strong>&quot;looking for a {fbNiche || '<niche>'}&quot;</strong> across all of them.
