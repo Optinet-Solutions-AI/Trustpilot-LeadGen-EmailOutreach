@@ -71,6 +71,61 @@ _BROAD_POST_URL_RE = re.compile('|'.join([
     r'/people/[^/]+/posts/',
 ]))
 
+# ISO country code → primary spoken language name (in English).
+# Used by _translate_niche_to_local to ask Gemini for the native niche term
+# when the operator submits an English term + a non-English city. Keep in
+# sync with _extract_country_from_excerpt's CITY_TO_COUNTRY mapping below:
+# every country that appears there should appear here unless it's
+# English-primary (GB/US/IE/CA/AU/NZ/SG/PH/IN/ZA — those are intentionally
+# omitted so translation is skipped for them).
+COUNTRY_TO_LANGUAGE: dict = {
+    'DE': 'German',
+    'AT': 'German',
+    'CH': 'German',  # majority — Italian/French regions skip translate
+    'FR': 'French',
+    'BE': 'Dutch',   # Brussels can be French — picked Dutch as FB-more-active
+    'NL': 'Dutch',
+    'IT': 'Italian',
+    'ES': 'Spanish',
+    'PT': 'Portuguese',
+    'BR': 'Portuguese',
+    'MX': 'Spanish',
+    'PL': 'Polish',
+    'CZ': 'Czech',
+    'SK': 'Slovak',
+    'HU': 'Hungarian',
+    'RO': 'Romanian',
+    'BG': 'Bulgarian',
+    'GR': 'Greek',
+    'HR': 'Croatian',
+    'SI': 'Slovenian',
+    'RS': 'Serbian',
+    'AL': 'Albanian',
+    'MK': 'Macedonian',
+    'ME': 'Montenegrin',
+    'BA': 'Bosnian',
+    'TR': 'Turkish',
+    'SE': 'Swedish',
+    'DK': 'Danish',
+    'NO': 'Norwegian',
+    'FI': 'Finnish',
+    'IS': 'Icelandic',
+    'LT': 'Lithuanian',
+    'LV': 'Latvian',
+    'EE': 'Estonian',
+    'MD': 'Romanian',
+    'UA': 'Ukrainian',
+    'CY': 'Greek',
+    'MT': 'Maltese',
+    'LU': 'German',  # also French/Lëtzebuergesch — German is most-FB-active
+}
+
+# In-process cache: (language_lower, niche_lower) → native_term
+# Avoids hitting Gemini for every scrape when the same niche+language combo
+# repeats. Cache lives for the worker process lifetime; warms up in <60s
+# of normal use.
+_NICHE_TRANSLATION_CACHE: dict = {}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -331,6 +386,106 @@ POST_EXPERIENCE_PATTERNS = [
 ]
 
 
+def _translate_niche_to_local(
+    niche: str,
+    location: str,
+    *,
+    timeout_s: int = 15,
+) -> Optional[str]:
+    """Translate a niche term to the local language of the given location.
+
+    Returns the translated term on success. Returns None when:
+      - location can't be mapped to a country (e.g. unknown city)
+      - country is English-primary (no translation needed)
+      - country has no entry in COUNTRY_TO_LANGUAGE (multilingual edge case)
+      - GEMINI_API_KEY is unset or the API call fails
+
+    Caller should treat None as "use original niche unchanged" — DO NOT
+    fall back to a different niche; we'd rather under-translate than
+    pick something semantically wrong.
+
+    Cache lookup is O(1) on (language_lower, niche_lower). The first call
+    for a new combo costs ~0.5s of Gemini latency; subsequent calls are
+    free for the worker's lifetime.
+    """
+    if not niche or not location:
+        return None
+
+    country = _extract_country_from_excerpt(location)
+    if not country:
+        return None  # unknown city — caller uses original niche
+
+    language = COUNTRY_TO_LANGUAGE.get(country)
+    if not language:
+        return None  # English-primary OR multilingual without default
+
+    # Cache check (case-insensitive)
+    cache_key = (language.lower(), niche.lower().strip())
+    if cache_key in _NICHE_TRANSLATION_CACHE:
+        return _NICHE_TRANSLATION_CACHE[cache_key]
+
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')
+    if not api_key:
+        return None
+
+    # Prompt design: short, deterministic, JSON-only. Ask for the most
+    # common consumer-facing word a real local would use in a casual FB
+    # group post — NOT a formal/dictionary translation. e.g. for "plumber"
+    # in Italian we want "idraulico", not "addetto agli impianti idraulici".
+    prompt = f"""You are translating a service-provider niche term for a Facebook group search.
+
+Niche: "{niche}"
+Target language: {language}
+
+Return the single most common consumer-facing word(s) a native speaker of {language} would use when asking for this service in a casual community Facebook post. NOT the formal/professional/dictionary term — the everyday term.
+
+Rules:
+- 1-3 words maximum
+- Lowercase unless the language requires capitalization (e.g. German nouns)
+- Use diacritics correctly (é, ñ, ü, ß, etc.)
+- No quotation marks, no explanations, no alternatives
+- If the niche is already in {language}, return it unchanged
+- If no good translation exists in {language}, return the niche unchanged
+
+Return ONLY a JSON object with this exact shape:
+{{"native_term": "..."}}
+"""
+
+    url = (
+        'https://generativelanguage.googleapis.com/v1beta/models/'
+        f'gemini-2.5-flash:generateContent?key={api_key}'
+    )
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'temperature': 0.1,
+            'maxOutputTokens': 64,
+            'responseMimeType': 'application/json',
+        },
+    }
+
+    try:
+        import requests as _requests  # lazy
+        resp = _requests.post(url, json=payload, timeout=timeout_s)
+        resp.raise_for_status()
+        body = resp.json()
+        text = (
+            body.get('candidates', [{}])[0]
+                .get('content', {})
+                .get('parts', [{}])[0]
+                .get('text', '')
+        ).strip()
+        parsed = json.loads(text)
+        native = (parsed.get('native_term') or '').strip()
+        if not native or len(native) > 60:
+            return None
+        _NICHE_TRANSLATION_CACHE[cache_key] = native
+        return native
+    except Exception as exc:  # noqa: BLE001
+        print(f'[niche-translate] failed for "{niche}" -> {language}: {exc}', file=sys.stderr)
+        return None
+
+
 def _classify_consumer_posts_with_gemini(
     post_excerpts: list[str],
     niche: str,
@@ -374,15 +529,13 @@ def _classify_consumer_posts_with_gemini(
         f'    that the post is from the target city. Only the post body, attached photo text, '
         f'    or explicit FB metadata (e.g. "in Manchester, United Kingdom") counts as a '
         f'    location signal.\n'
-        f'  - If {location} is a city where ENGLISH IS NOT the primary spoken language (Rome, '
-        f'    Paris, Tokyo, Berlin, Madrid, São Paulo, Moscow, Seoul, etc.), then an English-'
-        f'    language post with NO explicit mention of {location} (no neighborhood, no '
-        f'    postcode, no "I live in {location}", no flag emoji, no FB-tagged location) is '
-        f'    almost certainly NOT from {location} — locals would post in their native '
-        f'    language. Classify FALSE on insufficient location signal in this case.\n'
-        f'  - If {location} is an ENGLISH-PRIMARY city (London, Manchester, Birmingham, NYC, '
-        f'    Los Angeles, Sydney, Toronto, Dublin, etc.), an English post with no explicit '
-        f'    location mention can still pass — the language matches, we cannot rule it out.\n'
+        f'  - The post can be in ANY language (English, German, French, Italian, Spanish, '
+        f'    Portuguese, Polish, etc.). Judge the location signal by the city/neighborhood '
+        f'    NAMES in the post text — those names render the same way regardless of the '
+        f'    post language. A German post saying "ich suche einen Elektriker in Frankfurt-'
+        f'    Sachsenhausen" has a clear Frankfurt signal even though the language is German. '
+        f'    Conversely, a German post with NO mention of {location} or any neighborhood of '
+        f'    {location} should classify FALSE — we can\'t verify it\'s from there.\n'
         if location else ''
     )
 
@@ -1878,7 +2031,26 @@ class FacebookScraper(SocialPlatformScraper):
         process is killed mid-flight (each in-group search is a complete
         unit). Returns aggregated PostStubs across all discovered groups.
         """
-        groups_raw = self._sync_discover_groups(niche, location, on_progress)
+        # Auto-translate niche to local language when the city is non-English.
+        # Operator submits "electrician" + "Frankfurt" → we search FB groups
+        # for "Elektriker Frankfurt" because that's what German consumers
+        # actually post. Falls through silently if no translation available
+        # (English-primary city, unknown city, or Gemini error).
+        translated = _translate_niche_to_local(niche, location)
+        effective_niche = niche
+        if translated and translated.strip().lower() != niche.strip().lower():
+            effective_niche = translated
+            _emit(
+                on_progress,
+                'niche_translated',
+                **{
+                    'from': niche,
+                    'to': translated,
+                    'location': location,
+                },
+            )
+
+        groups_raw = self._sync_discover_groups(effective_niche, location, on_progress)
         if not groups_raw:
             _emit(on_progress, 'groups_found', count=0)
             return []
@@ -1893,7 +2065,7 @@ class FacebookScraper(SocialPlatformScraper):
         if not groups:
             _emit(on_progress, 'groups_found', count=0)
             return []
-        in_group_keyword = f'looking for a {niche}'
+        in_group_keyword = f'looking for a {effective_niche}'
         account = self._claim_or_raise()
 
         # Reuse ONE Chrome session across all in-group searches. Spawning
