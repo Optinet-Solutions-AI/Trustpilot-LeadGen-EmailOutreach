@@ -2101,10 +2101,31 @@ class FacebookScraper(SocialPlatformScraper):
     ) -> list[PostStub]:
         if not query:
             raise ValueError("search_posts requires a non-empty query")
-        groups_only = bool(filters.get('groups_only'))
-        stubs = await asyncio.to_thread(
-            self._sync_search_posts, query, groups_only, max_results or 50, on_progress,
-        )
+        # Route: when groups_only is set (the operator's default — set
+        # server-side in scrape-runner.ts for consumer-mode jobs), use the
+        # group-discovery → per-group search pipeline implemented at
+        # _sync_group_first_scrape. This is the May-27 design and is the
+        # ONLY path that yields real consumer asks; the open-feed search
+        # is dominated by ads phrased as "Looking for X?".
+        #
+        # Escape hatch: pass groups_only=False to filters to revert to the
+        # open-feed scrape (kept for parity testing + rollback).
+        groups_only = bool(filters.get('groups_only', True))
+        niche = (filters.get('niche') or '').strip()
+        location = (filters.get('location') or filters.get('country') or '').strip()
+        if groups_only:
+            if not niche or not location:
+                raise ValueError(
+                    "Group-first search requires both 'niche' and 'location' in filters. "
+                    "Pass groups_only=False to fall back to the open-feed search."
+                )
+            stubs = await asyncio.to_thread(
+                self._sync_group_first_scrape, niche, location, on_progress,
+            )
+        else:
+            stubs = await asyncio.to_thread(
+                self._sync_search_posts, query, False, max_results or 50, on_progress,
+            )
         # Stamp country/category from the operator's filters onto every stub.
         # scrape-runner dispatches consumer-mode jobs via search-posts → enrich-authors
         # (skipping scrape_listing's reshape), so without this the AuthorLead lands
