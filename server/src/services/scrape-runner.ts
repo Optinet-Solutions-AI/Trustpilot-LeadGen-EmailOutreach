@@ -682,10 +682,18 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
 
     if (isFbConsumerMode) {
       const maxResults = Number(fbFilters.max_results ?? 10);
+      // Force the in-FB "groups" filter on the post search. The open-feed
+      // search is dominated by business ads phrased as "Looking for X?";
+      // FB's built-in groups filter (URL hint `&filters=groups`) restricts
+      // to posts inside community groups, where real consumer asks live.
+      // This is the smaller-effort precursor to the full group-discovery
+      // flow specified in 2026-05-27-facebook-group-first-scraping-design.md.
+      const consumerFilters = { ...fbFilters, groups_only: true };
+      const consumerFiltersJson = JSON.stringify(consumerFilters);
       const { promise: searchPromise } = runPython(jobId, 'tools/scraper/run.py', [
         '--platform', platform,
         '--action', 'search-posts',
-        '--filters', filtersJson,
+        '--filters', consumerFiltersJson,
         '--output', rawOutput,
         '--max-results', String(maxResults),
       ], platformEnv);

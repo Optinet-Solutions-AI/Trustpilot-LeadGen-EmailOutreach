@@ -343,9 +343,9 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 <div className="sm:col-span-2 lg:col-span-3">
                   <ComboWarning niche={fbNiche} location={fbLocation} />
                   <p className="text-[11px] text-on-surface-variant">
-                    Group-first flow: we&apos;ll find every public FB group matching <strong>{fbNiche || '<niche>'} {fbLocation || '<location>'}</strong>,
-                    then run an in-group post search for <strong>&quot;looking for a {fbNiche || '<niche>'}&quot;</strong> across all of them.
-                    Streams live; you can cancel mid-flight. Expect 10-25 min wall time.
+                    Searches public FB <strong>group</strong> posts for <strong>&quot;looking for {fbNiche || '<niche>'} {fbLocation || '<location>'}&quot;</strong> &mdash;
+                    community groups have far less ad noise than the open feed. Each post is filtered to keep only
+                    real consumer asks (asking-only + Gemini niche+location match). Streams live; cancellable.
                   </p>
                 </div>
               </>
