@@ -243,7 +243,7 @@ export default function LocationPicker({ value, onChange, disabled, id }: Props)
   );
 
   return (
-    <div>
+    <div className="w-full">
       <Combobox
         id={id}
         value={value}
