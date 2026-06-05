@@ -2039,27 +2039,12 @@ class FacebookScraper(SocialPlatformScraper):
         Sequential and cancellable; partial results persist if the parent
         process is killed mid-flight (each in-group search is a complete
         unit). Returns aggregated PostStubs across all discovered groups.
-        """
-        # Auto-translate niche to local language when the city is non-English.
-        # Operator submits "electrician" + "Frankfurt" → we search FB groups
-        # for "Elektriker Frankfurt" because that's what German consumers
-        # actually post. Falls through silently if no translation available
-        # (English-primary city, unknown city, or Gemini error).
-        translated = _translate_niche_to_local(niche, location)
-        effective_niche = niche
-        if translated and translated.strip().lower() != niche.strip().lower():
-            effective_niche = translated
-            _emit(
-                on_progress,
-                'niche_translated',
-                **{
-                    'from': niche,
-                    'to': translated,
-                    'location': location,
-                },
-            )
 
-        groups_raw = self._sync_discover_groups(effective_niche, location, on_progress)
+        Caller is responsible for niche translation (search_posts handles
+        that BEFORE calling us, so the classifier downstream gets the same
+        translated value). Here we just use the niche we're given.
+        """
+        groups_raw = self._sync_discover_groups(niche, location, on_progress)
         if not groups_raw:
             _emit(on_progress, 'groups_found', count=0)
             return []
@@ -2074,7 +2059,7 @@ class FacebookScraper(SocialPlatformScraper):
         if not groups:
             _emit(on_progress, 'groups_found', count=0)
             return []
-        in_group_keyword = f'looking for a {effective_niche}'
+        in_group_keyword = f'looking for a {niche}'
         account = self._claim_or_raise()
 
         # Reuse ONE Chrome session across all in-group searches. Spawning
@@ -2331,6 +2316,25 @@ class FacebookScraper(SocialPlatformScraper):
         groups_only = bool(filters.get('groups_only', True))
         niche = (filters.get('niche') or '').strip()
         location = (filters.get('location') or filters.get('country') or '').strip()
+
+        # Auto-translate niche to the local language of the city BEFORE search +
+        # classifier. Operator submits "electrician" + "Frankfurt"; we translate
+        # to "Elektriker" and use that for BOTH the FB group/post search AND the
+        # downstream Gemini classifier. Falls through (no translation) for
+        # English-primary cities or unknown locations. Original term is preserved
+        # in `original_niche` for category-stamping on the persisted lead row
+        # (so dashboard filter "category=electrician" finds these German leads).
+        original_niche = niche
+        if niche and location:
+            translated = await asyncio.to_thread(_translate_niche_to_local, niche, location)
+            if translated and translated.strip().lower() != niche.strip().lower():
+                _emit(
+                    on_progress,
+                    'niche_translated',
+                    **{'from': niche, 'to': translated, 'location': location},
+                )
+                niche = translated
+
         if groups_only:
             if not niche or not location:
                 raise ValueError(
@@ -2345,17 +2349,16 @@ class FacebookScraper(SocialPlatformScraper):
                 self._sync_search_posts, query, False, max_results or 50, on_progress,
             )
         # Stamp country/category from the operator's filters onto every stub.
-        # scrape-runner dispatches consumer-mode jobs via search-posts → enrich-authors
-        # (skipping scrape_listing's reshape), so without this the AuthorLead lands
-        # with country=null/category=null and the "Recent Scrape Jobs → row click"
-        # filter URL (which uses location/niche) shows zero results.
-        niche = (filters.get('niche') or filters.get('category') or '').strip() or None
-        location = (filters.get('location') or filters.get('country') or '').strip() or None
+        # Uses ORIGINAL (un-translated) niche so the dashboard's "category=electrician"
+        # filter finds leads scraped from German "Elektriker" groups. Without this,
+        # AuthorLead lands with category=null and the Lead Matrix loses the row.
+        stamp_niche = original_niche or (filters.get('category') or '').strip() or None
+        stamp_location = location or None
         for s in stubs:
-            if niche and not s.get('category'):
-                s['category'] = niche
-            if location and not s.get('country'):
-                s['country'] = location
+            if stamp_niche and not s.get('category'):
+                s['category'] = stamp_niche
+            if stamp_location and not s.get('country'):
+                s['country'] = stamp_location
 
         # ── Consumer-only filter chain (was previously ONLY in scrape_listing) ──
         #
