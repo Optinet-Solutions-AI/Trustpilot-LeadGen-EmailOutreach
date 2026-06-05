@@ -25,7 +25,7 @@ export default function ComboWarning({ niche, location }: Props) {
   // Priority 1: B2B / low-tier niche — outweighs language concerns.
   if (nicheEntry?.tier === 'low') {
     return (
-      <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <div role="alert" className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
         ⚠️ <strong>B2B niche on FB:</strong> this niche rarely surfaces on
         community groups. Expect few or zero leads. Try a trade/home-service
         niche if you want consistent results.
@@ -36,10 +36,10 @@ export default function ComboWarning({ niche, location }: Props) {
   // Priority 2: known niche + non-English location.
   if (nicheEntry && cityLanguage) {
     return (
-      <div className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+      <div role="status" className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
         💡 <strong>Language tip:</strong> posts in {location} are usually in {cityLanguage}.
-        Consider the native term for "{nicheEntry.label}" (e.g. <em>idraulico</em>{' '}
-        for plumber in Italian) to surface more leads.
+        Consider searching for the native {cityLanguage} term for "{nicheEntry.label}" — Gemini
+        filtering accepts both, but native-language niches surface more leads.
       </div>
     );
   }
