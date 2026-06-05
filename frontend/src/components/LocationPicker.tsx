@@ -203,6 +203,11 @@ const LOCATION_CITIES: CityEntry[] = _RAW_CITIES.map((c) => ({
   language: NON_ENGLISH_LANGUAGES[c.country],
 }));
 
+/** Returns the non-English language a city primarily uses, or undefined. */
+export function findCityLanguage(city: string): string | undefined {
+  return LOCATION_CITIES.find((c) => c.city === city)?.language;
+}
+
 function flagEmoji(code: string): string {
   if (!/^[A-Za-z]{2}$/.test(code)) return '';
   const A = 0x1f1e6;
