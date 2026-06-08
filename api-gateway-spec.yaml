@@ -833,6 +833,25 @@ paths:
       responses:
         "200":
           description: OK
+  /api/social-groups/queue:
+    get:
+      operationId: listSocialGroupQueue
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/social-groups/queue/{id}:
+    patch:
+      operationId: updateSocialGroupQueue
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/dns-health/{domain}:
     get:
       operationId: getDnsHealth
