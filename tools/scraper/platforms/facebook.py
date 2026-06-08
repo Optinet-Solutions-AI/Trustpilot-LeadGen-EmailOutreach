@@ -984,10 +984,10 @@ def _group_relevance_tier(name: str, location: str | None, niche: str | None) ->
 
     lang = _resolve_relevance_language(location)
     tokens = set(_GROUP_RELEVANCE_VOCAB.get(lang, ())) | set(_GROUP_RELEVANCE_VOCAB['English'])
-    if any(tok in n for tok in tokens):
+    if any(re.search(r'\b' + re.escape(tok) + r'\b', n) for tok in tokens):
         return 2
 
-    if any(tok in n for tok in _GROUP_TIER1_TOKENS):
+    if any(re.search(r'\b' + re.escape(tok) + r'\b', n) for tok in _GROUP_TIER1_TOKENS):
         return 1
 
     return 0

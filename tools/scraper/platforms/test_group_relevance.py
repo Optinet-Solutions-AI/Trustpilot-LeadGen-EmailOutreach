@@ -182,3 +182,16 @@ def test_resolve_generic_cap_passthrough_and_string():
 def test_resolve_generic_cap_negative_clamped_and_garbage_defaults():
     assert _resolve_generic_cap({"generic_group_cap": -2}) == 0
     assert _resolve_generic_cap({"generic_group_cap": "abc"}) == 5
+
+
+def test_tier_word_boundary_avoids_substring_false_positives():
+    # 'marché' (FR vocab) must NOT match inside 'supermarché'.
+    assert _group_relevance_tier("Supermarché Paris", "Paris", None) == 0
+    # 'mura' (tier-1 token) must NOT match inside 'muralist'.
+    assert _group_relevance_tier("Muralist Group Berlin", "Berlin", None) == 0
+
+
+def test_tier_word_boundary_still_matches_real_tokens():
+    # Regression guard: legitimate whole-word matches still fire.
+    assert _group_relevance_tier("Le Marché de Lyon", "Lyon", None) == 2          # FR 'marché'
+    assert _group_relevance_tier("Frankfurt Community Help", "Frankfurt", None) == 1  # tier-1 'community'
