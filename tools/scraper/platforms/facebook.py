@@ -2188,6 +2188,7 @@ class FacebookScraper(SocialPlatformScraper):
         niche: str,
         location: str,
         on_progress: ProgressCallback,
+        generic_group_cap: int = 5,
     ) -> list:
         """Orchestrate the discovery → per-group search → aggregate flow.
         Sequential and cancellable; partial results persist if the parent
@@ -2205,11 +2206,23 @@ class FacebookScraper(SocialPlatformScraper):
         # Filter out professional / job / supplier / association groups.
         # Their 'looking for X' posts are job seekers and clinic recruiters,
         # not consumers. Cuts both noise and wall time dramatically.
-        groups = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''), location)]
-        dropped_pro = len(groups_raw) - len(groups)
+        gated = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''), location)]
+        dropped_pro = len(groups_raw) - len(gated)
         if dropped_pro:
-            _emit(on_progress, 'groups_filtered', dropped=dropped_pro, kept=len(groups),
+            _emit(on_progress, 'groups_filtered', dropped=dropped_pro, kept=len(gated),
                   reason='professional/job/supplier groups removed')
+        if not gated:
+            _emit(on_progress, 'groups_found', count=0)
+            return []
+
+        # Prioritize niche/classifieds/community groups; cap generic
+        # city/lifestyle groups so non-English markets stop drowning in
+        # lifestyle-group noise (and we don't burn account quota on it).
+        groups, prio = _order_and_cap_groups(gated, niche, location, generic_group_cap)
+        _emit(on_progress, 'groups_prioritized',
+              relevant=prio['relevant'],
+              generic_searched=prio['generic_searched'],
+              generic_skipped=prio['generic_skipped'])
         if not groups:
             _emit(on_progress, 'groups_found', count=0)
             return []
@@ -2332,6 +2345,7 @@ class FacebookScraper(SocialPlatformScraper):
             else:
                 post_stubs = await asyncio.to_thread(
                     self._sync_group_first_scrape, niche, location, on_progress,
+                    int(filters.get('generic_group_cap', 5) or 5),
                 )
             # Two-layer consumer-only filter:
             #  1. Drop business/ad posts (clinic handles, ad copy).
@@ -2497,6 +2511,7 @@ class FacebookScraper(SocialPlatformScraper):
                 )
             stubs = await asyncio.to_thread(
                 self._sync_group_first_scrape, niche, location, on_progress,
+                int(filters.get('generic_group_cap', 5) or 5),
             )
         else:
             stubs = await asyncio.to_thread(
