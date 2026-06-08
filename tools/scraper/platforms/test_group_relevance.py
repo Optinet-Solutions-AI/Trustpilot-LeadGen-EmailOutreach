@@ -159,3 +159,26 @@ def test_order_and_cap_group_without_name_is_tier0():
     ordered, stats = _order_and_cap_groups([{"group_id": "1"}], niche="Elektriker", location="Frankfurt", generic_group_cap=5)
     assert [g["group_id"] for g in ordered] == ["1"]
     assert stats == {"relevant": 0, "generic_searched": 1, "generic_skipped": 0}
+
+
+from tools.scraper.platforms.facebook import _resolve_generic_cap
+
+
+def test_resolve_generic_cap_explicit_zero_is_honored():
+    # The bug this fixes: explicit 0 must NOT become the default 5.
+    assert _resolve_generic_cap({"generic_group_cap": 0}) == 0
+
+
+def test_resolve_generic_cap_default_when_absent_or_none():
+    assert _resolve_generic_cap({}) == 5
+    assert _resolve_generic_cap({"generic_group_cap": None}) == 5
+
+
+def test_resolve_generic_cap_passthrough_and_string():
+    assert _resolve_generic_cap({"generic_group_cap": 3}) == 3
+    assert _resolve_generic_cap({"generic_group_cap": "4"}) == 4  # JSON may send strings
+
+
+def test_resolve_generic_cap_negative_clamped_and_garbage_defaults():
+    assert _resolve_generic_cap({"generic_group_cap": -2}) == 0
+    assert _resolve_generic_cap({"generic_group_cap": "abc"}) == 5

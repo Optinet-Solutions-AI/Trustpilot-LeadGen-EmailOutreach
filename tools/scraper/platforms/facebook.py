@@ -1033,6 +1033,22 @@ def _order_and_cap_groups(
     }
 
 
+def _resolve_generic_cap(filters: dict) -> int:
+    """Read the generic-group search cap from scrape filters.
+
+    Defaults to 5 when the key is absent or None. An explicit 0 means
+    'search no generic groups' and is honored (NOT coerced to the default).
+    Negative or malformed values are clamped to 0 / fall back to 5.
+    """
+    cap = filters.get('generic_group_cap')
+    if cap is None:
+        return 5
+    try:
+        return max(0, int(cap))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
@@ -2345,7 +2361,7 @@ class FacebookScraper(SocialPlatformScraper):
             else:
                 post_stubs = await asyncio.to_thread(
                     self._sync_group_first_scrape, niche, location, on_progress,
-                    int(filters.get('generic_group_cap', 5) or 5),
+                    _resolve_generic_cap(filters),
                 )
             # Two-layer consumer-only filter:
             #  1. Drop business/ad posts (clinic handles, ad copy).
@@ -2511,7 +2527,7 @@ class FacebookScraper(SocialPlatformScraper):
                 )
             stubs = await asyncio.to_thread(
                 self._sync_group_first_scrape, niche, location, on_progress,
-                int(filters.get('generic_group_cap', 5) or 5),
+                _resolve_generic_cap(filters),
             )
         else:
             stubs = await asyncio.to_thread(
