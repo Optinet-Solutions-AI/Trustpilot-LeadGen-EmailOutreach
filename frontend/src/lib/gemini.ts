@@ -141,6 +141,8 @@ export function domainToCompanyName(domain: string): string {
  * their original (Trustpilot) wording and still take precedence.
  */
 export function buildPrompt(options: GenerateTemplateOptions = {}): string {
+  // `platform` is intentionally read via options.platform below (not destructured
+  // here) so the `in PLATFORM_PROFILES` narrowing keeps the original reference.
   const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, discoveryMode, language, followUpMode, followUpStepNumber } = options;
 
   // PLATFORM: resolve the profile (fallback to trustpilot for unknown/absent).
@@ -149,9 +151,11 @@ export function buildPrompt(options: GenerateTemplateOptions = {}): string {
       ? (options.platform as PlatformSlug)
       : 'trustpilot';
   const profile = PLATFORM_PROFILES[slug];
-  // Special modes are inherently Trustpilot-framed flows — force the brand
-  // name back to Trustpilot for them regardless of the selected platform.
-  const specialMode = !!(discoveryMode || redirectMode);
+  // Special modes are platform-agnostic flows (support-handoff, listing
+  // redirect, or a manual domain-entered lead with no platform context) —
+  // force the brand name back to Trustpilot for them regardless of the
+  // selected platform, matching the pre-platform-aware copy.
+  const specialMode = !!(discoveryMode || redirectMode || manualMode);
   const brandPlatform = specialMode ? 'Trustpilot' : profile.displayName;
 
   const companyHint = emailDomain ? `a business with the domain "${emailDomain}"` : 'a business';
@@ -324,6 +328,9 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
   const rawSubject = subjectMatch ? subjectMatch[1].trim() : 'A quick note about {{company_name}}';
   const rawBody = bodyMatch ? bodyMatch[1].trim() : raw;
 
+  // Repair any malformed spintax the model may have emitted before the
+  // template leaves this function — strips unmatched braces and degenerate
+  // single-option groups. Prevents the "{Would you be open..." spam-flag bug.
   return {
     subject: sanitizeSpintaxBraces(rawSubject),
     body: sanitizeSpintaxBraces(rawBody),
