@@ -2274,6 +2274,7 @@ class FacebookScraper(SocialPlatformScraper):
                         'name': name,
                         'member_count_text': members,
                         'is_public': is_public,
+                        'is_member': _card_is_member(text),
                         'url': gurl,
                         'snippet': text[:200],
                     })
@@ -2327,6 +2328,36 @@ class FacebookScraper(SocialPlatformScraper):
               relevant=prio['relevant'],
               generic_searched=prio['generic_searched'],
               generic_skipped=prio['generic_skipped'])
+        # Assisted-join queue: record tier-2 groups the account isn't a member
+        # of so the operator can join them manually; auto-flip prior candidates
+        # to 'joined' once they show as members. Best-effort, never blocks.
+        try:
+            cand_groups = [
+                {**g, 'tier': _group_relevance_tier(g.get('name', ''), location, niche)}
+                for g in gated
+            ]
+            tier2_gids = [g['group_id'] for g in cand_groups if g.get('tier') == 2]
+            existing_status: dict = {}
+            if tier2_gids:
+                resp = (table('fb_group_candidates')
+                        .select('group_id,status')
+                        .eq('platform', 'facebook')
+                        .in_('group_id', tier2_gids)
+                        .execute())
+                existing_status = {r['group_id']: r['status'] for r in (resp.data or [])}
+            plan = _plan_candidate_writes(cand_groups, existing_status, niche, location, _now_iso())
+            if plan['upsert']:
+                table('fb_group_candidates').upsert(
+                    plan['upsert'], on_conflict='platform,group_id').execute()
+            for gid in plan['mark_joined']:
+                (table('fb_group_candidates')
+                 .update({'status': 'joined', 'joined_detected_at': _now_iso()})
+                 .eq('platform', 'facebook').eq('group_id', gid).eq('status', 'candidate')
+                 .execute())
+            _emit(on_progress, 'group_queue_updated',
+                  queued=len(plan['upsert']), joined=len(plan['mark_joined']))
+        except Exception as exc:  # noqa: BLE001
+            print(f'[group-queue] non-fatal: {str(exc)[:300]}', file=sys.stderr)
         if not groups:
             _emit(on_progress, 'groups_found', count=0)
             return []
