@@ -2275,7 +2275,7 @@ class FacebookScraper(SocialPlatformScraper):
         if not groups:
             _emit(on_progress, 'groups_found', count=0)
             return []
-        in_group_keyword = f'looking for a {niche}'
+        in_group_keyword = _in_group_keyword(niche, location)
         account = self._claim_or_raise()
 
         # Reuse ONE Chrome session across all in-group searches. Spawning
@@ -2404,8 +2404,7 @@ class FacebookScraper(SocialPlatformScraper):
             #     Dr.X') get dropped — those people already have a
             #     dentist, they're not leads.
             # Either filter is operator-overridable via filters.
-            exclude_businesses = filters.get('exclude_businesses', True)
-            asking_only = filters.get('asking_only', True)
+            exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
             use_llm_classifier = filters.get('use_llm_classifier', True)
             if exclude_businesses or asking_only:
                 before = len(post_stubs)
@@ -2595,8 +2594,7 @@ class FacebookScraper(SocialPlatformScraper):
         # use_llm_classifier (all default True).
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
-            exclude_businesses = filters.get('exclude_businesses', True)
-            asking_only = filters.get('asking_only', True)
+            exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
             use_llm_classifier = filters.get('use_llm_classifier', True)
 
             if exclude_businesses or asking_only:
