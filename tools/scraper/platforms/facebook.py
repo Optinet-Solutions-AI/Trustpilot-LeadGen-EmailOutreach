@@ -937,13 +937,13 @@ _GROUP_RELEVANCE_VOCAB: dict[str, tuple[str, ...]] = {
 # co-occur with B2B negatives ("Handyman Suppliers") and must NOT override.
 # Trade-role words still earn tier-2 for RANKING via _group_relevance_tier.
 _GATE_OVERRIDE_TOKENS: dict[str, tuple[str, ...]] = {
-    'English': ('classifieds', 'for sale', 'buy and sell', 'car boot'),
+    'English': ('classifieds', 'for sale', 'car boot'),
     'German': ('kleinanzeigen', 'marktplatz', 'flohmarkt', 'gesuche'),
     'French': ('petites annonces', 'bon coin'),
-    'Italian': ('mercatino', 'annunci'),
-    'Spanish': ('clasificados', 'anuncios', 'mercadillo'),
+    'Italian': ('mercatino',),
+    'Spanish': ('clasificados', 'mercadillo'),
     'Dutch': ('marktplaats',),
-    'Portuguese': ('classificados', 'anúncios'),
+    'Portuguese': ('classificados',),
 }
 
 # Consumer-positive tokens that signal a tier-1 (community / help) group.
@@ -996,12 +996,16 @@ def _group_relevance_tier(name: str, location: str | None, niche: str | None) ->
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
-    Four-stage decision (order matters):
+    Five-stage decision (order matters):
       1. COUNTRY MISMATCH — when the operator's location maps to a known
          country and the group name carries tokens for a *different*
          country, DROP. Runs FIRST so a generic POSITIVE token like
          'free' can't keep a foreign-country group ("Free Legal Advice
          Philippines" on a Brooklyn search).
+      2a. CLASSIFIEDS OVERRIDE — name matches a curated per-language
+         classifieds token (kleinanzeigen, flohmarkt, mercatino, …). These
+         are unambiguous consumer classifieds/flea-market boards, so KEEP
+         even if a generic negative token co-occurs. Runs before NEGATIVE.
       2. STRONG POSITIVE — name contains 'free', 'affordable', 'cheap',
          'budget', 'barato' (Filipino for cheap). These ARE consumer
          groups even if they also contain a generic token like 'clinic'.
@@ -1033,7 +1037,7 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
     # NOT override here. Niche is irrelevant to the gate (ranking-only).
     _lang = _resolve_relevance_language(operator_location)
     _override = set(_GATE_OVERRIDE_TOKENS.get(_lang, ())) | set(_GATE_OVERRIDE_TOKENS['English'])
-    if any(tok in name for tok in _override):
+    if any(re.search(r'\b' + re.escape(tok) + r'\b', name) for tok in _override):
         return True
 
     POSITIVE_TOKENS = (

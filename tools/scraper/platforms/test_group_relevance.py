@@ -87,3 +87,23 @@ def test_gate_backcompat_unchanged():
     # Existing behavior preserved for non-classifieds names.
     assert _is_consumer_facing_group("West Hampstead Community", "London") is True
     assert _is_consumer_facing_group("Dental Equipment Suppliers", "London") is False
+
+
+def test_gate_generic_ads_word_does_not_rescue_job_board():
+    # 'annunci' (generic IT "ads") was removed from the override, so a job
+    # board that also trips the 'jobs' negative is correctly DROPPED.
+    assert _is_consumer_facing_group("Annunci di Lavoro Jobs Roma", "Rome") is False
+
+
+def test_gate_gesuche_word_boundary_excludes_stellengesuche():
+    # word-boundary match: standalone 'Gesuche' overrides, but the compound
+    # 'Stellengesuche' (job applications) does NOT — and with a 'jobs'
+    # negative present it must DROP.
+    assert _is_consumer_facing_group("Gesuche Frankfurt", "Frankfurt") is True
+    assert _is_consumer_facing_group("Stellengesuche Jobs Frankfurt", "Frankfurt") is False
+
+
+def test_gate_classifieds_override_still_fires_with_word_boundary():
+    # Regression guard: the override still keeps a real classifieds board
+    # that co-occurs with a negative, using word-boundary matching.
+    assert _is_consumer_facing_group("Flohmarkt Equipment Frankfurt", "Frankfurt") is True
