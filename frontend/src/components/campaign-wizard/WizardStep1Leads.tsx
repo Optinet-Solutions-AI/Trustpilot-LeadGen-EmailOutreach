@@ -72,7 +72,6 @@ interface Props {
 // PLATFORM_MANIFESTS list on the backend; keep in sync when adding a
 // new scraping platform.
 const PLATFORM_OPTIONS: Array<{ slug: string; name: string }> = [
-  { slug: '',            name: 'All Platforms' },
   { slug: 'trustpilot',  name: 'Trustpilot' },
   { slug: 'tripadvisor', name: 'TripAdvisor' },
   { slug: 'yelp',        name: 'Yelp' },

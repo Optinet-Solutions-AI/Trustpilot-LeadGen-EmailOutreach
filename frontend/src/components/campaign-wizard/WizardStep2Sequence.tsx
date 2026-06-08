@@ -11,6 +11,10 @@ interface Props {
   includeScreenshot: boolean;
   filterCountry: string;
   filterCategory: string;
+  /** Platform this campaign targets (Step 1 picker). Drives the tailored AI
+   *  pitch and the platform-name UI strings. Always set — defaults to
+   *  'trustpilot' in the wizard. */
+  filterPlatform: string;
   manualEmails?: string[];
   followUpSteps: FollowUpStepInput[];
   /** Wizard launched from the Redirected Leads page — switches the AI prompt
@@ -38,8 +42,14 @@ const SPINTAX_EXAMPLES = [
   '{We noticed|We saw|Our team found}',
 ];
 
+const PLATFORM_LABELS: Record<string, string> = {
+  trustpilot: 'Trustpilot',
+  tripadvisor: 'TripAdvisor',
+  yelp: 'Yelp',
+};
+
 export default function WizardStep2Sequence({
-  subject, body, includeScreenshot, filterCountry, filterCategory, manualEmails, followUpSteps,
+  subject, body, includeScreenshot, filterCountry, filterCategory, filterPlatform, manualEmails, followUpSteps,
   redirectMode, discoveryMode,
   onSubjectChange, onBodyChange, onIncludeScreenshotChange, onFollowUpStepsChange,
 }: Props) {
@@ -47,6 +57,8 @@ export default function WizardStep2Sequence({
   const [previewMode, setPreviewMode] = useState<'raw' | 'preview'>('raw');
   const [generating, setGenerating] = useState(false);
   const [aiError, setAiError] = useState('');
+
+  const platformLabel = PLATFORM_LABELS[filterPlatform] ?? 'Trustpilot';
 
   // Infer preview company name from first manual email domain
   const firstEmailDomain = manualEmails?.[0]?.includes('@') ? manualEmails[0].split('@')[1] : undefined;
@@ -57,7 +69,7 @@ export default function WizardStep2Sequence({
     const newStep: FollowUpStepInput = {
       delayDays: newIdx === 0 ? 3 : followUpSteps[newIdx - 1].delayDays + 3,
       subject: `Follow-up: {Checking in|Quick follow-up|Just following up}`,
-      body: `<p>{Hi|Hello|Hey},</p><p>I just wanted to {follow up|circle back} on my previous email regarding your Trustpilot rating.</p><p>{Best regards|Kind regards},<br>OptiRate Solutions</p>`,
+      body: `<p>{Hi|Hello|Hey},</p><p>I just wanted to {follow up|circle back} on my previous email regarding your ${platformLabel} rating.</p><p>{Best regards|Kind regards},<br>OptiRate Solutions</p>`,
     };
     const newSteps = [...followUpSteps, newStep];
     onFollowUpStepsChange(newSteps);
@@ -76,6 +88,7 @@ export default function WizardStep2Sequence({
         country: filterCountry || undefined,
         category: filterCategory || undefined,
         emailDomain: firstEmailDomain,
+        platform: filterPlatform,
         manualMode: !!(manualEmails && manualEmails.length > 0),
         redirectMode: !!redirectMode,
         discoveryMode: !!discoveryMode,
@@ -131,6 +144,7 @@ export default function WizardStep2Sequence({
         country: filterCountry || undefined,
         category: filterCategory || undefined,
         emailDomain: firstEmailDomain,
+        platform: filterPlatform,
         manualMode: !!(manualEmails && manualEmails.length > 0),
         redirectMode: !!redirectMode,
         discoveryMode: !!discoveryMode,
@@ -303,7 +317,7 @@ export default function WizardStep2Sequence({
                   type="text"
                   value={activeSubject}
                   onChange={(e) => setActiveSubject(e.target.value)}
-                  placeholder="e.g. A quick note about your Trustpilot rating, {{company_name}}"
+                  placeholder={`e.g. A quick note about your ${platformLabel} rating, {{company_name}}`}
                   className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
                 />
                 <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -404,9 +418,9 @@ export default function WizardStep2Sequence({
                 </span>
               </div>
               <div className="flex-1">
-                <p className="text-sm font-bold text-on-surface">Attach Trustpilot Screenshot</p>
+                <p className="text-sm font-bold text-on-surface">Attach {platformLabel} Screenshot</p>
                 <p className="text-xs text-secondary mt-0.5">
-                  Automatically embed a screenshot of each company&apos;s Trustpilot page — makes the email highly personalized.
+                  Automatically embed a screenshot of each company&apos;s {platformLabel} page — makes the email highly personalized.
                 </p>
               </div>
               <div className={`w-11 h-6 rounded-full transition-all relative ${includeScreenshot ? 'bg-[#b0004a]' : 'bg-slate-200'}`}>
