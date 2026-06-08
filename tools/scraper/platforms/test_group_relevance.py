@@ -227,3 +227,16 @@ def test_consumer_filter_defaults_operator_override_wins():
     # Explicit operator filter overrides the language-aware default.
     assert _consumer_filter_defaults({"asking_only": True}, "Frankfurt") == (False, True)
     assert _consumer_filter_defaults({"exclude_businesses": False}, "London") == (False, True)
+
+
+def test_consumer_filter_defaults_explicit_false_in_english_is_honored():
+    # bool(False) footgun guard: explicit asking_only=False in an English
+    # market must NOT revert to the English default of True.
+    assert _consumer_filter_defaults({"asking_only": False}, "London") == (True, False)
+
+
+def test_consumer_filter_defaults_both_keys_overridden():
+    # Both operator overrides applied independently (non-English market).
+    assert _consumer_filter_defaults(
+        {"exclude_businesses": True, "asking_only": False}, "Frankfurt"
+    ) == (True, False)
