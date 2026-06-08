@@ -131,12 +131,19 @@ platform and angle and excludes the others — with no API key or network.
   generate at the intro step, and the follow-up generate in `addFollowUp` /
   `handleGenerateWithAI`); use the platform value to label the screenshot toggle.
 
-### 5. Dynamic screenshot label
+### 5. Dynamic platform-name UI strings
 
-In `WizardStep2Sequence.tsx`, the screenshot toggle becomes
-**"Include {Platform} Screenshot"** with a matching description, driven by the
-same display-name lookup (e.g. `PLATFORM_PROFILES[filterPlatform].displayName`).
-No longer hardcoded "Trustpilot."
+`WizardStep2Sequence.tsx` has three hardcoded "Trustpilot" UI strings that must
+track the selected platform. All three resolve from a small local
+`PLATFORM_LABELS: Record<string, string>` map — the same pattern already used in
+`WizardStep4Launch.tsx`.
+
+- **Screenshot toggle** ("Attach Trustpilot Screenshot" + "…company's Trustpilot
+  page…") → "Attach {Platform} Screenshot" + "…company's {Platform} page…".
+- **Subject placeholder** ("e.g. A quick note about your Trustpilot rating,
+  {{company_name}}") → uses {Platform}.
+- **Follow-up default body pre-fill** (the `addFollowUp` template that mentions
+  "your Trustpilot rating") → uses {Platform}.
 
 ---
 
