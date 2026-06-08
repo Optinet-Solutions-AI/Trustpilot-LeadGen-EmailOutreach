@@ -195,3 +195,35 @@ def test_tier_word_boundary_still_matches_real_tokens():
     # Regression guard: legitimate whole-word matches still fire.
     assert _group_relevance_tier("Le Marché de Lyon", "Lyon", None) == 2          # FR 'marché'
     assert _group_relevance_tier("Frankfurt Community Help", "Frankfurt", None) == 1  # tier-1 'community'
+
+
+from tools.scraper.platforms.facebook import _in_group_keyword, _consumer_filter_defaults
+
+
+def test_in_group_keyword_non_english_uses_bare_niche():
+    # Non-English market: search the translated niche term alone (max recall).
+    assert _in_group_keyword("Elektriker", "Frankfurt") == "Elektriker"
+
+
+def test_in_group_keyword_english_uses_carrier_phrase():
+    # English market: unchanged "looking for a {niche}" carrier phrase.
+    assert _in_group_keyword("handyman", "London") == "looking for a handyman"
+
+
+def test_in_group_keyword_unknown_location_defaults_english():
+    assert _in_group_keyword("plumber", "") == "looking for a plumber"
+    assert _in_group_keyword("plumber", None) == "looking for a plumber"
+
+
+def test_consumer_filter_defaults_non_english_both_off():
+    assert _consumer_filter_defaults({}, "Frankfurt") == (False, False)
+
+
+def test_consumer_filter_defaults_english_both_on():
+    assert _consumer_filter_defaults({}, "London") == (True, True)
+
+
+def test_consumer_filter_defaults_operator_override_wins():
+    # Explicit operator filter overrides the language-aware default.
+    assert _consumer_filter_defaults({"asking_only": True}, "Frankfurt") == (False, True)
+    assert _consumer_filter_defaults({"exclude_businesses": False}, "London") == (False, True)

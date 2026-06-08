@@ -1049,6 +1049,39 @@ def _resolve_generic_cap(filters: dict) -> int:
         return 5
 
 
+def _in_group_keyword(niche: str, location: str | None) -> str:
+    """Build the in-group post-search query for a niche.
+
+    Non-English markets: search the (already-translated) niche term ALONE
+    for maximum recall — German consumers write 'Suche Elektriker', not
+    'looking for a Elektriker', so the English carrier phrase misses them.
+    The multilingual Gemini classifier handles precision downstream.
+
+    English markets: unchanged 'looking for a {niche}' carrier phrase.
+    """
+    if _resolve_relevance_language(location) != 'English':
+        return niche
+    return f'looking for a {niche}'
+
+
+def _consumer_filter_defaults(filters: dict, location: str | None) -> tuple[bool, bool]:
+    """Resolve (exclude_businesses, asking_only) with language-aware defaults.
+
+    The substring filters _looks_like_business_post / _is_actively_asking are
+    English-only, so for non-English markets they DROP real local-language
+    asks. Default them OFF for non-English (let the multilingual Gemini
+    classifier be the sole gate) and ON for English (unchanged). An explicit
+    operator value in `filters` always wins.
+    """
+    default = _resolve_relevance_language(location) == 'English'
+    eb = filters.get('exclude_businesses')
+    ao = filters.get('asking_only')
+    return (
+        default if eb is None else bool(eb),
+        default if ao is None else bool(ao),
+    )
+
+
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
