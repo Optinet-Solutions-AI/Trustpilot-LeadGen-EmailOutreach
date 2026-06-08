@@ -40,11 +40,16 @@ In `frontend/src/lib/gemini.ts`, inside the `GenerateTemplateOptions` interface,
 
 ```ts
   /** Platform the campaign targets — selects the tailored pitch from
-   *  PLATFORM_PROFILES. Accepts 'trustpilot' | 'tripadvisor' | 'yelp';
-   *  any other/absent value falls back to 'trustpilot' (preserves the
-   *  original Trustpilot copy for callers that don't pass a platform). */
-  platform?: string;
+   *  PLATFORM_PROFILES. Use a PlatformSlug ('trustpilot' | 'tripadvisor' |
+   *  'yelp'); the union stays open to plain strings so callers holding a
+   *  loosely-typed filter value can pass it directly. buildPrompt narrows
+   *  unknown/absent values back to 'trustpilot' at runtime. */
+  platform?: PlatformSlug | (string & {});
 ```
+
+> Note: `platform` is typed `PlatformSlug | (string & {})` (not bare `string`)
+> per code review — this gives slug autocomplete while still accepting the
+> wizard's loosely-typed `filterPlatform: string` without a call-site cast.
 
 - [ ] **Step 2: Add the platform types and profile map**
 

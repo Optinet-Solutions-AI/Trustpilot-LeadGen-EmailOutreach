@@ -22,8 +22,8 @@ export interface PlatformProfile {
   reviewCountDesc: string;
 }
 
-/** Per-platform copy atoms. Add an entry here when a new scraping platform
- *  (e.g. Facebook / Instagram) goes live. */
+/** Per-platform copy atoms. Add an entry here — and extend PlatformSlug —
+ *  when a new scraping platform (e.g. Facebook / Instagram) goes live. */
 export const PLATFORM_PROFILES: Record<PlatformSlug, PlatformProfile> = {
   trustpilot: {
     displayName: 'Trustpilot',
@@ -84,10 +84,11 @@ export interface GenerateTemplateOptions {
    *  produce slightly more apologetic / "last attempt" framing. */
   followUpStepNumber?: number;
   /** Platform the campaign targets — selects the tailored pitch from
-   *  PLATFORM_PROFILES. Accepts 'trustpilot' | 'tripadvisor' | 'yelp';
-   *  any other/absent value falls back to 'trustpilot' (preserves the
-   *  original Trustpilot copy for callers that don't pass a platform). */
-  platform?: string;
+   *  PLATFORM_PROFILES. Use a PlatformSlug ('trustpilot' | 'tripadvisor' |
+   *  'yelp'); the union stays open to plain strings so callers holding a
+   *  loosely-typed filter value can pass it directly. buildPrompt narrows
+   *  unknown/absent values back to 'trustpilot' at runtime. */
+  platform?: PlatformSlug | (string & {});
 }
 
 export interface GenerateTemplateResult {
