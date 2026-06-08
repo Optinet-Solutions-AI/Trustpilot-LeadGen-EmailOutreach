@@ -2591,7 +2591,9 @@ class FacebookScraper(SocialPlatformScraper):
         # direct search-posts action) gets the filters. The duplicate filter
         # block in scrape_listing becomes a no-op on already-clean stubs.
         # Operator can disable via filters.exclude_businesses / asking_only /
-        # use_llm_classifier (all default True).
+        # use_llm_classifier. exclude_businesses and asking_only default ON for
+        # English markets and OFF for non-English (multilingual Gemini classifier
+        # is the sole gate there); an explicit filter value always wins.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
             exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
