@@ -10,9 +10,10 @@ interface Props {
   includeScreenshot: boolean;
   filterCountry: string;
   filterCategory: string;
-  /** Optional — pre-filled from Step 1's platform picker. Empty/undefined
-   *  means "all platforms". Shown in the recipient summary so the operator
-   *  sees "Yelp · US · plumbing" instead of just "US · plumbing". */
+  /** Platform this campaign targets — always a slug ('trustpilot' |
+   *  'tripadvisor' | 'yelp'); the wizard no longer offers "all platforms".
+   *  Shown in the recipient summary so the operator sees "Yelp · US ·
+   *  plumbing" instead of just "US · plumbing". */
   filterPlatform?: string;
   recipientCount: number;
   followUpCount: number;

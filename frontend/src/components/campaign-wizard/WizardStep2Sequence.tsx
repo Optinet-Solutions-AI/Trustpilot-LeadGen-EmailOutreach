@@ -42,6 +42,9 @@ const SPINTAX_EXAMPLES = [
   '{We noticed|We saw|Our team found}',
 ];
 
+// Local copy — mirrors WizardStep4Launch. Kept separate from PLATFORM_PROFILES
+// in gemini.ts so user-facing display names can diverge from AI-prompt copy
+// atoms. Keep in sync when adding a platform.
 const PLATFORM_LABELS: Record<string, string> = {
   trustpilot: 'Trustpilot',
   tripadvisor: 'TripAdvisor',
@@ -69,7 +72,7 @@ export default function WizardStep2Sequence({
     const newStep: FollowUpStepInput = {
       delayDays: newIdx === 0 ? 3 : followUpSteps[newIdx - 1].delayDays + 3,
       subject: `Follow-up: {Checking in|Quick follow-up|Just following up}`,
-      body: `<p>{Hi|Hello|Hey},</p><p>I just wanted to {follow up|circle back} on my previous email regarding your ${platformLabel} rating.</p><p>{Best regards|Kind regards},<br>OptiRate Solutions</p>`,
+      body: `<p>{Hi|Hello|Hey},</p><p>{We wanted to|We're writing to} {follow up|circle back} on our previous email regarding your ${platformLabel} rating.</p><p>{Best regards|Kind regards},<br>OptiRate Solutions</p>`,
     };
     const newSteps = [...followUpSteps, newStep];
     onFollowUpStepsChange(newSteps);
