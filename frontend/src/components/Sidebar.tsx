@@ -32,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/campaigns',                             icon: 'magic_button',     label: 'Campaign Wizard' },
   { href: '/email-accounts',                        icon: 'alternate_email',  label: 'Email Accounts' },
   { href: '/social-accounts',                       icon: 'share',            label: 'Social Accounts' },
+  { href: '/group-queue',                           icon: 'playlist_add_check', label: 'Group Queue' },
   { href: '/warmup-peers',                          icon: 'groups',           label: 'Warmup Peers' },
   { href: '/affiliate-monitor',                     icon: 'monitoring',       label: 'Affiliate Monitor' },
 ];
