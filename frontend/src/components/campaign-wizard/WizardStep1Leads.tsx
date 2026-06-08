@@ -42,10 +42,11 @@ function preloadScreenshot(src: string): void {
 interface Props {
   filterCountry: string;
   filterCategory: string;
-  /** Empty string = all platforms (default). Set to a specific platform
-   *  slug ('trustpilot' / 'tripadvisor' / 'yelp' / etc.) to restrict the
-   *  lead pool to that platform's leads only. The backend /leads route
-   *  filters via the lead_platform_presences join when this is set. */
+  /** Platform slug the campaign targets ('trustpilot' / 'tripadvisor' /
+   *  'yelp') — always set; the wizard no longer offers "all platforms" and
+   *  defaults to 'trustpilot'. Restricts the lead pool to that platform's
+   *  leads; the backend /leads route filters via the lead_platform_presences
+   *  join. */
   filterPlatform: string;
   selectedLeadIds: string[];
   manualEmails: string[];
