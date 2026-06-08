@@ -61,3 +61,29 @@ def test_tier2_english_vocab_fires_for_non_english_location():
 def test_niche_takes_precedence_over_tier1_token():
     # 'community' is a tier-1 token, but a niche word-boundary match wins.
     assert _group_relevance_tier("Elektriker Community Frankfurt", "Frankfurt", "Elektriker") == 2
+
+
+from tools.scraper.platforms.facebook import _is_consumer_facing_group
+
+
+def test_gate_keeps_classifieds_group():
+    # German classifieds board → KEEP (no negative present anyway).
+    assert _is_consumer_facing_group("Kleinanzeigen Frankfurt und Umgebung", "Frankfurt") is True
+
+
+def test_gate_classifieds_overrides_a_negative_token():
+    # 'flohmarkt' (DE classifieds override token) co-occurs with the
+    # 'equipment' negative; the classifieds override must win → KEEP.
+    assert _is_consumer_facing_group("Flohmarkt Equipment Frankfurt", "Frankfurt") is True
+
+
+def test_gate_trade_role_word_does_NOT_rescue_b2b_supplier():
+    # 'handyman' is a trade-role word (tier-2 for ranking) but is NOT a gate
+    # override token, so the 'suppliers' negative still wins → DROP.
+    assert _is_consumer_facing_group("Handyman Suppliers UK", "London") is False
+
+
+def test_gate_backcompat_unchanged():
+    # Existing behavior preserved for non-classifieds names.
+    assert _is_consumer_facing_group("West Hampstead Community", "London") is True
+    assert _is_consumer_facing_group("Dental Equipment Suppliers", "London") is False

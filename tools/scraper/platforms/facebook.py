@@ -928,6 +928,24 @@ _GROUP_RELEVANCE_VOCAB: dict[str, tuple[str, ...]] = {
     'Portuguese': ('classificados', 'anúncios', 'artesãos'),
 }
 
+# Curated CONSUMER-CLASSIFIEDS tokens used ONLY as a gate override in
+# _is_consumer_facing_group: a name carrying one of these is an unambiguous
+# consumer classifieds / flea-market / for-sale board, so it KEEPS even if
+# it also trips a generic negative token (e.g. 'equipment'). This is a
+# STRICT SUBSET of _GROUP_RELEVANCE_VOCAB — it deliberately omits the
+# trade-role words (handyman/handwerker/artisans/...), because those
+# co-occur with B2B negatives ("Handyman Suppliers") and must NOT override.
+# Trade-role words still earn tier-2 for RANKING via _group_relevance_tier.
+_GATE_OVERRIDE_TOKENS: dict[str, tuple[str, ...]] = {
+    'English': ('classifieds', 'for sale', 'buy and sell', 'car boot'),
+    'German': ('kleinanzeigen', 'marktplatz', 'flohmarkt', 'gesuche'),
+    'French': ('petites annonces', 'bon coin'),
+    'Italian': ('mercatino', 'annunci'),
+    'Spanish': ('clasificados', 'anuncios', 'mercadillo'),
+    'Dutch': ('marktplaats',),
+    'Portuguese': ('classificados', 'anúncios'),
+}
+
 # Consumer-positive tokens that signal a tier-1 (community / help) group.
 # Mirrors the POSITIVE_TOKENS used by _is_consumer_facing_group, plus
 # locality words that indicate a neighbourhood community group.
@@ -1005,6 +1023,18 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
                     continue
                 if pattern.search(group_name or ''):
                     return False
+
+    # Stage 2a (NEW): a curated consumer-classifieds token is a STRONG
+    # positive — a local classifieds / flea-market / for-sale board is
+    # exactly where consumer service-asks live, so KEEP it even if the name
+    # also carries a generic negative token (e.g. 'equipment'). Uses the
+    # CURATED _GATE_OVERRIDE_TOKENS subset (NOT the full relevance vocab):
+    # trade-role words like 'handyman' co-occur with B2B negatives and must
+    # NOT override here. Niche is irrelevant to the gate (ranking-only).
+    _lang = _resolve_relevance_language(operator_location)
+    _override = set(_GATE_OVERRIDE_TOKENS.get(_lang, ())) | set(_GATE_OVERRIDE_TOKENS['English'])
+    if any(tok in name for tok in _override):
+        return True
 
     POSITIVE_TOKENS = (
         'free', 'affordable', 'cheap', 'budget', 'barato', 'mura',
