@@ -56,13 +56,19 @@ each independently unit-testable):
 
 ### 1. `_is_consumer_facing_group(name, location, niche=None)` — hard gate
 
-Unchanged KEEP/DROP semantics, **one addition**: the translated niche term
-and the per-language classifieds/trade tokens join the existing
-STRONG-POSITIVE stage (the same stage that force-keeps "free"/"affordable"
-today). This guarantees a group like "Elektriker für alle" or
-"Kleinanzeigen Frankfurt" can never be dropped by a stray negative token
-(e.g. the existing `'marketplace'` negative).
+Unchanged KEEP/DROP semantics, **one addition**: the per-language
+classifieds/trade tokens join the existing STRONG-POSITIVE stage (the same
+stage that force-keeps "free"/"affordable" today). This guarantees a group
+like "Kleinanzeigen Frankfurt" or "Flohmarkt …" can never be dropped by a
+stray negative token (e.g. a co-occurring `'equipment'`).
 
+- A **bare niche-token match does NOT override negatives** at the gate.
+  "Plumber Suppliers" contains the niche word *plumber* but is a B2B group
+  and must stay dropped by the `'suppliers'` negative. The niche term is
+  used for **ranking only** (tier 2 in `_group_relevance_tier`), never as a
+  gate override. The added classifieds tokens are language-specific
+  (`kleinanzeigen`, `marktplatz`, `marktplaats`, …) so they don't collide
+  with the existing `'marketplace'` negative — that negative is left intact.
 - `niche` is an **optional** new third parameter, default `None` →
   back-compat preserved for any caller that doesn't pass it.
 - Default-KEEP behavior stays. This gate does NOT drop generics — the cap
