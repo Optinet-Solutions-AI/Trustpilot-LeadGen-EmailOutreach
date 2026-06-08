@@ -135,6 +135,26 @@ in each method).
 
 ---
 
+## Smoke Results — 2026-06-08 (round 2, this fix applied)
+
+**Frankfurt (electrician):** prioritization unchanged (`relevant=4, generic_searched=5,
+generic_skipped=24`). Non-English bypass **confirmed** — the substring `consumer_filtered`
+step was skipped, so all 21 raw posts reached the multilingual classifier.
+`llm_filtered: dropped=20, kept=1` → **yield 0 → 1**. The gold group
+"(Elektriker Handwerker Gesucht)" returned **0** in-group posts in BOTH runs — its discovery
+card shows `Private`, so the scraping account (not a member) cannot search inside it. The
+real non-English yield ceiling is **group membership**, not query/filter logic.
+
+**London (handyman) — regression guard:** English path byte-identical — `looking for a
+handyman` query + substring filters active (`consumer_filtered: dropped=125, kept=42`,
+same ballpark as 06-05's 32 at the substring stage). `llm_filtered: dropped=37, kept=5`.
+The 42→5 classifier cut is **pre-existing main behavior** (classifier fix `2cdd363` predates
+this branch); this branch does not touch the classifier or the English path. **No regression.**
+
+**Follow-ups surfaced (out of scope for this branch):**
+1. Private niche groups need account membership to search inside (auto-join / approval-lag workstream).
+2. The post-`2cdd363` classifier is aggressive even on English (42→5) — worth a precision review.
+
 ## Files Touched
 
 - `tools/scraper/platforms/facebook.py`
