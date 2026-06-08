@@ -911,6 +911,70 @@ _COUNTRY_NAME_TOKENS = {
 }
 
 
+# Per-language classifieds / general-trade tokens. A group whose name
+# contains one of these is a strong consumer/lead signal (tier 2): local
+# classifieds boards and trade communities are where people post "looking
+# for a <tradesperson>" asks. Language is resolved from the operator's
+# location; English tokens are ALWAYS also checked (bilingual group names
+# are common). Seed list — expand as real group names surface, same as the
+# negative/country token lists above.
+_GROUP_RELEVANCE_VOCAB: dict[str, tuple[str, ...]] = {
+    'English': ('classifieds', 'for sale', 'buy and sell', 'car boot', 'tradesmen', 'handyman'),
+    'German': ('kleinanzeigen', 'marktplatz', 'handwerker', 'flohmarkt', 'gesuche'),
+    'French': ('petites annonces', 'artisans', 'bon coin', 'marché'),
+    'Italian': ('mercatino', 'annunci', 'artigiani'),
+    'Spanish': ('clasificados', 'oficios', 'anuncios', 'mercadillo'),
+    'Dutch': ('marktplaats', 'vakmensen', 'klusjesman'),
+    'Portuguese': ('classificados', 'anúncios', 'artesãos'),
+}
+
+# Consumer-positive tokens that signal a tier-1 (community / help) group.
+# Mirrors the POSITIVE_TOKENS used by _is_consumer_facing_group, plus
+# locality words that indicate a neighbourhood community group.
+_GROUP_TIER1_TOKENS: tuple[str, ...] = (
+    'free', 'affordable', 'cheap', 'budget', 'barato', 'mura',
+    'help', 'community', 'recommendation', 'recommendations',
+    'buy and sell', 'local', 'neighbourhood', 'neighborhood',
+)
+
+
+def _resolve_relevance_language(location: str | None) -> str:
+    """Map an operator location (city or country) to its primary language
+    name (matching COUNTRY_TO_LANGUAGE values). Falls back to 'English' for
+    English-primary or unknown locations."""
+    if not location:
+        return 'English'
+    country = _extract_country_from_excerpt(location)
+    if not country:
+        return 'English'
+    return COUNTRY_TO_LANGUAGE.get(country, 'English')
+
+
+def _group_relevance_tier(name: str, location: str | None, niche: str | None) -> int:
+    """Rank a (gate-surviving) FB group by how likely it is to contain
+    consumer service-asks. Pure function, no side effects.
+
+      2 = translated-niche token match, OR per-language classifieds/trade token
+      1 = generic consumer-positive token (community/help/local/...)
+      0 = generic city/lifestyle group (passed the gate by default only)
+    """
+    n = (name or '').lower()
+
+    niche_l = (niche or '').strip().lower()
+    if niche_l and niche_l in n:
+        return 2
+
+    lang = _resolve_relevance_language(location)
+    tokens = set(_GROUP_RELEVANCE_VOCAB.get(lang, ())) | set(_GROUP_RELEVANCE_VOCAB['English'])
+    if any(tok in n for tok in tokens):
+        return 2
+
+    if any(tok in n for tok in _GROUP_TIER1_TOKENS):
+        return 1
+
+    return 0
+
+
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
