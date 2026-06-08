@@ -1005,10 +1005,11 @@ def _order_and_cap_groups(
     Returns (ordered_kept_groups, stats) where stats has integer keys
     'relevant' (tier>=1 count), 'generic_searched', 'generic_skipped'.
     Pure function — does no I/O.
+    A negative generic_group_cap is treated as zero (all generic groups skipped).
     """
+    generic_group_cap = max(0, generic_group_cap)
     tiered = [(_group_relevance_tier(g.get('name', ''), location, niche), g) for g in groups]
-    # Stable sort, highest tier first (negate tier; sorted() is stable so
-    # discovery order is preserved within each tier).
+    # Stable in-place sort, highest tier first: list.sort() preserves discovery order within each tier.
     tiered.sort(key=lambda t: -t[0])
 
     kept: list = []

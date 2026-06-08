@@ -146,3 +146,16 @@ def test_order_and_cap_all_relevant_keeps_everything():
     ordered, stats = _order_and_cap_groups(groups, niche="Klempner", location="Frankfurt", generic_group_cap=5)
     assert len(ordered) == 2
     assert stats == {"relevant": 2, "generic_searched": 0, "generic_skipped": 0}
+
+
+def test_order_and_cap_empty_input():
+    ordered, stats = _order_and_cap_groups([], niche="Elektriker", location="Frankfurt", generic_group_cap=5)
+    assert ordered == []
+    assert stats == {"relevant": 0, "generic_searched": 0, "generic_skipped": 0}
+
+
+def test_order_and_cap_group_without_name_is_tier0():
+    # A malformed group dict lacking 'name' must not crash; classified tier 0.
+    ordered, stats = _order_and_cap_groups([{"group_id": "1"}], niche="Elektriker", location="Frankfurt", generic_group_cap=5)
+    assert [g["group_id"] for g in ordered] == ["1"]
+    assert stats == {"relevant": 0, "generic_searched": 1, "generic_skipped": 0}
