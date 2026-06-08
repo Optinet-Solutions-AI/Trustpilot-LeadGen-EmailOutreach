@@ -7,6 +7,50 @@ import { GoogleGenAI } from '@google/genai';
 
 const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 
+export type PlatformSlug = 'trustpilot' | 'tripadvisor' | 'yelp';
+
+export interface PlatformProfile {
+  /** Human platform name woven into the copy, e.g. 'TripAdvisor'. */
+  displayName: string;
+  /** Noun phrase for the {{star_rating}} token description. */
+  ratingWord: string;
+  /** Subject of the audience clause, e.g. 'local service businesses'. */
+  audienceNoun: string;
+  /** The distinct pitch angle for this platform (body-guidance lead-in). */
+  pitchObservation: string;
+  /** Description for the {{review_count}} token. */
+  reviewCountDesc: string;
+}
+
+/** Per-platform copy atoms. Add an entry here when a new scraping platform
+ *  (e.g. Facebook / Instagram) goes live. */
+export const PLATFORM_PROFILES: Record<PlatformSlug, PlatformProfile> = {
+  trustpilot: {
+    displayName: 'Trustpilot',
+    ratingWord: 'their current Trustpilot star rating',
+    audienceNoun: 'companies',
+    pitchObservation:
+      'a low Trustpilot score makes online shoppers hesitate at checkout and erodes trust before they buy',
+    reviewCountDesc: 'number of reviews',
+  },
+  tripadvisor: {
+    displayName: 'TripAdvisor',
+    ratingWord: 'their current TripAdvisor rating (out of 5)',
+    audienceNoun: 'hospitality businesses (restaurants, hotels, attractions)',
+    pitchObservation:
+      'travelers filter and sort by rating before booking, so a low TripAdvisor rating quietly sends bookings to higher-rated competitors',
+    reviewCountDesc: 'number of traveler reviews',
+  },
+  yelp: {
+    displayName: 'Yelp',
+    ratingWord: 'their current Yelp star rating',
+    audienceNoun: 'local service businesses',
+    pitchObservation:
+      'most locals check Yelp before choosing, so the rating decides whether they call you or the next listing',
+    reviewCountDesc: 'number of reviews',
+  },
+};
+
 export interface GenerateTemplateOptions {
   country?: string;
   category?: string;
@@ -39,6 +83,11 @@ export interface GenerateTemplateOptions {
    *  3 = second, etc.). Only used when followUpMode is true. Higher numbers
    *  produce slightly more apologetic / "last attempt" framing. */
   followUpStepNumber?: number;
+  /** Platform the campaign targets — selects the tailored pitch from
+   *  PLATFORM_PROFILES. Accepts 'trustpilot' | 'tripadvisor' | 'yelp';
+   *  any other/absent value falls back to 'trustpilot' (preserves the
+   *  original Trustpilot copy for callers that don't pass a platform). */
+  platform?: string;
 }
 
 export interface GenerateTemplateResult {
