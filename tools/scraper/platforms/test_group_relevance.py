@@ -50,3 +50,14 @@ def test_tier0_generic_lifestyle():
 
 def test_tier2_english_niche_match_in_london():
     assert _group_relevance_tier("London Handyman Recommendations", "London", "handyman") == 2
+
+
+def test_tier2_english_vocab_fires_for_non_english_location():
+    # English vocab tokens are ALWAYS unioned in, even for non-English
+    # locations: 'handyman' fires while Frankfurt resolves to German.
+    assert _group_relevance_tier("London Handyman Group", "Frankfurt", None) == 2
+
+
+def test_niche_takes_precedence_over_tier1_token():
+    # 'community' is a tier-1 token, but a niche word-boundary match wins.
+    assert _group_relevance_tier("Elektriker Community Frankfurt", "Frankfurt", "Elektriker") == 2

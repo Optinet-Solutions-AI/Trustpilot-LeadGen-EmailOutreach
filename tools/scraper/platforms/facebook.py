@@ -934,12 +934,12 @@ _GROUP_RELEVANCE_VOCAB: dict[str, tuple[str, ...]] = {
 _GROUP_TIER1_TOKENS: tuple[str, ...] = (
     'free', 'affordable', 'cheap', 'budget', 'barato', 'mura',
     'help', 'community', 'recommendation', 'recommendations',
-    'buy and sell', 'local', 'neighbourhood', 'neighborhood',
+    'local', 'neighbourhood', 'neighborhood',
 )
 
 
 def _resolve_relevance_language(location: str | None) -> str:
-    """Map an operator location (city or country) to its primary language
+    """Map an operator location (city name) to its primary language
     name (matching COUNTRY_TO_LANGUAGE values). Falls back to 'English' for
     English-primary or unknown locations."""
     if not location:
@@ -961,7 +961,7 @@ def _group_relevance_tier(name: str, location: str | None, niche: str | None) ->
     n = (name or '').lower()
 
     niche_l = (niche or '').strip().lower()
-    if niche_l and niche_l in n:
+    if niche_l and re.search(r'\b' + re.escape(niche_l) + r'\b', n):
         return 2
 
     lang = _resolve_relevance_language(location)
