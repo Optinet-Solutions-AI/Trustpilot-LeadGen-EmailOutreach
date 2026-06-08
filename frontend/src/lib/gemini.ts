@@ -134,17 +134,25 @@ export function domainToCompanyName(domain: string): string {
 }
 
 /**
- * Generate a professional HTML email subject + body for OptiRate cold outreach.
- * Returns { subject, body } with {{company_name}}, {{star_rating}} tokens and spintax.
+ * Build the Gemini prompt for a cold-outreach (or follow-up) email.
+ * Pure — no network, no API key needed — so the output can be inspected
+ * deterministically. The normal cold-outreach branch is tailored per
+ * platform via PLATFORM_PROFILES; discovery/redirect/manual modes keep
+ * their original (Trustpilot) wording and still take precedence.
  */
-export async function generateEmailTemplate(options: GenerateTemplateOptions = {}): Promise<GenerateTemplateResult> {
-  if (!API_KEY) {
-    throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not set. Add it to your .env file.');
-  }
-
-  const genAI = new GoogleGenAI({ apiKey: API_KEY });
-
+export function buildPrompt(options: GenerateTemplateOptions = {}): string {
   const { country, category, minRating = 1, maxRating = 3.5, emailDomain, manualMode, redirectMode, discoveryMode, language, followUpMode, followUpStepNumber } = options;
+
+  // PLATFORM: resolve the profile (fallback to trustpilot for unknown/absent).
+  const slug: PlatformSlug =
+    options.platform && options.platform in PLATFORM_PROFILES
+      ? (options.platform as PlatformSlug)
+      : 'trustpilot';
+  const profile = PLATFORM_PROFILES[slug];
+  // Special modes are inherently Trustpilot-framed flows — force the brand
+  // name back to Trustpilot for them regardless of the selected platform.
+  const specialMode = !!(discoveryMode || redirectMode);
+  const brandPlatform = specialMode ? 'Trustpilot' : profile.displayName;
 
   const companyHint = emailDomain ? `a business with the domain "${emailDomain}"` : 'a business';
   const countryLabel = country ? `in ${country}` : '';
@@ -155,7 +163,8 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
       ? `companies whose Trustpilot listing has a website that redirects to a different brand or domain ${countryLabel} ${categoryLabel} — likely a rebrand, an affiliate, or a new operator running the original brand`.trim()
       : manualMode
         ? `${companyHint}${countryLabel ? ' ' + countryLabel : ''}${categoryLabel ? ' ' + categoryLabel : ''}`
-        : `companies ${countryLabel} ${categoryLabel} with a Trustpilot rating between ${minRating} and ${maxRating} stars`.trim();
+        // PLATFORM: profile-driven audience noun + platform name.
+        : `${profile.audienceNoun} ${countryLabel} ${categoryLabel} with a ${profile.displayName} rating between ${minRating} and ${maxRating} stars`.trim();
 
   const ratingTokens = discoveryMode
     ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{star_rating}} — their Trustpilot star rating`
@@ -163,7 +172,8 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
       ? `  - {{company_name}} — company name on the Trustpilot listing\n  - {{website}} — the redirect target / current website\n  - {{star_rating}} — their Trustpilot star rating (still relevant context)`
       : manualMode
         ? `  - {{company_name}} — company name (use this token, not the actual domain name)\n  - {{website}} — their website`
-        : `  - {{company_name}} — company name\n  - {{star_rating}} — their current Trustpilot star rating\n  - {{review_count}} — number of reviews`;
+        // PLATFORM: profile-driven rating + review-count descriptions.
+        : `  - {{company_name}} — company name\n  - {{star_rating}} — ${profile.ratingWord}\n  - {{review_count}} — ${profile.reviewCountDesc}`;
 
   const bodyGuidance = discoveryMode
     ? `- Open by acknowledging that you previously sent a message to their support inbox and were directed to this address
@@ -183,7 +193,8 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
 - Mention how poor reviews cost businesses customers, trust, and revenue
 - Position OptiRate as a partner that helps businesses turn their reputation around
 - CTA must be email-only: invite a reply, offer a free written audit, suggest a short follow-up email exchange`
-        : `- Open with a specific observation about their Trustpilot situation (low rating)
+        // PLATFORM: profile-driven observation + pitch angle.
+        : `- Open with a specific observation about their ${profile.displayName} rating — ${profile.pitchObservation}
 - Mention the concrete impact (lost customers, lower trust, less revenue)
 - CTA must be email-only: invite a reply, offer a free written audit. NEVER propose a phone call.`;
 
@@ -195,8 +206,8 @@ export async function generateEmailTemplate(options: GenerateTemplateOptions = {
     ? `\n=== THIS IS A FOLLOW-UP — NOT A COLD OPENER ===\nThis email is follow-up #${(followUpStepNumber ?? 2) - 1} in an existing sequence. The first email already pitched OptiRate's reputation services to ${audienceDesc}. Your job here is the gentle nudge, not a fresh pitch.\n- Open by acknowledging the prior email ("just following up", "circling back", "wanted to make sure my last email didn't get lost")\n- Keep the body to 1-2 SHORT paragraphs total (3-5 sentences max — follow-ups must feel light, not pushy)\n- Add ONE fresh angle: a quick question, a soft reminder of the value, or a low-friction CTA — do NOT restate the original pitch\n- Subject line MUST signal a follow-up. Use spintax patterns like "{Re:|Follow-up:|Quick follow-up —|Checking in on} {{company_name}}" or similar\n- ${(followUpStepNumber ?? 2) >= 4 ? 'This is a LATE follow-up — adopt a softer "last note" tone, e.g. "{I won\'t keep emailing|I\'ll let this be my last note|Promise this is the last one}"' : 'Tone is friendly and patient — never accusatory or guilt-trippy'}\n- Email-only CTA still applies — never propose a phone, video, or voice call\n`
     : '';
 
-  const prompt = `
-You are a professional B2B email copywriter for OptiRate, a reputation management agency that helps businesses improve their online reputation and Trustpilot scores.
+  return `
+You are a professional B2B email copywriter for OptiRate, a reputation management agency that helps businesses improve their online reputation and ${brandPlatform} scores.
 
 Write a ${followUpMode ? 'follow-up email in an outreach sequence' : 'cold outreach email'} targeting ${audienceDesc}.
 ${languageDirective}${followUpDirective}
@@ -243,7 +254,7 @@ ${ratingTokens}
 - Tone: professional, empathetic, consultative — NOT pushy or salesy
 - Length: ${followUpMode ? '1-2 short paragraphs (3-5 sentences total — follow-ups stay LIGHT)' : `STRUCTURE — count <p> tags before returning. The BODY MUST contain EXACTLY 4 <p> tags in this order:
   1. Greeting line — ONE short line, e.g. "<p>{Hi|Hello|Hey} {{company_name}} team,</p>"
-  2. First body paragraph — EXACTLY 2 sentences (no more, no less). Opens with the observation about their Trustpilot situation.
+  2. First body paragraph — EXACTLY 2 sentences (no more, no less). Opens with the observation about their ${brandPlatform} situation.
   3. Second body paragraph — EXACTLY 2 sentences (no more, no less). Contains the CTA (offer + how to respond).
   4. Signature — ONE short line, e.g. "<p>{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team|OptiRate Solutions}</p>"
   ABSOLUTE LIMITS: NO 5th <p> tag. Total body text (paragraphs 2 + 3, ignoring greeting and signature) MUST be ≤ 65 words AND exactly 4 sentences. Before returning, count: "<p>" tags = 4, sentences in body paragraphs = 4, word count ≤ 65. If any check fails, REWRITE shorter. Brevity beats comprehensiveness — cut adjectives, drop hedges, kill any sentence that does not earn its place. Short sentences. Punchy. No throat-clearing.`}
@@ -262,11 +273,11 @@ ${bodyGuidance}
 
 The example below shows EVERY rule applied at once: exactly 4 <p> tags total, 2 body paragraphs of exactly 2 sentences each, body content ≤65 words, "we / our" voice throughout (zero "I" / "me" / "my"), tokens woven naturally and NEVER inside spintax braces, and every spintax option grammatically valid on its own. Match this STRUCTURE and LENGTH exactly — do not add a third body paragraph, do not lengthen the sentences, do not slip into "I" voice.
 
-SUBJECT: {Quick {thought|note}|A {thought|note}} about {{company_name}}'s Trustpilot {profile|rating}
+SUBJECT: {Quick {thought|note}|A {thought|note}} about {{company_name}}'s ${brandPlatform} {profile|rating}
 
 BODY:
 <p>{Hi|Hello} {{company_name}} team,</p>
-<p>{We spotted|Our team noticed} your Trustpilot profile while {reviewing|scanning} brands in the space, and a {{star_rating}}-star rating {costs operators new customers|sends prospects to competitors}. {At OptiRate, we help|Our team at OptiRate helps} brands rebuild their score {without buying fake reviews|without gaming the system}.</p>
+<p>{We spotted|Our team noticed} your ${brandPlatform} profile while {reviewing|scanning} brands in the space, and a {{star_rating}}-star rating {costs operators new customers|sends prospects to competitors}. {At OptiRate, we help|Our team at OptiRate helps} brands rebuild their score {without buying fake reviews|without gaming the system}.</p>
 <p>{Would you be open to|Happy to send} a short written audit — {we'll outline|we can break down} {what's pulling your score down|where reviews are dropping off} and the fastest fixes. {Reply to this email|Drop us a quick reply} and {we'll send it within 24 hours|we'll have it in your inbox tomorrow}.</p>
 <p>{Best|Kind} {regards|wishes},<br>{OptiRate|The OptiRate Team}</p>
 
@@ -282,6 +293,19 @@ KEY STRUCTURAL RULES SHOWN ABOVE — REPEAT THEM:
 - Email-only CTA ("reply to this email") — no calls, no Zoom, no meetings
 - Signature paragraph is its own <p>
 `.trim();
+}
+
+/**
+ * Generate a professional HTML email subject + body for OptiRate cold outreach.
+ * Returns { subject, body } with {{company_name}}, {{star_rating}} tokens and spintax.
+ */
+export async function generateEmailTemplate(options: GenerateTemplateOptions = {}): Promise<GenerateTemplateResult> {
+  if (!API_KEY) {
+    throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not set. Add it to your .env file.');
+  }
+
+  const genAI = new GoogleGenAI({ apiKey: API_KEY });
+  const prompt = buildPrompt(options);
 
   const result = await genAI.models.generateContent({
     model: 'gemini-2.5-flash',
@@ -300,9 +324,6 @@ KEY STRUCTURAL RULES SHOWN ABOVE — REPEAT THEM:
   const rawSubject = subjectMatch ? subjectMatch[1].trim() : 'A quick note about {{company_name}}';
   const rawBody = bodyMatch ? bodyMatch[1].trim() : raw;
 
-  // Repair any malformed spintax the model may have emitted before the
-  // template leaves this function — strips unmatched braces and degenerate
-  // single-option groups. Prevents the "{Would you be open..." spam-flag bug.
   return {
     subject: sanitizeSpintaxBraces(rawSubject),
     body: sanitizeSpintaxBraces(rawBody),
