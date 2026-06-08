@@ -993,6 +993,45 @@ def _group_relevance_tier(name: str, location: str | None, niche: str | None) ->
     return 0
 
 
+def _order_and_cap_groups(
+    groups: list,
+    niche: str | None,
+    location: str | None,
+    generic_group_cap: int = 5,
+) -> tuple[list, dict]:
+    """Order gate-surviving groups by relevance tier (2 → 1 → 0, stable
+    within a tier) and cap how many tier-0 generic groups are searched.
+
+    Returns (ordered_kept_groups, stats) where stats has integer keys
+    'relevant' (tier>=1 count), 'generic_searched', 'generic_skipped'.
+    Pure function — does no I/O.
+    """
+    tiered = [(_group_relevance_tier(g.get('name', ''), location, niche), g) for g in groups]
+    # Stable sort, highest tier first (negate tier; sorted() is stable so
+    # discovery order is preserved within each tier).
+    tiered.sort(key=lambda t: -t[0])
+
+    kept: list = []
+    relevant = 0
+    generic_searched = 0
+    generic_skipped = 0
+    for tier, g in tiered:
+        if tier >= 1:
+            kept.append(g)
+            relevant += 1
+        elif generic_searched < generic_group_cap:
+            kept.append(g)
+            generic_searched += 1
+        else:
+            generic_skipped += 1
+
+    return kept, {
+        'relevant': relevant,
+        'generic_searched': generic_searched,
+        'generic_skipped': generic_skipped,
+    }
+
+
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 

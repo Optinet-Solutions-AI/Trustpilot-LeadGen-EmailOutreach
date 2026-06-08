@@ -107,3 +107,42 @@ def test_gate_classifieds_override_still_fires_with_word_boundary():
     # Regression guard: the override still keeps a real classifieds board
     # that co-occurs with a negative, using word-boundary matching.
     assert _is_consumer_facing_group("Flohmarkt Equipment Frankfurt", "Frankfurt") is True
+
+
+from tools.scraper.platforms.facebook import _order_and_cap_groups
+
+
+def _g(name, gid):
+    return {"name": name, "group_id": gid}
+
+
+def test_order_and_cap_sorts_by_tier_and_caps_generics():
+    groups = [
+        _g("Frankfurt Events", "1"),            # tier 0
+        _g("Kleinanzeigen Frankfurt", "2"),     # tier 2
+        _g("Nightlife Frankfurt", "3"),         # tier 0
+        _g("Neu in Frankfurt", "4"),            # tier 0
+        _g("Elektriker für alle", "5"),         # tier 2 (niche)
+        _g("Frankfurt Community", "6"),         # tier 1
+        _g("EINTRACHT FRANKFURT NEWS", "7"),    # tier 0
+    ]
+    ordered, stats = _order_and_cap_groups(groups, niche="Elektriker", location="Frankfurt", generic_group_cap=1)
+
+    ids = [g["group_id"] for g in ordered]
+    # tier-2 first (in discovery order: 2 then 5), then tier-1 (6), then ONE generic (1).
+    assert ids == ["2", "5", "6", "1"]
+    assert stats == {"relevant": 3, "generic_searched": 1, "generic_skipped": 3}
+
+
+def test_order_and_cap_zero_cap_drops_all_generics():
+    groups = [_g("Frankfurt Events", "1"), _g("Kleinanzeigen Frankfurt", "2")]
+    ordered, stats = _order_and_cap_groups(groups, niche="Elektriker", location="Frankfurt", generic_group_cap=0)
+    assert [g["group_id"] for g in ordered] == ["2"]
+    assert stats == {"relevant": 1, "generic_searched": 0, "generic_skipped": 1}
+
+
+def test_order_and_cap_all_relevant_keeps_everything():
+    groups = [_g("Kleinanzeigen Frankfurt", "1"), _g("Handwerker Frankfurt", "2")]
+    ordered, stats = _order_and_cap_groups(groups, niche="Klempner", location="Frankfurt", generic_group_cap=5)
+    assert len(ordered) == 2
+    assert stats == {"relevant": 2, "generic_searched": 0, "generic_skipped": 0}
