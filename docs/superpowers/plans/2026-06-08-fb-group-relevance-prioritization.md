@@ -23,12 +23,13 @@
 ## File Structure
 
 - **Modify** `tools/scraper/platforms/facebook.py`:
-  - New module-level dict `_GROUP_RELEVANCE_VOCAB` (per-language classifieds/trade tokens).
+  - New module-level dict `_GROUP_RELEVANCE_VOCAB` (per-language classifieds/trade tokens, for ranking).
+  - New module-level dict `_GATE_OVERRIDE_TOKENS` (curated classifieds-only subset, for the gate override).
   - New `_resolve_relevance_language(location) -> str`.
   - New `_group_relevance_tier(name, location, niche) -> int`.
   - New `_order_and_cap_groups(groups, niche, location, generic_group_cap) -> tuple[list, dict]`.
-  - Extend `_is_consumer_facing_group(group_name, operator_location=None, niche=None)` — add classifieds strong-positive override + optional `niche` param.
-  - Modify `_sync_group_first_scrape` — add `generic_group_cap=5` param; pass `niche` into the gate; replace the inline group list with `_order_and_cap_groups` output; emit `groups_prioritized`.
+  - `_is_consumer_facing_group(group_name, operator_location=None)` — signature UNCHANGED; add a curated classifieds strong-positive override.
+  - Modify `_sync_group_first_scrape` — add `generic_group_cap=5` param; replace the inline group list with `_order_and_cap_groups` output; emit `groups_prioritized`.
   - Update both call sites to pass `generic_group_cap=int(filters.get('generic_group_cap', 5) or 5)`.
 - **Create** `tools/scraper/platforms/test_group_relevance.py` — pure-function unit tests.
 
@@ -192,10 +193,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Extend the KEEP/DROP gate with a classifieds strong-positive override
+## Task 2: Add a curated classifieds strong-positive override to the gate
 
 **Files:**
-- Modify: `tools/scraper/platforms/facebook.py:914-976` (`_is_consumer_facing_group`)
+- Modify: `tools/scraper/platforms/facebook.py` (`_is_consumer_facing_group` — signature UNCHANGED; add `_GATE_OVERRIDE_TOKENS` dict + override block)
 - Test: `tools/scraper/platforms/test_group_relevance.py`
 
 - [ ] **Step 1: Impact analysis (CLAUDE.md GitNexus rule)**
@@ -204,7 +205,7 @@ Run impact analysis before editing the symbol. If the GitNexus MCP tools are ava
 `gitnexus_impact({target: "_is_consumer_facing_group", direction: "upstream"})`
 Report the blast radius. If GitNexus is unavailable, fall back to:
 `grep -n "_is_consumer_facing_group" tools/scraper/platforms/facebook.py`
-Expected: exactly TWO hits — the definition (line 914) and one call (line 2070). Adding a trailing optional `niche=None` param is non-breaking for the existing 2-arg call. Proceed (risk: LOW).
+Expected: exactly TWO hits — the definition and one call (inside `_sync_group_first_scrape`). The signature is UNCHANGED (still 2-arg), so this edit is fully non-breaking. Proceed (risk: LOW).
 
 - [ ] **Step 2: Write the failing test**
 
@@ -215,23 +216,24 @@ from tools.scraper.platforms.facebook import _is_consumer_facing_group
 
 
 def test_gate_keeps_classifieds_group():
-    assert _is_consumer_facing_group("Kleinanzeigen Frankfurt und Umgebung", "Frankfurt", "Klempner") is True
+    # German classifieds board → KEEP (no negative present anyway).
+    assert _is_consumer_facing_group("Kleinanzeigen Frankfurt und Umgebung", "Frankfurt") is True
 
 
 def test_gate_classifieds_overrides_a_negative_token():
-    # 'flohmarkt' (DE classifieds, tier-2) co-occurs with the 'equipment'
-    # negative; the classifieds strong-positive must win → KEEP.
-    assert _is_consumer_facing_group("Flohmarkt & Equipment Frankfurt", "Frankfurt", "Klempner") is True
+    # 'flohmarkt' (DE classifieds override token) co-occurs with the
+    # 'equipment' negative; the classifieds override must win → KEEP.
+    assert _is_consumer_facing_group("Flohmarkt Equipment Frankfurt", "Frankfurt") is True
 
 
-def test_gate_negative_still_drops_b2b_supplier_even_with_niche_word():
-    # Bare niche-match must NOT override a B2B negative: 'Plumber Suppliers'
-    # contains the niche word 'plumber' AND the 'suppliers' negative → DROP.
-    assert _is_consumer_facing_group("Plumber Suppliers UK", "London", "plumber") is False
+def test_gate_trade_role_word_does_NOT_rescue_b2b_supplier():
+    # 'handyman' is a trade-role word (tier-2 for ranking) but is NOT a gate
+    # override token, so the 'suppliers' negative still wins → DROP.
+    assert _is_consumer_facing_group("Handyman Suppliers UK", "London") is False
 
 
-def test_gate_backcompat_two_args_unchanged():
-    # Existing 2-arg call path behaves exactly as before (niche defaults None).
+def test_gate_backcompat_unchanged():
+    # Existing behavior preserved for non-classifieds names.
     assert _is_consumer_facing_group("West Hampstead Community", "London") is True
     assert _is_consumer_facing_group("Dental Equipment Suppliers", "London") is False
 ```
@@ -239,40 +241,54 @@ def test_gate_backcompat_two_args_unchanged():
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `./.venv/Scripts/python.exe -m pytest tools/scraper/platforms/test_group_relevance.py -v -k gate`
-Expected: FAIL — `_is_consumer_facing_group()` currently takes 2 positional args, so the 3-arg calls raise `TypeError`.
+Expected: FAIL — `test_gate_classifieds_overrides_a_negative_token` fails (today "Flohmarkt Equipment Frankfurt" is dropped by the `'equipment'` negative).
 
 - [ ] **Step 4: Write minimal implementation**
 
-Edit `_is_consumer_facing_group`. Change the signature line (currently line 914):
+First add a new module-level dict. Place it immediately AFTER `_GROUP_RELEVANCE_VOCAB` (the dict added in Task 1):
 
 ```python
-def _is_consumer_facing_group(group_name: str, operator_location: str | None = None, niche: str | None = None) -> bool:
+# Curated CONSUMER-CLASSIFIEDS tokens used ONLY as a gate override in
+# _is_consumer_facing_group: a name carrying one of these is an unambiguous
+# consumer classifieds / flea-market / for-sale board, so it KEEPS even if
+# it also trips a generic negative token (e.g. 'equipment'). This is a
+# STRICT SUBSET of _GROUP_RELEVANCE_VOCAB — it deliberately omits the
+# trade-role words (handyman/handwerker/artisans/...), because those
+# co-occur with B2B negatives ("Handyman Suppliers") and must NOT override.
+# Trade-role words still earn tier-2 for RANKING via _group_relevance_tier.
+_GATE_OVERRIDE_TOKENS: dict[str, tuple[str, ...]] = {
+    'English': ('classifieds', 'for sale', 'buy and sell', 'car boot'),
+    'German': ('kleinanzeigen', 'marktplatz', 'flohmarkt', 'gesuche'),
+    'French': ('petites annonces', 'bon coin'),
+    'Italian': ('mercatino', 'annunci'),
+    'Spanish': ('clasificados', 'anuncios', 'mercadillo'),
+    'Dutch': ('marktplaats',),
+    'Portuguese': ('classificados', 'anúncios'),
+}
 ```
 
-Then, inside the function, AFTER the Stage-1 country-mismatch block (the `if operator_location:` block that ends with `return False`) and BEFORE the `POSITIVE_TOKENS = (` line, insert this new strong-positive override:
+Then edit `_is_consumer_facing_group`. Leave the signature UNCHANGED. The function already computes `name = (group_name or '').lower()` near the top and runs the Stage-1 country-mismatch block. Insert this override AFTER the Stage-1 block (the `if operator_location:` block ending in `return False`) and BEFORE the `POSITIVE_TOKENS = (` line, reusing the existing `name` variable:
 
 ```python
-    # Stage 2a (NEW): classifieds / consumer-trade relevance is a STRONG
-    # positive — a local classifieds or trade-community board is exactly
-    # where consumer service-asks live, so KEEP it even if the name also
-    # carries a generic negative token (e.g. 'equipment'). NOTE: this fires
-    # on classifieds/trade vocabulary only, NOT on a bare niche-token match
-    # — "Plumber Suppliers" contains the niche word but is a B2B group and
-    # must still be dropped by the negative stage below. (Niche-token match
-    # is used for RANKING in _group_relevance_tier, not as a gate override.)
-    name = (group_name or '').lower()
+    # Stage 2a (NEW): a curated consumer-classifieds token is a STRONG
+    # positive — a local classifieds / flea-market / for-sale board is
+    # exactly where consumer service-asks live, so KEEP it even if the name
+    # also carries a generic negative token (e.g. 'equipment'). Uses the
+    # CURATED _GATE_OVERRIDE_TOKENS subset (NOT the full relevance vocab):
+    # trade-role words like 'handyman' co-occur with B2B negatives and must
+    # NOT override here. Niche is irrelevant to the gate (ranking-only).
     _lang = _resolve_relevance_language(operator_location)
-    _classifieds = set(_GROUP_RELEVANCE_VOCAB.get(_lang, ())) | set(_GROUP_RELEVANCE_VOCAB['English'])
-    if any(tok in name for tok in _classifieds):
+    _override = set(_GATE_OVERRIDE_TOKENS.get(_lang, ())) | set(_GATE_OVERRIDE_TOKENS['English'])
+    if any(tok in name for tok in _override):
         return True
 ```
 
-(The existing function already computes `name = (group_name or '').lower()` further down at the current line 933 — remove that now-duplicate assignment so `name` is defined once, at the top of the override block. Leave the rest of the function — POSITIVE_TOKENS, NEGATIVE_TOKENS, default `return True` — exactly as is.)
+Do NOT add or remove the `name = ...` assignment (it already exists at the top of the function); do NOT change the signature; leave POSITIVE_TOKENS / NEGATIVE_TOKENS / default `return True` exactly as is.
 
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `./.venv/Scripts/python.exe -m pytest tools/scraper/platforms/test_group_relevance.py -v`
-Expected: PASS (all tests, including the new gate tests and the Task-1 tests).
+Expected: PASS (all tests — Task-1 tests + the new gate tests).
 
 - [ ] **Step 6: Commit**
 
@@ -280,10 +296,10 @@ Expected: PASS (all tests, including the new gate tests and the Task-1 tests).
 git add "tools/scraper/platforms/facebook.py" "tools/scraper/platforms/test_group_relevance.py"
 git commit -m "feat(scraper): classifieds groups override negative tokens in FB gate
 
-_is_consumer_facing_group gains an optional niche param and a classifieds
-strong-positive so 'Kleinanzeigen'/'Flohmarkt' survive a co-occurring B2B
-negative; bare niche-match deliberately does NOT override (keeps 'Plumber
-Suppliers' dropped).
+_is_consumer_facing_group keeps genuine classifieds/flea-market boards
+('Kleinanzeigen'/'Flohmarkt') even when a generic negative co-occurs, via a
+curated _GATE_OVERRIDE_TOKENS subset. Trade-role words and niche matches do
+NOT override (keeps B2B 'Handyman Suppliers' dropped).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -448,10 +464,10 @@ Then replace the gate-filter block. The current block (lines 2070-2077) is:
             return []
 ```
 
-Replace it with (pass `niche` into the gate, then order + cap):
+Replace it with (gate stays 2-arg; niche is used only for ranking in the order+cap helper):
 
 ```python
-        gated = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''), location, niche)]
+        gated = [g for g in groups_raw if _is_consumer_facing_group(g.get('name', ''), location)]
         dropped_pro = len(groups_raw) - len(gated)
         if dropped_pro:
             _emit(on_progress, 'groups_filtered', dropped=dropped_pro, kept=len(gated),

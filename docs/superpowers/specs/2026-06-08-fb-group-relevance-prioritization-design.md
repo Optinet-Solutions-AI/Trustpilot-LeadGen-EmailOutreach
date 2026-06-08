@@ -54,23 +54,29 @@ Success criteria:
 Two functions, separated by concern (keeps blast radius small and makes
 each independently unit-testable):
 
-### 1. `_is_consumer_facing_group(name, location, niche=None)` — hard gate
+### 1. `_is_consumer_facing_group(name, location)` — hard gate
 
-Unchanged KEEP/DROP semantics, **one addition**: the per-language
-classifieds/trade tokens join the existing STRONG-POSITIVE stage (the same
-stage that force-keeps "free"/"affordable" today). This guarantees a group
-like "Kleinanzeigen Frankfurt" or "Flohmarkt …" can never be dropped by a
-stray negative token (e.g. a co-occurring `'equipment'`).
+**Signature unchanged (still 2-arg).** The niche is NOT passed to the gate —
+it is ranking-only. One addition: a per-language **curated consumer-classifieds
+token set** (`_GATE_OVERRIDE_TOKENS`) joins the existing STRONG-POSITIVE stage
+(the same stage that force-keeps "free"/"affordable" today). This guarantees a
+genuine classifieds/flea-market board like "Kleinanzeigen Frankfurt" or
+"Flohmarkt …" can never be dropped by a stray negative token (e.g. a
+co-occurring `'equipment'`).
 
-- A **bare niche-token match does NOT override negatives** at the gate.
-  "Plumber Suppliers" contains the niche word *plumber* but is a B2B group
-  and must stay dropped by the `'suppliers'` negative. The niche term is
-  used for **ranking only** (tier 2 in `_group_relevance_tier`), never as a
-  gate override. The added classifieds tokens are language-specific
-  (`kleinanzeigen`, `marktplatz`, `marktplaats`, …) so they don't collide
-  with the existing `'marketplace'` negative — that negative is left intact.
-- `niche` is an **optional** new third parameter, default `None` →
-  back-compat preserved for any caller that doesn't pass it.
+- The override token set is **curated to pure classifieds/for-sale/flea-market
+  words only** — it deliberately EXCLUDES the trade-role words that also live
+  in `_GROUP_RELEVANCE_VOCAB` (`handyman`, `handwerker`, `artisans`, …).
+  Reason: a trade-role word co-occurs with B2B negatives ("Handyman Suppliers
+  UK", "Handwerker Lieferanten"), so letting it override would resurrect B2B
+  supplier groups. Trade-role words still earn tier-2 in `_group_relevance_tier`
+  for ranking; they just don't override the gate.
+- A **bare niche-token match likewise does NOT override negatives** — "Plumber
+  Suppliers" contains the niche word *plumber* but is B2B and stays dropped by
+  the `'suppliers'` negative. Niche is used for ranking only (tier 2).
+- The override tokens are language-specific (`kleinanzeigen`, `marktplatz`,
+  `marktplaats`, …) so they don't collide with the existing `'marketplace'`
+  negative — that negative is left intact.
 - Default-KEEP behavior stays. This gate does NOT drop generics — the cap
   in `_sync_group_first_scrape` does.
 
@@ -174,10 +180,11 @@ surprise later.
 ## Files Touched
 
 - `tools/scraper/platforms/facebook.py`
-  - `_is_consumer_facing_group` — add optional `niche` param + STRONG-POSITIVE additions
+  - `_is_consumer_facing_group` — signature unchanged; add a curated classifieds STRONG-POSITIVE override
   - new `_group_relevance_tier`
-  - new `_GROUP_RELEVANCE_VOCAB` module dict
-  - `_sync_group_first_scrape` — tier-sort + cap + `groups_prioritized` emit; pass `niche` into the gate
+  - new `_GROUP_RELEVANCE_VOCAB` module dict (full classifieds+trade tokens, for ranking)
+  - new `_GATE_OVERRIDE_TOKENS` module dict (curated classifieds-only, for the gate override)
+  - `_sync_group_first_scrape` — tier-sort + cap + `groups_prioritized` emit (niche used for ranking, not passed to the 2-arg gate)
 - `tools/scraper/platforms/test_facebook_group_relevance.py` (or existing FB test module) — unit tests
 
 ## Impact / Blast Radius (to confirm at plan time)
