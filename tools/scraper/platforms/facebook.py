@@ -1033,6 +1033,61 @@ def _order_and_cap_groups(
     }
 
 
+def _card_is_member(card_text: str) -> bool:
+    """Best-effort: a discovered FB group card shows a standalone 'Join'
+    button line when the account is NOT a member. Returns False (not a
+    member) when such a line is present; True otherwise. Ambiguous cards
+    default to True (member) so we don't queue false candidates.
+    """
+    lines = [ln.strip().lower() for ln in (card_text or '').split('\n') if ln.strip()]
+    return not any(ln in ('join', 'join group') for ln in lines)
+
+
+def _plan_candidate_writes(
+    groups: list,
+    existing_status_by_gid: dict,
+    niche: str | None,
+    location: str | None,
+    now_iso: str,
+) -> dict:
+    """Decide fb_group_candidates writes for one discovery pass. Pure (no I/O).
+
+    Each group dict carries group_id, name, tier, is_member, is_public,
+    member_count_text. `existing_status_by_gid` maps group_id -> current
+    DB status. Returns {'upsert': [rows], 'mark_joined': [group_ids]}:
+      - tier-2 + NOT member + not already joined/ignored -> upsert candidate
+      - tier-2 + member + currently 'candidate'          -> mark_joined
+    """
+    upsert: list = []
+    mark_joined: list = []
+    for g in groups:
+        if g.get('tier') != 2:
+            continue
+        gid = g.get('group_id')
+        if not gid:
+            continue
+        status = existing_status_by_gid.get(gid)
+        if g.get('is_member'):
+            if status == 'candidate':
+                mark_joined.append(gid)
+            continue
+        if status in ('ignored', 'joined'):
+            continue
+        upsert.append({
+            'platform': 'facebook',
+            'group_id': gid,
+            'name': g.get('name'),
+            'member_count_text': g.get('member_count_text'),
+            'is_private': g.get('is_public') is False,
+            'relevance_tier': 2,
+            'niche': niche,
+            'location': location,
+            'status': 'candidate',
+            'last_seen_at': now_iso,
+        })
+    return {'upsert': upsert, 'mark_joined': mark_joined}
+
+
 def _resolve_generic_cap(filters: dict) -> int:
     """Read the generic-group search cap from scrape filters.
 

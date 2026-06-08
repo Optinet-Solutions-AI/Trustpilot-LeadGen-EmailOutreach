@@ -240,3 +240,53 @@ def test_consumer_filter_defaults_both_keys_overridden():
     assert _consumer_filter_defaults(
         {"exclude_businesses": True, "asking_only": False}, "Frankfurt"
     ) == (True, False)
+
+
+from tools.scraper.platforms.facebook import _card_is_member, _plan_candidate_writes
+
+
+def test_card_is_member_join_button_means_not_member():
+    card = "(Elektriker Handwerker Gesucht)\nPrivate · 26K members · 6 posts a day\nJoin"
+    assert _card_is_member(card) is False
+
+
+def test_card_is_member_no_join_button_means_member():
+    card = "Kleinanzeigen Frankfurt\nPublic · 50K members\nVisit"
+    assert _card_is_member(card) is True
+
+
+def test_card_is_member_name_containing_join_is_not_a_false_negative():
+    card = "Join My Local Group\nPublic · 1K members"
+    assert _card_is_member(card) is True
+
+
+def _grp(gid, tier, is_member, name="G", is_public=False):
+    return {"group_id": gid, "name": name, "tier": tier, "is_member": is_member,
+            "is_public": is_public, "member_count_text": "10K"}
+
+
+def test_plan_candidate_writes_queues_tier2_unjoined():
+    groups = [_grp("1", 2, False), _grp("2", 1, False), _grp("3", 0, False)]
+    plan = _plan_candidate_writes(groups, {}, "Elektriker", "Frankfurt", "2026-06-08T00:00:00Z")
+    assert [r["group_id"] for r in plan["upsert"]] == ["1"]
+    assert plan["mark_joined"] == []
+    row = plan["upsert"][0]
+    assert row["status"] == "candidate" and row["relevance_tier"] == 2
+    assert row["is_private"] is True and row["niche"] == "Elektriker" and row["location"] == "Frankfurt"
+    assert row["last_seen_at"] == "2026-06-08T00:00:00Z"
+    assert "first_seen_at" not in row
+
+
+def test_plan_candidate_writes_flips_member_candidate_to_joined():
+    groups = [_grp("1", 2, True)]
+    plan = _plan_candidate_writes(groups, {"1": "candidate"}, "Elektriker", "Frankfurt", "T")
+    assert plan["upsert"] == []
+    assert plan["mark_joined"] == ["1"]
+
+
+def test_plan_candidate_writes_respects_ignored_and_joined():
+    groups = [_grp("1", 2, False), _grp("2", 2, False), _grp("3", 2, True)]
+    existing = {"1": "ignored", "2": "joined", "3": "joined"}
+    plan = _plan_candidate_writes(groups, existing, "n", "l", "T")
+    assert plan["upsert"] == []
+    assert plan["mark_joined"] == []
