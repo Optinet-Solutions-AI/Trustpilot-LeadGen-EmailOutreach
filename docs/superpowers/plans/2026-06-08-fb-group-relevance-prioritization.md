@@ -257,14 +257,19 @@ First add a new module-level dict. Place it immediately AFTER `_GROUP_RELEVANCE_
 # co-occur with B2B negatives ("Handyman Suppliers") and must NOT override.
 # Trade-role words still earn tier-2 for RANKING via _group_relevance_tier.
 _GATE_OVERRIDE_TOKENS: dict[str, tuple[str, ...]] = {
-    'English': ('classifieds', 'for sale', 'buy and sell', 'car boot'),
+    'English': ('classifieds', 'for sale', 'car boot'),
     'German': ('kleinanzeigen', 'marktplatz', 'flohmarkt', 'gesuche'),
     'French': ('petites annonces', 'bon coin'),
-    'Italian': ('mercatino', 'annunci'),
-    'Spanish': ('clasificados', 'anuncios', 'mercadillo'),
+    'Italian': ('mercatino',),
+    'Spanish': ('clasificados', 'mercadillo'),
     'Dutch': ('marktplaats',),
-    'Portuguese': ('classificados', 'anúncios'),
+    'Portuguese': ('classificados',),
 }
+# NOTE: generic "ads" words (annunci/anuncios/anúncios) and 'buy and sell'
+# (already in POSITIVE_TOKENS) are deliberately NOT override tokens — they're
+# too broad (cover job ads) and would weaken the negative filter. The
+# override matches on WORD BOUNDARIES (re.search rf'\b{tok}\b') so 'gesuche'
+# can't fire inside the compound 'stellengesuche' (job applications).
 ```
 
 Then edit `_is_consumer_facing_group`. Leave the signature UNCHANGED. The function already computes `name = (group_name or '').lower()` near the top and runs the Stage-1 country-mismatch block. Insert this override AFTER the Stage-1 block (the `if operator_location:` block ending in `return False`) and BEFORE the `POSITIVE_TOKENS = (` line, reusing the existing `name` variable:
@@ -279,7 +284,7 @@ Then edit `_is_consumer_facing_group`. Leave the signature UNCHANGED. The functi
     # NOT override here. Niche is irrelevant to the gate (ranking-only).
     _lang = _resolve_relevance_language(operator_location)
     _override = set(_GATE_OVERRIDE_TOKENS.get(_lang, ())) | set(_GATE_OVERRIDE_TOKENS['English'])
-    if any(tok in name for tok in _override):
+    if any(re.search(r'\b' + re.escape(tok) + r'\b', name) for tok in _override):
         return True
 ```
 
