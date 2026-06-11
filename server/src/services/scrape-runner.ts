@@ -20,6 +20,7 @@ import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
 import { listActiveCitiesForCountry, type TripAdvisorCity } from '../db/tripadvisor-cities.js';
+import { shouldRefuseSocialOnLinux, socialProfileEnv } from './social-routing.js';
 
 export const scrapeEvents = new EventEmitter();
 
@@ -633,30 +634,26 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
   let totalEnriched = 0;
   let failedCount = 0;
 
-  // Multi-tenant FB profile routing. When the job carries a
+  // Multi-tenant social profile routing. When the job carries a
   // social_account_id, every Python subprocess in this job inherits
-  // FB_PROFILE_DIR=C:\fb-profiles\<id> so the right operator's
-  // logged-in Brave profile is used. Without an id, falls back to
-  // whatever FB_PROFILE_DIR is set in the worker's own env (the
-  // single-tenant default for the owner's profile).
-  const platformEnv: NodeJS.ProcessEnv = {};
-  if (platform === 'facebook' && socialAccountId) {
-    platformEnv.FB_PROFILE_DIR = `C:\\fb-profiles\\${socialAccountId}`;
-  }
+  // the per-account profile-dir env var (FB_PROFILE_DIR or IG_PROFILE_DIR)
+  // so the right operator's logged-in browser profile is used. Without an
+  // id, falls back to whatever profile-dir env is set in the worker's own
+  // env (the single-tenant default for the owner's profile).
+  const platformEnv: NodeJS.ProcessEnv = socialProfileEnv(platform, socialAccountId);
 
-  // Defensive: Linux can't run FB scrapes (proven 2026-06-01 — Brave
-  // fingerprint detected by FB on Linux+Xvfb regardless of stack). If a
-  // Linux worker claimed this FB job (because PLATFORM_EXCLUDE wasn't
-  // set on it), bail out HARD with a thrown error. markJobFailed will
-  // re-queue it (attempts < max_attempts) and the Windows worker will
-  // claim it on the next retry. The previous silent-success-with-zero-
-  // results behavior caused jobs to complete with no leads, hiding the
-  // routing bug from the dashboard.
-  if (platform === 'facebook' && process.platform === 'linux') {
+  // Defensive: Linux can't run social scrapes (FB proven 2026-06-01 — Brave
+  // fingerprint detected by FB on Linux+Xvfb regardless of stack; IG uses
+  // the same browser stack). If a Linux worker claimed this social job
+  // (because PLATFORM_EXCLUDE wasn't set on it), bail out HARD with a
+  // thrown error. markJobFailed will re-queue it (attempts < max_attempts)
+  // and the Windows worker will claim it on the next retry. The previous
+  // silent-success-with-zero-results behavior caused jobs to complete with
+  // no leads, hiding the routing bug from the dashboard.
+  if (shouldRefuseSocialOnLinux(platform, process.platform)) {
     throw new Error(
-      'Facebook scraping is not supported on Linux workers — set ' +
-      'PLATFORM_EXCLUDE=facebook on this worker to stop claiming FB ' +
-      'jobs. Job will be re-queued for a Windows worker to claim.',
+      `${platform} scraping is not supported on Linux workers — set ` +
+      `PLATFORM_EXCLUDE=${platform} on this worker. Job will be re-queued for a Windows worker.`,
     );
   }
 
