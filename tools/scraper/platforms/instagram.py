@@ -51,19 +51,43 @@ MOBILE_UA = (
     'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 )
 
+import html as _html
 import re as _re
-_OG_DESC_RE = _re.compile(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']*)["\']', _re.I)
+_OG_DESC_RE = _re.compile(r'<meta[^>]+property=["\']og:description["\'][^>]+content="([^"]*)"', _re.I)
+# IG og:description format: 'N likes, M comments - <handle> on <Month> <Day>, <Year>: "<caption>"'
+_OG_AUTHOR_RE = _re.compile(r'-\s*([A-Za-z0-9._]+)\s+on\s+\w+\s+\d{1,2},\s*\d{4}\s*:', _re.I)
 
 
-def _caption_from_og(html: str) -> str:
-    """Pull the post caption out of the og:description meta tag — robust to
-    IG's React DOM churn (the meta tag is server-rendered). Strips the
-    leading 'N likes - author:' prefix IG prepends."""
-    m = _OG_DESC_RE.search(html or '')
+def _caption_from_og(html_text: str) -> str:
+    """Pull the post caption from the og:description meta tag (server-rendered,
+    robust to IG's React churn). IG format:
+      'N likes, M comments - <handle> on <date>: "<caption>"'
+    Returns the caption with HTML entities unescaped and IG's wrapping quotes
+    stripped."""
+    m = _OG_DESC_RE.search(html_text or '')
     if not m:
         return ''
-    raw = m.group(1)
-    return raw.split(':', 1)[1].strip() if ':' in raw else raw.strip()
+    raw = _html.unescape(m.group(1))
+    body = (raw.split(':', 1)[1] if ':' in raw else raw).strip()
+    if body.startswith('"'):
+        body = body[1:].strip()
+    if body.endswith('".'):
+        body = body[:-2]
+    elif body.endswith('"'):
+        body = body[:-1]
+    return body.strip()
+
+
+def _author_handle_from_og(html_text: str) -> str:
+    """Extract the post author's handle from the og:description prefix
+    ('... - <handle> on <date>: ...'). Returns '' if not matched. This is the
+    reliable author source: IG hashtag-grid URLs are '/p/<shortcode>/' with no
+    author segment, and og:title carries the display name, not the handle."""
+    m = _OG_DESC_RE.search(html_text or '')
+    if not m:
+        return ''
+    a = _OG_AUTHOR_RE.search(_html.unescape(m.group(1)))
+    return a.group(1) if a else ''
 
 
 def _open_ig_driver():
@@ -293,7 +317,14 @@ class InstagramScraper(SocialPlatformScraper):
                     if _is_checkpoint(driver):
                         _flag_checkpoint(account['id'], 'captcha-during-caption')
                         break
-                    stub['content_excerpt'] = _caption_from_og(driver.page_source)
+                    page = driver.page_source
+                    stub['content_excerpt'] = _caption_from_og(page)
+                    # Real author handle lives in og:description, NOT the
+                    # '/p/<shortcode>/' grid URL. Overwrite the placeholder.
+                    handle = _author_handle_from_og(page)
+                    if handle:
+                        stub['author_handle'] = handle
+                        stub['author_profile_url'] = f'{IG_BASE}/{handle}/'
                     _emit(on_progress, 'caption_captured', url=stub['post_url'])
                 except Exception:
                     stub['content_excerpt'] = ''
