@@ -32,7 +32,6 @@ from tools.scraper.platforms._social_base import (
 )
 from tools.scraper.platforms.base import FilterField, ProgressCallback
 from tools.scraper.platforms.facebook import (
-    PAGE_LOAD_TIMEOUT,
     SCROLL_PAUSE,
     MAX_SCROLLS_PER_QUERY,
     COUNTER_FLUSH_EVERY,
@@ -53,19 +52,15 @@ MOBILE_UA = (
 
 
 def _open_ig_driver():
-    """Mobile-flavored undetected-chromedriver."""
-    import undetected_chromedriver as uc  # noqa: WPS433
-    headless = os.getenv('PLAYWRIGHT_HEADLESS', 'false').lower() == 'true'
-    options = uc.ChromeOptions()
-    if headless:
-        options.add_argument('--headless=new')
-    options.add_argument(f'--user-agent={MOBILE_UA}')
-    options.add_argument('--window-size=414,896')
-    options.add_argument('--lang=en-US,en')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    driver = uc.Chrome(options=options, use_subprocess=True)
-    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-    return driver
+    """Mobile-flavored driver with the SAME proxy + persistent-profile
+    stack Facebook uses. IG_PROFILE_DIR holds the logged-in profile."""
+    from tools.scraper.shared.uc_driver import open_uc_driver
+    return open_uc_driver(
+        'IG_PROFILE_DIR',
+        user_agent=MOBILE_UA,
+        window_size=(414, 896),
+        proxy_location=os.environ.get('IG_PROXY_LOCATION'),
+    )
 
 
 def _normalize_hashtag(q: str) -> str:
