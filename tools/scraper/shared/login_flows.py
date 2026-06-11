@@ -132,26 +132,22 @@ def _open_driver(headless: bool = False):
     use_proxy = bool(proxy_host) and (sys.platform.startswith('linux') or proxy_force)
 
     if use_proxy:
-        # Delegate to facebook.py's proxy-aware _open_driver(). It reads
-        # the proxy env vars + _CURRENT_LOCATION for country-code swap.
-        # We set PLAYWRIGHT_HEADLESS so the caller's headless arg wins.
-        os.environ['PLAYWRIGHT_HEADLESS'] = 'true' if headless else 'false'
-        from tools.scraper.platforms import facebook as fb  # noqa: WPS433
+        # Open the shared proxy-aware driver directly. It reads the proxy
+        # env vars and uses the proxy_location we pass for country-code
+        # swap — same residential-proxy + persistent-profile stack the FB
+        # scraper uses on EC2.
+        from tools.scraper.shared.uc_driver import open_uc_driver  # noqa: WPS433
         # Pick a city that maps to the desired proxy region. The
         # RESIDENTIAL_PROXY_REGION env var (PH/GB/DE/etc.) drives this
         # so the operator can re-login through a specific country.
         # Default PH — that's the most common bootstrap case
         # (account's natural home region).
         region = os.environ.get('RESIDENTIAL_PROXY_REGION', 'PH').upper()
-        region_to_city = {
-            'PH': 'Cebu', 'GB': 'London', 'DE': 'Berlin',
-            'FR': 'Paris', 'ES': 'Madrid', 'IT': 'Rome',
-            'NL': 'Amsterdam', 'US': 'New York', 'AU': 'Sydney',
-            'SG': 'Singapore', 'IE': 'Dublin',
-        }
-        fb._CURRENT_LOCATION = region_to_city.get(region, 'Cebu')
-        print(f'INFO: login_flows using residential proxy (region={region}, city={fb._CURRENT_LOCATION})', file=sys.stderr)
-        return fb._open_driver()
+        region_to_city = {'PH': 'Cebu', 'GB': 'London', 'DE': 'Berlin', 'FR': 'Paris', 'ES': 'Madrid',
+                          'IT': 'Rome', 'NL': 'Amsterdam', 'US': 'New York', 'AU': 'Sydney', 'SG': 'Singapore', 'IE': 'Dublin'}
+        proxy_city = region_to_city.get(region, 'Cebu')
+        print(f'INFO: login_flows using residential proxy (region={region}, city={proxy_city})', file=sys.stderr)
+        return open_uc_driver('FB_PROFILE_DIR', headless=headless, proxy_location=proxy_city)
 
     # Legacy non-proxy path.
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy import is correct here
