@@ -50,6 +50,20 @@ MOBILE_UA = (
     'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 )
 
+import re as _re
+_OG_DESC_RE = _re.compile(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']*)["\']', _re.I)
+
+
+def _caption_from_og(html: str) -> str:
+    """Pull the post caption out of the og:description meta tag — robust to
+    IG's React DOM churn (the meta tag is server-rendered). Strips the
+    leading 'N likes - author:' prefix IG prepends."""
+    m = _OG_DESC_RE.search(html or '')
+    if not m:
+        return ''
+    raw = m.group(1)
+    return raw.split(':', 1)[1].strip() if ':' in raw else raw.strip()
+
 
 def _open_ig_driver():
     """Mobile-flavored driver with the SAME proxy + persistent-profile
@@ -257,6 +271,17 @@ class InstagramScraper(SocialPlatformScraper):
                     break
                 driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
                 time.sleep(SCROLL_PAUSE)
+            for stub in results:
+                try:
+                    driver.get(stub['post_url'])
+                    time.sleep(SCROLL_PAUSE)
+                    if _is_checkpoint(driver):
+                        _flag_checkpoint(account['id'], 'captcha-during-caption')
+                        break
+                    stub['content_excerpt'] = _caption_from_og(driver.page_source)
+                    _emit(on_progress, 'caption_captured', url=stub['post_url'])
+                except Exception:
+                    stub['content_excerpt'] = ''
             _bump_counters(account['id'], 1, 1)
             _emit(on_progress, 'search_done', total=len(results))
             return results
