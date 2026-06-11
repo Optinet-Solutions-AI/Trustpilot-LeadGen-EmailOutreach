@@ -193,6 +193,12 @@ class InstagramScraper(SocialPlatformScraper):
         return account
 
     def _open_session(self, account: dict):
+        # Session layering (mirrors Facebook): the persistent IG_PROFILE_DIR
+        # profile loaded by _open_ig_driver() is the PRIMARY logged-in state
+        # (cookies + localStorage minted on the proxy IP at connect time).
+        # The injected sessionid jar below is a SECOND-layer fallback for a
+        # first-run/empty profile; if both fail, IG redirects to
+        # /accounts/login and we flag a checkpoint for operator re-connect.
         driver = _open_ig_driver()
         driver.get(IG_BASE)
         jar = load_cookies(account['id'])
