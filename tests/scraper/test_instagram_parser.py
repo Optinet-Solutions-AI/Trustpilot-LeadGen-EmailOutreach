@@ -42,3 +42,16 @@ def test_author_handle_from_og_extracts_username():
 def test_author_handle_from_og_empty_when_no_prefix():
     from tools.scraper.platforms.instagram import _author_handle_from_og
     assert _author_handle_from_og('<meta property="og:description" content="no prefix here">') == ''
+
+
+def test_decode_bio_link_extracts_target_and_drops_tracking():
+    from tools.scraper.platforms.instagram import _decode_bio_link
+    href = ('https://l.instagram.com/?u=http%3A%2F%2Fwww.charliemullinsobe.com%2F'
+            '%3Futm_source%3Dig%26utm_medium%3Dsocial&e=AUA4juoj')
+    assert _decode_bio_link(href) == 'http://www.charliemullinsobe.com/'
+
+
+def test_decode_bio_link_ignores_meta_nav_links():
+    from tools.scraper.platforms.instagram import _decode_bio_link
+    assert _decode_bio_link('https://www.meta.ai/?utm_source=ig_web_nav') is None
+    assert _decode_bio_link('https://www.threads.com/') is None
