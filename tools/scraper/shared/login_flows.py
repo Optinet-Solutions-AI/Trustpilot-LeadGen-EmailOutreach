@@ -53,6 +53,16 @@ START_URL_BY_PLATFORM = {
     'instagram': 'https://www.instagram.com/accounts/login/',
 }
 
+# Persistent-profile dir env var per platform. The proxy login path binds the
+# captured session to this profile so later EC2 scrapes reuse the same
+# fingerprint+IP class. MUST match the scraper's profile env (facebook.py uses
+# FB_PROFILE_DIR; instagram.py uses IG_PROFILE_DIR) — otherwise an IG connect
+# would write its session into the FB profile dir.
+PROFILE_DIR_ENV_BY_PLATFORM = {
+    'facebook': 'FB_PROFILE_DIR',
+    'instagram': 'IG_PROFILE_DIR',
+}
+
 
 def _emit(stage: str, detail: str = '') -> None:
     """Single-line structured event for the parent process to parse."""
@@ -110,18 +120,20 @@ def _detect_chrome_major_version() -> Optional[int]:
         return None
 
 
-def _open_driver(headless: bool = False):
+def _open_driver(headless: bool = False, profile_dir_env: str = 'FB_PROFILE_DIR'):
     """Lazy-import undetected_chromedriver so the module imports cheap.
 
     Returns a webdriver instance. Caller must ``driver.quit()``.
 
-    When the RESIDENTIAL_PROXY_* env vars are set, this delegates to
-    tools.scraper.platforms.facebook._open_driver() — the same
-    proxy-aware driver the FB scraper uses on EC2 — so cookies
-    captured during an operator-driven login are bound to the proxy
-    IP from inception. That's the core trick that makes EC2 scrapes
-    work afterward: the new cookies' "home IP" matches the IP class
-    EC2 will use, so FB doesn't trust-gate.
+    When the RESIDENTIAL_PROXY_* env vars are set, this opens the shared
+    proxy-aware driver (tools.scraper.shared.uc_driver.open_uc_driver) using
+    the platform's persistent profile (``profile_dir_env``) — the same
+    residential-proxy + persistent-profile stack the scrapers use on EC2 — so
+    cookies captured during an operator-driven login are bound to the proxy
+    IP from inception. That's the core trick that makes EC2 scrapes work
+    afterward: the new cookies' "home IP" matches the IP class EC2 will use,
+    so the platform doesn't trust-gate. ``profile_dir_env`` MUST match the
+    scraper's profile env for that platform (FB_PROFILE_DIR / IG_PROFILE_DIR).
 
     Without proxy env vars set, falls back to a plain
     undetected-chromedriver — preserves the legacy non-proxy login
@@ -147,7 +159,7 @@ def _open_driver(headless: bool = False):
                           'IT': 'Rome', 'NL': 'Amsterdam', 'US': 'New York', 'AU': 'Sydney', 'SG': 'Singapore', 'IE': 'Dublin'}
         proxy_city = region_to_city.get(region, 'Cebu')
         print(f'INFO: login_flows using residential proxy (region={region}, city={proxy_city})', file=sys.stderr)
-        return open_uc_driver('FB_PROFILE_DIR', headless=headless, proxy_location=proxy_city)
+        return open_uc_driver(profile_dir_env, headless=headless, proxy_location=proxy_city)
 
     # Legacy non-proxy path.
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy import is correct here
@@ -249,7 +261,7 @@ def start_login_session(account_id: str) -> bool:
         return False
 
     _emit('browser_open')
-    driver = _open_driver(headless=False)
+    driver = _open_driver(headless=False, profile_dir_env=PROFILE_DIR_ENV_BY_PLATFORM.get(platform, 'FB_PROFILE_DIR'))
     try:
         driver.get(START_URL_BY_PLATFORM[platform])
         # Read + erase the creds from process env immediately so even a
@@ -305,7 +317,7 @@ def start_checkpoint_recovery(account_id: str) -> bool:
         return False
 
     _emit('browser_open')
-    driver = _open_driver(headless=False)
+    driver = _open_driver(headless=False, profile_dir_env=PROFILE_DIR_ENV_BY_PLATFORM.get(platform, 'FB_PROFILE_DIR'))
     try:
         # Visit the root first so cookie injection is accepted.
         root = START_URL_BY_PLATFORM[platform].rsplit('/login', 1)[0]
