@@ -112,13 +112,12 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
     supports_group_search: false,
     filter_schema: [
       { name: 'lead_type', type: 'select', label: 'Lead type', required: true,
-        default: 'consumers',
+        default: 'businesses',
         options: [
-          { value: 'consumers',  label: 'People posting under a hashtag (post authors)' },
-          { value: 'businesses', label: 'Business profiles by category (explore feed)' },
+          { value: 'businesses', label: 'Businesses advertising under a hashtag (SMBs to pitch)' },
+          { value: 'consumers',  label: 'Consumers asking under a hashtag (intent-filtered)' },
         ] },
-      { name: 'query',    type: 'text', label: 'Hashtag (without #)' },
-      { name: 'category', type: 'text', label: 'Explore category' },
+      { name: 'query',    type: 'text', label: 'Niche hashtag (without #)', required: true },
     ],
   },
 ];
