@@ -55,6 +55,10 @@ interface CampaignMessage {
    *  user can tell promoted-replies at a glance without losing them from the
    *  inbox. */
   is_prospect?: boolean;
+  /** True when the user has starred this message. Lives on the campaign_lead
+   *  (migration 046), so a starred row appears in both Replies and Sent.
+   *  Drives the per-row star + the "Favorites only" filter. */
+  is_favorite?: boolean;
 }
 
 // Resolve the canonical campaign_lead UUID from a row. Synthetic rows from
@@ -271,6 +275,13 @@ export default function Inbox() {
   // ?search= URL param so the top-bar global search seeds the sidebar filter
   // when the user lands here from a different page.
   const [searchText, setSearchText] = useState<string>(() => searchParam ?? '');
+  // "Favorites only" filter — when true, the list shows only starred rows.
+  // Persisted to localStorage so the choice sticks across refreshes, mirroring
+  // sortMode / campaignTypeFilter.
+  const [favoritesOnly, setFavoritesOnly] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('inbox_favorites_only') === 'true';
+  });
   const [loading, setLoading] = useState(true);
   const isMobile = useIsMobile();
   const [folderNavOpen, setFolderNavOpen] = useState(false);
@@ -565,12 +576,36 @@ export default function Inbox() {
     });
   }, []);
 
+  // Star / unstar a message. Optimistically flips is_favorite on the row (and
+  // any sibling rows sharing the same canonical campaign_lead id, mirroring
+  // the markRead pattern), posts to the toggle endpoint, and rolls back on
+  // failure. The favorite lives on the campaign_lead so the change is reflected
+  // in both the Replies and Sent folders.
+  const toggleFavorite = useCallback(async (msg: CampaignMessage) => {
+    const cid = canonicalId(msg);
+    const next = !msg.is_favorite;
+    setMessages((prev) => prev.map((m) =>
+      canonicalId(m) === cid ? { ...m, is_favorite: next } : m,
+    ));
+    try {
+      await api.post('/inbox/toggle-favorite', { campaignLeadId: cid, favorite: next });
+    } catch (err: unknown) {
+      // Roll back the optimistic flip and surface the error.
+      setMessages((prev) => prev.map((m) =>
+        canonicalId(m) === cid ? { ...m, is_favorite: !next } : m,
+      ));
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      setError(e?.response?.data?.error ?? e?.message ?? 'Failed to update favorite');
+    }
+  }, []);
+
   // Visible messages — the result of (campaign filter ∩ search ∩ sort) over
   // the raw `messages` returned by the API. Pulled out into a memo so the
   // list, the campaign dropdown, and the select-all checkbox all agree on
   // exactly which rows are currently in scope.
   const visibleMessages = useMemo(() => {
     let rows = messages;
+    if (favoritesOnly) rows = rows.filter((m) => m.is_favorite);
     if (campaignIdFilter) rows = rows.filter((m) => m.campaign_id === campaignIdFilter);
     if (searchText.trim()) {
       const q = searchText.trim().toLowerCase();
@@ -593,7 +628,7 @@ export default function Inbox() {
       });
     }
     return sorted;
-  }, [messages, campaignIdFilter, searchText, sortMode]);
+  }, [messages, favoritesOnly, campaignIdFilter, searchText, sortMode]);
 
   // Campaign list for the filter dropdown — distinct campaign_id/name pairs
   // appearing in the current fetch. Sorted by name so the dropdown is
@@ -1037,11 +1072,34 @@ export default function Inbox() {
               ? 'Loading…'
               : checkStatus
                 ? checkStatus
-                : visibleMessages.length === messages.length
-                  ? `${messages.length} message${messages.length !== 1 ? 's' : ''}`
-                  : `${visibleMessages.length} of ${messages.length} message${messages.length !== 1 ? 's' : ''}`}
+                : favoritesOnly
+                  ? `${visibleMessages.length} favorite${visibleMessages.length !== 1 ? 's' : ''}`
+                  : visibleMessages.length === messages.length
+                    ? `${messages.length} message${messages.length !== 1 ? 's' : ''}`
+                    : `${visibleMessages.length} of ${messages.length} message${messages.length !== 1 ? 's' : ''}`}
           </p>
           <div className="flex items-center gap-1 flex-shrink-0">
+            {!selectionMode && (
+              <button
+                onClick={() => {
+                  const next = !favoritesOnly;
+                  setFavoritesOnly(next);
+                  if (typeof window !== 'undefined') localStorage.setItem('inbox_favorites_only', String(next));
+                }}
+                className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider rounded-md px-2 py-1 transition-colors border ${
+                  favoritesOnly
+                    ? 'text-amber-700 bg-amber-50 border-amber-300'
+                    : 'text-secondary hover:text-amber-700 border-slate-200 hover:border-amber-300'
+                }`}
+                title={favoritesOnly ? 'Showing favorites only — click to show all' : 'Show favorites only'}
+                aria-pressed={favoritesOnly}
+              >
+                <span className="material-symbols-outlined text-[13px]" style={favoritesOnly ? { fontVariationSettings: "'FILL' 1" } : undefined}>
+                  star
+                </span>
+                Favorites
+              </button>
+            )}
             {folder === 'replies' && !selectionMode && (
               <button
                 onClick={enterSelectionMode}
@@ -1249,7 +1307,26 @@ export default function Inbox() {
                             </span>
                           )}
                         </div>
-                        <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">{formatDate(msg.replied_at || msg.sent_at)}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0 ml-1">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); toggleFavorite(msg); }}
+                            title={msg.is_favorite ? 'Unstar' : 'Star this message'}
+                            aria-label={msg.is_favorite ? 'Unstar' : 'Star this message'}
+                            aria-pressed={!!msg.is_favorite}
+                            className={`transition-colors ${
+                              msg.is_favorite ? 'text-amber-500' : 'text-slate-300 hover:text-amber-500'
+                            }`}
+                          >
+                            <span
+                              className="material-symbols-outlined text-[16px] block"
+                              style={msg.is_favorite ? { fontVariationSettings: "'FILL' 1" } : undefined}
+                            >
+                              star
+                            </span>
+                          </button>
+                          <span className="text-[10px] text-slate-400">{formatDate(msg.replied_at || msg.sent_at)}</span>
+                        </div>
                       </div>
                       <p className="text-xs text-secondary truncate mb-1.5 flex items-center gap-1.5">
                         {msg.campaign_type === 'discovery_followup' && (

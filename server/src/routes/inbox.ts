@@ -421,7 +421,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
   try {
     const { data, error } = await getSupabase()
       .from('campaign_leads')
-      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, campaigns(name, campaign_type), leads(company_name, country)')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, is_favorite, campaigns(name, campaign_type), leads(company_name, country)')
       .in('status', statusFilter)
       .order('sent_at', { ascending: false })
       .limit(400);
@@ -493,6 +493,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
         // pre-dates the per-send activity log being wired up).
         current_step: (row.current_step as number | null) ?? 1,
         is_prospect: prospectIds.has(row.id as string),
+        is_favorite: (row.is_favorite as boolean | null) ?? false,
       };
     });
 
@@ -1044,6 +1045,43 @@ router.post('/mark-replies-read', async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, data: { marked: updated?.length ?? 0 } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── POST /api/inbox/toggle-favorite ───────────────────────────────────────────
+// Body: { campaignLeadId: string, favorite: boolean } — star/unstar an inbox
+// message. The flag lives on the campaign_lead, so a starred row shows in both
+// the Replies and Sent folders. Idempotent: re-posting the same value is a
+// no-op write that still returns the current state.
+router.post('/toggle-favorite', async (req: Request, res: Response) => {
+  const campaignLeadId = req.body?.campaignLeadId as string | undefined;
+  const favorite = req.body?.favorite;
+  if (!campaignLeadId || typeof favorite !== 'boolean') {
+    res.status(400).json({ success: false, error: 'campaignLeadId and boolean favorite required' });
+    return;
+  }
+
+  try {
+    const { data: updated, error } = await getSupabase()
+      .from('campaign_leads')
+      .update({ is_favorite: favorite })
+      .eq('id', campaignLeadId)
+      .select('id, is_favorite')
+      .maybeSingle();
+
+    if (error) {
+      res.status(500).json({ success: false, error: error.message });
+      return;
+    }
+    if (!updated) {
+      res.status(404).json({ success: false, error: 'campaign_lead not found' });
+      return;
+    }
+
+    res.json({ success: true, data: { is_favorite: updated.is_favorite } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
