@@ -416,6 +416,7 @@ See `docs/deployment.md` for complete reference.
 - Per-account daily caps + residential proxies + undetected-chromium to avoid bans
 - Captcha checkpoints are routine; the in-app social-account recovery UI (planned) is how operators resolve them
 - Lead model includes post authors (DM target) and group admins, not just page owners
+- **Instagram (in build):** runs on the Windows EC2 worker ONLY — set `PLATFORM_FILTER=facebook,instagram` there and add `instagram` to the Linux worker's `PLATFORM_EXCLUDE` (IG/Brave is checkpointed on Linux just like FB). Smoke-tested locally first on the owner's residential IP. Uses the shared `tools/scraper/shared/uc_driver.py` opener with `IG_PROFILE_DIR` + mobile UA + `og:description` caption capture + the shared Gemini consumer-intent classifier.
 
 ### Email
 - ZeroBounce free tier: 100 credits/month; MillionVerifier free: 1000/mo; Hunter free: 50 calls/mo
