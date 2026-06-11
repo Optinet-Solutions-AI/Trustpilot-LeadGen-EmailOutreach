@@ -590,12 +590,15 @@ export default function Inbox() {
     try {
       await api.post('/inbox/toggle-favorite', { campaignLeadId: cid, favorite: next });
     } catch (err: unknown) {
-      // Roll back the optimistic flip and surface the error.
+      // Roll back the optimistic flip. Surface the failure through the
+      // transient header status line — NOT the list-level `error`, which would
+      // blank the entire inbox. A failed star must never wipe the message list.
       setMessages((prev) => prev.map((m) =>
         canonicalId(m) === cid ? { ...m, is_favorite: !next } : m,
       ));
       const e = err as { response?: { data?: { error?: string } }; message?: string };
-      setError(e?.response?.data?.error ?? e?.message ?? 'Failed to update favorite');
+      setCheckStatus(e?.response?.data?.error ?? e?.message ?? 'Couldn’t update favorite');
+      setTimeout(() => setCheckStatus(null), 4000);
     }
   }, []);
 
@@ -1086,18 +1089,16 @@ export default function Inbox() {
                   setFavoritesOnly(next);
                   if (typeof window !== 'undefined') localStorage.setItem('inbox_favorites_only', String(next));
                 }}
-                className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider rounded-md px-2 py-1 transition-colors border ${
-                  favoritesOnly
-                    ? 'text-amber-700 bg-amber-50 border-amber-300'
-                    : 'text-secondary hover:text-amber-700 border-slate-200 hover:border-amber-300'
+                className={`p-1 transition-colors ${
+                  favoritesOnly ? 'text-amber-500' : 'text-slate-400 hover:text-amber-500'
                 }`}
                 title={favoritesOnly ? 'Showing favorites only — click to show all' : 'Show favorites only'}
                 aria-pressed={favoritesOnly}
+                aria-label="Toggle favorites only"
               >
-                <span className="material-symbols-outlined text-[13px]" style={favoritesOnly ? { fontVariationSettings: "'FILL' 1" } : undefined}>
+                <span className="material-symbols-outlined text-[18px] block" style={favoritesOnly ? { fontVariationSettings: "'FILL' 1" } : undefined}>
                   star
                 </span>
-                Favorites
               </button>
             )}
             {folder === 'replies' && !selectionMode && (
