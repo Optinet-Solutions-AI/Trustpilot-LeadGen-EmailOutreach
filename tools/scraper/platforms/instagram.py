@@ -43,6 +43,7 @@ from tools.scraper.platforms.facebook import (
     _is_checkpoint,
 )
 from tools.scraper.shared.session_store import load_cookies
+from tools.scraper.shared.social_nlp import classify_consumer_posts_with_gemini
 
 IG_BASE = 'https://www.instagram.com'
 MOBILE_UA = (
@@ -80,6 +81,20 @@ def _open_ig_driver():
 def _normalize_hashtag(q: str) -> str:
     """Strip the leading '#' and any whitespace; lowercase."""
     return q.strip().lstrip('#').lower()
+
+
+def _filter_consumer_posts(posts: list[dict], *, niche: str, location):
+    """Drop posts the Gemini classifier marks non-consumer. Classifier
+    None (no key / API fail) => keep everything (IG relies on the LLM
+    verdict; there's no substring fallback like Facebook's)."""
+    if not posts:
+        return posts
+    verdicts = classify_consumer_posts_with_gemini(
+        [p.get('content_excerpt', '') for p in posts], niche, location=location,
+    )
+    if verdicts is None or len(verdicts) != len(posts):
+        return posts
+    return [p for p, keep in zip(posts, verdicts) if keep]
 
 
 class InstagramScraper(SocialPlatformScraper):
@@ -282,6 +297,7 @@ class InstagramScraper(SocialPlatformScraper):
                     _emit(on_progress, 'caption_captured', url=stub['post_url'])
                 except Exception:
                     stub['content_excerpt'] = ''
+            results = _filter_consumer_posts(results, niche=tag, location=None)
             _bump_counters(account['id'], 1, 1)
             _emit(on_progress, 'search_done', total=len(results))
             return results
