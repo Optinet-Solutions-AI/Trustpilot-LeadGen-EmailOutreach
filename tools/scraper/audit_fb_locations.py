@@ -13,6 +13,7 @@ Run from repo root:
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import Counter, defaultdict
 
 from tools.db.supabase_client import table
@@ -45,6 +46,14 @@ def _audit_verdict(group_name, excerpt, loc):
 
 
 def main():
+    # Scraped names/posts contain characters the Windows cp1252 console can't
+    # encode (macrons, smart quotes, emoji). Degrade them instead of crashing
+    # mid-table — otherwise --write never reaches the DB writes after the print.
+    try:
+        sys.stdout.reconfigure(errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--location', help='only leads whose country ILIKE this')
     ap.add_argument('--since', help='only leads scraped on/after this ISO timestamp')
