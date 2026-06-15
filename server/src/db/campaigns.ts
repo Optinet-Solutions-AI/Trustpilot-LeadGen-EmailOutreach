@@ -196,6 +196,22 @@ export async function getCampaignLeads(campaignId: string) {
   return data || [];
 }
 
+/**
+ * Campaign memberships for a single lead. Used by the Lead Detail Activity
+ * timeline to resolve a note's campaign_id → the campaign_lead_id the Inbox
+ * deep-link (/inbox?open=<campaign_lead_id>) needs, so timeline entries can
+ * link to the actual conversation.
+ */
+export async function getCampaignLeadsByLead(leadId: string) {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('campaign_leads')
+    .select('id, campaign_id, status')
+    .eq('lead_id', leadId);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
 export async function addLeadsByFilter(campaignId: string, filters: { country?: string; category?: string }) {
   const supabase = getSupabase();
 
