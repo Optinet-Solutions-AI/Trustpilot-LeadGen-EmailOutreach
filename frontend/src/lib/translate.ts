@@ -2,7 +2,12 @@
  * Gemini-powered translation for inbox replies that arrive in a foreign language.
  * Uses the same NEXT_PUBLIC_GEMINI_API_KEY as the campaign template generator.
  *
- * Lightweight: one round-trip per call, HTML-preserving, deterministic temperature.
+ * We translate the PLAIN-TEXT of the message, not its raw HTML. Outreach emails
+ * embed a screenshot/score-card image and rich markup; asking the model to
+ * "preserve every HTML tag" made it reproduce the entire payload (a ~40KB
+ * embedded image took >90s and timed out). Stripping to readable text first
+ * keeps the prompt and the response tiny, so a translation returns in ~1-2s.
+ * The result is escaped and line-broken back into light HTML for display.
  */
 
 import { GoogleGenAI } from '@google/genai';
@@ -10,10 +15,12 @@ import { GoogleGenAI } from '@google/genai';
 const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 
 /** Abort a stuck translation rather than spin forever on a slow/hung call. */
-const TRANSLATE_TIMEOUT_MS = 20_000;
+const TRANSLATE_TIMEOUT_MS = 30_000;
+/** Cap the text we send — readable email text is short; this bounds worst case. */
+const MAX_INPUT_CHARS = 16_000;
 
 export interface TranslationResult {
-  /** The translated text (or HTML if the input was HTML). */
+  /** Translated text as light HTML (escaped text + <br>), safe to render. */
   text: string;
   /** Two-letter ISO 639-1 code Gemini reported as the source. May be 'unknown'. */
   sourceLanguage: string;
@@ -22,9 +29,7 @@ export interface TranslationResult {
 // ── Cache ────────────────────────────────────────────────────────────────
 // The same reply gets re-translated every time the user re-opens a thread or
 // re-clicks "Translate", and each call is a full Gemini round-trip. Cache the
-// result keyed by (target language + content) so repeats are instant. An
-// in-memory Map covers the active session; localStorage survives navigation
-// and refresh. Both are best-effort — a miss just re-fetches.
+// result keyed by (target language + content) so repeats are instant.
 const memCache = new Map<string, TranslationResult>();
 
 /** djb2 — cheap, stable string hash so keys stay short regardless of body size. */
@@ -67,13 +72,49 @@ function writeCache(key: string, value: TranslationResult): void {
   }
 }
 
+// ── HTML → readable text ───────────────────────────────────────────────────
+const NAMED_ENTITIES: Record<string, string> = {
+  '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+  '&#39;': "'", '&apos;': "'", '&mdash;': '—', '&ndash;': '–', '&hellip;': '…',
+};
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, d) => {
+      try { return String.fromCodePoint(Number(d)); } catch { return _; }
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+      try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _; }
+    })
+    .replace(/&[a-z]+\d*;/gi, (m) => NAMED_ENTITIES[m.toLowerCase()] ?? m);
+}
+
+/** Strip HTML to readable plain text, keeping paragraph/line structure. */
+function htmlToText(html: string): string {
+  return decodeEntities(
+    html
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<\s*(br|\/p|\/div|\/li|\/tr|\/h[1-6])\s*>/gi, '\n')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/[ \t\f\v]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /**
- * Translate text or HTML into the target language.
- *
- * - When the input contains HTML tags, those are preserved verbatim; only
- *   text nodes are translated.
- * - The model is asked to wrap the output in a `<<<TRANSLATED>>>` /
- *   `<<<END>>>` envelope so we can strip any preface it may include.
+ * Translate a message body into the target language. `input` may be HTML or
+ * plain text; we reduce it to readable text before translating. Returns light
+ * HTML (escaped text + <br>) suitable for dangerouslySetInnerHTML.
  */
 export async function translateText(
   input: string,
@@ -86,42 +127,41 @@ export async function translateText(
     return { text: input, sourceLanguage: 'unknown' };
   }
 
-  // Serve from cache when we've translated this exact content before.
   const key = cacheKey(input, targetLanguage);
   const cached = readCache(key);
   if (cached) return cached;
 
+  let text = htmlToText(input);
+  if (!text) return { text: '', sourceLanguage: 'unknown' };
+  if (text.length > MAX_INPUT_CHARS) text = text.slice(0, MAX_INPUT_CHARS);
+
   const genAI = new GoogleGenAI({ apiKey: API_KEY });
 
   const prompt = `
-You are translating email body content for an outreach inbox. Translate the
-material below into ${targetLanguage}.
+Translate the email message below into ${targetLanguage}.
 
 Rules:
-- Preserve every HTML tag (<p>, <br>, <a>, <strong>, etc.) exactly as-is.
-- Translate only the human-readable text nodes between tags.
+- Translate only the human-readable text.
 - Do not translate URLs, email addresses, file names, or proper names.
 - Do not add commentary, prefaces, signatures, or notes.
-- If the input is already in ${targetLanguage}, return it unchanged.
+- Preserve line breaks between paragraphs.
+- If the message is already in ${targetLanguage}, return it unchanged.
 
 Return your response in this EXACT format (no other text before or after):
-SOURCE_LANG: [two-letter ISO 639-1 code you detected, e.g. "sv", "de", "es", or "unknown"]
+SOURCE_LANG: [two-letter ISO 639-1 code you detected, e.g. "pt", "de", "es", or "unknown"]
 TRANSLATED:
-[the translated content here]
+[the translated text here]
 
 === INPUT ===
-${input}
+${text}
 === END INPUT ===
 `.trim();
 
-  // thinkingBudget: 0 disables the 2.5 "thinking" pass — it's on by default and
-  // is the dominant source of latency. Translation is a deterministic
-  // transform that gains nothing from reasoning tokens, so turning it off is
-  // the single biggest speed win here. Race against a timeout so a hung call
-  // surfaces as an error instead of an endless spinner.
+  // thinkingBudget: 0 keeps flash-lite snappy; race a timeout so a hung call
+  // surfaces an error instead of an endless spinner.
   const result = await Promise.race([
     genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       contents: prompt,
       config: { temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
     }),
@@ -132,17 +172,18 @@ ${input}
 
   const raw = (result.text ?? '').trim();
   const sourceMatch = raw.match(/^SOURCE_LANG:\s*(\S+)/m);
-  // Use indexOf split rather than a multiline regex — `m` mode `$` anchors at
-  // the first newline, which truncated multi-paragraph translations to just
-  // the first line. Everything after "TRANSLATED:" is the body.
   const transTag = 'TRANSLATED:';
   const transIdx = raw.indexOf(transTag);
   const translated = transIdx >= 0
     ? raw.slice(transIdx + transTag.length).replace(/^\s*\n?/, '').trimEnd()
     : raw;
 
+  // Escape, then turn newlines into <br> so the existing HTML renderer shows
+  // paragraph breaks without trusting any markup the model might emit.
+  const html = escapeHtml(translated).replace(/\n/g, '<br>');
+
   const out: TranslationResult = {
-    text: translated,
+    text: html,
     sourceLanguage: sourceMatch ? sourceMatch[1].toLowerCase().trim() : 'unknown',
   };
   writeCache(key, out);
