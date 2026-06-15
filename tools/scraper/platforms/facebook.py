@@ -608,6 +608,18 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     if not text:
         return None
     lowered = text.lower()
+    # Province/state tokens that disambiguate a city name shared across
+    # countries (e.g. "London, Ontario" must resolve CA, not GB). Checked
+    # BEFORE the bare-city scan so the province wins. Small + data-driven —
+    # only provinces actually seen in live group names.
+    PROVINCE_TO_COUNTRY = [
+        ('ontario', 'CA'), ('quebec', 'CA'), ('québec', 'CA'),
+        ('alberta', 'CA'), ('manitoba', 'CA'), ('saskatchewan', 'CA'),
+        ('british columbia', 'CA'), ('nova scotia', 'CA'),
+    ]
+    for needle, country in PROVINCE_TO_COUNTRY:
+        if needle in lowered:
+            return country
     # Order: most specific multi-word cities first so 'lapu-lapu city' matches
     # before a generic 'cebu' substring would.
     CITY_TO_COUNTRY = [
