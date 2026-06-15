@@ -741,6 +741,43 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     return None
 
 
+def _derive_location_confidence(
+    group_name: Optional[str],
+    post_excerpt: Optional[str],
+    operator_location: Optional[str],
+) -> str:
+    """Classify how well a captured lead matches the SEARCHED city.
+
+    Returns:
+      'confirmed_city' — searched city appears (whole-word) in the group name
+                         or the post text.
+      'same_country'   — a different city is named that resolves to the SAME
+                         country as the operator's search location.
+      'unconfirmed'    — no usable location signal (generic group + a post that
+                         names no place). The honest default.
+
+    Pure + deterministic; reuses CITY_TO_COUNTRY via _extract_country_from_excerpt.
+    Wrong-COUNTRY groups are dropped earlier by _is_consumer_facing_group, so
+    they are not expected here; if one slips through it falls to 'unconfirmed'.
+    """
+    loc = (operator_location or '').strip().lower()
+    hay = f"{group_name or ''} {post_excerpt or ''}".lower()
+
+    if loc and re.search(r'\b' + re.escape(loc) + r'\b', hay):
+        return 'confirmed_city'
+
+    operator_country = _extract_country_from_excerpt(operator_location or '')
+    # Scrub the searched city from `hay` before country-detection so that a
+    # city name embedded inside a longer token (e.g. "bristol" in
+    # "bristolboard") does not produce a spurious same_country signal.
+    hay_for_country = re.sub(re.escape(loc), '', hay) if loc else hay
+    detected_country = _extract_country_from_excerpt(hay_for_country)
+    if detected_country and operator_country and detected_country == operator_country:
+        return 'same_country'
+
+    return 'unconfirmed'
+
+
 # Country-token map for the "drop name-mismatched country groups" filter.
 # Word-boundary-anchored regex patterns — keep them strict so 'phone' doesn't
 # match 'PH' and 'auspicious' doesn't match 'AU'.
