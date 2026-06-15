@@ -2195,6 +2195,9 @@ class FacebookScraper(SocialPlatformScraper):
                     # text is the ground truth — Lead Matrix surfaces it
                     # as-is.
                     'country': location or None,
+                    'location_confidence': _derive_location_confidence(
+                        s.get('group_name'), s.get('content_excerpt'), location,
+                    ),
                     'is_anonymous': is_anon,
                     'outreach_status': 'lost' if is_anon else None,
                 })
@@ -2292,6 +2295,11 @@ class FacebookScraper(SocialPlatformScraper):
                 s['category'] = stamp_niche
             if stamp_location and not s.get('country'):
                 s['country'] = stamp_location
+            if not s.get('location_confidence'):
+                s['location_confidence'] = _derive_location_confidence(
+                    s.get('group_name'), s.get('content_excerpt'),
+                    s.get('country') or stamp_location,
+                )
 
         # ── Consumer-only filter chain (was previously ONLY in scrape_listing) ──
         #
