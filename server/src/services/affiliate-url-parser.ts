@@ -13,6 +13,9 @@ export interface ParsedAffiliate {
 
 interface ExistingAffiliate {
   website: string | null;
+  // Dedup is by normalized website only; tp_url is accepted (the route selects
+  // it) but not currently used for matching. Kept so callers can pass DB rows
+  // verbatim without reshaping.
   tp_url: string | null;
 }
 
@@ -52,6 +55,9 @@ export function parseTrustpilotAffiliateUrl(line: string): ParsedAffiliate | nul
 
   const tp_url = `https://${host}/review/${slug}`;
 
+  // Any 2-letter subdomain becomes the geo. Trustpilot only uses ISO-3166-1
+  // alpha-2 country subdomains (de., au., dk., it., …), so this is safe for the
+  // real URL corpus; www./bare hosts have no 2-letter match and yield [].
   const sub = host.match(REGIONAL_SUBDOMAIN);
   const geo = sub ? [sub[1].toUpperCase()] : [];
 

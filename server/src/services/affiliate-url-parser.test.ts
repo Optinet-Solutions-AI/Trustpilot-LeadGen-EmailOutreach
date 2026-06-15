@@ -21,6 +21,14 @@ describe('parseTrustpilotAffiliateUrl', () => {
     expect(r?.name).toBe('Payid casino');
   });
 
+  it('strips www. from website for dedup but preserves the literal slug in tp_url', () => {
+    const r = parseTrustpilotAffiliateUrl('https://dk.trustpilot.com/review/www.grimme-aelling.dk');
+    expect(r?.website).toBe('grimme-aelling.dk');
+    // tp_url keeps the exact Trustpilot slug — /review/www.* and /review/* are
+    // different profile pages, so we must not strip www. from the link itself.
+    expect(r?.tp_url).toBe('https://dk.trustpilot.com/review/www.grimme-aelling.dk');
+  });
+
   it('gives bare and www hosts an empty geo', () => {
     expect(parseTrustpilotAffiliateUrl('https://trustpilot.com/review/foo.com')?.geo).toEqual([]);
     expect(parseTrustpilotAffiliateUrl('https://www.trustpilot.com/review/foo.com')?.geo).toEqual([]);
