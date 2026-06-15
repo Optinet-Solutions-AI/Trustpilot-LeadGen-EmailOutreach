@@ -10,7 +10,7 @@ export interface AffiliateMeta {
   reviews?: number;
 }
 
-const LD_BLOCK = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+const LD_BLOCK = /<script[^>]+type=["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script>/gi;
 
 export function extractAffiliateMeta(html: string): AffiliateMeta {
   if (!html) return {};
@@ -44,6 +44,9 @@ function walkForRating(node: unknown): AffiliateMeta | null {
     const reviews = toInt(a.reviewCount);
     if (reviews != null) meta.reviews = reviews;
     if (meta.name || meta.rating != null || meta.reviews != null) return meta;
+    // This node IS the aggregateRating carrier but had no usable fields — stop
+    // here rather than recursing into the aggregateRating sub-object.
+    return null;
   }
 
   for (const v of Object.values(obj)) {
