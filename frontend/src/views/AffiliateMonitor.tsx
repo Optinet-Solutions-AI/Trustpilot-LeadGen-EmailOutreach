@@ -29,12 +29,57 @@ const EMPTY_FORM = {
 interface AddModalProps {
   onClose: () => void;
   onSave: (payload: Omit<Affiliate, 'id' | 'created_at'>) => Promise<unknown>;
+  onBulkSave: (text: string) => Promise<{ created: unknown[]; skipped: string[]; invalid: string[]; jobId: string | null }>;
+  existingWebsites: Set<string>;
+  onBulkDone: (result: { created: number; skipped: number; invalid: number; jobId: string | null }) => void;
 }
 
-function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
+const TP_REVIEW_LINE = /(^|\.)trustpilot\.com\/review\/([^/?#\s]+)/i;
+
+function previewBulk(text: string, existing: Set<string>) {
+  let detected = 0, tracked = 0, invalid = 0;
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    const m = t.match(TP_REVIEW_LINE);
+    if (!m) { invalid++; continue; }
+    const site = m[2].toLowerCase().replace(/^www\./, '');
+    if (existing.has(site) || seen.has(site)) { tracked++; continue; }
+    seen.add(site);
+    detected++;
+  }
+  return { detected, tracked, invalid };
+}
+
+function AddAffiliateModal({ onClose, onSave, onBulkSave, existingWebsites, onBulkDone }: AddModalProps) {
+  const [mode, setMode] = useState<'single' | 'bulk'>('single');
+  const [bulkText, setBulkText] = useState('');
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const preview = previewBulk(bulkText, existingWebsites);
+
+  const handleBulkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    setSaving(true);
+    try {
+      const result = await onBulkSave(bulkText);
+      onBulkDone({
+        created: result.created.length,
+        skipped: result.skipped.length,
+        invalid: result.invalid.length,
+        jobId: result.jobId,
+      });
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Bulk add failed');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const set = (key: keyof typeof EMPTY_FORM) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -75,7 +120,7 @@ function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
         className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-7"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-4">
           <h3 className="text-xl font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
             Add <span className="text-[#b0004a]">Affiliate</span>
           </h3>
@@ -84,6 +129,62 @@ function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
           </button>
         </div>
 
+        {/* Single / Bulk toggle */}
+        <div className="flex items-center gap-1 mb-5 bg-slate-100 rounded-lg p-1">
+          {(['single', 'bulk'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setMode(m); setErr(null); }}
+              className={`flex-1 px-3 py-1.5 rounded-md text-sm font-bold transition-colors ${
+                mode === m ? 'bg-white text-[#b0004a] shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {m === 'single' ? 'Single' : 'Bulk paste'}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'bulk' ? (
+          <form onSubmit={handleBulkSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1">Trustpilot URLs (one per line)</label>
+              <textarea
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                rows={9}
+                placeholder={'https://de.trustpilot.com/review/example.com\nhttps://au.trustpilot.com/review/another.net'}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-[#b0004a] transition-colors resize-none"
+              />
+              <p className="text-xs text-slate-400 mt-1.5">
+                <span className="font-bold text-slate-600">{preview.detected}</span> to add
+                {preview.tracked > 0 && <> · <span className="font-bold text-amber-600">{preview.tracked}</span> already tracked</>}
+                {preview.invalid > 0 && <> · <span className="font-bold text-red-500">{preview.invalid}</span> invalid</>}
+                <br />
+                <span className="text-slate-400">Name, rating &amp; reviews are filled in automatically after adding.</span>
+              </p>
+            </div>
+
+            {err && <p className="text-xs text-red-500">{err}</p>}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving || preview.detected === 0}
+                className="px-5 py-2 rounded-lg text-sm font-bold bg-[#b0004a] text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {saving ? 'Adding…' : `Add ${preview.detected} Affiliate${preview.detected === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Name */}
           <div>
@@ -198,6 +299,7 @@ function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );
@@ -206,7 +308,7 @@ function AddAffiliateModal({ onClose, onSave }: AddModalProps) {
 // ── Main View ────────────────────────────────────────────────────────────────
 
 export default function AffiliateMonitor() {
-  const { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkDelete, updateAffiliate } = useAffiliates();
+  const { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkAddAffiliates, bulkDelete, updateAffiliate } = useAffiliates();
   const [activeTab, setActiveTab] = useState<'chart' | 'dashboard'>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [geoFilter, setGeoFilter] = useState('All');
@@ -215,6 +317,7 @@ export default function AffiliateMonitor() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [bulkSummary, setBulkSummary] = useState<{ created: number; skipped: number; invalid: number } | null>(null);
 
   useEffect(() => {
     fetchAffiliates();
@@ -256,6 +359,11 @@ export default function AffiliateMonitor() {
         : '0';
     return { livePages: live.length, totalReviews, geoMarkets: geos.size, avgRating };
   }, [affiliates]);
+
+  const existingWebsites = useMemo(
+    () => new Set(affiliates.map((a) => (a.website ?? '').toLowerCase().replace(/^www\./, '')).filter(Boolean)),
+    [affiliates],
+  );
 
   const handleToggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -445,6 +553,23 @@ export default function AffiliateMonitor() {
         </div>
       )}
 
+      {/* Bulk-add summary banner */}
+      {bulkSummary && (
+        <div className="flex items-center gap-3 rounded-xl px-5 py-3 text-sm border bg-[#8ff9a8]/20 border-[#006630]/20 text-[#006630]">
+          <span className="material-symbols-outlined text-[18px] text-[#006630]">playlist_add_check</span>
+          <span className="font-semibold">Bulk add complete!</span>
+          <span className="font-normal">
+            Added <strong>{bulkSummary.created}</strong>
+            {bulkSummary.skipped > 0 && <>, skipped <strong>{bulkSummary.skipped}</strong> already tracked</>}
+            {bulkSummary.invalid > 0 && <>, <strong>{bulkSummary.invalid}</strong> invalid</>}
+            . Enriching name, rating &amp; reviews now…
+          </span>
+          <button onClick={() => setBulkSummary(null)} className="ml-auto text-[#006630]/60 hover:text-[#006630] transition-colors">
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
       {/* Link-check result banner */}
       {linkResult && (
         <div className={`flex items-center gap-3 rounded-xl px-5 py-3 text-sm border ${
@@ -515,6 +640,18 @@ export default function AffiliateMonitor() {
         <AddAffiliateModal
           onClose={() => setShowAddModal(false)}
           onSave={addAffiliate}
+          onBulkSave={bulkAddAffiliates}
+          existingWebsites={existingWebsites}
+          onBulkDone={({ created, skipped, invalid, jobId }) => {
+            setBulkSummary({ created, skipped, invalid });
+            // Stream the enrichment job through the existing link-job machinery
+            // so name/rating/reviews + link badges populate live, then refetch.
+            if (jobId) {
+              localStorage.setItem('active_affiliate_link_job', jobId);
+              setLinkJobId(jobId);
+              setLinkStartedAt(new Date().toISOString());
+            }
+          }}
         />
       )}
     </div>
