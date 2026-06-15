@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads, getLeadIds } from '../db/leads.js';
+import { getCampaignLeadsByLead } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sanitizeTrustpilotUrl, validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from '../services/url-validator.js';
@@ -92,6 +93,20 @@ router.get('/ids', async (req: Request, res: Response) => {
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
     });
     res.json({ success: true, data: ids, total: ids.length });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/leads/:id/campaign-leads — this lead's campaign memberships, so the
+// Activity timeline can deep-link notes (campaign_id) to the right inbox thread
+// (campaign_lead_id). Declared before /:id; the extra path segment means Express
+// never matches this under the single-segment /:id route anyway.
+router.get('/:id/campaign-leads', async (req: Request, res: Response) => {
+  try {
+    const data = await getCampaignLeadsByLead(param(req.params.id));
+    res.json({ success: true, data });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

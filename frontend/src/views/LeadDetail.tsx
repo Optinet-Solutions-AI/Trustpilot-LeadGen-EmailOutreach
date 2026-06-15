@@ -91,6 +91,25 @@ export default function LeadDetail() {
 
   const { notes, fetchNotes, addNote } = useNotes(id || '');
   const { followUps, fetchFollowUps, createFollowUp, completeFollowUp } = useFollowUps(id ?? undefined);
+
+  // Map campaign_id -> campaign_lead_id for this lead so the Activity timeline
+  // can deep-link email/reply/auto-reply notes to the right Inbox conversation.
+  const [campaignLeadByCampaign, setCampaignLeadByCampaign] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    api.get(`/leads/${id}/campaign-leads`)
+      .then((res) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const cl of (res.data?.data ?? []) as Array<{ id: string; campaign_id: string | null }>) {
+          if (cl.campaign_id) map[cl.campaign_id] = cl.id;
+        }
+        setCampaignLeadByCampaign(map);
+      })
+      .catch(() => { if (!cancelled) setCampaignLeadByCampaign({}); });
+    return () => { cancelled = true; };
+  }, [id]);
   const { data: leadDiscoveries, refresh: refreshDiscoveries } = useLeadDiscoveries(id || null);
   const discoveryActions = useDiscoveryActions();
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
@@ -636,7 +655,7 @@ export default function LeadDetail() {
           </h2>
           <NoteEditor onSubmit={async (content) => { await addNote(content); }} />
           <div className="mt-4">
-            <ActivityTimeline notes={notes} />
+            <ActivityTimeline notes={notes} campaignLeadByCampaign={campaignLeadByCampaign} />
           </div>
         </div>
 
