@@ -1074,6 +1074,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/affiliates/bulk:
+    post:
+      operationId: bulkAddAffiliates
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/affiliates/bulk-delete:
     post:
       operationId: bulkDeleteAffiliates
