@@ -34,19 +34,36 @@ interface AddModalProps {
   onBulkDone: (result: { created: number; skipped: number; invalid: number; jobId: string | null }) => void;
 }
 
-const TP_REVIEW_LINE = /(^|\.)trustpilot\.com\/review\/([^/?#\s]+)/i;
+// Mirrors the server parser (affiliate-url-parser.ts) so the live count agrees
+// with what POST /affiliates/bulk will actually insert. Whole trimmed line must
+// be the URL; slug must be a bare domain.
+const TP_HOST = /(^|\.)trustpilot\.com$/i;
+const REVIEW_SLUG = /\/review\/([^/?#]+)/i;
+const DOMAIN_SLUG = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/;
+
+function parsePreviewWebsite(line: string): string | null {
+  const t = line.trim().replace(/^["'<]+|["'>]+$/g, '');
+  if (!t) return null;
+  const candidate = /^https?:\/\//i.test(t) ? t : 'https://' + t.replace(/^\/+/, '');
+  let u: URL;
+  try { u = new URL(candidate); } catch { return null; }
+  if (!TP_HOST.test(u.host.toLowerCase())) return null;
+  const m = u.pathname.match(REVIEW_SLUG);
+  if (!m) return null;
+  const website = m[1].toLowerCase().replace(/^www\./, '');
+  if (!DOMAIN_SLUG.test(website)) return null;
+  return website;
+}
 
 function previewBulk(text: string, existing: Set<string>) {
   let detected = 0, tracked = 0, invalid = 0;
   const seen = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t) continue;
-    const m = t.match(TP_REVIEW_LINE);
-    if (!m) { invalid++; continue; }
-    const site = m[2].toLowerCase().replace(/^www\./, '');
-    if (existing.has(site) || seen.has(site)) { tracked++; continue; }
-    seen.add(site);
+    if (!line.trim()) continue;
+    const website = parsePreviewWebsite(line);
+    if (!website) { invalid++; continue; }
+    if (existing.has(website) || seen.has(website)) { tracked++; continue; }
+    seen.add(website);
     detected++;
   }
   return { detected, tracked, invalid };
@@ -148,8 +165,9 @@ function AddAffiliateModal({ onClose, onSave, onBulkSave, existingWebsites, onBu
         {mode === 'bulk' ? (
           <form onSubmit={handleBulkSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1">Trustpilot URLs (one per line)</label>
+              <label htmlFor="bulk-tp-urls" className="block text-xs font-bold text-slate-500 mb-1">Trustpilot URLs (one per line)</label>
               <textarea
+                id="bulk-tp-urls"
                 value={bulkText}
                 onChange={(e) => setBulkText(e.target.value)}
                 rows={9}
@@ -317,7 +335,7 @@ export default function AffiliateMonitor() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [bulkSummary, setBulkSummary] = useState<{ created: number; skipped: number; invalid: number } | null>(null);
+  const [bulkSummary, setBulkSummary] = useState<{ created: number; skipped: number; invalid: number; enriching: boolean } | null>(null);
 
   useEffect(() => {
     fetchAffiliates();
@@ -562,7 +580,7 @@ export default function AffiliateMonitor() {
             Added <strong>{bulkSummary.created}</strong>
             {bulkSummary.skipped > 0 && <>, skipped <strong>{bulkSummary.skipped}</strong> already tracked</>}
             {bulkSummary.invalid > 0 && <>, <strong>{bulkSummary.invalid}</strong> invalid</>}
-            . Enriching name, rating &amp; reviews now…
+            {bulkSummary.enriching && <>. Enriching name, rating &amp; reviews now…</>}
           </span>
           <button onClick={() => setBulkSummary(null)} className="ml-auto text-[#006630]/60 hover:text-[#006630] transition-colors">
             <span className="material-symbols-outlined text-[18px]">close</span>
@@ -643,13 +661,17 @@ export default function AffiliateMonitor() {
           onBulkSave={bulkAddAffiliates}
           existingWebsites={existingWebsites}
           onBulkDone={({ created, skipped, invalid, jobId }) => {
-            setBulkSummary({ created, skipped, invalid });
+            setBulkSummary({ created, skipped, invalid, enriching: jobId != null });
             // Stream the enrichment job through the existing link-job machinery
             // so name/rating/reviews + link badges populate live, then refetch.
-            if (jobId) {
+            // Skip if a Validate Links job is already running — overwriting
+            // linkJobId would orphan that job's completion handler.
+            if (jobId && !checkingLinks && !linkJobId) {
               localStorage.setItem('active_affiliate_link_job', jobId);
               setLinkJobId(jobId);
               setLinkStartedAt(new Date().toISOString());
+            } else if (jobId) {
+              console.warn('[bulk-add] enrichment running server-side; not streaming (a link-check job is already active)');
             }
           }}
         />
