@@ -102,6 +102,76 @@ export function isPermanentSendFailure(errorText: string | undefined | null): bo
   return HARD_BOUNCE_PATTERNS.some(p => p.test(errorText));
 }
 
+// A delivery-status notification (NDR) sender. Address is mailer-daemon /
+// postmaster regardless of the "Mail Delivery Subsystem" display name.
+const DAEMON_FROM = /(mailer-daemon|postmaster|mail\s*delivery\s*(sub)?system)/i;
+
+// Subjects MTAs put on bounces. Kept broad — different providers phrase the
+// same failure a dozen ways ("Undelivered Mail Returned to Sender", "Mail
+// delivery failed", "Delivery Status Notification (Failure)", ...).
+const NDR_SUBJECT = /(delivery\s+status\s+notification|undeliverable|undelivered\s+mail|mail\s+delivery\s+(failed|failure|subsystem)|returned\s+mail|delivery\s+(has\s+)?failed|failure\s+notice|message\s+(was\s+not|not|could\s+not\s+be)\s+delivered|address\s+not\s+found)/i;
+
+function pickHeaderValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string {
+  if (!headers) return '';
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== lower) continue;
+    return Array.isArray(value) ? value.join(', ') : String(value ?? '');
+  }
+  return '';
+}
+
+/**
+ * Classify an INBOUND message as a delivery-status notification (bounce/NDR).
+ *
+ * A bounce threads under our original outgoing Message-ID (the NDR quotes the
+ * failed message), so the IMAP reply tracker's References-match strategy picks
+ * it up as if it were a reply. Without this guard, a hard bounce gets counted
+ * as a human reply — inflating reply rate and leaving the dead address active.
+ *
+ * Detection layers four independent signals; any one is sufficient:
+ *   1. From address is mailer-daemon / postmaster
+ *   2. Content-Type is multipart/report; report-type=delivery-status (RFC 3464)
+ *   3. Subject matches a known NDR phrasing
+ *   4. Body carries an RFC 3464 DSN block with Action: failed
+ *
+ * Pure function — no IO. Reuses the existing extractBouncedEmail / classifyBounce
+ * so hard-vs-soft logic stays in one place.
+ */
+export function classifyInboundBounce(input: {
+  fromAddr?: string | null;
+  subject?: string | null;
+  headers?: Record<string, string | string[] | undefined>;
+  body?: string | null;
+}): { isBounce: boolean; type: 'hard' | 'soft'; bouncedEmail: string | null } {
+  const from = (input.fromAddr || '').toLowerCase();
+  const subject = input.subject || '';
+  const body = input.body || '';
+  const contentType = pickHeaderValue(input.headers, 'content-type');
+
+  const fromDaemon = DAEMON_FROM.test(from);
+  const isReport =
+    /multipart\/report/i.test(contentType) &&
+    /report-type\s*=\s*["']?delivery-status/i.test(contentType);
+  const subjectNdr = NDR_SUBJECT.test(subject);
+  const dsnBlock =
+    /^\s*final-recipient\s*:/im.test(body) && /^\s*action\s*:\s*failed/im.test(body);
+
+  if (!(fromDaemon || isReport || subjectNdr || dsnBlock)) {
+    return { isBounce: false, type: 'hard', bouncedEmail: null };
+  }
+
+  const scanText = `${subject}\n${body}`;
+  return {
+    isBounce: true,
+    type: classifyBounce(scanText),
+    bouncedEmail: extractBouncedEmail(scanText),
+  };
+}
+
 interface GmailClientEntry {
   email: string;
   gmail: ReturnType<typeof getGmailClient>;

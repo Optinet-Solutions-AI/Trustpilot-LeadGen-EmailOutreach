@@ -200,10 +200,25 @@ export async function fetchSmtpThread(
   outgoingMessageId: string,
   accountEmail: string,
   leadEmail?: string,
+  status?: string,
 ): Promise<ThreadResult | null> {
   const target = normalizeId(outgoingMessageId);
   if (!target) return null;
   const targetWithAngles = `<${target}>`;
+
+  // Performance gate: the inbound-discovery fallbacks below (FROM-based and the
+  // unfiltered JS References scan) each sweep the recent mailbox and download
+  // full RFC822 source for matches. They only have something to find when an
+  // inbound message actually exists — i.e. the row is 'replied' / 'auto_replied'
+  // / 'bounced'. For a plain 'sent' (not-yet-replied) thread there is no inbound
+  // to reconstruct, and the reply tracker — which runs the identical References
+  // match every poll — has already confirmed none arrived. Skipping the
+  // fallbacks for those rows removes a full-mailbox scan from every open of a
+  // pending thread (the common case). When status is omitted (the reply-compose
+  // and promote-to-prospects call sites, which genuinely need the latest
+  // inbound regardless of recorded status), the full behavior is preserved.
+  const expectInbound =
+    status === undefined || ['replied', 'auto_replied', 'bounced'].includes(status);
 
   // Serve from in-memory cache when hot (60s TTL). Key scopes by account so
   // two accounts with the same Message-ID (extremely rare) still get isolated
@@ -357,8 +372,9 @@ export async function fetchSmtpThread(
     // scan INBOX + All Mail for any message FROM the lead address within the
     // last 30 days — this is the same strategy reply-tracker.imap.ts uses
     // successfully to flip status='replied', so it's the proven detection
-    // path. Only runs when we have a leadEmail and found no inbound yet.
-    if (leadEmail) {
+    // path. Only runs when we have a leadEmail and found no inbound yet, and
+    // only when the row's status says an inbound message should exist.
+    if (expectInbound && leadEmail) {
       const leadAddr = leadEmail.toLowerCase();
       const accountAddr = accountEmail.toLowerCase();
       const hasInbound = collected.some((c) => {
@@ -421,7 +437,10 @@ export async function fetchSmtpThread(
     // bounded on busy mailboxes.
     {
       const stillNoInbound = !collected.some((c) => /inbox/i.test(c.folder));
-      if (stillNoInbound) {
+      // expectInbound gate: this is the most expensive fallback — an unfiltered
+      // `search({ since })` pulls every message in the last 30 days, so it must
+      // not fire for not-yet-replied threads (see expectInbound rationale above).
+      if (expectInbound && stillNoInbound) {
         const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
         const inboundPaths = scanPaths.filter((p) => !/sent/i.test(p));
         for (const path of inboundPaths) {

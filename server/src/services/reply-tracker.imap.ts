@@ -31,6 +31,7 @@ import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { config } from '../config.js';
 import { classifyReply } from './auto-reply-detector.js';
+import { classifyInboundBounce } from './bounce-tracker.js';
 import { extractContacts } from './auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 
@@ -53,10 +54,11 @@ function normalizeMessageId(raw: string | null | undefined): string {
 
 export async function checkRepliesImap(
   account: ImapAccount,
-): Promise<{ repliesFound: number; autoRepliesFound: number; scanned: number }> {
+): Promise<{ repliesFound: number; autoRepliesFound: number; bouncesFound: number; scanned: number }> {
   const supabase = getSupabase();
   let repliesFound = 0;
   let autoRepliesFound = 0;
+  let bouncesFound = 0;
   let scanned = 0;
 
   // Load every campaign_lead this account has sent to (and isn't already replied/bounced)
@@ -68,7 +70,7 @@ export async function checkRepliesImap(
 
   if (!sentLeads?.length) {
     console.log(`[ImapReplyTracker] ${account.email}: no sent-and-unreplied leads to watch`);
-    return { repliesFound: 0, autoRepliesFound: 0, scanned: 0 };
+    return { repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0, scanned: 0 };
   }
 
   // Two parallel lookup maps — From-address match and Message-ID threading.
@@ -117,7 +119,7 @@ export async function checkRepliesImap(
       const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const uids = await client.search({ since });
       if (!uids || uids.length === 0) {
-        return { repliesFound: 0, autoRepliesFound: 0, scanned: 0 };
+        return { repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0, scanned: 0 };
       }
 
       // Helper: drop a matched lead from BOTH lookup maps so the same campaign_lead
@@ -132,7 +134,7 @@ export async function checkRepliesImap(
         lead: LeadRef,
         msg: FetchMessageObject,
         opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy },
-      ): Promise<{ matched: boolean; isAuto: boolean }> => {
+      ): Promise<{ matched: boolean; isAuto: boolean; isBounce: boolean }> => {
         // Fetch the body for the matched UID. We deliberately don't carry
         // source through the initial fetch — that would download the body of
         // every message in the 7-day window even though most aren't matches.
@@ -140,6 +142,24 @@ export async function checkRepliesImap(
         // common case (1–2 matches per poll) cheap.
         const sourceBuf = await fetchSourceForUid(client, msg.uid!);
         const parsedBody = sourceBuf ? await parseBody(sourceBuf) : { headers: {}, body: '' };
+
+        // Bounce/NDR guard — MUST run before classifyReply. A Mail Delivery
+        // Subsystem report quotes the failed message, so its In-Reply-To /
+        // References point at our outgoing Message-ID and it matches via
+        // Strategy 2/3 above. Without this, a hard bounce is counted as a
+        // human reply (status='replied'), inflating reply rate and leaving the
+        // dead address active for future campaigns.
+        const bounce = classifyInboundBounce({
+          fromAddr: opts.fromAddr,
+          subject: opts.subject,
+          headers: parsedBody.headers,
+          body: parsedBody.body,
+        });
+        if (bounce.isBounce) {
+          const ok = await markBounced(lead, opts, bounce);
+          if (ok) dropLead(lead);
+          return { matched: ok, isAuto: false, isBounce: true };
+        }
 
         const verdict = classifyReply({
           headers: parsedBody.headers,
@@ -160,7 +180,7 @@ export async function checkRepliesImap(
               : `imap:${msg.uid}`,
           });
           if (ok) dropLead(lead);
-          return { matched: ok, isAuto: true };
+          return { matched: ok, isAuto: true, isBounce: false };
         }
 
         const ok = await markReplied(lead, opts, parsedBody.body);
@@ -186,7 +206,60 @@ export async function checkRepliesImap(
             }
           }
         }
-        return { matched: ok, isAuto: false };
+        return { matched: ok, isAuto: false, isBounce: false };
+      };
+
+      // Mark a matched lead as bounced rather than replied. Mirrors the Gmail
+      // bounce-tracker side effects: flip campaign_lead → 'bounced', bump
+      // campaign total_bounced, log an activity note, and (hard bounces only)
+      // mark the lead email invalid so it's excluded from future campaigns.
+      // Gated on .eq('status','sent') so we never downgrade a row another
+      // poll already moved on from. outreach_status is left untouched — the
+      // invalid email flag is what gates re-sends.
+      const markBounced = async (
+        lead: LeadRef,
+        opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy },
+        bounce: { type: 'hard' | 'soft'; bouncedEmail: string | null },
+      ): Promise<boolean> => {
+        const { error: updateErr } = await supabase
+          .from('campaign_leads')
+          .update({ status: 'bounced' })
+          .eq('id', lead.id)
+          .eq('status', 'sent');
+        if (updateErr) return false;
+
+        const { data: campaign } = await supabase
+          .from('campaigns').select('total_bounced').eq('id', lead.campaign_id).single();
+        if (campaign) {
+          await supabase
+            .from('campaigns')
+            .update({ total_bounced: (campaign.total_bounced || 0) + 1 })
+            .eq('id', lead.campaign_id);
+        }
+
+        await createNote(lead.lead_id, {
+          type: 'email_bounced',
+          content: `Bounce detected via IMAP (${account.email}, ${bounce.type} bounce, matched by ${opts.matchedBy})${bounce.bouncedEmail ? ` — ${bounce.bouncedEmail}` : ''}`,
+          metadata: {
+            campaign_id: lead.campaign_id,
+            account: account.email,
+            bounce_type: bounce.type,
+            bounced_email: bounce.bouncedEmail ?? lead.email_used,
+            from: opts.fromAddr,
+            subject: opts.subject,
+            matched_by: opts.matchedBy,
+          },
+        });
+
+        if (bounce.type === 'hard') {
+          await updateLead(lead.lead_id, {
+            email_verified: false,
+            verification_status: 'invalid',
+          });
+        }
+
+        console.log(`[ImapReplyTracker] ${account.email}: ${bounce.type} bounce from ${opts.fromAddr} (${opts.matchedBy}) → campaign_lead ${lead.id}`);
+        return true;
       };
 
       const markReplied = async (
@@ -282,7 +355,8 @@ export async function checkRepliesImap(
         });
 
         if (result.matched) {
-          if (result.isAuto) autoRepliesFound++;
+          if (result.isBounce) bouncesFound++;
+          else if (result.isAuto) autoRepliesFound++;
           else repliesFound++;
         }
       }
@@ -297,7 +371,7 @@ export async function checkRepliesImap(
     }
   }
 
-  return { repliesFound, autoRepliesFound, scanned };
+  return { repliesFound, autoRepliesFound, bouncesFound, scanned };
 }
 
 async function fetchSourceForUid(client: ImapFlow, uid: number): Promise<Buffer | null> {
@@ -462,7 +536,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   }) as Promise<T>;
 }
 
-export async function checkAllImapReplies(): Promise<{ accountsChecked: number; repliesFound: number; autoRepliesFound: number }> {
+export async function checkAllImapReplies(): Promise<{ accountsChecked: number; repliesFound: number; autoRepliesFound: number; bouncesFound: number }> {
   const supabase = getSupabase();
   const { data: accounts } = await supabase
     .from('email_accounts')
@@ -473,7 +547,7 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
     .not('imap_user', 'is', null)
     .not('imap_pass', 'is', null);
 
-  if (!accounts?.length) return { accountsChecked: 0, repliesFound: 0, autoRepliesFound: 0 };
+  if (!accounts?.length) return { accountsChecked: 0, repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0 };
 
   const results = await Promise.allSettled(
     accounts.map((acc) =>
@@ -494,15 +568,17 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
 
   let totalReplies = 0;
   let totalAuto = 0;
+  let totalBounces = 0;
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (r.status === 'fulfilled') {
       totalReplies += r.value.repliesFound;
       totalAuto += r.value.autoRepliesFound;
+      totalBounces += r.value.bouncesFound;
     } else {
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
       console.error(`[ImapReplyTracker] ${accounts[i].email} skipped: ${reason}`);
     }
   }
-  return { accountsChecked: accounts.length, repliesFound: totalReplies, autoRepliesFound: totalAuto };
+  return { accountsChecked: accounts.length, repliesFound: totalReplies, autoRepliesFound: totalAuto, bouncesFound: totalBounces };
 }

@@ -579,7 +579,7 @@ router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) =
     const supabase = getSupabase();
     const { data: cl, error: clErr } = await supabase
       .from('campaign_leads')
-      .select('id, sender_email, gmail_message_id, email_used')
+      .select('id, sender_email, gmail_message_id, email_used, status')
       .eq('id', campaignLeadId)
       .single();
 
@@ -632,6 +632,7 @@ router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) =
       cl.gmail_message_id,
       account.email,
       (cl.email_used as string | null) ?? undefined,
+      (cl.status as string | null) ?? undefined,
     );
 
     if (!thread) {
