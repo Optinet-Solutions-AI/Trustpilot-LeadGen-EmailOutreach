@@ -75,3 +75,9 @@ def test_confidence_word_boundary_no_substring_false_positive():
     # 'bristol' must match only as a whole word, not as a substring of a longer token.
     assert _derive_location_confidence("Bristol Traders Wanted", None, "Bristol") == "confirmed_city"   # whole word
     assert _derive_location_confidence("Bristolboard crafters", None, "Bristol") == "unconfirmed"        # substring only
+
+
+def test_confidence_unconfirmed_when_operator_location_none():
+    # No search location at all -> no signal -> honest default, no exception.
+    assert _derive_location_confidence("London Handyman Services", None, None) == "unconfirmed"
+    assert _derive_location_confidence("", "", "") == "unconfirmed"
