@@ -67,7 +67,7 @@ router.post('/bulk', async (req: Request, res: Response) => {
     const { text, urls } = req.body || {};
     const raw =
       typeof text === 'string' ? text
-      : Array.isArray(urls) ? urls.join('\n')
+      : Array.isArray(urls) ? (urls as unknown[]).filter((u): u is string => typeof u === 'string').join('\n')
       : '';
     if (!raw.trim()) {
       res.status(400).json({ success: false, error: 'text (or urls[]) is required' });
