@@ -3,7 +3,7 @@
 Run from repo root:
     ./.venv/Scripts/python.exe -m pytest tools/scraper/platforms/test_location_confidence.py -v
 """
-from tools.scraper.platforms.facebook import _extract_country_from_excerpt
+from tools.scraper.platforms.facebook import _extract_country_from_excerpt, _is_consumer_facing_group
 
 
 def test_province_token_disambiguates_shared_city_name():
@@ -23,9 +23,6 @@ def test_no_known_place_returns_none():
     assert _extract_country_from_excerpt("") is None
 
 
-from tools.scraper.platforms.facebook import _is_consumer_facing_group
-
-
 def test_gate_drops_other_country_city_in_group_name():
     # City names (not country words) now resolve to a country and mismatch-drop.
     assert _is_consumer_facing_group("ATLANTA HANDYMAN SERVICES", "Bristol") is False
@@ -39,3 +36,11 @@ def test_gate_keeps_same_country_and_generic_groups():
     assert _is_consumer_facing_group("Find a Tradesman Bristol and surrounding", "Bristol") is True
     assert _is_consumer_facing_group("London Handyman Services", "Bristol") is True   # GB == GB
     assert _is_consumer_facing_group("T T handyman services", "Bristol") is True       # no geo
+
+
+def test_gate_does_not_drop_when_operator_or_country_unknown():
+    # Operator city not in the country map (Doncaster) -> Stage 1b is skipped,
+    # so a foreign-city group is NOT dropped on an unresolvable search.
+    assert _is_consumer_facing_group("Atlanta Handyman Services", "Doncaster") is True
+    # No operator location at all -> all of Stage 1 is bypassed, keep.
+    assert _is_consumer_facing_group("Atlanta Handyman Services", None) is True
