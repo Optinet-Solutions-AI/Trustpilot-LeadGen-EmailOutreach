@@ -5,7 +5,7 @@
 // + last_validated_at when each row finishes. The two only differ by which
 // table they update (`leads` vs `affiliates`) and which column holds the URL.
 import { EventEmitter } from 'events';
-import { validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from './url-validator.js';
+import { validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright, type UrlCheckResult } from './url-validator.js';
 import { launchBrowser, TIER_CONFIGS } from './scrapers/browser-launcher.js';
 import { getSupabase } from '../lib/supabase.js';
 import type { Browser, BrowserContext } from 'playwright';
@@ -60,6 +60,7 @@ export async function runLinkCheckJob(
   source: LinkCheckSource,
   ids: string[],
   registry: LinkCheckRegistry,
+  opts: { enrich?: boolean } = {},
 ): Promise<void> {
   const { jobs, events } = registry;
   const emit = (stage: string, detail: string) => {
@@ -122,15 +123,17 @@ export async function runLinkCheckJob(
         // on the next URL instead of dying and leaving the job hung.
         let status: 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN' = 'UNKNOWN';
         let error: string | null = null;
+        let meta: UrlCheckResult['meta'] = undefined;
         try {
           // Playwright path mirrors the lead-scraper exactly (same stealth +
           // popup-handler + UA rotation). ScrapingBee/plain-fetch is the
           // fallback when Chromium can't boot or VALIDATOR_USE_PLAYWRIGHT=false.
-          const result = context
-            ? await validateTrustpilotUrlViaPlaywright(context, target.url)
+          const result: UrlCheckResult = context
+            ? await validateTrustpilotUrlViaPlaywright(context, target.url, { extractMeta: opts.enrich })
             : await validateTrustpilotUrl(target.url);
           status = result.status;
           error = result.error;
+          meta = result.meta;
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.error(`[link-check-job] worker ${workerIdx} threw on ${target.url}:`, msg);
@@ -144,15 +147,21 @@ export async function runLinkCheckJob(
         else job.unknown++;
         job.checked++;
 
+        const update: Record<string, unknown> = {
+          link_status: status,
+          last_validated_at: now,
+          link_validation_error: error,
+        };
+        // Enrich mode (affiliates bulk-add): backfill scraped fields, but only
+        // when present — never clobber an existing value with undefined.
+        if (opts.enrich && meta) {
+          if (meta.name) update.name = meta.name;
+          if (meta.rating != null) update.rating = meta.rating;
+          if (meta.reviews != null) update.reviews = meta.reviews;
+        }
+
         try {
-          await supabase
-            .from(source)
-            .update({
-              link_status: status,
-              last_validated_at: now,
-              link_validation_error: error,
-            })
-            .eq('id', target.id);
+          await supabase.from(source).update(update).eq('id', target.id);
         } catch (e) {
           // DB write failure shouldn't kill the worker either.
           console.error(`[link-check-job] DB update failed for ${target.id}:`, e);
