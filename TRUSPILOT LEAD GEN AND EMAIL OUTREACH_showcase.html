@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OptiRate — What We've Built</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=Hanken+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --paper:#F3EFE6;
+    --paper-2:#ECE6D9;
+    --ink:#1C1813;
+    --ink-soft:#5B5346;
+    --muted:#938A78;
+    --line:#D9D1C0;
+    --accent:#C1003F;
+    --accent-soft:#F6D9E0;
+    --live:#1E7A4B;
+    --local:#B5731A;
+    --planned:#9A9281;
+    --shadow:0 1px 0 rgba(28,24,19,.04), 0 18px 50px -28px rgba(28,24,19,.30);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"Hanken Grotesk",sans-serif;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  /* faint atmosphere */
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(120% 90% at 88% 6%, rgba(193,0,63,.05), transparent 46%),
+      radial-gradient(110% 80% at 4% 96%, rgba(28,24,19,.05), transparent 50%);
+  }
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.5;
+    background-image:radial-gradient(var(--line) .6px, transparent .6px);
+    background-size:30px 30px;
+    -webkit-mask-image:radial-gradient(120% 120% at 50% 50%, #000 35%, transparent 78%);
+            mask-image:radial-gradient(120% 120% at 50% 50%, #000 35%, transparent 78%);
+  }
+
+  .deck{position:fixed;top:0;left:0;right:0;height:100vh;height:100dvh;z-index:1}
+  .slide{
+    position:absolute;inset:0;
+    display:flex;flex-direction:column;
+    padding:clamp(28px,4.4vw,72px) clamp(28px,6vw,118px);
+    opacity:0;visibility:hidden;
+    transform:translateY(14px) scale(.992);
+    transition:opacity .6s cubic-bezier(.22,.61,.36,1), transform .6s cubic-bezier(.22,.61,.36,1), visibility .6s;
+  }
+  .slide.active{opacity:1;visibility:visible;transform:none}
+
+  /* ── chrome ── */
+  .bar{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto}
+  .brand{display:flex;align-items:center;gap:11px;font-family:"JetBrains Mono",monospace;
+    font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink)}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 4px var(--accent-soft)}
+  .brand b{font-weight:500}
+  .brand span{color:var(--muted);font-weight:400}
+  .count{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.14em;color:var(--muted)}
+  .count em{color:var(--ink);font-style:normal}
+
+  .body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;justify-content:center;
+    max-width:1180px;width:100%;margin:0 auto;padding:24px 0}
+
+  .kicker{font-family:"JetBrains Mono",monospace;font-size:12.5px;letter-spacing:.26em;
+    text-transform:uppercase;color:var(--accent);margin-bottom:22px;display:flex;align-items:center;gap:14px}
+  .kicker::before{content:"";width:26px;height:1.5px;background:var(--accent);display:inline-block}
+
+  h1{font-family:"Fraunces",serif;font-weight:400;line-height:1.0;letter-spacing:-.018em;
+    font-size:clamp(40px,7.4vw,104px)}
+  h1 .it{font-style:italic;color:var(--accent)}
+  h2{font-family:"Fraunces",serif;font-weight:400;line-height:1.04;letter-spacing:-.015em;
+    font-size:clamp(33px,5.1vw,68px)}
+  h2 .it{font-style:italic}
+  .lead{font-size:clamp(16px,1.5vw,21px);line-height:1.6;color:var(--ink-soft);
+    max-width:64ch;font-weight:400}
+  .lead b{color:var(--ink);font-weight:600}
+
+  /* reveal */
+  [data-reveal]{opacity:0;transform:translateY(16px);
+    transition:opacity .65s cubic-bezier(.22,.61,.36,1), transform .65s cubic-bezier(.22,.61,.36,1);
+    transition-delay:calc(var(--i,0) * 75ms + 120ms)}
+  .slide.active [data-reveal]{opacity:1;transform:none}
+
+  /* ── cover ── */
+  .cover-foot{display:flex;flex-wrap:wrap;gap:34px;margin-top:42px;align-items:flex-end}
+  .stat-mini{display:flex;flex-direction:column;gap:3px}
+  .stat-mini .n{font-family:"Fraunces",serif;font-size:clamp(26px,3vw,40px);line-height:1}
+  .stat-mini .l{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted)}
+  .cover-foot .sep{width:1px;align-self:stretch;background:var(--line)}
+
+  /* ── pipeline ── */
+  .pipe{display:flex;flex-wrap:wrap;gap:10px;margin-top:38px}
+  .pipe .step{flex:1 1 0;min-width:140px;background:var(--paper-2);border:1px solid var(--line);
+    border-radius:14px;padding:18px 18px 20px;position:relative;box-shadow:var(--shadow)}
+  .pipe .step .s-n{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--accent);letter-spacing:.1em}
+  .pipe .step .s-t{font-family:"Fraunces",serif;font-size:21px;margin-top:10px;line-height:1.1}
+  .pipe .step .s-d{font-size:12.5px;color:var(--muted);margin-top:7px;line-height:1.45}
+  .pipe .arrow{align-self:center;color:var(--line);font-size:20px;flex:0 0 auto}
+
+  /* ── metrics grid ── */
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
+    border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-top:34px;box-shadow:var(--shadow)}
+  .metric{background:var(--paper);padding:26px 26px 24px;display:flex;flex-direction:column;gap:8px;min-height:138px;justify-content:center}
+  .metric.span2{grid-column:span 2}
+  .metric .n{font-family:"Fraunces",serif;font-weight:400;font-size:clamp(34px,4.1vw,58px);line-height:.95;letter-spacing:-.02em}
+  .metric .n small{font-size:.46em;color:var(--accent);font-family:"JetBrains Mono",monospace;letter-spacing:0;vertical-align:super}
+  .metric .l{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+  .metric .sub{font-size:12.5px;color:var(--ink-soft)}
+  .metric.accent{background:var(--ink);color:var(--paper)}
+  .metric.accent .l{color:#C9BFA9}
+  .metric.accent .n small{color:var(--accent-soft)}
+
+  /* ── platform cards ── */
+  .plat{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:34px}
+  .pcard{background:var(--paper-2);border:1px solid var(--line);border-radius:16px;
+    padding:22px 22px 24px;position:relative;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:12px}
+  .pcard .ptop{display:flex;align-items:center;justify-content:space-between}
+  .pcard .pname{font-family:"Fraunces",serif;font-size:25px}
+  .pcard .pdesc{font-size:13px;color:var(--ink-soft);line-height:1.5}
+  .badge{font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+    padding:5px 10px;border-radius:999px;border:1px solid;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .badge.live{color:var(--live);border-color:color-mix(in srgb,var(--live) 35%,transparent);background:color-mix(in srgb,var(--live) 9%,transparent)}
+  .badge.local{color:var(--local);border-color:color-mix(in srgb,var(--local) 38%,transparent);background:color-mix(in srgb,var(--local) 10%,transparent)}
+  .badge.planned{color:var(--planned);border-color:color-mix(in srgb,var(--planned) 40%,transparent);background:color-mix(in srgb,var(--planned) 9%,transparent)}
+
+  /* ── feature columns ── */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px 56px;margin-top:30px}
+  .feat{display:flex;gap:15px;padding:4px 0}
+  .feat .fi{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--accent-soft);
+    color:var(--accent);display:flex;align-items:center;justify-content:center;font-family:"Fraunces",serif;
+    font-size:15px;font-style:italic;margin-top:2px}
+  .feat .ft{font-weight:600;font-size:15.5px;margin-bottom:3px}
+  .feat .fd{font-size:13px;color:var(--ink-soft);line-height:1.5}
+
+  /* ── cascade (verify) ── */
+  .cascade{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px;align-items:stretch}
+  .tier{flex:1 1 0;min-width:180px;border:1px solid var(--line);border-radius:14px;padding:18px 20px;
+    background:var(--paper-2);box-shadow:var(--shadow)}
+  .tier .tn{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--accent);letter-spacing:.1em}
+  .tier .th{font-family:"Fraunces",serif;font-size:20px;margin-top:8px}
+  .tier .td{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.45}
+  .chev{align-self:center;color:var(--line);font-size:18px}
+
+  /* ── fb honest split ── */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:30px}
+  .panel{border-radius:16px;padding:24px 26px;position:relative;box-shadow:var(--shadow)}
+  .panel.works{background:color-mix(in srgb,var(--live) 7%,var(--paper));border:1px solid color-mix(in srgb,var(--live) 30%,transparent)}
+  .panel.blocked{background:var(--paper-2);border:1px solid var(--line)}
+  .panel .ph{display:flex;align-items:center;gap:11px;font-family:"Fraunces",serif;font-size:23px;margin-bottom:6px}
+  .panel .mark{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:15px;flex:0 0 auto;color:#fff}
+  .panel.works .mark{background:var(--live)}
+  .panel.blocked .mark{background:var(--local)}
+  .panel .psub{font-size:13px;color:var(--ink-soft);line-height:1.55;margin-bottom:14px}
+  .panel ul{list-style:none;display:flex;flex-direction:column;gap:9px}
+  .panel li{font-size:13px;line-height:1.45;padding-left:18px;position:relative;color:var(--ink-soft)}
+  .panel li::before{content:"";position:absolute;left:0;top:8px;width:5px;height:5px;border-radius:50%;background:var(--muted)}
+  .panel li b{color:var(--ink);font-weight:600}
+  .fb-fix{margin-top:20px;border-left:3px solid var(--accent);background:var(--accent-soft);
+    padding:15px 20px;border-radius:0 12px 12px 0;font-size:14px;line-height:1.55;color:var(--ink)}
+  .fb-fix b{color:var(--accent)}
+
+  /* ── roadmap ── */
+  .road{display:flex;flex-direction:column;gap:2px;margin-top:30px;border-top:1px solid var(--line)}
+  .ritem{display:grid;grid-template-columns:54px 1fr auto;gap:24px;align-items:center;
+    padding:20px 6px;border-bottom:1px solid var(--line)}
+  .ritem .rn{font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--accent)}
+  .ritem .rt{font-family:"Fraunces",serif;font-size:23px;line-height:1.1}
+  .ritem .rd{font-size:13px;color:var(--muted);margin-top:3px}
+  .ritem .rtag{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+
+  /* ── close ── */
+  .close-grid{display:flex;flex-direction:column;gap:30px}
+  .url{font-family:"JetBrains Mono",monospace;font-size:14px;color:var(--ink-soft);
+    display:inline-flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:999px;
+    padding:11px 20px;background:var(--paper-2);width:fit-content}
+  .url .dot{width:7px;height:7px;border-radius:50%;background:var(--live)}
+
+  /* ── footer nav ── */
+  .nav{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:20px}
+  .dots{display:flex;gap:9px;align-items:center}
+  .dots button{width:8px;height:8px;border-radius:50%;border:0;background:var(--line);cursor:pointer;
+    padding:0;transition:all .35s ease}
+  .dots button.on{background:var(--accent);width:26px;border-radius:5px}
+  .arrows{display:flex;gap:10px}
+  .arrows button{width:42px;height:42px;border-radius:50%;border:1px solid var(--line);background:transparent;
+    color:var(--ink);cursor:pointer;font-size:17px;display:flex;align-items:center;justify-content:center;
+    transition:all .25s ease}
+  .arrows button:hover{background:var(--ink);color:var(--paper);border-color:var(--ink);transform:translateY(-1px)}
+  .arrows button:disabled{opacity:.3;cursor:not-allowed}
+  .arrows button:disabled:hover{background:transparent;color:var(--ink);border-color:var(--line);transform:none}
+
+  .progress{position:fixed;top:0;left:0;height:3px;background:var(--accent);z-index:5;
+    transition:width .5s cubic-bezier(.22,.61,.36,1);box-shadow:0 0 12px rgba(193,0,63,.4)}
+
+  .hint{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:6;
+    font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.1em;color:var(--muted);
+    opacity:.85;transition:opacity .5s ease;text-transform:uppercase}
+  .hint.hide{opacity:0}
+
+  /* ── tablet & below: collapse multi-column layouts, allow per-slide scroll ── */
+  @media (max-width:860px){
+    .slide{padding:20px 22px 16px}
+    .body{justify-content:flex-start;overflow-y:auto;-webkit-overflow-scrolling:touch;
+      padding:18px 2px 8px;scrollbar-width:none}
+    .body::-webkit-scrollbar{display:none}
+    .metrics{grid-template-columns:repeat(2,1fr)}
+    .plat,.cols,.split{grid-template-columns:1fr}
+    .pipe{flex-direction:column;gap:8px}.pipe .arrow{transform:rotate(90deg)}
+    .cascade{flex-direction:column}.cascade .chev{transform:rotate(90deg)}
+    .ritem{grid-template-columns:40px 1fr;gap:8px 14px}.ritem .rtag{grid-column:2;justify-self:start}
+    .cover-foot{gap:16px 22px}.cover-foot .sep{display:none}
+    .brand span{display:none}
+    .nav{padding-top:10px}
+  }
+  /* ── phones: tighten type, spacing, controls ── */
+  @media (max-width:480px){
+    .slide{padding:16px 18px 14px}
+    .body{padding:12px 0 6px}
+    h1{font-size:clamp(31px,8.6vw,40px);line-height:1.04}
+    h2{font-size:clamp(27px,7.6vw,38px);line-height:1.08}
+    .lead{font-size:15px;line-height:1.55}
+    .kicker{margin-bottom:15px;font-size:11px;letter-spacing:.18em}
+    .kicker::before{width:18px}
+    .metric{min-height:96px;padding:16px 16px 15px;gap:5px}
+    .metric .sub{font-size:11.5px}
+    .pcard,.tier,.step{padding:16px}
+    .panel{padding:17px 18px}
+    .panel li,.panel .psub,.fb-fix{font-size:12.5px}
+    .feat{gap:12px}.feat .fd{font-size:12.5px}
+    .stat-mini .n{font-size:26px}
+    .url{font-size:11.5px;padding:9px 14px}
+    .arrows button{width:38px;height:38px;font-size:15px}
+    .dots{gap:6px}.dots button{width:7px;height:7px}.dots button.on{width:20px}
+    .count{font-size:11px}
+  }
+  @media (max-width:480px) and (min-width:421px){
+    .metrics{grid-template-columns:repeat(2,1fr)}
+  }
+  /* very narrow: single-column metrics so numbers never crowd */
+  @media (max-width:420px){
+    .metrics{grid-template-columns:1fr}
+    .metric.span2{grid-column:span 1}
+  }
+  /* short landscape: keep everything reachable via scroll, smaller headings */
+  @media (max-height:520px){
+    .body{justify-content:flex-start;overflow-y:auto}
+    h1{font-size:clamp(28px,6vw,46px)}h2{font-size:clamp(24px,5vw,40px)}
+    .kicker{margin-bottom:12px}
+  }
+</style>
+</head>
+<body>
+  <div class="progress" id="progress"></div>
+  <div class="deck" id="deck">
+
+    <!-- 1 · COVER -->
+    <section class="slide" data-name="Cover">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ optiratesolutions.com</span></div>
+        <div class="count"><em>01</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Product Showcase · June 2026</div>
+        <h1 data-reveal style="--i:1">Multi-platform<br>lead generation,<br><span class="it">end to end.</span></h1>
+        <p class="lead" data-reveal style="--i:3;margin-top:28px">A full-stack engine that finds businesses across review &amp; social platforms, enriches and verifies their contacts, and runs personalized cold-email campaigns from many mailboxes — managed in one dashboard.</p>
+        <div class="cover-foot" data-reveal style="--i:4">
+          <div class="stat-mini"><span class="n">5</span><span class="l">Platforms wired</span></div>
+          <div class="sep"></div>
+          <div class="stat-mini"><span class="n">2,595</span><span class="l">Emails sent</span></div>
+          <div class="sep"></div>
+          <div class="stat-mini"><span class="n">116</span><span class="l">Replies</span></div>
+          <div class="sep"></div>
+          <div class="stat-mini"><span class="n">0</span><span class="l">Bounces</span></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 2 · WHAT IT IS -->
+    <section class="slide" data-name="The system">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ the system</span></div>
+        <div class="count"><em>02</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">One pipeline, five stages</div>
+        <h2 data-reveal style="--i:1">From an anonymous listing<br>to a <span class="it">warm reply.</span></h2>
+        <div class="pipe">
+          <div class="step" data-reveal style="--i:2"><div class="s-n">01</div><div class="s-t">Scrape</div><div class="s-d">Pull companies from any platform via a plugin per source.</div></div>
+          <div class="arrow" data-reveal style="--i:3">→</div>
+          <div class="step" data-reveal style="--i:3"><div class="s-n">02</div><div class="s-t">Enrich</div><div class="s-d">Visit sites for emails, phones &amp; screenshots.</div></div>
+          <div class="arrow" data-reveal style="--i:4">→</div>
+          <div class="step" data-reveal style="--i:4"><div class="s-n">03</div><div class="s-t">Verify</div><div class="s-d">Three-tier email validation before any send.</div></div>
+          <div class="arrow" data-reveal style="--i:5">→</div>
+          <div class="step" data-reveal style="--i:5"><div class="s-n">04</div><div class="s-t">Outreach</div><div class="s-d">Personalized campaigns across many mailboxes.</div></div>
+          <div class="arrow" data-reveal style="--i:6">→</div>
+          <div class="step" data-reveal style="--i:6"><div class="s-n">05</div><div class="s-t">Track</div><div class="s-d">Replies &amp; bounces synced back to the CRM.</div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 3 · BY THE NUMBERS -->
+    <section class="slide" data-name="By the numbers">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ live metrics</span></div>
+        <div class="count"><em>03</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Real numbers · pulled from production</div>
+        <h2 data-reveal style="--i:1">What it has done <span class="it">so far.</span></h2>
+        <div class="metrics">
+          <div class="metric span2 accent" data-reveal style="--i:2">
+            <div class="n">2,595</div><div class="l">Cold emails sent</div>
+            <div class="sub" style="color:#C9BFA9">across 39 campaigns, 21 connected mailboxes</div>
+          </div>
+          <div class="metric" data-reveal style="--i:3"><div class="n">116</div><div class="l">Replies received</div><div class="sub">~4.5% reply rate</div></div>
+          <div class="metric" data-reveal style="--i:4"><div class="n">0</div><div class="l">Hard bounces</div><div class="sub">clean deliverability</div></div>
+          <div class="metric" data-reveal style="--i:5"><div class="n">1,000</div><div class="l">Leads managed</div><div class="sub">scraped, enriched, tracked</div></div>
+          <div class="metric" data-reveal style="--i:6"><div class="n">39</div><div class="l">Campaigns run</div><div class="sub">multi-country outreach</div></div>
+          <div class="metric" data-reveal style="--i:7"><div class="n">21</div><div class="l">Mailboxes</div><div class="sub">Gmail · SMTP · app-pwd</div></div>
+          <div class="metric" data-reveal style="--i:8"><div class="n">5</div><div class="l">Platforms</div><div class="sub">3 live · 1 local · 1 planned</div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 4 · PLATFORMS -->
+    <section class="slide" data-name="Lead sources">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ lead sources</span></div>
+        <div class="count"><em>04</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">A plugin per source</div>
+        <h2 data-reveal style="--i:1">Where the <span class="it">leads</span> come from.</h2>
+        <p class="lead" data-reveal style="--i:2;margin-top:16px">Every platform is a plugin behind one contract — adding a source never touches the core. Status is shown honestly below.</p>
+        <div class="plat">
+          <div class="pcard" data-reveal style="--i:3"><div class="ptop"><span class="pname">Trustpilot</span><span class="badge live">Live</span></div><div class="pdesc">Stealth browser scraping with category &amp; rating filters.</div></div>
+          <div class="pcard" data-reveal style="--i:4"><div class="ptop"><span class="pname">TripAdvisor</span><span class="badge live">Live</span></div><div class="pdesc">Proxy-routed; city fan-out across countries.</div></div>
+          <div class="pcard" data-reveal style="--i:5"><div class="ptop"><span class="pname">Yelp</span><span class="badge live">Live</span></div><div class="pdesc">Official API for listings + proxy for profiles.</div></div>
+          <div class="pcard" data-reveal style="--i:6"><div class="ptop"><span class="pname">Facebook</span><span class="badge local">Local only</span></div><div class="pdesc">Logged-in scraping works on a local machine — cloud in progress (see slide 08).</div></div>
+          <div class="pcard" data-reveal style="--i:7"><div class="ptop"><span class="pname">Instagram</span><span class="badge planned">Planned</span></div><div class="pdesc">Next social source on the roadmap.</div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 5 · CRM -->
+    <section class="slide" data-name="The CRM">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ the crm</span></div>
+        <div class="count"><em>05</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Manage every lead in one place</div>
+        <h2 data-reveal style="--i:1">A CRM built around <span class="it">the pipeline.</span></h2>
+        <div class="cols">
+          <div class="feat" data-reveal style="--i:2"><div class="fi">a</div><div><div class="ft">Lead table &amp; filters</div><div class="fd">Paginated, searchable, bulk-editable across country, category &amp; status.</div></div></div>
+          <div class="feat" data-reveal style="--i:3"><div class="fi">b</div><div><div class="ft">Kanban pipeline</div><div class="fd">Drag leads through new → contacted → replied → converted → lost.</div></div></div>
+          <div class="feat" data-reveal style="--i:4"><div class="fi">c</div><div><div class="ft">Lead detail timeline</div><div class="fd">Every status change, email, note &amp; follow-up auto-logged per lead.</div></div></div>
+          <div class="feat" data-reveal style="--i:5"><div class="fi">d</div><div><div class="ft">Dashboard &amp; analytics</div><div class="fd">Leads by country, category &amp; status; campaign performance at a glance.</div></div></div>
+          <div class="feat" data-reveal style="--i:6"><div class="fi">e</div><div><div class="ft">Follow-up reminders</div><div class="fd">Schedule and complete reminders so no warm lead goes cold.</div></div></div>
+          <div class="feat" data-reveal style="--i:7"><div class="fi">f</div><div><div class="ft">Unified inbox</div><div class="fd">Replies land back in-app, threaded against the originating lead.</div></div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 6 · OUTREACH ENGINE -->
+    <section class="slide" data-name="Outreach engine">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ outreach engine</span></div>
+        <div class="count"><em>06</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Many mailboxes, one campaign</div>
+        <h2 data-reveal style="--i:1">Cold email, done <span class="it">carefully.</span></h2>
+        <div class="cols">
+          <div class="feat" data-reveal style="--i:2"><div class="fi">a</div><div><div class="ft">Multi-provider sending</div><div class="fd">Gmail OAuth, SMTP (Bluehost/Titan, DreamHost) &amp; app-password — 21 mailboxes, each with its own caps.</div></div></div>
+          <div class="feat" data-reveal style="--i:3"><div class="fi">b</div><div><div class="ft">5-step campaign wizard</div><div class="fd">Setup → template → follow-ups → recipients → review.</div></div></div>
+          <div class="feat" data-reveal style="--i:4"><div class="fi">c</div><div><div class="ft">Personalization &amp; spintax</div><div class="fd">{{tokens}} + spintax variants + optional embedded screenshot per lead.</div></div></div>
+          <div class="feat" data-reveal style="--i:5"><div class="fi">d</div><div><div class="ft">Mandatory test flight</div><div class="fd">No campaign goes live until a real test send is verified — a hard gate.</div></div></div>
+          <div class="feat" data-reveal style="--i:6"><div class="fi">e</div><div><div class="ft">Scheduler with caps</div><div class="fd">Sends drip on a schedule, respecting per-account daily &amp; hourly limits.</div></div></div>
+          <div class="feat" data-reveal style="--i:7"><div class="fi">f</div><div><div class="ft">Reply &amp; bounce sync</div><div class="fd">IMAP poller pulls replies back; stats stay authoritative per sender.</div></div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 7 · VERIFICATION -->
+    <section class="slide" data-name="Deliverability">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ deliverability</span></div>
+        <div class="count"><em>07</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Protect the sending reputation</div>
+        <h2 data-reveal style="--i:1">Verify first. <span class="it">Then</span> send.</h2>
+        <p class="lead" data-reveal style="--i:2;margin-top:14px">A three-tier cascade validates every address before it ever receives mail — which is how 2,595 sends produced <b>zero hard bounces.</b></p>
+        <div class="cascade">
+          <div class="tier" data-reveal style="--i:3"><div class="tn">TIER 1</div><div class="th">ZeroBounce</div><div class="td">Primary, batch — runs on every address.</div></div>
+          <div class="chev" data-reveal style="--i:4">→</div>
+          <div class="tier" data-reveal style="--i:4"><div class="tn">TIER 2</div><div class="th">MillionVerifier</div><div class="td">Fires only on a Tier-1 “unknown”.</div></div>
+          <div class="chev" data-reveal style="--i:5">→</div>
+          <div class="tier" data-reveal style="--i:5"><div class="tn">TIER 3</div><div class="th">Hunter</div><div class="td">Last resort when both come back unsure.</div></div>
+        </div>
+        <div class="cols" style="margin-top:26px;grid-template-columns:1fr 1fr">
+          <div class="feat" data-reveal style="--i:6"><div class="fi">g</div><div><div class="ft">Per-account DNS health</div><div class="fd">MX · SPF · DMARC badges on every mailbox; fix red before you scale.</div></div></div>
+          <div class="feat" data-reveal style="--i:7"><div class="fi">h</div><div><div class="ft">Invalid addresses skipped</div><div class="fd">Leads that fail verification never enter a send — campaigns only reach deliverable inboxes.</div></div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 8 · FACEBOOK HONEST -->
+    <section class="slide" data-name="Facebook · honest status">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ facebook · the honest part</span></div>
+        <div class="count"><em>08</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Straight talk</div>
+        <h2 data-reveal style="--i:1">Facebook works <span class="it">locally</span> —<br>cloud is still in progress.</h2>
+        <div class="split">
+          <div class="panel works" data-reveal style="--i:2">
+            <div class="ph"><span class="mark">✓</span> Works today — on a local machine</div>
+            <div class="psub">A logged-in Facebook session on a real Windows + browser setup scrapes successfully. Validated end-to-end: full authenticated homepage, no login wall, no captcha.</div>
+            <ul>
+              <li>Real consumer browser fingerprint passes Meta's checks</li>
+              <li>Session cookies stored encrypted &amp; reusable</li>
+              <li>Same scraper code path as the live platforms</li>
+            </ul>
+          </div>
+          <div class="panel blocked" data-reveal style="--i:3">
+            <div class="ph"><span class="mark">⟳</span> Not yet — on cloud servers</div>
+            <div class="psub">Run unattended from a datacenter server, Meta bounces it back to the login screen. The block is <b>fingerprint-level, not credentials</b> — the server simply doesn't look like a real person's computer:</div>
+            <ul>
+              <li><b>WebRTC</b> leaks the datacenter IP via STUN</li>
+              <li><b>WebGL</b> renders with no GPU — a classic bot tell</li>
+              <li><b>No media devices</b> (mic/webcam) that real users have</li>
+              <li><b>Server-OS fonts</b> differ from a consumer desktop</li>
+            </ul>
+          </div>
+        </div>
+        <div class="fb-fix" data-reveal style="--i:4"><b>The path forward →</b> A Windows-based cloud worker with one browser profile per operator + a residential proxy. The exact combination that fails on a Linux server has already been <b>smoke-tested as working</b> on Windows. That build is the next milestone.</div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 9 · ROADMAP -->
+    <section class="slide" data-name="What's next">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ what's next</span></div>
+        <div class="count"><em>09</em> / 10</div>
+      </div>
+      <div class="body">
+        <div class="kicker" data-reveal style="--i:0">Roadmap</div>
+        <h2 data-reveal style="--i:1">Where it goes <span class="it">from here.</span></h2>
+        <div class="road">
+          <div class="ritem" data-reveal style="--i:2"><div class="rn">01</div><div><div class="rt">Facebook in the cloud</div><div class="rd">Windows worker + per-operator profiles, so FB scrapes run unattended like everything else.</div></div><div class="rtag">In progress</div></div>
+          <div class="ritem" data-reveal style="--i:3"><div class="rn">02</div><div><div class="rt">Instagram &amp; FB Groups</div><div class="rd">Post/keyword search and post-author capture as DM targets.</div></div><div class="rtag">Planned</div></div>
+          <div class="ritem" data-reveal style="--i:4"><div class="rn">03</div><div><div class="rt">Multi-tenant ready</div><div class="rd">Per-operator accounts &amp; isolation — built for more than owner use.</div></div><div class="rtag">Planned</div></div>
+          <div class="ritem" data-reveal style="--i:5"><div class="rn">04</div><div><div class="rt">Deliverability polish</div><div class="rd">Dedicated send scheduler, per-recipient caps, send-rate dashboard.</div></div><div class="rtag">Planned</div></div>
+        </div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+    <!-- 10 · CLOSE -->
+    <section class="slide" data-name="Close">
+      <div class="bar">
+        <div class="brand"><span class="dot"></span><b>OptiRate</b><span>/ optiratesolutions.com</span></div>
+        <div class="count"><em>10</em> / 10</div>
+      </div>
+      <div class="body close-grid">
+        <div>
+          <div class="kicker" data-reveal style="--i:0">In one line</div>
+          <h2 data-reveal style="--i:1">A working lead machine —<br>and an <span class="it">honest</span> map of the rest.</h2>
+        </div>
+        <p class="lead" data-reveal style="--i:2">Three review platforms live, Facebook proven locally with a clear cloud path, and a verified outreach engine that has already sent <b>2,595 emails</b> for <b>116 replies</b> at <b>zero bounces</b>. The foundation is real; the roadmap is honest.</p>
+        <div data-reveal style="--i:3"><span class="url"><span class="dot"></span>trustpilot-lead-gen-email-outreach.vercel.app</span></div>
+      </div>
+      <div class="nav"><div></div><div></div></div>
+    </section>
+
+  </div>
+
+  <!-- shared footer nav (fixed) -->
+  <div class="hint" id="hint">← → or space to navigate</div>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const total = slides.length;
+    let idx = 0;
+
+    // build dots + arrows into each slide's .nav
+    slides.forEach((s, n) => {
+      const nav = s.querySelector('.nav');
+      nav.innerHTML = '';
+      const dots = document.createElement('div'); dots.className = 'dots';
+      slides.forEach((_, j) => {
+        const b = document.createElement('button');
+        b.setAttribute('aria-label', 'Go to slide ' + (j+1));
+        b.addEventListener('click', () => go(j));
+        dots.appendChild(b);
+      });
+      const arrows = document.createElement('div'); arrows.className = 'arrows';
+      const prev = document.createElement('button'); prev.innerHTML = '←'; prev.setAttribute('aria-label','Previous'); prev.addEventListener('click', () => go(idx-1));
+      const next = document.createElement('button'); next.innerHTML = '→'; next.setAttribute('aria-label','Next'); next.addEventListener('click', () => go(idx+1));
+      arrows.append(prev, next);
+      nav.append(dots, arrows);
+    });
+
+    const progress = document.getElementById('progress');
+    const hint = document.getElementById('hint');
+    if (window.matchMedia('(pointer:coarse)').matches) hint.textContent = 'Swipe or tap arrows to navigate';
+
+    function render(){
+      slides.forEach((s, n) => s.classList.toggle('active', n === idx));
+      const active = slides[idx];
+      active.querySelectorAll('.dots button').forEach((b, j) => b.classList.toggle('on', j === idx));
+      const arr = active.querySelectorAll('.arrows button');
+      if (arr[0]) arr[0].disabled = idx === 0;
+      if (arr[1]) arr[1].disabled = idx === total - 1;
+      progress.style.width = ((idx) / (total - 1)) * 100 + '%';
+    }
+    function go(n){
+      const c = Math.max(0, Math.min(total - 1, n));
+      if (c === idx) return;
+      idx = c; render();
+    }
+
+    document.addEventListener('keydown', e => {
+      if (['ArrowRight',' ','PageDown'].includes(e.key)){ e.preventDefault(); go(idx+1); }
+      else if (['ArrowLeft','PageUp'].includes(e.key)){ e.preventDefault(); go(idx-1); }
+      else if (e.key === 'Home'){ go(0); }
+      else if (e.key === 'End'){ go(total-1); }
+      if (!hint.classList.contains('hide')) hint.classList.add('hide');
+    });
+
+    // touch swipe
+    let tx = 0;
+    document.addEventListener('touchstart', e => tx = e.changedTouches[0].clientX, {passive:true});
+    document.addEventListener('touchend', e => {
+      const dx = e.changedTouches[0].clientX - tx;
+      if (Math.abs(dx) > 55) go(idx + (dx < 0 ? 1 : -1));
+    }, {passive:true});
+
+    setTimeout(() => hint.classList.add('hide'), 5200);
+    render();
+  </script>
+</body>
+</html>

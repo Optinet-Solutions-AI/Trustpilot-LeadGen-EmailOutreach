@@ -37,3 +37,6 @@ DEFAULT --project*
 # AWS EC2 key pairs - never commit
 *.pem
 *.key
+
+# Local remote-desktop connection files (host/creds, machine-specific)
+*.rdp
