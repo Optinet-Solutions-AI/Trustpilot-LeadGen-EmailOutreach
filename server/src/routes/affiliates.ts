@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
 import { createRegistry, newJob, runLinkCheckJob } from '../services/link-check-job.js';
+import { partitionBulkUrls } from '../services/affiliate-url-parser.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -53,6 +54,55 @@ router.post('/', async (req: Request, res: Response) => {
     if (error) throw error;
     res.status(201).json({ success: true, data });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/affiliates/bulk — paste-add: parse Trustpilot URLs, dedupe vs
+// existing rows, bulk-insert, then auto-launch an enrichment link-check job
+// that backfills name/rating/reviews and the link_status for the new rows.
+router.post('/bulk', async (req: Request, res: Response) => {
+  try {
+    const { text, urls } = req.body || {};
+    const raw =
+      typeof text === 'string' ? text
+      : Array.isArray(urls) ? urls.join('\n')
+      : '';
+    if (!raw.trim()) {
+      res.status(400).json({ success: false, error: 'text (or urls[]) is required' });
+      return;
+    }
+
+    const supabase = getSupabase();
+    const { data: existingRows, error: exErr } = await supabase
+      .from('affiliates')
+      .select('website, tp_url');
+    if (exErr) throw exErr;
+
+    const { toInsert, skipped, invalid } = partitionBulkUrls(raw, existingRows ?? []);
+
+    if (toInsert.length === 0) {
+      res.status(200).json({ success: true, data: { created: [], skipped, invalid, jobId: null } });
+      return;
+    }
+
+    const { data: created, error: insErr } = await supabase
+      .from('affiliates')
+      .insert(toInsert)
+      .select();
+    if (insErr) throw insErr;
+
+    // Fire-and-forget enrichment: validate links + scrape name/rating/reviews.
+    const jobId = randomUUID();
+    linkCheckRegistry.jobs.set(jobId, newJob());
+    const insertedIds = (created ?? []).map((r) => r.id);
+    runLinkCheckJob(jobId, 'affiliates', insertedIds, linkCheckRegistry, { enrich: true })
+      .catch((e) => console.error(`[affiliates/bulk] enrich job ${jobId} crashed`, e));
+
+    res.status(201).json({ success: true, data: { created, skipped, invalid, jobId } });
+  } catch (err) {
+    if (res.headersSent) return;
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
