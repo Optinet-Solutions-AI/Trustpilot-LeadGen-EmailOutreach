@@ -25,6 +25,8 @@ CONTACT_EXTRACT_JS = r'''() => {
         trustpilot_email: null,
         phone: null,
         profile_claimed: null,
+        blocked: false,
+        blocked_reason: null,
     };
 
     // Company name from h1. Trustpilot's h1 layout embeds a review-count
@@ -180,6 +182,46 @@ CONTACT_EXTRACT_JS = r'''() => {
 
     result.profile_claimed = claimed;
 
+    // ── Step 6: Consumer-alert / blocked detection ──
+    // Trustpilot flags businesses it has caught manipulating reviews (or that
+    // are otherwise under sanction) with a prominent consumer-alert / warning
+    // banner. Those are dead-end leads — mark them so outreach skips them.
+    // Two sources: the Next.js data blob (authoritative when present) and a
+    // visible-text scan as a fallback (DOM class names drift over time).
+    let blocked = false;
+    let blockedReason = null;
+
+    // Source 1: __NEXT_DATA__ consumerAlert object (null when not flagged).
+    try {
+        const el = document.getElementById('__NEXT_DATA__');
+        if (el && el.textContent) {
+            const data = JSON.parse(el.textContent);
+            const pp = data && data.props && data.props.pageProps;
+            const alert = pp && (pp.consumerAlert ||
+                (pp.businessUnit && pp.businessUnit.consumerAlert));
+            if (alert && (typeof alert === 'object' ? Object.keys(alert).length > 0 : !!alert)) {
+                blocked = true;
+                blockedReason = String(alert.title || alert.type || 'consumer alert').slice(0, 200);
+            }
+        }
+    } catch (_e) { /* fall through to text scan */ }
+
+    // Source 2: visible banner text. Phrases are specific to the alert banner
+    // so we don't false-positive on ordinary review/footer copy.
+    if (!blocked) {
+        const bodyText = (document.body ? document.body.innerText : '') || '';
+        const ALERT_RX = /(consumer alert|we(?:'ve| have) (?:detected|found)[^.]{0,60}(?:fake|misleading|incentivi[sz]ed)|evidence of (?:fake|incentivi[sz]ed) reviews|this (?:company|business|profile) (?:is|has been) (?:misusing|flagged|suspended)|trustpilot has (?:issued|placed|detected)|harmful or illegal content|we(?:'ve| have) placed a (?:warning|notification)|flagged for (?:misleading|fake|review))/i;
+        const m = bodyText.match(ALERT_RX);
+        if (m) {
+            blocked = true;
+            const idx = Math.max(0, m.index - 20);
+            blockedReason = bodyText.slice(idx, idx + 180).replace(/\s+/g, ' ').trim();
+        }
+    }
+
+    result.blocked = blocked;
+    result.blocked_reason = blockedReason;
+
     return result;
 }'''
 
@@ -317,6 +359,11 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
                     # profile_claimed is tri-state — False is a real value, only skip when None
                     if contact.get('profile_claimed') is not None:
                         enriched['profile_claimed'] = contact['profile_claimed']
+                    # blocked is a definite boolean from the consumer-alert scan
+                    # (true=flagged, false=clear) — carry it + the reason snippet.
+                    if contact.get('blocked') is not None:
+                        enriched['blocked'] = contact['blocked']
+                        enriched['blocked_reason'] = contact.get('blocked_reason')
                     results_dict[idx] = enriched
                     # Rich per-item done event: carries email source + screenshot flag + website presence for the UI
                     email_src = 'trustpilot' if contact.get('trustpilot_email') else 'none'

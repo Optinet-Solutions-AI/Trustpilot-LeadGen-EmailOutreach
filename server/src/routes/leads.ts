@@ -61,6 +61,7 @@ router.get('/', async (req: Request, res: Response) => {
         ? (req.query.verificationStatus as 'valid' | 'invalid' | 'catch-all' | 'unknown')
         : undefined,
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
+      blocked: req.query.blocked === 'only' || req.query.blocked === 'exclude' ? req.query.blocked : 'all',
     });
     res.json({ success: true, ...result });
   } catch (err) {

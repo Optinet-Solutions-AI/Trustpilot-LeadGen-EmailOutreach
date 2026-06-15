@@ -70,6 +70,12 @@ const SUBJECT_AUTO_SIGNALS: Array<{ pattern: RegExp; weight: number; label: stri
   { pattern: /\b(abwesenheit|automatische\s+antwort|absence|ferienmitteilung|nicht\s+im\s+b[üu]ro)\b/i, weight: 0.4, label: 'subject:ooo-de' },
   { pattern: /\b(absence|absent|hors\s+du\s+bureau|vacances|cong[ée]s?)\b/i, weight: 0.3, label: 'subject:ooo-fr' },
   { pattern: /\b(afwezig|vakantie|niet\s+aanwezig)\b/i, weight: 0.3, label: 'subject:ooo-nl' },
+  // Auto-acknowledgement subjects — confirmation openers a cold prospect
+  // effectively never sends (we contacted them, not the reverse). Kept at a
+  // sub-threshold weight so one alone can't flip a real reply, but they stack
+  // with body signals on a typical "we got your message" autoresponder.
+  { pattern: /\bthank(s| you)\s+for\s+(contacting|reaching\s+out|getting\s+in\s+touch|your\s+(e?mail|message|inquiry|enquiry|request))/i, weight: 0.3, label: 'subject:thank-you-ack' },
+  { pattern: /\b(we('ve| have)\s+)?received\s+your\s+(e?mail|message|inquiry|enquiry|request)\b/i, weight: 0.4, label: 'subject:received-ack' },
 ];
 
 const SUBJECT_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
@@ -87,6 +93,11 @@ const SUBJECT_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
   // Excludes the warmup-pool tag "[ref:xxxx]" which appears at the END of the
   // subject (these arrive at the START), so it can't false-positive on warmup.
   { pattern: /^\s*\[\s*(?!ref:)[a-z][\w\s.\-]{0,40}\]\s*re:\s/i, label: 'subject:bracket-brand-re' },
+  // Bare helpdesk subjects without bracketed numbers — "Support request",
+  // "Case number ...", "Your reference: AB12CD".
+  { pattern: /\b(support|service|help)\s+request\b/i, label: 'subject:support-request' },
+  { pattern: /\bcase\s*(number|no\.?|id|#)\b/i, label: 'subject:case-number' },
+  { pattern: /\b(your\s+)?(reference|ref)\s*[:#]\s*[a-z0-9][a-z0-9\-]{2,}/i, label: 'subject:reference-code' },
 ];
 
 const BODY_AUTO_SIGNALS: Array<{ pattern: RegExp; weight: number; label: string }> = [
@@ -101,11 +112,23 @@ const BODY_AUTO_SIGNALS: Array<{ pattern: RegExp; weight: number; label: string 
   // Routing instructions that almost always mean "this is an auto-router"
   { pattern: /for\s+(affiliate|partnership|partner|press|media|business|sales|marketing)\s+(inquiries|inquiries?|requests?|matters?|please)/i, weight: 0.5, label: 'body:routing-instructions' },
   { pattern: /please\s+(contact|email|reach\s+out\s+to|write\s+to)\s+[\w.+-]+@[\w.-]+/i, weight: 0.4, label: 'body:please-contact' },
+  // Auto-acknowledgement bodies — the canonical "we got your message, a human
+  // will reply later" autoresponder that ticket systems and shared inboxes
+  // emit. Individually modest, but they stack into a clear auto verdict.
+  { pattern: /thank\s+you\s+for\s+(contacting|reaching\s+out\s+to|getting\s+in\s+touch|your\s+(e?mail|message|inquiry|enquiry|interest|request))/i, weight: 0.3, label: 'body:thank-you-ack' },
+  { pattern: /(our\s+team|a\s+member\s+of\s+(our|the)\s+team|someone\s+(from|on)\s+(our|the)\s+team)\s+(will|'ll)\s+(get\s+back|be\s+in\s+touch|respond|reply|review)/i, weight: 0.5, label: 'body:team-will-respond' },
+  { pattern: /(get\s+back\s+to\s+you|respond|reply)\s+(as\s+soon\s+as|within|shortly|asap)/i, weight: 0.4, label: 'body:respond-soon' },
+  { pattern: /\bwithin\s+\d+\s*(business\s+)?(hour|day)s?\b/i, weight: 0.3, label: 'body:within-timeframe' },
+  { pattern: /\byour\s+(message|request|e?mail|inquiry|enquiry|ticket|case)\s+(has\s+been|was|is)\s+(logged|registered|queued|assigned)/i, weight: 0.5, label: 'body:message-logged' },
 ];
 
 const BODY_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /(zendesk|freshdesk|helpscout|intercom|kayako|gorgias|frontapp)/i, label: 'body:helpdesk-product' },
   { pattern: /ticket\s+(id|number|#)\s*[:=#]?\s*\d/i, label: 'body:ticket-id-line' },
+  // Alphanumeric reference/case codes ("Reference number: AB-12345",
+  // "Your case ID is 88421") — strong ticket-issuance markers.
+  { pattern: /\b(reference|case|ticket)\s*(number|no\.?|id|#)\s*[:=#]?\s*[a-z0-9][a-z0-9\-]{2,}/i, label: 'body:reference-code' },
+  { pattern: /\byour\s+(reference|case|ticket)\s+(is|number|id|#)/i, label: 'body:your-reference' },
 ];
 
 function pickHeader(headers: ClassifyInput['headers'], name: string): string {

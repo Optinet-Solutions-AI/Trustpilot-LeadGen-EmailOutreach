@@ -44,6 +44,10 @@ export interface Lead {
   link_validation_error: string | null;
   screenshot_path: string | null;
   profile_claimed: boolean | null;
+  // Trustpilot flagged this business with a consumer-alert / warning banner
+  // (migration 048). Marked but kept; excluded from campaign recipients.
+  blocked: boolean;
+  blocked_reason: string | null;
   // Set when the live website redirects to a different registrable domain.
   // Leads with this populated are surfaced on the dedicated Redirected Leads
   // page so users can decide whether to send a different cold-outreach

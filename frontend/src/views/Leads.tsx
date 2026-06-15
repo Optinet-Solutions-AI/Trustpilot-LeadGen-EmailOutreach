@@ -73,6 +73,9 @@ export default function Leads() {
   const [countryFilter, setCountryFilter] = useState(() => searchParams?.get('country') ?? '');
   const [categoryFilter, setCategoryFilter] = useState(() => searchParams?.get('category') ?? '');
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
+  // When on, show ONLY Trustpilot-flagged (blocked) leads — lets the operator
+  // see and count how many blocked accounts were scraped (migration 048).
+  const [blockedFilter, setBlockedFilter] = useState(false);
   const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
 
   // Sync filter state from URL on every navigation. Without this, clicking
@@ -111,6 +114,7 @@ export default function Leads() {
     (categoryFilter ? 1 : 0) +
     (statusFilter ? 1 : 0) +
     (hasEmailFilter ? 1 : 0) +
+    (blockedFilter ? 1 : 0) +
     (search ? 1 : 0);
   const [sortBy, setSortBy] = useState('scraped_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -131,6 +135,7 @@ export default function Leads() {
     if (countryFilter) filters.country = countryFilter;
     if (categoryFilter) filters.category = categoryFilter;
     if (hasEmailFilter) (filters as any).hasEmail = 'true';
+    if (blockedFilter) (filters as any).blocked = 'only';
     if (search) filters.search = search;
     if (platformFilter) filters.platform = platformFilter;
     filters.sortBy = sortBy;
@@ -140,7 +145,7 @@ export default function Leads() {
     // never accidentally pulls in misattributed leads.
     (filters as any).redirected = 'exclude';
     fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
-  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, platformFilter, view, sortBy, sortDir, fetchLeads]);
+  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, blockedFilter, search, platformFilter, view, sortBy, sortDir, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 
@@ -857,6 +862,18 @@ export default function Leads() {
             <span className="material-symbols-outlined text-[15px]">mail</span>
             Has Email
           </button>
+          <button
+            onClick={() => { setBlockedFilter(v => !v); setPage(1); }}
+            title="Show only Trustpilot-flagged (blocked) leads — these are excluded from campaigns"
+            className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
+              blockedFilter
+                ? 'bg-rose-600 text-white border-rose-600'
+                : 'bg-surface-container text-secondary border-transparent hover:text-on-surface'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">block</span>
+            Blocked
+          </button>
         </div>
       </div>
 
@@ -929,6 +946,17 @@ export default function Leads() {
           >
             <span className="material-symbols-outlined text-[15px]">mail</span>
             {hasEmailFilter ? 'Has Email (on)' : 'Has Email'}
+          </button>
+          <button
+            onClick={() => { setBlockedFilter(v => !v); setPage(1); }}
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
+              blockedFilter
+                ? 'bg-rose-600 text-white border-rose-600'
+                : 'bg-surface-container text-secondary border-transparent'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">block</span>
+            {blockedFilter ? 'Blocked only (on)' : 'Blocked only'}
           </button>
           <button
             onClick={() => setFilterSheetOpen(false)}

@@ -360,12 +360,31 @@ export default function LeadDetail() {
               <span className="material-symbols-outlined text-[#b0004a] text-[24px]">business</span>
             </div>
             <div>
-              <h1
-                className="text-2xl font-extrabold text-on-surface"
-                style={{ fontFamily: 'Manrope, sans-serif' }}
-              >
-                {lead.company_name}
-              </h1>
+              {(() => {
+                // Mirror the lead matrix: the company name links to the
+                // platform profile (Trustpilot first, then any other platform
+                // presence). Falls back to plain text when no profile URL.
+                const profileHref = lead.trustpilot_url || lead.lead_platform_presences?.[0]?.profile_url || null;
+                return profileHref ? (
+                  <a
+                    href={profileHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-2xl font-extrabold text-on-surface hover:text-[#b0004a] hover:underline inline-flex items-center gap-1.5 transition-colors"
+                    style={{ fontFamily: 'Manrope, sans-serif' }}
+                  >
+                    {lead.company_name}
+                    <span className="material-symbols-outlined text-[18px]">open_in_new</span>
+                  </a>
+                ) : (
+                  <h1
+                    className="text-2xl font-extrabold text-on-surface"
+                    style={{ fontFamily: 'Manrope, sans-serif' }}
+                  >
+                    {lead.company_name}
+                  </h1>
+                );
+              })()}
               {lead.website_url && (
                 <a
                   href={lead.website_url}
@@ -376,6 +395,22 @@ export default function LeadDetail() {
                   {lead.website_url}
                   <span className="material-symbols-outlined text-[14px]">open_in_new</span>
                 </a>
+              )}
+              {/* Blocked on Trustpilot (consumer-alert flagged, migration 048) —
+                  this lead is excluded from campaign recipients. */}
+              {lead.blocked && (
+                <div
+                  className="mt-2 flex items-start gap-1.5 text-xs font-bold bg-rose-100 text-rose-700 px-2.5 py-1.5 rounded-lg max-w-md"
+                  title={lead.blocked_reason || undefined}
+                >
+                  <span className="material-symbols-outlined text-[14px] mt-px shrink-0">block</span>
+                  <span>
+                    Blocked on Trustpilot — excluded from campaigns
+                    {lead.blocked_reason && (
+                      <span className="block font-normal text-rose-600/90 mt-0.5 line-clamp-2">“{lead.blocked_reason}”</span>
+                    )}
+                  </span>
+                </div>
               )}
             </div>
           </div>

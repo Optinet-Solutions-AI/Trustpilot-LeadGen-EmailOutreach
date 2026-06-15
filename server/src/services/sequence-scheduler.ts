@@ -22,6 +22,7 @@ import { sendEmail } from './email-sender.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
 import { getSenderAccountByEmail } from './sender-loader.js';
+import { isPermanentSendFailure } from './bounce-tracker.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
 
@@ -65,13 +66,22 @@ async function processDueFollowUps() {
 
   const supabase = getSupabase();
 
-  // Find leads with due follow-ups
+  // Find leads with due follow-ups.
+  //
+  // status IN ('sent','opened') is the delivery gate: a follow-up only makes
+  // sense if the previous step actually landed. This excludes leads that
+  // bounced or were rejected at send time (status='bounced'), never sent
+  // (status='pending'/'failed'), already replied ('replied'), auto-replied,
+  // or were deduped ('skipped'). Without it, a lead that bounced AFTER its
+  // step-2 date was scheduled would still get chased — the exact "don't
+  // follow up if it wasn't delivered" bug.
   const { data: dueLeads, error } = await supabase
     .from('campaign_leads')
     .select('*, leads(*)')
     .lte('next_step_at', new Date().toISOString())
     .eq('sequence_completed', false)
     .eq('sequence_paused', false)
+    .in('status', ['sent', 'opened'])
     .not('next_step_at', 'is', null)
     .limit(20); // process in small batches
 
@@ -342,5 +352,21 @@ async function sendFollowUp(cl: Record<string, unknown>) {
     console.log(`[SequenceScheduler] Sent step ${nextStepNumber} to ${cl.email_used}`);
   } else {
     console.warn(`[SequenceScheduler] Failed to send step ${nextStepNumber} to ${cl.email_used}: ${result.error}`);
+    // A permanent rejection (recipient unknown / mailbox rejected) means the
+    // address is dead — stop the sequence so we don't keep chasing it every
+    // time the 10-minute claim window lapses. Transient errors fall through
+    // and retry on a later tick (status stays 'sent', claim re-expires).
+    if (isPermanentSendFailure(result.error)) {
+      await supabase
+        .from('campaign_leads')
+        .update({ status: 'bounced', bounced_at: new Date().toISOString(), next_step_at: null, sequence_paused: true })
+        .eq('id', cl.id);
+      await createNote(cl.lead_id as string, {
+        type: 'email_bounced',
+        content: `Follow-up step ${nextStepNumber} to ${cl.email_used} rejected at send time — sequence stopped (${result.error ?? 'permanent failure'})`,
+        metadata: { campaign_id: campaignId, step_number: nextStepNumber },
+      });
+      console.warn(`[SequenceScheduler] Permanent failure for ${cl.email_used} — marked bounced, sequence stopped`);
+    }
   }
 }

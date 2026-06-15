@@ -9,11 +9,62 @@ import { GoogleGenAI } from '@google/genai';
 
 const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 
+/** Abort a stuck translation rather than spin forever on a slow/hung call. */
+const TRANSLATE_TIMEOUT_MS = 20_000;
+
 export interface TranslationResult {
   /** The translated text (or HTML if the input was HTML). */
   text: string;
   /** Two-letter ISO 639-1 code Gemini reported as the source. May be 'unknown'. */
   sourceLanguage: string;
+}
+
+// ── Cache ────────────────────────────────────────────────────────────────
+// The same reply gets re-translated every time the user re-opens a thread or
+// re-clicks "Translate", and each call is a full Gemini round-trip. Cache the
+// result keyed by (target language + content) so repeats are instant. An
+// in-memory Map covers the active session; localStorage survives navigation
+// and refresh. Both are best-effort — a miss just re-fetches.
+const memCache = new Map<string, TranslationResult>();
+
+/** djb2 — cheap, stable string hash so keys stay short regardless of body size. */
+function hashKey(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+function cacheKey(input: string, target: string): string {
+  return `tp_tr:${target}:${hashKey(input)}`;
+}
+
+function readCache(key: string): TranslationResult | null {
+  const hit = memCache.get(key);
+  if (hit) return hit;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw) as TranslationResult;
+        memCache.set(key, parsed);
+        return parsed;
+      }
+    } catch {
+      /* localStorage unavailable / quota / parse error — treat as miss */
+    }
+  }
+  return null;
+}
+
+function writeCache(key: string, value: TranslationResult): void {
+  memCache.set(key, value);
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* quota exceeded — in-memory cache still serves this session */
+    }
+  }
 }
 
 /**
@@ -34,6 +85,11 @@ export async function translateText(
   if (!input.trim()) {
     return { text: input, sourceLanguage: 'unknown' };
   }
+
+  // Serve from cache when we've translated this exact content before.
+  const key = cacheKey(input, targetLanguage);
+  const cached = readCache(key);
+  if (cached) return cached;
 
   const genAI = new GoogleGenAI({ apiKey: API_KEY });
 
@@ -58,11 +114,21 @@ ${input}
 === END INPUT ===
 `.trim();
 
-  const result = await genAI.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt,
-    config: { temperature: 0.2 },
-  });
+  // thinkingBudget: 0 disables the 2.5 "thinking" pass — it's on by default and
+  // is the dominant source of latency. Translation is a deterministic
+  // transform that gains nothing from reasoning tokens, so turning it off is
+  // the single biggest speed win here. Race against a timeout so a hung call
+  // surfaces as an error instead of an endless spinner.
+  const result = await Promise.race([
+    genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: { temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Translation timed out — please try again.')), TRANSLATE_TIMEOUT_MS),
+    ),
+  ]);
 
   const raw = (result.text ?? '').trim();
   const sourceMatch = raw.match(/^SOURCE_LANG:\s*(\S+)/m);
@@ -75,8 +141,10 @@ ${input}
     ? raw.slice(transIdx + transTag.length).replace(/^\s*\n?/, '').trimEnd()
     : raw;
 
-  return {
+  const out: TranslationResult = {
     text: translated,
     sourceLanguage: sourceMatch ? sourceMatch[1].toLowerCase().trim() : 'unknown',
   };
+  writeCache(key, out);
+  return out;
 }

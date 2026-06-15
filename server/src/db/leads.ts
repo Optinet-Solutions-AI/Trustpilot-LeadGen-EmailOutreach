@@ -17,6 +17,10 @@ export interface LeadFilters {
   // (the dedicated Redirected Leads page); 'exclude' filters them out so
   // standard outreach views never include them. 'all' (default) ignores it.
   redirected?: 'only' | 'exclude' | 'all';
+  // Blocked = Trustpilot consumer-alert flagged (migration 048). 'only' shows
+  // just blocked leads (the "how many did we scrape" count), 'exclude' hides
+  // them, 'all' (default) shows everything so the matrix surfaces the badge.
+  blocked?: 'only' | 'exclude' | 'all';
   page?: number;
   limit?: number;
   sortBy?: string;
@@ -68,6 +72,11 @@ export async function getLeads(filters: LeadFilters = {}) {
     query = query.not('redirects_to', 'is', null);
   } else if (filters.redirected === 'exclude') {
     query = query.is('redirects_to', null);
+  }
+  if (filters.blocked === 'only') {
+    query = query.eq('blocked', true);
+  } else if (filters.blocked === 'exclude') {
+    query = query.eq('blocked', false);
   }
 
   const EMAIL_SORT_COLUMNS = new Set(['primary_email', 'trustpilot_email', 'website_email']);
@@ -141,6 +150,9 @@ export async function getLeadIds(
   if (filters.verificationStatus) query = query.eq('verification_status', filters.verificationStatus);
   if (filters.redirected === 'only') query = query.not('redirects_to', 'is', null);
   else if (filters.redirected === 'exclude') query = query.is('redirects_to', null);
+  // This list feeds campaign recipient selection (wizard "select all") — never
+  // hand back blocked leads. They're flagged out of outreach entirely.
+  query = query.eq('blocked', false);
 
   const { data, error } = await query.range(0, MAX_IDS - 1);
   if (error) throw new Error(error.message);

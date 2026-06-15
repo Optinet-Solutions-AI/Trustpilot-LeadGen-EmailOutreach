@@ -449,6 +449,18 @@ export default function LeadsTable({
                 <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
               );
             })()}
+            {/* Blocked on Trustpilot — consumer-alert flagged (migration 048).
+                Excluded from campaigns; surfaced here so the operator can spot
+                and count them. */}
+            {lead.blocked && (
+              <span
+                title={lead.blocked_reason || 'Flagged by a Trustpilot consumer alert — excluded from campaigns'}
+                className="inline-flex items-center gap-1 mt-0.5 text-[10px] font-bold uppercase tracking-wide bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded"
+              >
+                <span className="material-symbols-outlined text-[11px]">block</span>
+                Blocked
+              </span>
+            )}
             {/* Social-platform extras live in their own dedicated columns
                 (social_profile, social_handle, social_action) — no longer
                 stuffed under the Company cell. */}

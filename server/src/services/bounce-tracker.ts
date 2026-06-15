@@ -88,6 +88,20 @@ function classifyBounce(text: string): 'hard' | 'soft' {
   return 'hard';
 }
 
+/**
+ * True when an SMTP/Gmail send-error string indicates a PERMANENT failure —
+ * the recipient mailbox doesn't exist or was rejected outright (550, 5.1.1,
+ * "user unknown", "recipient rejected", ...). Lets the schedulers stop a lead
+ * at send time instead of waiting for an async mailer-daemon bounce that may
+ * never arrive for synchronously-rejected SMTP sends. A `false` here means the
+ * error was transient (4xx / network) and the send may succeed on retry.
+ */
+export function isPermanentSendFailure(errorText: string | undefined | null): boolean {
+  if (!errorText) return false;
+  if (SOFT_BOUNCE_PATTERNS.some(p => p.test(errorText))) return false;
+  return HARD_BOUNCE_PATTERNS.some(p => p.test(errorText));
+}
+
 interface GmailClientEntry {
   email: string;
   gmail: ReturnType<typeof getGmailClient>;

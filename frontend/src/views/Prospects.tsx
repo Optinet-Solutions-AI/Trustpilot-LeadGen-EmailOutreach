@@ -359,7 +359,32 @@ export default function Prospects() {
         );
       },
     },
-  ], []);
+    {
+      // "Reply" — deep-link to the inbound auto-reply that surfaced this
+      // prospect, so the user can see WHY it landed here. The discovery row
+      // records the originating campaign_lead; the Inbox opens that exact
+      // thread via ?open=<campaignLeadId>. Hidden when the discovery has no
+      // source reply (e.g. a lead spawned from a scraped URL).
+      key: 'source_reply',
+      label: 'Reply',
+      render: (lead) => {
+        const r = (lead as Lead & { _discovery?: DiscoveredContactWithLead })._discovery;
+        const cid = r?.source_campaign_lead_id;
+        if (!cid) return <span className="text-slate-300 text-xs">—</span>;
+        return (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); router.push(`/inbox?open=${encodeURIComponent(cid)}`); }}
+            title="View the reply that added this lead to Prospects"
+            aria-label="View original reply"
+            className="inline-flex items-center justify-center w-7 h-7 rounded-md text-[#b0004a] hover:bg-[#ffd9de] transition-colors"
+          >
+            <span className="material-symbols-outlined text-[16px]">forum</span>
+          </button>
+        );
+      },
+    },
+  ], [router]);
 
   const extraRowActions = (lead: Lead) => {
     const r = (lead as Lead & { _discovery?: DiscoveredContactWithLead })._discovery;

@@ -396,6 +396,11 @@ def upsert_leads(leads: list[dict]) -> int:
             'star_rating': lead.get('star_rating') or lead.get('rating'),
             'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
             'profile_claimed': lead.get('profile_claimed'),
+            # Trustpilot consumer-alert / blocked flag (migration 048). None on
+            # a row that wasn't profile-enriched → stripped below so a re-scrape
+            # never clobbers a known value with null.
+            'blocked': lead.get('blocked'),
+            'blocked_reason': lead.get('blocked_reason'),
             'scraped_at': now,
             'link_status': link_status,
             'last_validated_at': validated_at,

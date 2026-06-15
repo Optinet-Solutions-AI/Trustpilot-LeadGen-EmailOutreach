@@ -23,7 +23,7 @@ import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { getCampaignSteps } from '../db/campaign-steps.js';
-import { checkForBounces } from './bounce-tracker.js';
+import { checkForBounces, isPermanentSendFailure } from './bounce-tracker.js';
 
 const POLL_INTERVAL_MS = 60_000; // check every 60 seconds
 const BATCH_LIMIT = 10;           // max sends per tick (stays within hourly caps)
@@ -425,6 +425,38 @@ async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefi
     console.log(`[CampaignScheduler] Sent → ${cl.email_used}`);
   } else {
     console.warn(`[CampaignScheduler] Failed → ${cl.email_used}: ${result.error}`);
+    // A permanent rejection (recipient unknown / mailbox rejected) means the
+    // initial send was never delivered. Mark it bounced so it (a) stops being
+    // re-selected as 'pending' on every tick once the 10-minute claim lapses,
+    // and (b) is never scheduled a follow-up — maybeFinalizeCampaign and the
+    // sequence scheduler both only act on delivered ('sent'/'opened') rows.
+    // Transient errors are left at 'pending' (claim re-expires → retried).
+    if (isPermanentSendFailure(result.error)) {
+      await supabase
+        .from('campaign_leads')
+        .update({ status: 'bounced', bounced_at: new Date().toISOString() })
+        .eq('id', cl.id);
+      // Increment the campaign bounce counter so analytics reflect reality.
+      const { data: camp } = await supabase
+        .from('campaigns')
+        .select('total_bounced')
+        .eq('id', campaign.id as string)
+        .single();
+      if (camp) {
+        await supabase
+          .from('campaigns')
+          .update({ total_bounced: ((camp.total_bounced as number) || 0) + 1 })
+          .eq('id', campaign.id as string);
+      }
+      // Permanently invalid address — exclude from future campaigns too.
+      await updateLead(lead.id as string, { email_verified: false, verification_status: 'invalid' });
+      await createNote(lead.id as string, {
+        type: 'email_bounced',
+        content: `Campaign "${campaign.name}" send to ${cl.email_used} rejected at send time — marked bounced (${result.error ?? 'permanent failure'})`,
+        metadata: { campaign_id: campaign.id },
+      });
+      console.warn(`[CampaignScheduler] Permanent failure for ${cl.email_used} — marked bounced`);
+    }
   }
 }
 
