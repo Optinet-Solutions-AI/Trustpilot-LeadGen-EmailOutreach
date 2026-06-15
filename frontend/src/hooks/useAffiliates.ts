@@ -2,6 +2,13 @@ import { useState, useCallback } from 'react';
 import api from '../api/client';
 import type { Affiliate } from '../components/affiliate-monitor/AffiliateData';
 
+export interface BulkAddResult {
+  created: Affiliate[];
+  skipped: string[];
+  invalid: string[];
+  jobId: string | null;
+}
+
 export function useAffiliates() {
   const [affiliates, setAffiliates] = useState<Affiliate[]>([]);
   const [loading, setLoading] = useState(false);
@@ -27,6 +34,13 @@ export function useAffiliates() {
     return created;
   }, []);
 
+  const bulkAddAffiliates = useCallback(async (text: string): Promise<BulkAddResult> => {
+    const res = await api.post<{ success: boolean; data: BulkAddResult }>('/affiliates/bulk', { text });
+    const data = res.data.data;
+    if (data.created.length) setAffiliates((prev) => [...prev, ...data.created]);
+    return data;
+  }, []);
+
   const bulkDelete = useCallback(async (ids: string[]): Promise<void> => {
     await api.post('/affiliates/bulk-delete', { ids });
     setAffiliates((prev) => prev.filter((a) => !ids.includes(a.id)));
@@ -39,5 +53,5 @@ export function useAffiliates() {
     return updated;
   }, []);
 
-  return { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkDelete, updateAffiliate };
+  return { affiliates, loading, error, fetchAffiliates, addAffiliate, bulkAddAffiliates, bulkDelete, updateAffiliate };
 }
