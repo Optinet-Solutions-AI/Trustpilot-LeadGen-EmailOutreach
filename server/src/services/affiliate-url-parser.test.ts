@@ -40,6 +40,14 @@ describe('parseTrustpilotAffiliateUrl', () => {
     expect(parseTrustpilotAffiliateUrl('not a url')).toBeNull();
     expect(parseTrustpilotAffiliateUrl('   ')).toBeNull();
   });
+
+  it('rejects a line with trailing text after the review URL', () => {
+    expect(parseTrustpilotAffiliateUrl('https://de.trustpilot.com/review/foo.com  some note')).toBeNull();
+  });
+
+  it('rejects prose that merely contains a URL (whole line must be the URL)', () => {
+    expect(parseTrustpilotAffiliateUrl('Check out https://de.trustpilot.com/review/foo.com now')).toBeNull();
+  });
 });
 
 describe('partitionBulkUrls', () => {

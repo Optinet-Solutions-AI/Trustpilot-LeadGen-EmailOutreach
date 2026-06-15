@@ -52,6 +52,11 @@ export function parseTrustpilotAffiliateUrl(line: string): ParsedAffiliate | nul
   const slug = m[1].toLowerCase();
   const website = normalizeWebsite(slug);
   if (!website) return null;
+  // The slug must be a bare domain. Lines with trailing text after the URL
+  // (e.g. "…/review/foo.com  note") get the space percent-encoded into the
+  // path by `new URL`, yielding a garbage slug like "foo.com%20note" — reject
+  // those rather than inserting them.
+  if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(website)) return null;
 
   const tp_url = `https://${host}/review/${slug}`;
 
