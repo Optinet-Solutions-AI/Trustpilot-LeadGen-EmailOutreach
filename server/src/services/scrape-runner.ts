@@ -686,13 +686,20 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
 
     if (isFbConsumerMode) {
       const maxResults = Number(fbFilters.max_results ?? 10);
-      // Force the in-FB "groups" filter on the post search. The open-feed
-      // search is dominated by business ads phrased as "Looking for X?";
-      // FB's built-in groups filter (URL hint `&filters=groups`) restricts
-      // to posts inside community groups, where real consumer asks live.
-      // This is the smaller-effort precursor to the full group-discovery
-      // flow specified in 2026-05-27-facebook-group-first-scraping-design.md.
-      const consumerFilters = { ...fbFilters, groups_only: true };
+      // Respect the operator's `groups_only` toggle (FB manifest default:
+      // false). This was previously hard-forced to true, which silently
+      // overrode the toggle the UI already sends and always ran the
+      // join-heavy in-group crawl.
+      //   false → open-feed /search/posts/ : read-only, NO group joins,
+      //           lower automation-flag risk, real consumer asks with
+      //           contact info (open-feed extractor fixed 2026-06-15).
+      //   true  → in-group discovery + per-group search (yield is gated by
+      //           group membership; joining groups is what trips FB's
+      //           automated-behavior detection).
+      // Accept a real boolean or the string "true" defensively.
+      const groupsOnly =
+        fbFilters.groups_only === true || fbFilters.groups_only === 'true';
+      const consumerFilters = { ...fbFilters, groups_only: groupsOnly };
       const consumerFiltersJson = JSON.stringify(consumerFilters);
       const { promise: searchPromise } = runPython(jobId, 'tools/scraper/run.py', [
         '--platform', platform,
