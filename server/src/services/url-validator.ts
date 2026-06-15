@@ -6,8 +6,15 @@
 import type { BrowserContext } from 'playwright';
 import { fetchStatusViaScrapingbee, scrapingbeeEnabled } from './scrapers/tier5-scrapingbee.js';
 import { handleCloudflareChallenge } from './scrapers/popup-handler.js';
+import { extractAffiliateMeta, type AffiliateMeta } from './affiliate-meta-extractor.js';
 
 export type LinkStatus = 'VALID' | 'FLAGGED_DEAD' | 'FLAGGED_REMOVED' | 'UNKNOWN';
+
+export interface UrlCheckResult {
+  status: LinkStatus;
+  error: string | null;
+  meta?: AffiliateMeta;
+}
 
 // Trustpilot's "removed profile" copy localized per regional subdomain.
 // The page is JS-rendered so the validator must use Playwright OR
@@ -148,11 +155,12 @@ const PLAYWRIGHT_NAV_TIMEOUT_MS = 25_000;
 export async function validateTrustpilotUrlViaPlaywright(
   context: BrowserContext,
   url: string,
-): Promise<{ status: LinkStatus; error: string | null }> {
+  opts: { extractMeta?: boolean } = {},
+): Promise<UrlCheckResult> {
   const cleaned = sanitizeTrustpilotUrl(url);
   if (!cleaned) return { status: 'UNKNOWN', error: 'unsalvageable_url' };
 
-  const playwrightResult = await runPlaywrightCheck(context, cleaned);
+  const playwrightResult = await runPlaywrightCheck(context, cleaned, opts.extractMeta ?? false);
 
   // If Playwright got bot-blocked (403/429 from Cloudflare on specific
   // Trustpilot subdomains — au./ca./it./etc.), retry via ScrapingBee. SB's
@@ -186,6 +194,7 @@ export async function validateTrustpilotUrlViaPlaywright(
         error: sbResult.error
           ? `${sbResult.error} (via scrapingbee_stealth after playwright ${playwrightResult.error ?? 'unknown'})`
           : null,
+        ...(opts.extractMeta && sb.body ? { meta: extractAffiliateMeta(sb.body) } : {}),
       };
     }
     return {
@@ -212,7 +221,8 @@ function inferCountryCode(url: string): string | null {
 async function runPlaywrightCheck(
   context: BrowserContext,
   url: string,
-): Promise<{ status: LinkStatus; error: string | null }> {
+  extractMeta: boolean,
+): Promise<UrlCheckResult> {
   const page = await context.newPage();
   try {
     let httpStatus = 0;
@@ -268,15 +278,17 @@ async function runPlaywrightCheck(
     // as a Playwright failure so the SB fallback in the calling function
     // gets to retry — without this wrap, the worker_exception bubbled up to
     // the job runner and the URL was stuck on UNKNOWN.
-    let body: string;
+    let rawBody: string;
     try {
-      body = (await page.content()).toLowerCase();
+      rawBody = await page.content();
     } catch (err) {
       const name = err instanceof Error ? err.name : 'Error';
       const msg = err instanceof Error ? err.message : String(err);
       return { status: 'UNKNOWN', error: `playwright_content_failed: ${name} ${msg.slice(0, 80)}` };
     }
-    return classifyResponse(httpStatus || 200, body, { blockedHttp });
+    const result: UrlCheckResult = classifyResponse(httpStatus || 200, rawBody.toLowerCase(), { blockedHttp });
+    if (extractMeta) result.meta = extractAffiliateMeta(rawBody);
+    return result;
   } finally {
     await page.close().catch(() => undefined);
   }
