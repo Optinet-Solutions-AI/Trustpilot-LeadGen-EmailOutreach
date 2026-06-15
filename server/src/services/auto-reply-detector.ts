@@ -115,11 +115,22 @@ const BODY_AUTO_SIGNALS: Array<{ pattern: RegExp; weight: number; label: string 
   // Auto-acknowledgement bodies — the canonical "we got your message, a human
   // will reply later" autoresponder that ticket systems and shared inboxes
   // emit. Individually modest, but they stack into a clear auto verdict.
-  { pattern: /thank\s+you\s+for\s+(contacting|reaching\s+out\s+to|getting\s+in\s+touch|your\s+(e?mail|message|inquiry|enquiry|interest|request))/i, weight: 0.3, label: 'body:thank-you-ack' },
+  { pattern: /thank(?:s| you)\s+for\s+(contacting|reaching\s+out|getting\s+in\s+touch|your\s+(e?mail|message|inquiry|enquiry|interest|request|query|patience))/i, weight: 0.3, label: 'body:thank-you-ack' },
   { pattern: /(our\s+team|a\s+member\s+of\s+(our|the)\s+team|someone\s+(from|on)\s+(our|the)\s+team)\s+(will|'ll)\s+(get\s+back|be\s+in\s+touch|respond|reply|review)/i, weight: 0.5, label: 'body:team-will-respond' },
-  { pattern: /(get\s+back\s+to\s+you|respond|reply)\s+(as\s+soon\s+as|within|shortly|asap)/i, weight: 0.4, label: 'body:respond-soon' },
+  // "respond to your query as soon as possible", "we aim to respond within 48
+  // hours" — the verb and the time-promise can be separated by an object, so
+  // allow a short gap. Restricted to strong time phrases ("as soon as
+  // possible" / "within N hours/days") to avoid catching a human "I'll reply
+  // shortly".
+  { pattern: /\b(respond|reply|get\s+back\s+to\s+you|aim\s+to\s+respond)\b[^.\n]{0,40}?\b(as\s+soon\s+as\s+possible|within\s+\d+\s*(?:business\s+)?(?:hour|day))/i, weight: 0.4, label: 'body:respond-soon' },
   { pattern: /\bwithin\s+\d+\s*(business\s+)?(hour|day)s?\b/i, weight: 0.3, label: 'body:within-timeframe' },
   { pattern: /\byour\s+(message|request|e?mail|inquiry|enquiry|ticket|case)\s+(has\s+been|was|is)\s+(logged|registered|queued|assigned)/i, weight: 0.5, label: 'body:message-logged' },
+  // Shared "contact us" inbox autoresponder hallmarks: stating opening hours,
+  // and deflecting to a self-service help centre / FAQ. A real prospect
+  // replying to cold outreach doesn't volunteer their opening hours or link
+  // their own help desk — staffed shared inboxes auto-reply with exactly this.
+  { pattern: /\b(opening|office|business)\s+hours\s+(are|of\s+operation)\b/i, weight: 0.4, label: 'body:business-hours' },
+  { pattern: /\b(help\s+(centre|center)|knowledge\s+base|support\s+(portal|centre|center))\b/i, weight: 0.3, label: 'body:self-service' },
 ];
 
 const BODY_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
