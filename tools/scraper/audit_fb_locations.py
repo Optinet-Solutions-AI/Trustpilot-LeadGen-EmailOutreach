@@ -3,6 +3,9 @@
 Re-derives location_confidence for already-scraped Facebook leads from the
 group name + post excerpt stored in lead_platform_posts. No re-scraping.
 
+`--location` should be a CITY (the value the operator searched), e.g. Bristol —
+that's what location_confidence is judged against.
+
 Run from repo root:
     ./.venv/Scripts/python.exe -m tools.scraper.audit_fb_locations --location Bristol
     ./.venv/Scripts/python.exe -m tools.scraper.audit_fb_locations --location Bristol --write
@@ -18,8 +21,15 @@ from tools.scraper.platforms.facebook import (
     _extract_country_from_excerpt,
 )
 
-# Lower rank = more concerning; used for sort order + strongest-wins merge.
-_RANK = {'wrong_country': -1, 'unconfirmed': 0, 'same_country': 1, 'confirmed_city': 2}
+# When a lead has several posts, which single verdict best represents it?
+# A real confirmation wins outright; a foreign-country signal (wrong_country)
+# is more informative than no signal (unconfirmed), so it must beat the
+# 'unconfirmed' floor — otherwise the audit would hide the very leads it exists
+# to surface.
+_MERGE_PRIORITY = {'unconfirmed': 0, 'wrong_country': 1, 'same_country': 2, 'confirmed_city': 3}
+
+# Display order for the table: most concerning first.
+_SORT_ORDER = {'wrong_country': 0, 'unconfirmed': 1, 'same_country': 2, 'confirmed_city': 3}
 
 
 def _audit_verdict(group_name, excerpt, loc):
@@ -32,10 +42,6 @@ def _audit_verdict(group_name, excerpt, loc):
         if dc and oc and dc != oc:
             return 'wrong_country'
     return base
-
-
-def _best(a, b):
-    return a if _RANK[a] >= _RANK[b] else b
 
 
 def main():
@@ -63,16 +69,19 @@ def main():
     rows, summary = [], Counter()
     for l in leads:
         loc = l.get('country')
-        verdict = 'unconfirmed'
+        # Pick the verdict that best represents the lead, and remember the post
+        # that produced it so the table shows the group/excerpt that drove it.
+        best_verdict, best_post = 'unconfirmed', by_lead[l['id']][0]
         for p in by_lead[l['id']]:
-            verdict = _best(verdict, _audit_verdict(p.get('group_name'), p.get('content_excerpt'), loc))
-        first = by_lead[l['id']][0]
-        rows.append((l['id'], l.get('company_name') or '', first.get('group_name') or '',
-                     verdict, (first.get('content_excerpt') or '').replace('\n', ' ')[:60]))
-        summary[verdict] += 1
+            v = _audit_verdict(p.get('group_name'), p.get('content_excerpt'), loc)
+            if _MERGE_PRIORITY[v] >= _MERGE_PRIORITY[best_verdict]:
+                best_verdict, best_post = v, p
+        rows.append((l['id'], l.get('company_name') or '', best_post.get('group_name') or '',
+                     best_verdict, (best_post.get('content_excerpt') or '').replace('\n', ' ')[:60]))
+        summary[best_verdict] += 1
 
     print(f"{'CONFIDENCE':<16}{'COMPANY':<26}{'GROUP':<38}EXCERPT")
-    for _id, name, group, verdict, excerpt in sorted(rows, key=lambda r: _RANK[r[3]]):
+    for _id, name, group, verdict, excerpt in sorted(rows, key=lambda r: _SORT_ORDER[r[3]]):
         print(f"{verdict:<16}{name[:25]:<26}{group[:37]:<38}{excerpt}")
     print()
     print('SUMMARY:', dict(summary), f'| {len(leads)} FB leads matched')
