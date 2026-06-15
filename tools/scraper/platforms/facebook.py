@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -126,6 +127,28 @@ COUNTRY_TO_LANGUAGE: dict = {
 # repeats. Cache lives for the worker process lifetime; warms up in <60s
 # of normal use.
 _NICHE_TRANSLATION_CACHE: dict = {}
+
+
+def _human_pause(base: float, *, extra: float = 1.0) -> None:
+    """Sleep for a randomized, human-like interval >= ``base`` seconds.
+
+    Real users never pause for exactly the same duration twice. Fixed
+    ``time.sleep(2.0)`` calls give the scrape loop a metronome cadence
+    that Facebook's automation detection keys on, so every PACING sleep
+    (scroll waits, between-group gaps) goes through here instead of a
+    constant. The drawn delay is uniform over ``[base, base + extra]``
+    with an occasional longer "distracted reader" pause — and it never
+    sleeps LESS than ``base``, so it can't reintroduce the timing races
+    the original constants were tuned to avoid.
+
+    NOTE: do NOT route the functional load/cookie-trust waits in
+    _open_session through here — those are correctness waits, not pacing,
+    and adding variability there risks the documented 'Not Found' stub.
+    """
+    delay = random.uniform(base, base + extra)
+    if random.random() < 0.12:  # ~1 in 8: a longer human glance-away pause
+        delay += random.uniform(2.0, 6.0)
+    time.sleep(delay)
 
 
 def _now_iso() -> str:
@@ -1439,6 +1462,13 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
         if 'facebook.com' not in href:
             return False
         path = href.split('facebook.com', 1)[-1].split('?')[0].split('#')[0]
+        # Group posts surfaced in search results expose the author as
+        # /groups/<gid>/user/<uid>/ — recognize it BEFORE the /groups/
+        # reject below. FB switched search-result authors to this shape;
+        # without this the open-feed extractor finds no author and skips
+        # every card (the 0-stubs-from-N-cards bug, fixed 2026-06-15).
+        if re.search(r'/groups/\d+/user/\d+/?', path):
+            return True
         if any(path.startswith(p) for p in NON_AUTHOR_PREFIXES):
             return False
         # /profile.php?id=... is a valid author link
@@ -1471,7 +1501,13 @@ def _extract_posts_from_search_page(driver) -> list[dict]:
                 if real_post_url is None and post_url_re.search(href):
                     real_post_url = _clean_fb_url(href)
                 if author_url is None and _is_author_link(href):
-                    if '/profile.php' in href:
+                    gm = re.search(r'/groups/\d+/user/(\d+)', href)
+                    if gm:
+                        # Canonicalize the in-group author link to the user's
+                        # global profile so author enrichment + cross-group
+                        # dedup key on one stable URL per person.
+                        author_url = f'https://www.facebook.com/profile.php?id={gm.group(1)}'
+                    elif '/profile.php' in href:
                         m = re.search(r'/profile\.php\?id=(\d+)', href)
                         author_url = f'https://www.facebook.com/profile.php?id={m.group(1)}' if m else href.split('&')[0]
                     else:
@@ -1744,7 +1780,7 @@ class FacebookScraper(SocialPlatformScraper):
             # Scroll a little to surface more groups
             for _ in range(2):
                 driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                time.sleep(SCROLL_PAUSE)
+                _human_pause(SCROLL_PAUSE)
             try:
                 cards = driver.find_elements('css selector', 'div[role="feed"] > div')
                 if not cards:
@@ -1908,14 +1944,14 @@ class FacebookScraper(SocialPlatformScraper):
                 try:
                     url = f'{FB_BASE}/groups/{g["group_id"]}/search/?q={quote_plus(in_group_keyword)}'
                     driver.get(url)
-                    time.sleep(SCROLL_PAUSE)
+                    _human_pause(SCROLL_PAUSE)
                     if _is_checkpoint(driver):
                         _flag_checkpoint(account['id'], f'captcha-in-group-{g["group_id"]}')
                         _emit(on_progress, 'group_failed', group_id=g['group_id'], reason='captcha')
                         break
                     # Light scroll for lazy content
                     driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                    time.sleep(SCROLL_PAUSE)
+                    _human_pause(SCROLL_PAUSE)
                     stubs = _extract_posts_from_group_search(driver, g)
                     if stubs:
                         aggregated.extend(stubs)
@@ -1923,6 +1959,12 @@ class FacebookScraper(SocialPlatformScraper):
                     _bump_counters(account['id'], delta_today=1, delta_hour=1)
                 except Exception as exc:  # noqa: BLE001
                     _emit(on_progress, 'group_failed', group_id=g['group_id'], reason=str(exc)[:120])
+                # Human-like gap between consecutive group searches. Firing
+                # group-after-group with only scroll pauses is the metronome
+                # cadence FB's automation detection flags; a randomized
+                # ~5-12s gap (skipped after the last group) breaks it.
+                if i < len(groups):
+                    _human_pause(5.0, extra=7.0)
             _emit(on_progress, 'search_done', total=len(aggregated))
             return aggregated
         finally:
@@ -1945,14 +1987,14 @@ class FacebookScraper(SocialPlatformScraper):
         try:
             url = f'{FB_BASE}/groups/{group["group_id"]}/search/?q={quote_plus(keyword)}'
             driver.get(url)
-            time.sleep(SCROLL_PAUSE * 2)
+            _human_pause(SCROLL_PAUSE * 2)
             if _is_checkpoint(driver):
                 _flag_checkpoint(account['id'], f'captcha-in-group-{group["group_id"]}')
                 return results
             # Scroll a couple of times to load lazy content
             for _ in range(2):
                 driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                time.sleep(SCROLL_PAUSE)
+                _human_pause(SCROLL_PAUSE)
             posts = _extract_posts_from_group_search(driver, group)
             for p in posts:
                 results.append(p)
@@ -2348,7 +2390,7 @@ class FacebookScraper(SocialPlatformScraper):
             # signature for backwards compat but is no longer used here.
             search_url = f'{FB_BASE}/search/posts/?q={quote_plus(query)}'
             driver.get(search_url)
-            time.sleep(SCROLL_PAUSE)
+            _human_pause(SCROLL_PAUSE)
 
             # Diagnostic — log where Chrome actually ended up. If cookies
             # don't authenticate, FB redirects to /login/ and the search
@@ -2404,7 +2446,7 @@ class FacebookScraper(SocialPlatformScraper):
                     break
                 # scroll for more
                 driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                time.sleep(SCROLL_PAUSE)
+                _human_pause(SCROLL_PAUSE)
 
             _bump_counters(account['id'], delta_today=1, delta_hour=1)
             _emit(on_progress, 'search_done', total=len(results))
@@ -2425,7 +2467,7 @@ class FacebookScraper(SocialPlatformScraper):
         results: list[GroupStub] = []
         try:
             driver.get(f'{FB_BASE}/search/groups/?q={quote_plus(query)}')
-            time.sleep(SCROLL_PAUSE)
+            _human_pause(SCROLL_PAUSE)
             if _is_checkpoint(driver):
                 _flag_checkpoint(account['id'], 'captcha-during-group-search')
                 return results
@@ -2495,7 +2537,7 @@ class FacebookScraper(SocialPlatformScraper):
             for i, (profile_url, posts) in enumerate(unique_authors.items(), 1):
                 try:
                     driver.get(profile_url)
-                    time.sleep(SCROLL_PAUSE)
+                    _human_pause(SCROLL_PAUSE)
                     if _is_checkpoint(driver):
                         _flag_checkpoint(account['id'], 'captcha-during-enrich')
                         break
@@ -2645,7 +2687,7 @@ class FacebookScraper(SocialPlatformScraper):
         driver = self._open_session(account)
         try:
             driver.get(f'{FB_BASE}/pages/category/{quote_plus(category)}/')
-            time.sleep(SCROLL_PAUSE)
+            _human_pause(SCROLL_PAUSE)
             if _is_checkpoint(driver):
                 _flag_checkpoint(account['id'], 'captcha-during-category')
                 return []
@@ -2670,7 +2712,7 @@ class FacebookScraper(SocialPlatformScraper):
             for i, stub in enumerate(stubs, 1):
                 try:
                     driver.get(stub['profile_url'])
-                    time.sleep(SCROLL_PAUSE)
+                    _human_pause(SCROLL_PAUSE)
                     if _is_checkpoint(driver):
                         _flag_checkpoint(account['id'], 'captcha-during-page-enrich')
                         break
