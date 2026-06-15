@@ -1063,6 +1063,14 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
                 if pattern.search(group_name or ''):
                     return False
 
+            # Stage 1b: city-in-name mismatch. The token loop above only
+            # catches explicit COUNTRY words ('usa', 'ireland'); group names
+            # usually carry a CITY ('Atlanta', 'Dublin'). Resolve any city in
+            # the name to its country and drop if it's a DIFFERENT country.
+            group_country = _extract_country_from_excerpt(group_name or '')
+            if group_country and group_country != operator_country:
+                return False
+
     # Stage 2a (NEW): a curated consumer-classifieds token is a STRONG
     # positive — a local classifieds / flea-market / for-sale board is
     # exactly where consumer service-asks live, so KEEP it even if the name
