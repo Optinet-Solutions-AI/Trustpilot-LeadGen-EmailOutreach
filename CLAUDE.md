@@ -4,6 +4,23 @@
 
 ---
 
+## ⚠️ STANDING DIRECTIVE — Keep the PMS board in sync (do this without being asked)
+
+This project's work is tracked on an external PMS board ("TrustPilot Dashboard" at https://pms-nu-eight.vercel.app, project id `cmnx071c7000004jvmffvk53p`). **Proactively update it as part of finishing work** — the operator should never have to remind you:
+
+- **When a meaningful task/milestone is completed** → create a task in the **Done** column with a one-line description, assigned to the operator (John Campilanan, `cmnx0tu7x000004jlz2vcf34u`), and **always set `dueDate` to today (ISO, e.g. `2026-06-16T12:00:00.000Z`)**. The board only renders a date badge when `dueDate` is set — a card created without it shows *no date*. If you forget, back-fill with `PATCH /api/tasks/{id}` `{dueDate}`.
+- **When you start OR identify substantial new/remaining work** → add it to **To Do** / **In Progress** (don't leave follow-on work only in your chat reply — if there's a pending task, it belongs on the board), or move an existing task with `PATCH /api/tasks/{id}/move`.
+- Mention what you logged in your reply so the operator can see it landed.
+
+**How to call the API (full details + IDs in the `project-pms-integration` memory; OpenAPI spec in `api-1.json`):**
+- **Auth:** session cookie only. Send `Cookie: __Secure-authjs.session-token=$PMS_SESSION_COOKIE` (value lives in `.env`; the `__Secure-` prefix is required). Bearer `pms_` API tokens return 401 — they are NOT wired up in this deployment.
+- **CSRF:** every write (POST/PATCH/DELETE) needs an `Origin: https://pms-nu-eight.vercel.app` header or it 403s with `Cross-origin request blocked`. GETs don't.
+- **Verify every write:** this PMS sometimes returns `201` on a write that doesn't actually persist — always re-`GET /api/tasks/{id}` after creating to confirm.
+- **Create:** `POST /api/projects/{pid}/tasks` (req `title`,`columnId`; opt `description`,`priority`,`dueDate` ISO,`assigneeIds[]`). Set `dueDate` so the board shows the date badge. **Update:** `PATCH /api/tasks/{taskId}` (accepts `dueDate` to back-fill). Columns: Backlog/To Do `cmnx071cz000204jvtz9crqn3`/In Progress `cmnx071cz000304jvambw65wh`/Review-QA/Blocked/Done `cmnx071cz000604jv36sqn7u8` (full list in memory).
+- If the cookie 401s, it expired — ask the operator to re-grab `authjs.session-token` from the browser. Don't fall back to bearer.
+
+---
+
 ## Project Overview
 
 A full-stack lead generation and CRM system that scrapes companies from **any platform** — review sites (Trustpilot, Yelp, TripAdvisor — live) and social platforms (Facebook Pages/Groups, Instagram — planned, with post/group keyword search and post-author capture). Each platform is a plugin behind a single `BasePlatformScraper` contract; scraped leads are enriched, verified, managed through a pipeline, and contacted via personalized cold outreach campaigns over multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
