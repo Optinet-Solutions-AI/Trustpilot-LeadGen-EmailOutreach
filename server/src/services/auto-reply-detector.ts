@@ -131,6 +131,17 @@ const BODY_AUTO_SIGNALS: Array<{ pattern: RegExp; weight: number; label: string 
   // their own help desk — staffed shared inboxes auto-reply with exactly this.
   { pattern: /\b(opening|office|business)\s+hours\s+(are|of\s+operation)\b/i, weight: 0.4, label: 'body:business-hours' },
   { pattern: /\b(help\s+(centre|center)|knowledge\s+base|support\s+(portal|centre|center))\b/i, weight: 0.3, label: 'body:self-service' },
+  // Numeric-RANGE response-time promises ("within 24-48 hours", "1-2 business
+  // days"). The single-number within-timeframe pattern above can't match a
+  // range — the hyphen breaks it — which is why "within 24-48 hours" (twice in
+  // the Home Teeth Whitening ack) contributed nothing.
+  { pattern: /\bwithin\s+\d+\s*[-–—]\s*\d+\s*(business\s+)?(hour|day|week)s?\b/i, weight: 0.4, label: 'body:within-range' },
+  { pattern: /\b(take|expect|respond|reply|get\s+back\s+to\s+you)\b[^.\n]{0,40}?\b\d+\s*[-–—]\s*\d+\s*(business\s+)?(hour|day|week)s?\b/i, weight: 0.4, label: 'body:range-timeframe' },
+  // Helpdesk autoresponder boilerplate — the "add to this ticket" footer and
+  // the "responses may take / response times may vary" SLA notice. A cold
+  // prospect replying to us doesn't volunteer either.
+  { pattern: /to\s+add\s+(additional\s+)?comments?,?\s+reply\s+to\s+this\s+e?mail/i, weight: 0.4, label: 'body:add-comments-reply' },
+  { pattern: /\b(e?mail\s+responses?\s+may\s+take|response\s+times?\s+may\s+(be|take|vary))/i, weight: 0.4, label: 'body:response-time-notice' },
 ];
 
 const BODY_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
@@ -140,6 +151,19 @@ const BODY_TICKET_SIGNALS: Array<{ pattern: RegExp; label: string }> = [
   // "Your case ID is 88421") — strong ticket-issuance markers.
   { pattern: /\b(reference|case|ticket)\s*(number|no\.?|id|#)\s*[:=#]?\s*[a-z0-9][a-z0-9\-]{2,}/i, label: 'body:reference-code' },
   { pattern: /\byour\s+(reference|case|ticket)\s+(is|number|id|#)/i, label: 'body:your-reference' },
+  // Zendesk / Gorgias / Freshdesk reply-stripping delimiter — only ever
+  // appears on ticketing-system emails ("##- Please type your reply above
+  // this line -##"). A near-certain ticket marker on its own.
+  { pattern: /reply\s+above\s+this\s+line/i, label: 'body:reply-above-line' },
+  // Issued ticket/request/case number, including the parenthesised form
+  // helpdesks favour ("Your request (115344)", "your case #88421"). Requires
+  // 3+ digits so it can't fire on a stray small number.
+  { pattern: /\b(your|our|the)\s+(request|ticket|case|enquiry|inquiry|order)\s*[#(]?\s*\d{3,}/i, label: 'body:request-number' },
+  // "your request/ticket/case … has been received/logged/created", tolerant of
+  // an interleaved number or parenthetical that the stricter body:ticket-received
+  // pattern (in BODY_AUTO_SIGNALS) can't bridge — this was the exact gap that
+  // let "Your request (115344) has been received" score as human.
+  { pattern: /\b(your|our|the)\s+(ticket|request|case|enquiry|inquiry|order)\b[^.\n]{0,15}\b(has\s+been|was|is)\s+(received|created|opened|logged|registered|assigned)/i, label: 'body:ticket-received-relaxed' },
 ];
 
 function pickHeader(headers: ClassifyInput['headers'], name: string): string {
