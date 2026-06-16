@@ -423,7 +423,7 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
   try {
     const { data, error } = await getSupabase()
       .from('campaign_leads')
-      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, is_favorite, campaigns(name, campaign_type), leads(company_name, country)')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, is_favorite, opt_out_detected, campaigns(name, campaign_type), leads(company_name, country, do_not_contact)')
       .in('status', statusFilter)
       .order('sent_at', { ascending: false })
       .limit(400);
@@ -496,6 +496,11 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
         current_step: (row.current_step as number | null) ?? 1,
         is_prospect: prospectIds.has(row.id as string),
         is_favorite: (row.is_favorite as boolean | null) ?? false,
+        // Opt-out: detector flagged this reply (opt_out_detected) → show the
+        // "Opt-out?" pill + Do Not Contact action, unless already suppressed
+        // (do_not_contact on the lead) → show a muted "Do not contact" state.
+        opt_out_detected: (row.opt_out_detected as boolean | null) ?? false,
+        do_not_contact: (row.leads as { do_not_contact?: boolean } | null)?.do_not_contact ?? false,
       };
     });
 
@@ -1085,6 +1090,63 @@ router.post('/toggle-favorite', async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, data: { is_favorite: updated.is_favorite } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── POST /api/inbox/do-not-contact ────────────────────────────────────────────
+// Body: { campaignLeadId: string, reason?: string } — the operator's one-click
+// confirmation of an opt-out reply. Suppresses the lead from ALL future
+// campaigns (leads.do_not_contact=true, mirrors the migration-048 `blocked`
+// exclusion), marks it 'lost', and stops every active sequence for it. The
+// auto-detector only flags opt_out_detected; this endpoint is the human gate
+// that actually suppresses.
+router.post('/do-not-contact', async (req: Request, res: Response) => {
+  const campaignLeadId = req.body?.campaignLeadId as string | undefined;
+  const reason = (req.body?.reason as string | undefined)?.slice(0, 280) || 'Opt-out reply — operator confirmed';
+  if (!campaignLeadId) {
+    res.status(400).json({ success: false, error: 'campaignLeadId required' });
+    return;
+  }
+
+  try {
+    const supabase = getSupabase();
+    const { data: cl, error: clErr } = await supabase
+      .from('campaign_leads')
+      .select('id, lead_id, campaign_id')
+      .eq('id', campaignLeadId)
+      .maybeSingle();
+    if (clErr) { res.status(500).json({ success: false, error: clErr.message }); return; }
+    if (!cl) { res.status(404).json({ success: false, error: 'campaign_lead not found' }); return; }
+
+    // Lead-level suppression — the source of truth recipient queries filter on.
+    const { error: leadErr } = await supabase
+      .from('leads')
+      .update({
+        do_not_contact: true,
+        do_not_contact_at: new Date().toISOString(),
+        do_not_contact_reason: reason,
+        outreach_status: 'lost',
+      })
+      .eq('id', cl.lead_id);
+    if (leadErr) { res.status(500).json({ success: false, error: leadErr.message }); return; }
+
+    // Stop every still-active sequence for this lead, across all campaigns.
+    await supabase
+      .from('campaign_leads')
+      .update({ sequence_paused: true, next_step_at: null })
+      .eq('lead_id', cl.lead_id)
+      .in('status', ['pending', 'sent', 'opened']);
+
+    await createNote(cl.lead_id, {
+      type: 'marked_do_not_contact',
+      content: `Marked Do Not Contact — ${reason}. Suppressed from all future campaigns; active sequences stopped.`,
+      metadata: { campaign_id: cl.campaign_id, source: 'inbox' },
+    });
+
+    res.json({ success: true, data: { lead_id: cl.lead_id, do_not_contact: true } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

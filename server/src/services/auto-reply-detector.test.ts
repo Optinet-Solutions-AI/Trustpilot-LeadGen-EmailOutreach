@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReply } from './auto-reply-detector';
+import { classifyReply, detectOptOut } from './auto-reply-detector';
 
 // The exact Home Teeth Whitening ticket auto-acknowledgement that the live
 // classifier scored 0.3 (just under the 0.4 threshold) and mislabeled as a
@@ -83,5 +83,35 @@ describe('classifyReply — genuine human replies stay human', () => {
       body: 'We are fully aware of our online presence and handle review management internally. We are not interested. Please remove KBM Builders from your database and mark us as "do not contact".',
     });
     expect(v.kind).toBe('human');
+  });
+});
+
+describe('detectOptOut', () => {
+  it('flags the KBM "remove us / do not contact" reply', () => {
+    const r = detectOptOut(
+      'We are not interested. Please remove KBM Builders from your database and mark us as "do not contact".',
+    );
+    expect(r.isOptOut).toBe(true);
+    expect(r.phrase).toBeTruthy();
+  });
+
+  it('flags unsubscribe / take me off the list / stop emailing', () => {
+    expect(detectOptOut('Please unsubscribe me.').isOptOut).toBe(true);
+    expect(detectOptOut('Take us off your mailing list.').isOptOut).toBe(true);
+    expect(detectOptOut('Stop emailing me.').isOptOut).toBe(true);
+    expect(detectOptOut('We no longer wish to be contacted.').isOptOut).toBe(true);
+  });
+
+  it('does NOT flag a genuinely interested reply', () => {
+    expect(detectOptOut("Thanks — we're interested, can you send pricing and a sample report?").isOptOut).toBe(false);
+  });
+
+  it('does NOT flag an innocuous use of "remove" (not a list/database removal)', () => {
+    expect(detectOptOut('Could you remove the screenshot from the email? It looks blurry.').isOptOut).toBe(false);
+  });
+
+  it('treats empty input as not opt-out', () => {
+    expect(detectOptOut('').isOptOut).toBe(false);
+    expect(detectOptOut(null as unknown as string).isOptOut).toBe(false);
   });
 });

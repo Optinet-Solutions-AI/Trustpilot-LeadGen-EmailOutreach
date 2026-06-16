@@ -59,6 +59,13 @@ interface CampaignMessage {
    *  (migration 046), so a starred row appears in both Replies and Sent.
    *  Drives the per-row star + the "Favorites only" filter. */
   is_favorite?: boolean;
+  /** True when the auto-reply detector found opt-out / do-not-contact language
+   *  in this reply (migration 050). Drives the "Opt-out?" pill + the one-click
+   *  "Do Not Contact" action. */
+  opt_out_detected?: boolean;
+  /** True when the lead has been marked do-not-contact (suppressed from all
+   *  future campaigns). Shown as a muted state; hides the action. */
+  do_not_contact?: boolean;
 }
 
 // Resolve the canonical campaign_lead UUID from a row. Synthetic rows from
@@ -293,6 +300,7 @@ export default function Inbox() {
   const [error, setError] = useState<string | null>(null);
   const [checkingMailbox, setCheckingMailbox] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
+  const [dncBusy, setDncBusy] = useState(false);
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
 
   // Per-message Gemini translation cache. Keyed by ThreadMessage.id.
@@ -601,6 +609,29 @@ export default function Inbox() {
       setTimeout(() => setCheckStatus(null), 4000);
     }
   }, []);
+
+  // One-click "Do Not Contact" — the operator's confirmation of a detected
+  // opt-out reply. Suppresses the lead from all future campaigns and stops any
+  // active sequence (server side). Optimistically flips the row + selected msg
+  // so the pill switches from "Opt-out?" to the muted "Do not contact" state.
+  const markDoNotContact = useCallback(async (msg: CampaignMessage) => {
+    if (dncBusy) return;
+    const cid = canonicalId(msg);
+    setDncBusy(true);
+    try {
+      await api.post('/inbox/do-not-contact', { campaignLeadId: cid });
+      const patch = { do_not_contact: true, opt_out_detected: false };
+      setMessages((prev) => prev.map((m) => (canonicalId(m) === cid ? { ...m, ...patch } : m)));
+      setSelectedMsg((prev) => (prev && canonicalId(prev) === cid ? { ...prev, ...patch } : prev));
+      setCheckStatus(`Marked ${msg.company_name || 'lead'} as Do Not Contact`);
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      setCheckStatus(e?.response?.data?.error ?? e?.message ?? 'Couldn’t mark Do Not Contact');
+    } finally {
+      setDncBusy(false);
+      setTimeout(() => setCheckStatus(null), 4000);
+    }
+  }, [dncBusy]);
 
   // Visible messages — the result of (campaign filter ∩ search ∩ sort) over
   // the raw `messages` returned by the API. Pulled out into a memo so the
@@ -1352,6 +1383,23 @@ export default function Inbox() {
                               Prospect
                             </span>
                           )}
+                          {msg.do_not_contact ? (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 inline-flex items-center gap-0.5"
+                              title="Marked Do Not Contact — suppressed from future campaigns"
+                            >
+                              <span className="material-symbols-outlined text-[11px]">block</span>
+                              DNC
+                            </span>
+                          ) : msg.opt_out_detected ? (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-error inline-flex items-center gap-0.5"
+                              title="Opt-out language detected — open to review and mark Do Not Contact"
+                            >
+                              <span className="material-symbols-outlined text-[11px]">person_off</span>
+                              Opt-out?
+                            </span>
+                          ) : null}
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
                             {badge.label}
                           </span>
@@ -1443,6 +1491,31 @@ export default function Inbox() {
               <span className={`flex-shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full ${STATUS_BADGE[selectedMsg.status]?.classes || ''}`}>
                 {STATUS_BADGE[selectedMsg.status]?.label || selectedMsg.status}
               </span>
+              {selectedMsg.do_not_contact ? (
+                <span
+                  className="flex-shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-500 inline-flex items-center gap-1"
+                  title="Suppressed from all future campaigns"
+                >
+                  <span className="material-symbols-outlined text-[13px]">block</span>
+                  Do not contact
+                </span>
+              ) : (
+                <button
+                  onClick={() => markDoNotContact(selectedMsg)}
+                  disabled={dncBusy}
+                  className={`flex-shrink-0 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider rounded-md px-2.5 py-1 transition-colors disabled:opacity-40 ${
+                    selectedMsg.opt_out_detected
+                      ? 'text-white bg-error hover:bg-error/90'
+                      : 'text-secondary border border-slate-200 hover:border-error/40 hover:text-error'
+                  }`}
+                  title={selectedMsg.opt_out_detected
+                    ? 'Opt-out detected — suppress this lead from all future campaigns'
+                    : 'Mark Do Not Contact — suppress this lead from all future campaigns'}
+                >
+                  <span className="material-symbols-outlined text-[13px]">person_off</span>
+                  Do Not Contact
+                </button>
+              )}
             </div>
 
             <div className="flex-1">

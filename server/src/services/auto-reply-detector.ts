@@ -266,3 +266,41 @@ function stripHtmlForScan(html: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+// ── Opt-out / do-not-contact detection ──────────────────────────────────────
+//
+// Separate from the auto/human classification: an opt-out is a HUMAN reply
+// ("remove us from your database", "unsubscribe", "not interested") that the
+// operator should be able to suppress with one click. We only flag it here —
+// the reply still counts as a human reply; suppression is operator-confirmed.
+const OPT_OUT_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bdo\s*-?\s*not\s+(contact|email|e-?mail|reach\s+out|message)\b/i, label: 'do-not-contact' },
+  { pattern: /\bdon'?t\s+(contact|email|e-?mail|message)\s+(me|us)\b/i, label: 'dont-contact' },
+  { pattern: /\bunsubscrib(e|ed|ing)\b/i, label: 'unsubscribe' },
+  { pattern: /\bopt(ed)?[\s-]?out\b/i, label: 'opt-out' },
+  // "remove me/us … from/off your … database/list/records/system/contacts".
+  // The lazy gaps tolerate a company name or qualifier between the verb and the
+  // list noun ("remove KBM Builders from your database") without matching an
+  // unrelated "remove the screenshot from the email".
+  { pattern: /\bremove\s+(me|us|my|our)?\b[^.\n]{0,40}?\b(from|off)\b[^.\n]{0,20}?\b(database|list|mailing|records|system|contacts?|crm|outreach)\b/i, label: 'remove-from-list' },
+  { pattern: /\btake\s+(me|us|my\s+name|our\s+name)\s+off\b/i, label: 'take-me-off' },
+  { pattern: /\bstop\s+(emailing|e-?mailing|contacting|sending|messaging)\b/i, label: 'stop-emailing' },
+  { pattern: /\bno\s+longer\s+(wish|want)\s+to\s+(receive|be\s+contacted|hear)\b/i, label: 'no-longer-wish' },
+  { pattern: /\bnot\s+interested\b/i, label: 'not-interested' },
+];
+
+/**
+ * Detect opt-out / do-not-contact intent in an inbound reply body. Pure
+ * function. Returns the first matched phrase for audit/display. Conservative
+ * by design on the broad signals ("not interested") — suppression is gated on
+ * operator confirmation, so this only surfaces a prompt, never auto-suppresses.
+ */
+export function detectOptOut(text: string | null | undefined): { isOptOut: boolean; phrase: string | null } {
+  if (!text) return { isOptOut: false, phrase: null };
+  const scan = stripHtmlForScan(String(text));
+  for (const { pattern, label } of OPT_OUT_PATTERNS) {
+    const m = scan.match(pattern);
+    if (m) return { isOptOut: true, phrase: (m[0].trim().slice(0, 80) || label) };
+  }
+  return { isOptOut: false, phrase: null };
+}

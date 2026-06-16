@@ -22,7 +22,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { config } from '../config.js';
-import { classifyReply } from './auto-reply-detector.js';
+import { classifyReply, detectOptOut } from './auto-reply-detector.js';
 import { classifyInboundBounce } from './bounce-tracker.js';
 import { extractContacts } from './auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
@@ -139,7 +139,7 @@ export async function checkForReplies(): Promise<{ repliesFound: number; autoRep
         }
 
         // Either classified human, OR auto-handling is feature-flagged off.
-        await markHumanReplied({ cl, snippet });
+        await markHumanReplied({ cl, snippet, body });
         repliesFound++;
 
         // Shadow log when feature flag is off so we can score detector
@@ -180,8 +180,8 @@ export async function checkForReplies(): Promise<{ repliesFound: number; autoRep
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-async function markHumanReplied(args: { cl: SentCampaignLead; snippet: string }): Promise<void> {
-  const { cl, snippet } = args;
+async function markHumanReplied(args: { cl: SentCampaignLead; snippet: string; body?: string }): Promise<void> {
+  const { cl, snippet, body } = args;
   const supabase = getSupabase();
 
   await supabase
@@ -215,6 +215,20 @@ async function markHumanReplied(args: { cl: SentCampaignLead; snippet: string })
       .from('campaigns')
       .update({ total_replied: (campaign.total_replied || 0) + 1 })
       .eq('id', cl.campaign_id);
+  }
+
+  // Opt-out flag — a human reply asking not to be contacted. Stays 'replied'
+  // (it IS a human reply); we only surface the one-click "Do Not Contact"
+  // prompt in the Inbox. Suppression is operator-gated.
+  const optOut = detectOptOut(body ?? snippet);
+  if (optOut.isOptOut) {
+    await supabase.from('campaign_leads').update({ opt_out_detected: true }).eq('id', cl.id);
+    await createNote(cl.lead_id, {
+      type: 'opt_out_detected',
+      content: `Opt-out language in reply ("${optOut.phrase}") — review and confirm Do Not Contact`,
+      metadata: { campaign_id: cl.campaign_id, phrase: optOut.phrase, gmail_thread_id: cl.gmail_thread_id },
+    });
+    console.log(`[ReplyTracker] opt-out detected on lead ${cl.lead_id} ("${optOut.phrase}")`);
   }
 }
 

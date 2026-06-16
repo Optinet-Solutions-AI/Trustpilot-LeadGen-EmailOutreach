@@ -30,7 +30,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { config } from '../config.js';
-import { classifyReply } from './auto-reply-detector.js';
+import { classifyReply, detectOptOut } from './auto-reply-detector.js';
 import { classifyInboundBounce } from './bounce-tracker.js';
 import { extractContacts } from './auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
@@ -301,6 +301,11 @@ export async function checkRepliesImap(
             .eq('id', lead.campaign_id);
         }
 
+        // Opt-out flag — a human reply asking not to be contacted. Stays
+        // 'replied' (it IS a human reply); we only surface the one-click
+        // "Do Not Contact" prompt in the Inbox. Suppression is operator-gated.
+        await flagOptOut(lead, body, account.email);
+
         console.log(`[ImapReplyTracker] ${account.email}: reply from ${opts.fromAddr} (${opts.matchedBy}) → campaign_lead ${lead.id}`);
         return true;
       };
@@ -399,6 +404,24 @@ async function parseBody(raw: Buffer): Promise<{ headers: Record<string, string>
   // Prefer text/plain; fall back to text/html stripped.
   const body = parsed.text || (parsed.html ? String(parsed.html) : '') || '';
   return { headers, body };
+}
+
+/**
+ * Flag a human reply that contains opt-out / do-not-contact language. Sets
+ * campaign_leads.opt_out_detected and writes an audit note so the Inbox can
+ * surface the one-click "Do Not Contact" prompt. Never suppresses on its own.
+ */
+async function flagOptOut(lead: LeadRef, body: string, accountEmail: string): Promise<void> {
+  const optOut = detectOptOut(body);
+  if (!optOut.isOptOut) return;
+  const supabase = getSupabase();
+  await supabase.from('campaign_leads').update({ opt_out_detected: true }).eq('id', lead.id);
+  await createNote(lead.lead_id, {
+    type: 'opt_out_detected',
+    content: `Opt-out language in reply ("${optOut.phrase}") — review and confirm Do Not Contact`,
+    metadata: { campaign_id: lead.campaign_id, phrase: optOut.phrase, account: accountEmail },
+  });
+  console.log(`[ImapReplyTracker] opt-out detected on lead ${lead.lead_id} ("${optOut.phrase}")`);
 }
 
 async function markAutoReplied(args: {
