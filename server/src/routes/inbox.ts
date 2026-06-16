@@ -400,20 +400,22 @@ router.get('/thread/:threadId', async (req: Request, res: Response) => {
 
 // ── GET /api/inbox/campaign-replies?folder=replies|sent ───────────────────────
 // Returns campaign_leads enriched with lead + campaign info.
-// folder=replies → status='replied'
-// folder=sent    → status IN (sent, opened, replied, bounced)
+// folder=replies → status IN (replied, auto_replied, bounced)
+// folder=sent    → status IN (sent, opened, replied, bounced, auto_replied)
 //
 // Joins against email_accounts so the frontend knows which thread endpoint to
 // hit (Gmail API vs IMAP) and exposes reply_read_at so the notifications badge
 // can track unseen replies.
 router.get('/campaign-replies', async (req: Request, res: Response) => {
   const folder = (req.query.folder as string) || 'replies';
-  // Both 'replied' (human) and 'auto_replied' (auto-detector flagged) belong
-  // in the Replies folder. They look different in metrics — total_replied
-  // stays human-only — but the user wants both visible in the inbox so a
-  // "Prospect" badge can call out the ones that were promoted/auto-flagged.
+  // 'replied' (human), 'auto_replied' (auto-detector flagged) and 'bounced'
+  // (NDR mistakenly threaded as a reply) all belong in the Replies folder.
+  // They differ in metrics — total_replied stays human-only and bounces feed
+  // total_bounced — but the user wants all three visible in the inbox so a
+  // dead address shows its red "Bounced" tag in place rather than vanishing,
+  // and so promoted/auto-flagged replies still surface their "Prospect" badge.
   const statusFilter = folder === 'replies'
-    ? ['replied', 'auto_replied']
+    ? ['replied', 'auto_replied', 'bounced']
     : ['sent', 'opened', 'replied', 'bounced', 'auto_replied'];
   const groupBy = req.query.groupBy as string | undefined;
   const campaignTypeFilter = req.query.campaignType as string | undefined;

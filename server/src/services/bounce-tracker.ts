@@ -172,6 +172,68 @@ export function classifyInboundBounce(input: {
   };
 }
 
+// Snippet-safe hard-failure signals. Deliberately EXCLUDES the bare 3-digit
+// SMTP codes (550/551/…) that HARD_BOUNCE_PATTERNS carries: in a real DSN a
+// lone "550 " is reliable, but in free-form reply text it collides with
+// everyday numbers ("we're at 550 King St"). These are unambiguous in prose —
+// dotted DSN codes and named refusal phrases a human reply would never use.
+const SNIPPET_HARD_SIGNALS = [
+  /5\.\d\.\d/,                 // dotted enhanced status code, e.g. 5.1.1
+  /NoSuchUser/i,
+  /user unknown/i,
+  /user does not exist/i,
+  /address.*not found/i,
+  /no such.*mailbox/i,
+  /mailbox not found/i,
+  /recipient.*rejected/i,
+  /account.*does not exist/i,
+];
+
+/**
+ * Classify a stored `campaign_leads.reply_snippet` (body text only) as a
+ * bounce. Used by the one-off backfill that reclassifies rows the live tracker
+ * marked 'replied' before the bounce guard shipped (commit b9cc8fc) — those
+ * rows have no preserved From/Subject/headers, only the body the tracker saved.
+ *
+ * Two layers, conservative by design (a backfill must not flip genuine human
+ * replies):
+ *   1. Run the inbound NDR detector with the snippet as both subject + body so
+ *      its subject-phrasing and RFC 3464 DSN-block signals can fire.
+ *   2. Fall back to snippet-safe hard-failure phrases ("NoSuchUser",
+ *      "account … does not exist", dotted 5.x.x codes) for NDRs whose body
+ *      carries the refusal text without standard NDR subject phrasing.
+ *
+ * Only PERMANENT failures are flagged. A transient/soft snippet (4xx, mailbox
+ * full) returns isBounce=false — a mislabeled transient failure is rare and
+ * not worth the false-positive risk on a bulk reclassify.
+ */
+export function classifyBounceFromSnippet(
+  snippet: string | null | undefined,
+  fallbackEmail?: string | null,
+): { isBounce: boolean; type: 'hard' | 'soft'; bouncedEmail: string | null } {
+  const text = (snippet || '').trim();
+  if (!text) return { isBounce: false, type: 'hard', bouncedEmail: null };
+
+  const inbound = classifyInboundBounce({ subject: text, body: text });
+  if (inbound.isBounce) {
+    return {
+      isBounce: true,
+      type: inbound.type,
+      bouncedEmail: inbound.bouncedEmail ?? fallbackEmail ?? null,
+    };
+  }
+
+  if (SNIPPET_HARD_SIGNALS.some(p => p.test(text))) {
+    return {
+      isBounce: true,
+      type: 'hard',
+      bouncedEmail: extractBouncedEmail(text) ?? fallbackEmail ?? null,
+    };
+  }
+
+  return { isBounce: false, type: 'hard', bouncedEmail: null };
+}
+
 interface GmailClientEntry {
   email: string;
   gmail: ReturnType<typeof getGmailClient>;

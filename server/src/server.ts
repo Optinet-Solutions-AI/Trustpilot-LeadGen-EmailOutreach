@@ -284,18 +284,18 @@ const server = app.listen(config.port, async () => {
   setInterval(async () => {
     try {
       const { checkForReplies } = await import('./services/reply-tracker.js');
-      const { repliesFound, autoRepliesFound } = await checkForReplies();
-      if (repliesFound > 0 || autoRepliesFound > 0) {
-        console.log(`[ReplyTracker] Gmail: ${repliesFound} human / ${autoRepliesFound} auto reply(s)`);
+      const { repliesFound, autoRepliesFound, bouncesFound } = await checkForReplies();
+      if (repliesFound > 0 || autoRepliesFound > 0 || bouncesFound > 0) {
+        console.log(`[ReplyTracker] Gmail: ${repliesFound} human / ${autoRepliesFound} auto reply(s)${bouncesFound > 0 ? ` / ${bouncesFound} bounce(s)` : ''}`);
       }
     } catch (e) {
       console.error('[ReplyTracker] Gmail poll error:', e instanceof Error ? e.message : e);
     }
     try {
       const { checkAllImapReplies } = await import('./services/reply-tracker.imap.js');
-      const { accountsChecked, repliesFound, autoRepliesFound } = await checkAllImapReplies();
+      const { accountsChecked, repliesFound, autoRepliesFound, bouncesFound } = await checkAllImapReplies();
       if (accountsChecked > 0) {
-        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} human / ${autoRepliesFound} auto reply(s)`);
+        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} human / ${autoRepliesFound} auto reply(s)${bouncesFound > 0 ? ` / ${bouncesFound} bounce(s)` : ''}`);
       }
     } catch (e) {
       console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);

@@ -23,6 +23,7 @@ import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
 import { config } from '../config.js';
 import { classifyReply } from './auto-reply-detector.js';
+import { classifyInboundBounce } from './bounce-tracker.js';
 import { extractContacts } from './auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 
@@ -52,12 +53,13 @@ interface SentCampaignLead {
   replied_at: string | null;
 }
 
-export async function checkForReplies(): Promise<{ repliesFound: number; autoRepliesFound: number }> {
-  if (config.emailMode !== 'gmail') return { repliesFound: 0, autoRepliesFound: 0 };
+export async function checkForReplies(): Promise<{ repliesFound: number; autoRepliesFound: number; bouncesFound: number }> {
+  if (config.emailMode !== 'gmail') return { repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0 };
 
   const supabase = getSupabase();
   let repliesFound = 0;
   let autoRepliesFound = 0;
+  let bouncesFound = 0;
 
   try {
     const gmail = getGmailClient();
@@ -70,10 +72,10 @@ export async function checkForReplies(): Promise<{ repliesFound: number; autoRep
 
     if (error) {
       console.error('[ReplyTracker] DB query error:', error.message);
-      return { repliesFound: 0, autoRepliesFound: 0 };
+      return { repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0 };
     }
 
-    if (!sentLeads || sentLeads.length === 0) return { repliesFound: 0, autoRepliesFound: 0 };
+    if (!sentLeads || sentLeads.length === 0) return { repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0 };
 
     const fromEmail = config.gmail.fromEmail.toLowerCase();
 
@@ -103,8 +105,22 @@ export async function checkForReplies(): Promise<{ repliesFound: number; autoRep
 
         const headers = headersToMap(replyMsg.payload?.headers ?? []);
         const subject = pickHeader(headers, 'subject');
+        const fromAddr = pickHeader(headers, 'from');
         const body = extractBodyText(replyMsg.payload ?? null) || replyMsg.snippet || '';
         const snippet = (replyMsg.snippet ?? '').slice(0, 200);
+
+        // Bounce/NDR guard — MUST run before classifyReply. A Mail Delivery
+        // Subsystem report threads under our outgoing Message-ID, so Gmail
+        // groups it into the campaign thread and it surfaces here as the
+        // inbound message. Without this it'd be counted as a human reply.
+        // Mirrors the IMAP path's guard (reply-tracker.imap.ts).
+        const bounce = classifyInboundBounce({ fromAddr, subject, headers, body });
+        if (bounce.isBounce) {
+          await markBouncedGmail({ cl, bounce, subject });
+          bouncesFound++;
+          console.log(`[ReplyTracker] ${bounce.type} bounce for lead ${cl.lead_id} in campaign ${cl.campaign_id}`);
+          continue;
+        }
 
         const verdict = classifyReply({ headers, subject, body });
         const isAuto = verdict.kind === 'auto' || verdict.kind === 'ticket';
@@ -159,7 +175,7 @@ export async function checkForReplies(): Promise<{ repliesFound: number; autoRep
     console.error('[ReplyTracker] Fatal error:', err instanceof Error ? err.message : err);
   }
 
-  return { repliesFound, autoRepliesFound };
+  return { repliesFound, autoRepliesFound, bouncesFound };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -199,6 +215,59 @@ async function markHumanReplied(args: { cl: SentCampaignLead; snippet: string })
       .from('campaigns')
       .update({ total_replied: (campaign.total_replied || 0) + 1 })
       .eq('id', cl.campaign_id);
+  }
+}
+
+// Flip a matched lead to 'bounced' rather than 'replied'. Mirrors the IMAP
+// bounce path: guard on status='sent' so we never downgrade a row a parallel
+// poll already advanced, bump campaign total_bounced, log an activity note,
+// and (hard bounces only) invalidate the dead address so it's excluded from
+// future campaigns. outreach_status is left untouched — the invalid-email
+// flag is what gates re-sends.
+async function markBouncedGmail(args: {
+  cl: SentCampaignLead;
+  bounce: { type: 'hard' | 'soft'; bouncedEmail: string | null };
+  subject: string;
+}): Promise<void> {
+  const { cl, bounce, subject } = args;
+  const supabase = getSupabase();
+
+  const { error: updateErr } = await supabase
+    .from('campaign_leads')
+    .update({ status: 'bounced' })
+    .eq('id', cl.id)
+    .eq('status', 'sent');
+  if (updateErr) return;
+
+  const { data: campaign } = await supabase
+    .from('campaigns')
+    .select('total_bounced')
+    .eq('id', cl.campaign_id)
+    .single();
+  if (campaign) {
+    await supabase
+      .from('campaigns')
+      .update({ total_bounced: (campaign.total_bounced || 0) + 1 })
+      .eq('id', cl.campaign_id);
+  }
+
+  await createNote(cl.lead_id, {
+    type: 'email_bounced',
+    content: `Bounce detected via Gmail (${bounce.type} bounce)${bounce.bouncedEmail ? ` — ${bounce.bouncedEmail}` : ''}`,
+    metadata: {
+      campaign_id: cl.campaign_id,
+      gmail_thread_id: cl.gmail_thread_id,
+      bounce_type: bounce.type,
+      bounced_email: bounce.bouncedEmail ?? cl.email_used,
+      subject,
+    },
+  });
+
+  if (bounce.type === 'hard') {
+    await updateLead(cl.lead_id, {
+      email_verified: false,
+      verification_status: 'invalid',
+    });
   }
 }
 
