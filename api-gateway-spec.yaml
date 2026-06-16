@@ -987,6 +987,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/inbox/do-not-contact:
+    post:
+      operationId: markInboxDoNotContact
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/discovered-contacts:
     get:
       operationId: listDiscoveredContacts
