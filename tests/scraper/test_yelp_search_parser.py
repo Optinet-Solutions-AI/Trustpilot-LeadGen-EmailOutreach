@@ -11,6 +11,23 @@ def _load():
 def test_extracts_many_businesses():
     assert len(_load()) >= 8
 
+def test_parses_abbreviated_and_exact_review_counts():
+    # Yelp shows "5.7k reviews" for popular spots and "1,097 reviews" for others.
+    # Both must parse, or popular businesses get review_count=0 and are dropped.
+    # Each card is nested >6 deep so the parser's parent-walk stays per-card
+    # (real Yelp cards are deeply nested; a shallow stub would merge them).
+    def card(slug, name, rating, reviews):
+        inner = (f'<a href="/biz/{slug}">{name}</a>'
+                 f'<span aria-label="{rating} star rating"></span> {reviews}')
+        return '<div>' * 8 + inner + '</div>' * 8
+    html = ('<ul>'
+            + card('popular-spot', 'Popular Spot', '4.2', '5.7k reviews')
+            + card('exact-spot', 'Exact Spot', '4.0', '1,097 reviews')
+            + '</ul>')
+    rows = {r['name']: r for r in _parse_yelp_search_cards(html)}
+    assert rows['Popular Spot']['review_count'] == 5700
+    assert rows['Exact Spot']['review_count'] == 1097
+
 def test_rows_have_name_and_biz_url():
     for r in _load():
         assert r['name'] and isinstance(r['name'], str)

@@ -179,7 +179,11 @@ def _build_search_url(category: str, city: str, start: int) -> str:
 
 _BIZ_HREF_RE = re.compile(r'/biz/([a-z0-9\-]+)')
 _RATING_RE = re.compile(r'([0-5](?:\.\d)?)\s*star rating', re.I)
-_REVIEWS_RE = re.compile(r'([\d,]+)\s+review', re.I)
+# Yelp shows review counts two ways on search cards: exact ("1,097 reviews")
+# and abbreviated for popular spots ("5.7k reviews"). Capture both, incl. the
+# optional 'k' thousands suffix — without it, popular businesses parse to 0
+# reviews and get dropped by the min_review_count filter.
+_REVIEWS_RE = re.compile(r'([\d,]+(?:\.\d+)?)\s*(k)?\s*reviews?', re.I)
 _NOISE_NAMES = {'order', 'menu', 'more', 'website', 'directions', 'call',
                 'see all', 'read more', 'order now', ''}
 
@@ -222,7 +226,11 @@ def _parse_yelp_search_cards(html: str) -> list[dict]:
         rm = _RATING_RE.search(hay)
         rating = float(rm.group(1)) if rm else None
         vm = _REVIEWS_RE.search(hay)
-        review_count = int(vm.group(1).replace(',', '')) if vm else 0
+        if vm:
+            n = float(vm.group(1).replace(',', ''))
+            review_count = int(n * 1000) if vm.group(2) else int(n)
+        else:
+            review_count = 0
 
         out.append({
             'name': name,
