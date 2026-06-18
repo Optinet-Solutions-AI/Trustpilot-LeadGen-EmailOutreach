@@ -75,6 +75,7 @@ class LocalBrowserFetcher:
         max_pace: float = 12.0,
         reloads: int = 1,
         page_timeout: int = 70,
+        block_markers: tuple[str, ...] = BLOCK_MARKERS,
     ):
         self._driver = None
         self.min_bytes = min_bytes
@@ -85,6 +86,7 @@ class LocalBrowserFetcher:
         self.max_pace = max_pace
         self.reloads = reloads
         self.page_timeout = page_timeout
+        self.block_markers = block_markers
         self._last_load = 0.0
 
     def __enter__(self):
@@ -120,9 +122,8 @@ class LocalBrowserFetcher:
         except Exception:
             return ''
 
-    @staticmethod
-    def _is_block(html: str) -> bool:
-        return any(m in html for m in BLOCK_MARKERS)
+    def _is_block(self, html: str) -> bool:
+        return any(m in html for m in self.block_markers)
 
     def get(self, url: str) -> Optional[str]:
         d = self._driver
