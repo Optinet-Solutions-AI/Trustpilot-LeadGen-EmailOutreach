@@ -105,9 +105,6 @@ _EXCLUDED_DOMAINS = (
     'youtube.com', 'tiktok.com', 'pinterest.com',
 )
 
-_BIZ_SLUG_RE = re.compile(r'^/biz/[a-z0-9._-]+/?$', re.IGNORECASE)
-
-
 def _load_country_cities() -> dict[str, list[str]]:
     try:
         with open(_COUNTRY_CITIES_PATH, 'r', encoding='utf-8') as f:
@@ -166,16 +163,6 @@ def _unwrap_biz_redir(href: str) -> Optional[str]:
     if any(d in lower for d in _EXCLUDED_DOMAINS):
         return None
     return target.rstrip('/')
-
-
-def _build_search_url(category: str, city: str, start: int) -> str:
-    """Compose the public Yelp search URL the same way the UI does."""
-    qs = urllib.parse.urlencode({
-        'find_desc': category,
-        'find_loc': city,
-        'start': start,
-    })
-    return f'https://www.yelp.com/search?{qs}'
 
 
 _BIZ_HREF_RE = re.compile(r'/biz/([a-z0-9\-]+)')
@@ -272,116 +259,6 @@ def _search_city_browser(fetch_fn, city: str, category: str, max_results: int) -
             break
         offset += _RESULTS_PER_PAGE
     return out[:max_results]
-
-
-def _extract_search_cards(html: str) -> list[dict]:
-    """
-    Parse a /search results page and return business stubs.
-
-    Yelp wraps each result in <li> (sometimes <div role="listitem">).
-    Inside the card boundary we find:
-      • The /biz/<slug> anchor(s) — name link, rating link, review-count
-        link all share the same href. Pick the name (non-empty text,
-        not a bare digit, not a "N reviews" link).
-      • Rating via `[aria-label*="star rating"]` (Yelp ships a 0.5-step
-        decimal like "4.5 star rating").
-      • Review count via plain text "N reviews" anywhere in the card.
-
-    Honoring the card boundary is critical — without it the ancestor
-    walk picks up the rating of an adjacent card and assigns it to a
-    rating-less business. The boundary is the nearest `<li>` /
-    `[role="listitem"]` ancestor.
-
-    Defensive: Yelp redesigns the search UI semi-regularly. We dedupe
-    by profile_url so a card with no rating still emits a stub (the
-    in-process filter in scrape_listing drops it before enrichment).
-    """
-    soup = BeautifulSoup(html, 'lxml')
-    seen_urls: set[str] = set()
-    cards: list[dict] = []
-
-    # Card containers — Yelp's listing has used both shapes across
-    # redesigns. Iterate <li> first, then any [role="listitem"]
-    # not already seen (parents inside an <li> won't double-count).
-    containers: list = list(soup.find_all('li'))
-    seen_container_ids = {id(c) for c in containers}
-    for el in soup.select('[role="listitem"]'):
-        if id(el) in seen_container_ids:
-            continue
-        seen_container_ids.add(id(el))
-        containers.append(el)
-
-    for card in containers:
-        # Collect biz anchors in this card; skip biz_redir (those are
-        # profile-side external links, not search-result entries).
-        biz_anchors = [
-            a for a in card.select('a[href^="/biz/"]')
-            if 'biz_redir' not in (a.get('href') or '')
-        ]
-        if not biz_anchors:
-            continue
-
-        # Resolve the slug path — all biz anchors in one card point at
-        # the same business, modulo query params (?hrid=, ?ad_business_id=).
-        slug_path: Optional[str] = None
-        for a in biz_anchors:
-            href = (a.get('href') or '').split('?', 1)[0].split('#', 1)[0].rstrip('/')
-            if _BIZ_SLUG_RE.match(href):
-                slug_path = href
-                break
-        if not slug_path:
-            continue
-
-        profile_url = f'https://www.yelp.com{slug_path}'
-        if profile_url in seen_urls:
-            continue
-
-        # Pick the name anchor — anchor text must be non-empty, not a
-        # bare digit, and not a "N review(s)" link.
-        name: Optional[str] = None
-        for a in biz_anchors:
-            text = (a.get_text() or '').strip()
-            if not text or text.isdigit() or len(text) > 200:
-                continue
-            if re.search(r'\b\d+\s+reviews?\b', text, re.IGNORECASE):
-                continue
-            name = text
-            break
-        if not name:
-            continue
-        # Strip search-result rank prefixes ("1. Acme Plumbing")
-        name = re.sub(r'^\d{1,3}\.\s+', '', name)
-
-        # Rating: aria-label="X.X star rating" anywhere within the card
-        rating: Optional[float] = None
-        rating_el = card.select_one('[aria-label*="star rating"]')
-        if rating_el is not None:
-            m = re.search(r'(\d+(?:\.\d+)?)\s*star', rating_el.get('aria-label') or '')
-            if m:
-                try:
-                    rating = float(m.group(1))
-                except ValueError:
-                    pass
-
-        # Review count: first "N review(s)" hit in card text
-        review_count: Optional[int] = None
-        card_text = card.get_text(' ', strip=True)
-        m = re.search(r'\b(\d{1,6})\s+reviews?\b', card_text)
-        if m:
-            try:
-                review_count = int(m.group(1))
-            except ValueError:
-                pass
-
-        seen_urls.add(profile_url)
-        cards.append({
-            'name': name,
-            'profile_url': profile_url,
-            'rating': rating,
-            'review_count': review_count,
-        })
-
-    return cards
 
 
 def _extract_profile_detail(html: str) -> dict:
@@ -566,6 +443,8 @@ class YelpScraper(BasePlatformScraper):
                 markers=('/biz/',),
                 block_markers=('Access to this page has been denied',),
                 min_pace=8.0, max_pace=18.0,
+                # max_wait trimmed: an empty results page has no /biz/ marker, so cap the terminal-page wait
+                max_wait=25.0,
             ) if source == 'browser' else None
         )
         fetch_fn = browser_ctx.__enter__() if browser_ctx else None
@@ -573,28 +452,29 @@ class YelpScraper(BasePlatformScraper):
             for city_idx, city in enumerate(cities):
                 global_page += 1
                 print(
-                    f"  [city {city_idx + 1}/{len(cities)}] {city}: querying Fusion...",
+                    f"  [city {city_idx + 1}/{len(cities)}] {city}: "
+                    + ("querying Yelp /search (browser)..." if source == 'browser' else "querying Fusion..."),
                     flush=True,
                 )
                 # Emit "we're looking at page N" the moment we START fetching.
                 print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
-
-                # on_page callback: called by search_businesses_paged after each
-                # Fusion call. We use it to emit progress for sub-pages within
-                # a city's pagination (every 50 results).
-                sub_seen_so_far = [0]
-
-                def _on_fusion_page(seen: int, total_cap: int) -> None:
-                    # `seen` = how many businesses Fusion returned for this city so far
-                    # We don't increment global_page within a city — Fusion is fast,
-                    # so the per-city granularity is good enough for the UI.
-                    sub_seen_so_far[0] = seen
 
                 if source == 'browser':
                     businesses = await asyncio.to_thread(
                         _search_city_browser, fetch_fn, city, category, per_city_cap,
                     )
                 else:
+                    # on_page callback: called by search_businesses_paged after each
+                    # Fusion call. We use it to emit progress for sub-pages within
+                    # a city's pagination (every 50 results).
+                    sub_seen_so_far = [0]
+
+                    def _on_fusion_page(seen: int, total_cap: int) -> None:
+                        # `seen` = how many businesses Fusion returned for this city so far
+                        # We don't increment global_page within a city — Fusion is fast,
+                        # so the per-city granularity is good enough for the UI.
+                        sub_seen_so_far[0] = seen
+
                     businesses = await asyncio.to_thread(
                         search_businesses_paged,
                         location=city,
@@ -639,7 +519,7 @@ class YelpScraper(BasePlatformScraper):
                     page_kept += 1
 
                 print(
-                    f"  {city}: Fusion returned {len(businesses)} businesses, "
+                    f"  {city}: returned {len(businesses)} businesses, "
                     f"{page_kept} matched filter (rating {min_rating}-{max_rating}, "
                     f"min_reviews {min_review_count})",
                     flush=True,
@@ -667,7 +547,7 @@ class YelpScraper(BasePlatformScraper):
         except BrowserBlocked as e:
             print(
                 f"FAILED:listing|yelp|ip_blocked|PerimeterX hard-blocked the IP "
-                f"at {e}. Stopping; {len(results)} businesses collected from "
+                f"(last URL: {e}). Stopping; {len(results)} businesses collected from "
                 f"earlier cities. Wait for cooldown and re-run remaining cities.",
                 flush=True,
             )
@@ -685,7 +565,7 @@ class YelpScraper(BasePlatformScraper):
         if total_seen_pre_filter > 0 and not results:
             print(
                 f"FAILED:listing|yelp|filter_too_strict|"
-                f"Fusion returned {total_seen_pre_filter} businesses for "
+                f"Listing returned {total_seen_pre_filter} businesses for "
                 f"{country}/{category} but 0 passed the filter "
                 f"(rating {min_rating}-{max_rating}, min_reviews "
                 f"{min_review_count}). Try widening max_rating to 5.0 and "
