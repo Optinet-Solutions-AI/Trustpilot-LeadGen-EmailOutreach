@@ -41,6 +41,17 @@ def test_rows_have_numeric_rating_and_reviews():
         assert 1.0 <= r['rating'] <= 5.0
         assert r['review_count'] >= 0
 
+def test_non_ascii_slug_not_truncated():
+    # Slugs with a literal or %-encoded non-ASCII char must capture in full;
+    # a truncated slug yields a broken profile_url that fails enrichment.
+    html = (
+        '<div><a href="/biz/gasthaus-pöschl-wien">Gasthaus Poschl</a></div>'
+        '<div><a href="/biz/cafe-%C3%A9clair-paris">Cafe Eclair</a></div>'
+    )
+    urls = {r['name']: r['url'] for r in _parse_yelp_search_cards(html)}
+    assert urls['Gasthaus Poschl'].endswith('/biz/gasthaus-pöschl-wien')
+    assert urls['Cafe Eclair'].endswith('/biz/cafe-%C3%A9clair-paris')
+
 def test_drops_noise_anchors():
     names = {r['name'].lower() for r in _load()}
     assert 'order' not in names and 'menu' not in names

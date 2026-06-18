@@ -165,7 +165,11 @@ def _unwrap_biz_redir(href: str) -> Optional[str]:
     return target.rstrip('/')
 
 
-_BIZ_HREF_RE = re.compile(r'/biz/([a-z0-9\-]+)')
+# Capture the FULL /biz/ slug up to a path/query delimiter. A restrictive
+# [a-z0-9-] class truncates slugs at the first non-ASCII char (e.g. Yelp's
+# "gasthaus-poschl" rendered with a literal/encoded 'ö'), producing a broken
+# profile_url that fails enrichment — fatal for non-English markets.
+_BIZ_HREF_RE = re.compile(r'/biz/([^/?#"\s]+)')
 _RATING_RE = re.compile(r'([0-5](?:\.\d)?)\s*star rating', re.I)
 # Yelp shows review counts two ways on search cards: exact ("1,097 reviews")
 # and abbreviated for popular spots ("5.7k reviews"). Capture both, incl. the
