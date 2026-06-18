@@ -238,7 +238,8 @@ trustpilot-leadgen/
 | `PLAYWRIGHT_HEADLESS` | Headless browser in prod | `true` |
 | `PYTHON_PATH` | Python executable | `/usr/bin/python3` |
 | `SCRAPINGBEE_API_KEY` | Required for TripAdvisor (full pipeline) and Yelp profile enrichment on `/biz/<slug>` via `stealth_proxy` — 75 credits/page. Yelp `/search` is NOT reachable via ScrapingBee (timed out 100% in smoke tests). Sign up at https://scrapingbee.com | set |
-| `YELP_API_KEY` | Required for Yelp listing. Free Fusion API at https://docs.developer.yelp.com/ — 5,000 calls/day, no card required. ~30 calls per typical scrape. | unset |
+| `YELP_API_KEY` | Was Yelp Fusion listing. Fusion is now PAID and this key's trial has EXPIRED (`400 TRIAL_EXPIRED`). Listing now defaults to the free browser path; only needed if `YELP_LISTING_SOURCE=fusion`. | set (trial expired) |
+| `YELP_LISTING_SOURCE` | `browser` (free headed-browser `/search`, owner-local-only — default) or `fusion` (paid Yelp API). | `browser` |
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
@@ -426,11 +427,9 @@ See `docs/deployment.md` for complete reference.
 
 ### Yelp
 - Direct Playwright is 403 (PerimeterX edge). ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages; `/search` times out 100% (smoke-tested 2026-05-18).
-- **Listing** uses **Yelp Fusion API** — free 5,000 calls/day. Requires `YELP_API_KEY`. Returns name, rating, phone, review_count, address for free.
-- **Profile enrichment** uses **ScrapingBee `stealth_proxy`** on `/biz/<slug>` (75 credits/page). `premium_proxy` is rejected with 500.
-- Country fan-out via `tools/scraper/data/yelp_country_cities.json` (13 markets: US, CA, UK, IE, AU, NZ, DE, FR, IT, ES, JP, BR, MX).
-- Category dropdown comes from a curated seed at `tools/scraper/data/yelp_categories.json`. Add verticals by editing that file and re-running taxonomy refresh.
-- In-process rating + min_review_count filter applies BEFORE profile enrichment to bound ScrapingBee credit spend.
+- **Listing**: Yelp Fusion moved to a PAID plan and the trial has expired (returns `400 TRIAL_EXPIRED`), so listing now defaults to a FREE headed-browser `/search` scraper (`YELP_LISTING_SOURCE=browser`, the default). It is **owner-local-only** (headed Chrome + residential IP; cannot run on Cloud Run/EC2). Set `YELP_LISTING_SOURCE=fusion` to use the API again if a paid plan is restored. PerimeterX is aggressive — conservative jittered pacing + hard-block abort (`"Access to this page has been denied"` only; the `perimeterx`/`captcha` SDK strings appear on every successful page, so they are NOT treated as blocks).
+- **Profile enrichment** still uses ScrapingBee `stealth_proxy` on `/biz/<slug>` (75 credits/page) — unchanged.
+- Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
 
 ### Social platforms (planned — Facebook, Instagram, FB Groups)
 - Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)
