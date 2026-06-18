@@ -177,6 +177,65 @@ def _build_search_url(category: str, city: str, start: int) -> str:
     return f'https://www.yelp.com/search?{qs}'
 
 
+_BIZ_HREF_RE = re.compile(r'/biz/([a-z0-9\-]+)')
+_RATING_RE = re.compile(r'([0-5](?:\.\d)?)\s*star rating', re.I)
+_REVIEWS_RE = re.compile(r'([\d,]+)\s+review', re.I)
+_NOISE_NAMES = {'order', 'menu', 'more', 'website', 'directions', 'call',
+                'see all', 'read more', 'order now', ''}
+
+
+def _parse_yelp_search_cards(html: str) -> list[dict]:
+    """Parse a Yelp /search results page into Fusion-shaped business dicts.
+
+    Backbone: each result is an <a href="/biz/<slug>"> with the visible name.
+    Rating + review_count are read from the nearest enclosing card container
+    (aria-label "<n> star rating" and "<n> reviews"). Returns the same shape
+    the Fusion businesses[] entries expose so the existing scrape_listing loop
+    consumes browser + fusion results identically.
+    """
+    soup = BeautifulSoup(html or '', 'lxml')
+    out: list[dict] = []
+    seen: set[str] = set()
+    for a in soup.find_all('a', href=True):
+        m = _BIZ_HREF_RE.match(a['href'])
+        if not m:
+            continue
+        slug = m.group(1)
+        name = (a.get_text() or '').strip()
+        if not name or name.lower() in _NOISE_NAMES or len(name) > 80:
+            continue
+        if slug in seen:
+            continue
+        seen.add(slug)
+
+        card = a
+        for _ in range(6):
+            if card.parent is None:
+                break
+            card = card.parent
+        blob = card.get_text(' ', strip=True) if card else ''
+        aria = ' '.join(
+            el.get('aria-label', '') for el in (card.find_all(attrs={'aria-label': True}) if card else [])
+        )
+        hay = f'{aria} {blob}'
+
+        rm = _RATING_RE.search(hay)
+        rating = float(rm.group(1)) if rm else None
+        vm = _REVIEWS_RE.search(hay)
+        review_count = int(vm.group(1).replace(',', '')) if vm else 0
+
+        out.append({
+            'name': name,
+            'url': f'https://www.yelp.com/biz/{slug}',
+            'rating': rating,
+            'review_count': review_count,
+            'phone': None,
+            'location': {'display_address': []},
+            'id': None,
+        })
+    return out
+
+
 def _extract_search_cards(html: str) -> list[dict]:
     """
     Parse a /search results page and return business stubs.
