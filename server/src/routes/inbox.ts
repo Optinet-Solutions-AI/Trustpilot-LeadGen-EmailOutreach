@@ -1140,11 +1140,21 @@ router.post('/do-not-contact', async (req: Request, res: Response) => {
       .eq('lead_id', cl.lead_id)
       .in('status', ['pending', 'sent', 'opened']);
 
-    await createNote(cl.lead_id, {
-      type: 'marked_do_not_contact',
-      content: `Marked Do Not Contact — ${reason}. Suppressed from all future campaigns; active sequences stopped.`,
-      metadata: { campaign_id: cl.campaign_id, source: 'inbox' },
-    });
+    // Best-effort audit note. The suppression above (lead flag + sequence
+    // stop) is the user-facing action and has already committed — a note
+    // insert failure (e.g. an un-migrated lead_notes.type CHECK) must NOT
+    // turn a successful suppression into a 500 that leaves the Inbox looking
+    // dead. Log and carry on.
+    try {
+      await createNote(cl.lead_id, {
+        type: 'marked_do_not_contact',
+        content: `Marked Do Not Contact — ${reason}. Suppressed from all future campaigns; active sequences stopped.`,
+        metadata: { campaign_id: cl.campaign_id, source: 'inbox' },
+      });
+    } catch (noteErr) {
+      const m = noteErr instanceof Error ? noteErr.message : String(noteErr);
+      console.warn(`[do-not-contact] lead ${cl.lead_id} suppressed but audit note failed: ${m}`);
+    }
 
     res.json({ success: true, data: { lead_id: cl.lead_id, do_not_contact: true } });
   } catch (err) {
