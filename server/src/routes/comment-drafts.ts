@@ -157,23 +157,17 @@ async function resolveLeadAccount(lead_id: string): Promise<ResolvedAccount | nu
 
   const country = (leadRow as { country?: string | null } | null)?.country ?? null;
 
-  const query = supabase
+  // No country on the lead and no capturing account → cannot resolve safely.
+  if (!country) return null;
+
+  // Single fluent chain — country filter is unambiguously applied before await.
+  const { data: accts, error: acctErr2 } = await supabase
     .from('social_accounts')
     .select('id, country')
     .eq('platform', 'facebook')
     .eq('status', 'active')
+    .eq('country', country)
     .limit(1);
-
-  // Pin to country only when we know the lead's country — never pick a
-  // cross-country account as a catch-all fallback.
-  if (country) {
-    query.eq('country', country);
-  } else {
-    // No country on the lead and no capturing account → cannot resolve safely.
-    return null;
-  }
-
-  const { data: accts, error: acctErr2 } = await query;
   if (acctErr2) throw new Error(`resolveLeadAccount country account lookup: ${acctErr2.message}`);
 
   const fallback = accts?.[0] as { id: string; country: string | null } | undefined;
@@ -307,7 +301,7 @@ router.post('/:id/post', async (req: Request, res: Response) => {
       .maybeSingle();
     if (acctErr) throw new Error(`account cap lookup: ${acctErr.message}`);
     if (!acctRow) {
-      res.status(409).json({ success: false, error: 'account not found' });
+      res.status(404).json({ success: false, error: 'account for this draft no longer exists' });
       return;
     }
     const { comment_used_today, comment_daily_cap } = acctRow as {
