@@ -82,3 +82,13 @@ def test_claim_without_country_is_unfiltered(monkeypatch):
     got = fb._claim_account('facebook')
     assert got is not None and got['id'] == 'us'
     assert all(c != 'country' for c, _ in eq_log)
+
+
+def test_claim_or_raise_message_names_country(monkeypatch):
+    _install_fake_table(monkeypatch, [_acct(id='us', country='US')])
+    scraper = fb.FacebookScraper()
+    try:
+        scraper._claim_or_raise(country='JP')
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert 'JP' in str(e)

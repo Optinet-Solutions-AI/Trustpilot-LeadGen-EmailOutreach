@@ -1180,6 +1180,11 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
 # scrape runs in its own Python subprocess, so the global is process-
 # scoped and safe from cross-job leakage.
 _CURRENT_LOCATION: Optional[str] = None
+# ISO-2 country resolved from the current scrape's filters via
+# _target_country_from_filters(). Set alongside _CURRENT_LOCATION in
+# scrape_listing so that _claim_or_raise picks the right account even
+# when called deep in the sync helpers (which have no access to filters).
+_TARGET_COUNTRY: Optional[str] = None
 
 
 def _open_driver():
@@ -2098,12 +2103,13 @@ class FacebookScraper(SocialPlatformScraper):
         # Record the operator's location/country for the proxy-country
         # resolver in _open_driver(). consumers-mode uses `location`
         # (city), businesses-mode uses `country` (ISO code).
-        global _CURRENT_LOCATION
+        global _CURRENT_LOCATION, _TARGET_COUNTRY
         _CURRENT_LOCATION = (
             (filters.get('location') or '').strip()
             or (filters.get('country') or '').strip()
             or None
         )
+        _TARGET_COUNTRY = _target_country_from_filters(filters)
 
         lead_type = (filters.get('lead_type') or 'consumers').lower()
 
@@ -2405,13 +2411,24 @@ class FacebookScraper(SocialPlatformScraper):
         return await asyncio.to_thread(self._sync_enrich_authors, post_stubs, on_progress)
 
     # ── Sync internals ───────────────────────────────────────────────
-    def _claim_or_raise(self) -> dict:
-        account = _claim_account('facebook')
+    def _claim_or_raise(self, country: Optional[str] = None) -> dict:
+        country = country or _TARGET_COUNTRY
+        account = _claim_account('facebook', country=country)
         if not account:
+            if country:
+                raise RuntimeError(
+                    f"No active Facebook account pinned to country {country}. "
+                    f"Connect one in Social Accounts and pin it to {country}."
+                )
             raise RuntimeError(
                 "No active Facebook account available. Connect one in Social Accounts "
                 "and check daily/hourly caps."
             )
+        # Geo-consistency: operate this account on its own country's residential IP.
+        global _CURRENT_LOCATION
+        pin = account.get('proxy_location') or account.get('country')
+        if pin:
+            _CURRENT_LOCATION = pin
         return account
 
     def _open_session(self, account: dict):
