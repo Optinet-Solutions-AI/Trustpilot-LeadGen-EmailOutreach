@@ -42,41 +42,35 @@ function makeFakeClient() {
           }),
         })),
       })),
-      // UPDATE branch
-      update: vi.fn((patch: Record<string, any>) => ({
-        eq: vi.fn((_col: string, val: string) => {
-          // Apply patch to the in-memory row
-          if (rows[val]) {
-            Object.assign(rows[val], patch);
-          }
-          return {
-            // void update (endBrowseSession)
-            then: undefined as any,
-            // resolve as promise so `await sb.from().update().eq(accountId)` works
-            // (endBrowseSession does: const { error } = await sb.from().update().eq())
-            // We need the promise to resolve here:
-            [Symbol.asyncIterator]: undefined,
-            // Supabase returns a thenable; we make the eq() result itself thenable
-            // so `const { error } = await ...eq(accountId)` resolves.
-            // Pattern: the eq() return object is a PromiseLike
-            ...(() => {
-              const result = Promise.resolve({ data: rows[val] ?? null, error: null });
-              return {
-                then: result.then.bind(result),
-                catch: result.catch.bind(result),
-                finally: result.finally.bind(result),
-              };
-            })(),
-            // SELECT chain after update (enqueueBrowseSession's second call)
-            select: vi.fn((_cols?: string) => ({
-              single: vi.fn().mockImplementation(async () => ({
-                data: rows[val] ?? null,
-                error: null,
-              })),
+      // UPDATE branch — `.eq()` self-chains so multiple filters work
+      // (real Supabase allows .update().eq().eq()...). The first .eq() whose
+      // value matches a known row captures the target + applies the patch;
+      // additional .eq() calls are filters that return the same chainable.
+      update: vi.fn((patch: Record<string, any>) => {
+        let targetVal: string | null = null;
+        const settle = () =>
+          Promise.resolve({ data: targetVal ? rows[targetVal] ?? null : null, error: null });
+        const u: any = {
+          eq: vi.fn((_col: string, val: string) => {
+            if (rows[val]) {
+              targetVal = val;
+              Object.assign(rows[val], patch);
+            }
+            return u; // chainable for additional .eq filters
+          }),
+          select: vi.fn((_cols?: string) => ({
+            single: vi.fn().mockImplementation(async () => ({
+              data: targetVal ? rows[targetVal] ?? null : null,
+              error: null,
             })),
-          };
-        }),
-      })),
+          })),
+          // thenable so `const { error } = await sb.from().update().eq()...` resolves
+          then: (...a: any[]) => settle().then(...a),
+          catch: (...a: any[]) => settle().catch(...a),
+          finally: (...a: any[]) => settle().finally(...a),
+        };
+        return u;
+      }),
     })),
   };
   return client;

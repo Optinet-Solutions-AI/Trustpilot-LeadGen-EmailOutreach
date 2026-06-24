@@ -165,17 +165,20 @@ export async function enqueueBrowseSession(
       connect_error: null,
     })
     .eq('id', accountId)
-    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error')
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
     .single();
   if (error) throw new Error(`enqueueBrowseSession: ${error.message}`);
   return data as ConnectRequestRow;
 }
 
 export async function endBrowseSession(accountId: string): Promise<void> {
+  // Guard on connect_mode='browse' so an accidental call with a connect-mode
+  // account id can't clobber a live login session to 'ended'.
   const { error } = await getSupabase()
     .from('social_accounts')
     .update({ connect_status: 'ended' as ConnectStatus })
-    .eq('id', accountId);
+    .eq('id', accountId)
+    .eq('connect_mode', 'browse');
   if (error) throw new Error(`endBrowseSession: ${error.message}`);
 }
 
