@@ -256,18 +256,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+_OPERATOR_ACTIONABLE_MARKERS = (
+    'pinned to country',
+    'No active Facebook account',
+    'target country',
+    'needs re-connect',
+    'Connect one in Social Accounts',
+)
 
-    if args.action == 'manifests':
-        _run_manifests(args)
-        return
 
-    # draft-comment defaults to facebook and doesn't need --platform.
-    # post-comment requires --platform but the per-action check handles it.
-    if not args.platform and args.action not in ('draft-comment', 'post-comment'):
-        raise SystemExit("--platform is required for this action.")
+def _is_operator_actionable(message: str) -> bool:
+    """True when a RuntimeError is a known, operator-fixable scraper failure
+    (no eligible/pinned account for the target country, a stale session, or an
+    undeterminable target country) rather than a genuine bug. Lets run.py
+    surface a clean one-line message instead of a Python traceback."""
+    return any(m in (message or '') for m in _OPERATOR_ACTIONABLE_MARKERS)
 
+
+def _dispatch_action(args: argparse.Namespace) -> None:
     if args.action == 'list':
         if not args.output:
             raise SystemExit("--output is required for --action list.")
@@ -294,6 +300,30 @@ def main() -> None:
         if not args.platform:
             raise SystemExit("--platform is required for --action post-comment.")
         asyncio.run(_run_post_comment(args))
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    if args.action == 'manifests':
+        _run_manifests(args)
+        return
+
+    # draft-comment defaults to facebook and doesn't need --platform.
+    # post-comment requires --platform but the per-action check handles it.
+    if not args.platform and args.action not in ('draft-comment', 'post-comment'):
+        raise SystemExit("--platform is required for this action.")
+
+    try:
+        _dispatch_action(args)
+    except RuntimeError as exc:
+        # Operator-actionable scraper failures (no eligible / pinned account,
+        # stale session, undeterminable target country) surface as a clean
+        # one-line message instead of a Python traceback, so the UI shows
+        # exactly what to fix. Genuine bugs keep their traceback for debugging.
+        if _is_operator_actionable(str(exc)):
+            raise SystemExit(f"Scrape blocked — {exc}")
+        raise
 
 
 if __name__ == '__main__':
