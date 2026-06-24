@@ -12,7 +12,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
-import { enqueueConnectRequest, getConnectRequestStatus } from '../db/social-connect-requests.js';
+import { enqueueConnectRequest, getConnectRequestStatus, enqueueBrowseSession, endBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
 
 const router = Router();
 
@@ -288,6 +288,28 @@ router.get('/:id/connect-status', async (req: Request, res: Response) => {
 // ── POST /api/social-accounts/:id/recover (SSE) ──────────────────────
 router.post('/:id/recover', (req: Request, res: Response) => {
   streamLoginFlow(String(req.params.id), true, req, res);
+});
+
+// ── POST /api/social-accounts/:id/browse ─────────────────────────────
+router.post('/:id/browse', async (req: Request, res: Response) => {
+  try {
+    const { targetUrl, requestedBy } = req.body as { targetUrl?: string; requestedBy?: string };
+    if (!requestedBy) { res.status(400).json({ success: false, error: 'requestedBy is required' }); return; }
+    const row = await enqueueBrowseSession(String(req.params.id), { targetUrl: targetUrl ?? null, requestedBy });
+    res.json({ success: true, data: row });
+  } catch (err) {
+    if (err instanceof AccountInUseError) {
+      res.status(409).json({ success: false, error: `In use by ${err.heldBy ?? 'another user'}${err.expiresAt ? ` until ${err.expiresAt}` : ''}` });
+      return;
+    }
+    res.status(500).json({ success: false, error: (err as Error).message });
+  }
+});
+
+// ── POST /api/social-accounts/:id/browse/end ─────────────────────────
+router.post('/:id/browse/end', async (req: Request, res: Response) => {
+  try { await endBrowseSession(String(req.params.id)); res.json({ success: true }); }
+  catch (err) { res.status(500).json({ success: false, error: (err as Error).message }); }
 });
 
 export default router;
