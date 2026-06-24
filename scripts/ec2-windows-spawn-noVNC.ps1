@@ -20,7 +20,9 @@
 
 param(
     [Parameter(Mandatory=$true)][string]$ProfileDir,
-    [Parameter(Mandatory=$true)][string]$AccountId
+    [Parameter(Mandatory=$true)][string]$AccountId,
+    [string]$Mode = 'connect',
+    [string]$TargetUrl = ''
 )
 
 $ErrorActionPreference = "Continue"
@@ -142,10 +144,13 @@ if (-not $tunnelUrl) {
 $noVncUrl = "$tunnelUrl/vnc.html?autoconnect=true&resize=remote"
 Write-Host $noVncUrl
 
-# 3. Launch Brave at facebook.com with the operator's persistent profile dir.
+# 3. Launch Brave with the operator's persistent profile dir.
 #    --remote-debugging-port=9222 enables the Chromium DevTools Protocol (CDP)
 #    so the Node worker can extract structured cookies via Network.getAllCookies
 #    instead of reading the raw SQLite binary file.
+#    In browse mode the caller supplies a deep-link URL; otherwise default to
+#    facebook.com so connect mode is unchanged.
+$launchUrl = if ($Mode -eq 'browse' -and $TargetUrl) { $TargetUrl } else { 'https://www.facebook.com/' }
 $braveArgs = @(
     "--user-data-dir=$ProfileDir"
     "--no-first-run"
@@ -153,7 +158,7 @@ $braveArgs = @(
     "--window-size=1280,900"
     "--window-position=0,0"
     "--remote-debugging-port=9222"
-    "https://www.facebook.com/"
+    $launchUrl
 )
 $braveProc = Start-Process -FilePath $BRAVE -ArgumentList $braveArgs -PassThru
 Write-Host "brave launched pid=$($braveProc.Id) profile=$ProfileDir"

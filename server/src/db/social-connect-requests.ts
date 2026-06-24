@@ -22,6 +22,8 @@ export interface ConnectRequestRow {
   connect_started_at: string | null;
   connect_expires_at: string | null;
   connect_error: string | null;
+  connect_mode: string | null;
+  connect_target_url: string | null;
 }
 
 export interface ConnectStatusView {
@@ -71,7 +73,7 @@ export async function claimPendingConnectRequest(platform: string): Promise<Conn
   const sb = getSupabase();
   const { data: candidates, error: selectErr } = await sb
     .from('social_accounts')
-    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error')
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
     .eq('platform', platform)
     .eq('connect_status', 'requested')
     .order('connect_started_at', { ascending: true })
@@ -89,7 +91,7 @@ export async function claimPendingConnectRequest(platform: string): Promise<Conn
     .eq('id', candidate.id)
     .eq('connect_session_id', candidate.connect_session_id ?? '')
     .eq('connect_status', 'requested')
-    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error')
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
     .single();
   if (updateErr) {
     // PGRST116 = no rows matched the WHERE — someone else claimed it. Not an error.
@@ -175,4 +177,11 @@ export async function endBrowseSession(accountId: string): Promise<void> {
     .update({ connect_status: 'ended' as ConnectStatus })
     .eq('id', accountId);
   if (error) throw new Error(`endBrowseSession: ${error.message}`);
+}
+
+export async function getConnectStatusValue(accountId: string): Promise<string | null> {
+  const { data, error } = await getSupabase().from('social_accounts')
+    .select('connect_status').eq('id', accountId).single();
+  if (error) return null;
+  return (data as { connect_status: string | null }).connect_status;
 }
