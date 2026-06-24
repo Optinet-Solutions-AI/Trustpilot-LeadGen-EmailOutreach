@@ -2,7 +2,17 @@ import crypto from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
 
 export type ConnectStatus =
-  | 'requested' | 'provisioning' | 'ready' | 'captured' | 'expired' | 'failed';
+  | 'requested' | 'provisioning' | 'ready' | 'captured' | 'expired' | 'failed'
+  | 'active' | 'ended';
+
+export const BROWSE_ACTIVE_STATES = ['requested', 'provisioning', 'ready', 'active'] as const;
+
+export class AccountInUseError extends Error {
+  constructor(public heldBy: string | null, public expiresAt: string | null) {
+    super(`account in use by ${heldBy ?? 'another user'}`);
+    this.name = 'AccountInUseError';
+  }
+}
 
 export interface ConnectRequestRow {
   id: string;
@@ -21,7 +31,7 @@ export interface ConnectStatusView {
   connect_expires_at: string | null;
 }
 
-const TTL_MS = 10 * 60 * 1000;
+export const TTL_MS = 10 * 60 * 1000;
 
 export async function enqueueConnectRequest(accountId: string): Promise<ConnectRequestRow> {
   const sessionId = crypto.randomUUID();
@@ -117,4 +127,52 @@ export async function finalizeConnectRequest(
     })
     .eq('id', accountId);
   if (error) throw new Error(`finalizeConnectRequest: ${error.message}`);
+}
+
+export async function enqueueBrowseSession(
+  accountId: string,
+  opts: { targetUrl: string | null; requestedBy: string },
+): Promise<ConnectRequestRow> {
+  const sb = getSupabase();
+  const { data: cur, error: e1 } = await sb
+    .from('social_accounts')
+    .select('connect_status, connect_mode, connect_requested_by, connect_expires_at')
+    .eq('id', accountId)
+    .single();
+  if (e1) throw new Error(`enqueueBrowseSession read: ${e1.message}`);
+  if (cur && (BROWSE_ACTIVE_STATES as readonly string[]).includes(cur.connect_status)) {
+    throw new AccountInUseError(
+      cur.connect_requested_by ?? null,
+      cur.connect_expires_at ?? null,
+    );
+  }
+  const sessionId = crypto.randomUUID();
+  const now = new Date();
+  const expires = new Date(now.getTime() + TTL_MS);
+  const { data, error } = await sb
+    .from('social_accounts')
+    .update({
+      connect_mode: 'browse',
+      connect_session_id: sessionId,
+      connect_status: 'requested' as ConnectStatus,
+      connect_tunnel_url: null,
+      connect_target_url: opts.targetUrl,
+      connect_requested_by: opts.requestedBy,
+      connect_started_at: now.toISOString(),
+      connect_expires_at: expires.toISOString(),
+      connect_error: null,
+    })
+    .eq('id', accountId)
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error')
+    .single();
+  if (error) throw new Error(`enqueueBrowseSession: ${error.message}`);
+  return data as ConnectRequestRow;
+}
+
+export async function endBrowseSession(accountId: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from('social_accounts')
+    .update({ connect_status: 'ended' as ConnectStatus })
+    .eq('id', accountId);
+  if (error) throw new Error(`endBrowseSession: ${error.message}`);
 }
