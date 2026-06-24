@@ -18,6 +18,30 @@ const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY as string;
 const TRANSLATE_TIMEOUT_MS = 30_000;
 /** Cap the text we send — readable email text is short; this bounds worst case. */
 const MAX_INPUT_CHARS = 16_000;
+/**
+ * Models tried in order. `flash-lite` is cheapest and snappy but is the first
+ * to return 503 UNAVAILABLE ("high demand") under load; `flash` (what the rest
+ * of the app uses) is more reliably available, so it's the fallback. We exhaust
+ * retries on a model before stepping to the next.
+ */
+const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'] as const;
+/** Per-model retry attempts on transient (503/429/overloaded) failures. */
+const MAX_ATTEMPTS_PER_MODEL = 3;
+
+/** True for transient Gemini conditions worth retrying (overload / rate limit). */
+function isTransient(err: unknown): boolean {
+  const s = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    s.includes('503') ||
+    s.includes('429') ||
+    s.includes('unavailable') ||
+    s.includes('overloaded') ||
+    s.includes('high demand') ||
+    s.includes('resource_exhausted')
+  );
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface TranslationResult {
   /** Translated text as light HTML (escaped text + <br>), safe to render. */
@@ -157,18 +181,44 @@ ${text}
 === END INPUT ===
 `.trim();
 
-  // thinkingBudget: 0 keeps flash-lite snappy; race a timeout so a hung call
-  // surfaces an error instead of an endless spinner.
-  const result = await Promise.race([
-    genAI.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
-      contents: prompt,
-      config: { temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Translation timed out — please try again.')), TRANSLATE_TIMEOUT_MS),
-    ),
-  ]);
+  // Try each model in turn, retrying transient (503/429/overloaded) failures
+  // with exponential backoff before stepping to the next model. flash-lite is
+  // the first to get throttled under load, so this rides out a "high demand"
+  // 503 instead of surfacing the raw error JSON on the first attempt.
+  // thinkingBudget: 0 keeps flash-lite snappy; a timeout guards each call so a
+  // hung request surfaces an error instead of an endless spinner.
+  let result: Awaited<ReturnType<typeof genAI.models.generateContent>> | null = null;
+  let lastErr: unknown = null;
+  outer: for (const model of MODELS) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt++) {
+      try {
+        result = await Promise.race([
+          genAI.models.generateContent({
+            model,
+            contents: prompt,
+            config: { temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Translation timed out — please try again.')), TRANSLATE_TIMEOUT_MS),
+          ),
+        ]);
+        break outer;
+      } catch (err) {
+        lastErr = err;
+        if (!isTransient(err)) throw err;        // hard error — don't waste retries
+        // Backoff: 0.8s, 1.6s, 3.2s. Skip the wait on the last attempt of the
+        // last model so we fail fast into the fallback message.
+        const isLastTry = model === MODELS[MODELS.length - 1] && attempt === MAX_ATTEMPTS_PER_MODEL - 1;
+        if (!isLastTry) await sleep(800 * 2 ** attempt);
+      }
+    }
+  }
+  if (!result) {
+    throw new Error(
+      'Translation service is temporarily overloaded. Please try again in a moment.' +
+        (lastErr instanceof Error ? ` (${lastErr.message})` : ''),
+    );
+  }
 
   const raw = (result.text ?? '').trim();
   const sourceMatch = raw.match(/^SOURCE_LANG:\s*(\S+)/m);
