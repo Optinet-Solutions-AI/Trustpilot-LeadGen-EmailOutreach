@@ -759,6 +759,26 @@ def _target_country_from_filters(filters: dict) -> Optional[str]:
     return None
 
 
+def _target_country_from_env() -> Optional[str]:
+    """Resolve target country from the SCRAPE_TARGET_FILTERS env var.
+
+    The orchestrator runs listing and enrichment as SEPARATE processes that
+    all inherit the same env; the `_TARGET_COUNTRY` module global is only set
+    in scrape_listing, so the enrich/search-posts processes rely on this env
+    fallback to keep account selection + proxy country-consistent.
+    """
+    raw = os.environ.get('SCRAPE_TARGET_FILTERS')
+    if not raw:
+        return None
+    try:
+        filters = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(filters, dict):
+        return None
+    return _target_country_from_filters(filters)
+
+
 def _derive_location_confidence(
     group_name: Optional[str],
     post_excerpt: Optional[str],
@@ -2412,7 +2432,7 @@ class FacebookScraper(SocialPlatformScraper):
 
     # ── Sync internals ───────────────────────────────────────────────
     def _claim_or_raise(self, country: Optional[str] = None) -> dict:
-        country = country or _TARGET_COUNTRY
+        country = country or _TARGET_COUNTRY or _target_country_from_env()
         account = _claim_account('facebook', country=country)
         if not account:
             if country:

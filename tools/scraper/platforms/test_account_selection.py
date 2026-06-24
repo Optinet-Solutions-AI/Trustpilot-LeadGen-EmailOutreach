@@ -3,6 +3,9 @@
 Run from repo root:
     ./.venv/Scripts/python.exe -m pytest tools/scraper/platforms/test_account_selection.py -v
 """
+import types
+
+import tools.scraper.platforms.facebook as fb
 from tools.scraper.platforms.facebook import _target_country_from_filters
 
 
@@ -19,10 +22,6 @@ def test_location_city_maps_to_country():
 def test_unresolvable_returns_none():
     assert _target_country_from_filters({}) is None
     assert _target_country_from_filters({'location': 'Atlantis'}) is None
-
-
-import types
-import tools.scraper.platforms.facebook as fb
 
 
 class _FakeQuery:
@@ -92,3 +91,37 @@ def test_claim_or_raise_message_names_country(monkeypatch):
         assert False, "expected RuntimeError"
     except RuntimeError as e:
         assert 'JP' in str(e)
+
+
+# ── New tests: env-based country resolution (Edit 2) ─────────────────────────
+
+def test_target_country_from_env_resolves(monkeypatch):
+    """SCRAPE_TARGET_FILTERS env var carries target country to enrich phase."""
+    monkeypatch.setenv('SCRAPE_TARGET_FILTERS', '{"country":"de"}')
+    assert fb._target_country_from_env() == 'DE'
+
+
+def test_target_country_from_env_none_when_unset(monkeypatch):
+    """Returns None when env var absent or contains invalid JSON."""
+    monkeypatch.delenv('SCRAPE_TARGET_FILTERS', raising=False)
+    assert fb._target_country_from_env() is None
+    # Invalid JSON must also return None, not raise
+    monkeypatch.setenv('SCRAPE_TARGET_FILTERS', 'not json')
+    assert fb._target_country_from_env() is None
+
+
+def test_claim_or_raise_uses_env_country(monkeypatch):
+    """_claim_or_raise falls back to SCRAPE_TARGET_FILTERS when module global is None.
+
+    This is the critical cross-process path: listing sets _TARGET_COUNTRY,
+    enrich runs in a SEPARATE process where the global is None, so the env
+    var must be the fallback that keeps account+proxy country-consistent.
+    """
+    rows = [_acct(id='us', country='US'), _acct(id='de', country='DE')]
+    _install_fake_table(monkeypatch, rows)
+    monkeypatch.setenv('SCRAPE_TARGET_FILTERS', '{"country":"DE"}')
+    # Clear module global so env is the only source
+    monkeypatch.setattr(fb, '_TARGET_COUNTRY', None)
+    scraper = fb.FacebookScraper()
+    got = scraper._claim_or_raise()
+    assert got is not None and got['id'] == 'de'
