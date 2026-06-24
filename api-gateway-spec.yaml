@@ -761,6 +761,44 @@ paths:
       responses:
         "200":
           description: OK
+  /api/comment-drafts:
+    get:
+      operationId: listCommentDrafts
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/comment-drafts/draft:
+    post:
+      operationId: createCommentDraft
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/comment-drafts/{id}:
+    patch:
+      operationId: updateCommentDraft
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/comment-drafts/{id}/post:
+    post:
+      operationId: postCommentDraft
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/social-accounts:
     get:
       operationId: listSocialAccounts
