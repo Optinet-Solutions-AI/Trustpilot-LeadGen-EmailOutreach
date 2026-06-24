@@ -741,6 +741,25 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     return None
 
 
+def _target_country_from_filters(filters: dict) -> Optional[str]:
+    """Resolve the scrape's target country to an uppercased ISO-2 code.
+
+    Businesses-mode passes an ISO `country`; consumers-mode passes a
+    `location` city we map via _extract_country_from_excerpt. Returns
+    None when neither resolves — caller treats that as "no country
+    constraint" / "no account for country" depending on context.
+    """
+    explicit = (filters.get('country') or '').strip()
+    if explicit:
+        return explicit.upper()
+    loc = (filters.get('location') or '').strip()
+    if loc:
+        cc = _extract_country_from_excerpt(loc)
+        if cc:
+            return cc.upper()
+    return None
+
+
 def _derive_location_confidence(
     group_name: Optional[str],
     post_excerpt: Optional[str],
