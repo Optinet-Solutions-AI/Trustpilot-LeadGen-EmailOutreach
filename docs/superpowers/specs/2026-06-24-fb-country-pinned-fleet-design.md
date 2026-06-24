@@ -118,6 +118,20 @@ Add to `social_accounts` (all nullable / safe defaults, idempotent `IF NOT EXIST
   `_flag_checkpoint`, same as reads.
 - Posting routes through the account's pinned country IP (no geo-jump on writes).
 
+### Per-lead account selection (operator directive, 2026-06-24)
+Opening or commenting on a lead must use **only that lead's own account** — never another user's
+account, never a rotating/arbitrary one. The account is chosen by the **lead's country**
+(`leads.country` → the FB account pinned to that country), so a PH lead always acts through the
+PH-pinned account on the PH IP. This is the per-lead counterpart to Phase 1's scrape-time country
+selection, and it relies on the same fail-closed rule: if no account is pinned to the lead's
+country, the open/comment action errors clearly rather than falling back to a mismatched account.
+
+To make "open on *that* account" exact (not merely country-matched once multiple accounts share a
+country), add a nullable `social_account_id` FK to `lead_platform_presences` (and/or
+`lead_platform_posts`) recording which account captured the lead; the open/comment path prefers
+that account, falling back to the country-pinned one. Today attribution exists only at the
+`scrape_jobs.social_account_id` level (migration 039) — per-lead attribution is a Phase-2 add.
+
 ### James acceptance test (Phase 2)
 1. Pick one post james observed; request a comment.
 2. Confirm Gemini draft references the post content; edit it.
