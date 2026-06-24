@@ -7,6 +7,8 @@ import { useNotes } from '../hooks/useNotes';
 import { useFollowUps } from '../hooks/useFollowUps';
 import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
 import { useLeadDiscoveries, useDiscoveryActions } from '../hooks/useDiscoveredContacts';
+import { useCommentDrafts } from '../hooks/useCommentDrafts';
+import type { CommentDraft } from '../hooks/useCommentDrafts';
 import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
@@ -113,12 +115,30 @@ export default function LeadDetail() {
   const { data: leadDiscoveries, refresh: refreshDiscoveries } = useLeadDiscoveries(id || null);
   const discoveryActions = useDiscoveryActions();
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
+
+  // FB comment draft panel state
+  const { loading: draftLoading, error: draftError, listDrafts, createDraft, updateDraft, postDraft } = useCommentDrafts();
+  const [activeDraft, setActiveDraft] = useState<CommentDraft | null>(null);
+  const [draftText, setDraftText] = useState('');
   // Three-state lifecycle for the screenshot tile: 'loading' until the
   // browser raises load or error, then 'ready' or 'failed'. Resets every
   // time the lead's screenshot_path changes so navigating between leads
   // doesn't carry one lead's status to another.
   const [screenshotState, setScreenshotState] = useState<'loading' | 'ready' | 'failed'>('loading');
   useEffect(() => { setScreenshotState('loading'); }, [lead?.screenshot_path]);
+
+  // Load most-recent comment draft when the lead is available and has FB posts
+  useEffect(() => {
+    if (!id || !lead?.lead_platform_posts?.some((p) => p.post_url)) return;
+    listDrafts(id).then((fetched) => {
+      if (fetched.length > 0) {
+        const latest = fetched[0];
+        setActiveDraft(latest);
+        setDraftText(latest.draft_text);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, lead?.lead_platform_posts]);
 
   // Loading flag distinct from `lead == null` — without it, a transient
   // network failure followed by an unset `loadError` would re-show the
@@ -623,6 +643,166 @@ export default function LeadDetail() {
                   />
                 </a>
               )}
+            </div>
+          );
+        })()}
+        {/* Facebook comment draft panel — visible only when the lead has
+            at least one captured FB post with a post_url. All business logic
+            (account selection, caps, posting) lives server-side; this panel
+            is pure presentation + API calls. */}
+        {(() => {
+          const fbPost = lead.lead_platform_posts?.find((p) => p.post_url) ?? null;
+          if (!fbPost) return null;
+          const canPost = activeDraft?.status === 'approved';
+          return (
+            <div className="mt-6 pt-6 border-t border-slate-100">
+              <h3 className="text-sm font-bold text-on-surface mb-3 flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px] text-secondary">comment</span>
+                Facebook Comment
+                {activeDraft && (
+                  <span className={`ml-2 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    activeDraft.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                    activeDraft.status === 'posted'   ? 'bg-blue-100 text-blue-700' :
+                    activeDraft.status === 'discarded' ? 'bg-slate-100 text-slate-500' :
+                    'bg-amber-100 text-amber-700'
+                  } uppercase tracking-wide`}>
+                    {activeDraft.status}
+                  </span>
+                )}
+              </h3>
+
+              {/* Post context chip */}
+              <a
+                href={fbPost.post_url!}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-[#b0004a] hover:underline mb-3"
+              >
+                <span className="material-symbols-outlined text-[13px]">open_in_new</span>
+                View source post
+              </a>
+              {fbPost.content_excerpt && (
+                <p className="text-xs text-secondary bg-surface-container rounded-lg px-3 py-2 mb-3 line-clamp-2 italic">
+                  "{fbPost.content_excerpt}"
+                </p>
+              )}
+
+              {/* Draft comment area */}
+              <textarea
+                value={draftText}
+                onChange={(e) => setDraftText(e.target.value)}
+                rows={4}
+                disabled={draftLoading || activeDraft?.status === 'posted'}
+                placeholder="Draft comment text will appear here after generating…"
+                className="w-full rounded-xl border border-slate-200 bg-surface-container px-3 py-2.5 text-sm text-on-surface resize-y focus:outline-none focus:ring-2 focus:ring-[#b0004a]/20 disabled:opacity-60 disabled:cursor-not-allowed"
+              />
+
+              {/* Error area */}
+              {draftError && (
+                <p className="mt-1.5 text-xs font-semibold text-rose-600 flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[13px]">error</span>
+                  {draftError}
+                </p>
+              )}
+
+              {/* Action buttons */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {/* Draft / Re-draft */}
+                <button
+                  disabled={draftLoading}
+                  onClick={async () => {
+                    const draft = await createDraft({
+                      lead_id: lead.id,
+                      post_url: fbPost.post_url!,
+                      post_excerpt: fbPost.content_excerpt ?? null,
+                      niche: lead.category ?? null,
+                    });
+                    if (draft) {
+                      setActiveDraft(draft);
+                      setDraftText(draft.draft_text);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#b0004a] text-white text-xs font-bold hover:bg-[#90003b] disabled:opacity-50 transition-colors"
+                >
+                  <span className={`material-symbols-outlined text-[14px] ${draftLoading ? 'animate-spin' : ''}`}>
+                    {draftLoading ? 'progress_activity' : activeDraft ? 'refresh' : 'auto_awesome'}
+                  </span>
+                  {activeDraft ? 'Re-draft' : 'Draft comment'}
+                </button>
+
+                {/* Save edit */}
+                {activeDraft && activeDraft.status !== 'posted' && (
+                  <button
+                    disabled={draftLoading || draftText === activeDraft.draft_text}
+                    onClick={async () => {
+                      const updated = await updateDraft(activeDraft.id, { draft_text: draftText });
+                      if (updated) setActiveDraft(updated);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">save</span>
+                    Save edit
+                  </button>
+                )}
+
+                {/* Approve */}
+                {activeDraft && activeDraft.status !== 'approved' && activeDraft.status !== 'posted' && (
+                  <button
+                    disabled={draftLoading}
+                    onClick={async () => {
+                      const updated = await updateDraft(activeDraft.id, { status: 'approved' });
+                      if (updated) setActiveDraft(updated);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 text-emerald-700 text-xs font-bold hover:bg-emerald-50 disabled:opacity-50 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">thumb_up</span>
+                    Approve
+                  </button>
+                )}
+
+                {/* Discard */}
+                {activeDraft && activeDraft.status !== 'discarded' && activeDraft.status !== 'posted' && (
+                  <button
+                    disabled={draftLoading}
+                    onClick={async () => {
+                      const updated = await updateDraft(activeDraft.id, { status: 'discarded' });
+                      if (updated) setActiveDraft(updated);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-slate-500 text-xs font-bold hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">delete_outline</span>
+                    Discard
+                  </button>
+                )}
+
+                {/* Post — only enabled when approved */}
+                {activeDraft && activeDraft.status !== 'posted' && (
+                  <button
+                    disabled={draftLoading || !canPost}
+                    title={!canPost ? 'Approve the draft first before posting' : undefined}
+                    onClick={async () => {
+                      const posted = await postDraft(activeDraft.id);
+                      if (posted) setActiveDraft(posted);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">send</span>
+                    Post
+                  </button>
+                )}
+
+                {activeDraft?.status === 'posted' && (
+                  <p className="text-xs font-semibold text-blue-600 flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">check_circle</span>
+                    Comment posted
+                    {activeDraft.posted_at && (
+                      <span className="text-secondary font-normal ml-1">
+                        · {new Date(activeDraft.posted_at).toLocaleString()}
+                      </span>
+                    )}
+                  </p>
+                )}
+              </div>
             </div>
           );
         })()}
