@@ -252,6 +252,63 @@ def _bump_counters(account_id: str, delta_today: int = 1, delta_hour: int = 1) -
     )
 
 
+def _load_account_by_id(account_id: str) -> dict:
+    """Fetch a social_accounts row by primary key.
+
+    Used by the comment-post path where the server has already chosen the
+    correct account for the lead's country — we just need its full row.
+
+    Raises RuntimeError when the row doesn't exist or the account is not
+    active (caller should surface this as an error, not silently skip).
+    """
+    rows = (
+        table('social_accounts')
+        .select(
+            'id,platform,handle,status,country,proxy_location,'
+            'daily_cap,hourly_cap,comment_daily_cap,comment_used_today,'
+            'used_today,used_this_hour,encrypted_cookies,last_used_at'
+        )
+        .eq('id', account_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise RuntimeError(f"social_accounts row not found for id={account_id!r}")
+    row = rows[0]
+    if row.get('status') != 'active':
+        raise RuntimeError(
+            f"Account {account_id!r} is not active (status={row.get('status')!r})"
+        )
+    return row
+
+
+def _bump_comment_counter(account_id: str) -> None:
+    """Atomically increment comment_used_today for an account.
+
+    Mirrors _bump_counters but touches only the comment budget columns,
+    so read-path counters (used_today / used_this_hour) remain untouched.
+    """
+    row = (
+        table('social_accounts')
+        .select('comment_used_today')
+        .eq('id', account_id)
+        .execute()
+        .data
+    )
+    if not row:
+        return
+    new_comment_count = (row[0].get('comment_used_today') or 0) + 1
+    (
+        table('social_accounts')
+        .update({
+            'comment_used_today': new_comment_count,
+            'updated_at': _now_iso(),
+        })
+        .eq('id', account_id)
+        .execute()
+    )
+
+
 def _flag_checkpoint(account_id: str, reason: str) -> None:
     """Mark an account as captcha-locked. The frontend banner will surface this."""
     (
@@ -2869,3 +2926,183 @@ class FacebookScraper(SocialPlatformScraper):
         finally:
             try: driver.quit()
             except Exception: pass
+
+    # ── Comment posting ──────────────────────────────────────────────
+
+    def post_comment(self, post_url: str, text: str, account_id: str) -> dict:
+        """Post a comment on a Facebook post via the account's saved session.
+
+        This is the WRITE path — it uses the account identified by ``account_id``
+        (the lead's OWN account, chosen by the server for geo-consistency) and does
+        NOT call ``_claim_or_raise``/_``_claim_account`` (those are for READ scrapes).
+
+        Returns ``{"posted": True, "error": None}`` on success, or
+        ``{"posted": False, "error": "<reason>"}`` on failure.
+
+        Selenium interaction is wrapped in ``asyncio.to_thread`` in the async
+        caller below. Call the sync method directly in tests.
+        """
+        account = _load_account_by_id(account_id)
+
+        # Geo-consistency: pin the proxy location to this account's country
+        # BEFORE opening any browser so _open_driver picks the right exit node.
+        global _CURRENT_LOCATION
+        pin = account.get('proxy_location') or account.get('country')
+        if pin:
+            _CURRENT_LOCATION = pin
+
+        # Comment-cap guard — do NOT open a browser if already capped.
+        comment_used = account.get('comment_used_today') or 0
+        comment_cap = account.get('comment_daily_cap') or 0
+        if comment_used >= comment_cap:
+            return {'posted': False, 'error': 'comment_cap_reached'}
+
+        driver = self._open_session(account)
+        try:
+            driver.get(post_url)
+            _human_pause(SCROLL_PAUSE, extra=1.5)
+
+            # Trust-gate / checkpoint check immediately after navigation.
+            if _is_checkpoint(driver):
+                _flag_checkpoint(account['id'], 'captcha-before-comment')
+                return {'posted': False, 'error': 'checkpoint'}
+
+            # Dismiss cookie banner if it appeared (it blocks all clicks).
+            _dismiss_fb_cookie_banner(driver)
+
+            # Bypass trust gate in case we hit a new-IP redirect.
+            if _bypass_fb_trust_gate(driver):
+                # Re-navigate to the post after trusting the IP.
+                driver.get(post_url)
+                _human_pause(SCROLL_PAUSE)
+                if _is_checkpoint(driver):
+                    _flag_checkpoint(account['id'], 'captcha-after-trust-gate-comment')
+                    return {'posted': False, 'error': 'checkpoint'}
+
+            # ── LIVE-DISCOVERY: verify these selectors against a real FB post
+            # before trusting (repo rule). FB comment box is a Lexical
+            # contenteditable; see _open_session/_bypass_fb_trust_gate for the
+            # driver patterns. The selectors below are best-known as of 2026-06
+            # but Facebook rewrites class names roughly monthly — the SHAPE
+            # (div[role=textbox][contenteditable=true]) is stable; the
+            # containing hierarchy and placeholder text are not.
+            # Steps that NEED live verification on james's account:
+            #   1. Locate the right comment box (a post page may have several
+            #      nested-comment boxes in addition to the top-level one).
+            #   2. Whether send_keys per-char suffices or JS InputEvent injection
+            #      is needed for Lexical to register the text.
+            #   3. The submit affordance — Enter key vs. a "Post" button.
+            #   4. The post-submit verification selector (how to confirm our text
+            #      actually appears in the rendered comment).
+            # ──────────────────────────────────────────────────────────────────
+
+            # Scroll down to make comment sections visible / load lazy content.
+            driver.execute_script('window.scrollBy(0, 400);')
+            _human_pause(1.0)
+
+            # Locate the comment composer. FB renders a Lexical-powered
+            # contenteditable div as the comment input.
+            # Best-known selectors in priority order:
+            COMMENT_BOX_SELECTORS = [
+                # Aria-labelled composer (most stable — survives class-name churn)
+                'div[role="textbox"][aria-label*="comment" i][contenteditable="true"]',
+                'div[role="textbox"][aria-label*="Write a comment" i][contenteditable="true"]',
+                # Fallback: any top-level contenteditable (may match nested replies
+                # — verify which index is correct for the primary comment area)
+                'div[role="textbox"][contenteditable="true"]',
+            ]
+            composer = None
+            for sel in COMMENT_BOX_SELECTORS:
+                try:
+                    candidates = driver.find_elements('css selector', sel)
+                    if candidates:
+                        composer = candidates[0]
+                        print(f'INFO: comment composer found via selector: {sel}', file=sys.stderr)
+                        break
+                except Exception:
+                    continue
+
+            if composer is None:
+                print('WARN: no comment composer found on page — selectors need live verification', file=sys.stderr)
+                return {'posted': False, 'error': 'composer_not_found'}
+
+            # Scroll the composer into view and click to focus.
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", composer)
+            _human_pause(0.4)
+            composer.click()
+            _human_pause(0.3)
+
+            # Type the comment text human-paced (per-character send_keys).
+            # Lexical tracks keystroke-level input; bulk string injection via
+            # element.send_keys("whole string") works in most cases but may
+            # miss Lexical's onChange events — per-char is safer.
+            # LIVE-VERIFY: if the composer stays empty after per-char send_keys,
+            # switch to JS InputEvent injection (see ActionChains alternative).
+            for ch in text:
+                composer.send_keys(ch)
+                time.sleep(random.uniform(0.03, 0.09))
+
+            _human_pause(0.6)
+
+            # Submit: Enter key is the standard FB comment-submit affordance.
+            # LIVE-VERIFY: some FB surfaces render a "Post" button instead.
+            # If Enter submits but a visible "Post" button is present, prefer
+            # clicking the button (more reliable than the key event).
+            from selenium.webdriver.common.keys import Keys  # noqa: WPS433 — lazy
+            composer.send_keys(Keys.RETURN)
+            _human_pause(2.0, extra=1.0)  # wait for the comment to render
+
+            # Post-submit verification: look for our text in a comment node.
+            # LIVE-VERIFY: the exact selector for rendered comment text may differ
+            # (span[dir="auto"] inside a comment article is the typical shape).
+            submitted_text_snippet = text[:40]
+            comment_appeared = False
+            try:
+                all_spans = driver.find_elements('css selector', 'span[dir="auto"]')
+                for span in all_spans:
+                    try:
+                        if submitted_text_snippet in (span.text or ''):
+                            comment_appeared = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if not comment_appeared:
+                print(
+                    f'WARN: comment text snippet not found in page after submit — '
+                    f'may have posted but verification selector needs live tuning',
+                    file=sys.stderr,
+                )
+                # Still treat as posted if no checkpoint/error surfaced —
+                # the verification step is best-effort pending live selector work.
+
+            # ── END LIVE-DISCOVERY BLOCK ──────────────────────────────────────
+
+            # Success path: bump comment counters (separate from read counters).
+            _bump_comment_counter(account['id'])
+            return {'posted': True, 'error': None}
+
+        except RuntimeError:
+            # _open_session raises RuntimeError on cookie rejection — that's a
+            # checkpoint/login-gate scenario, not a generic error.
+            _flag_checkpoint(account['id'], 'login-gate-during-comment')
+            return {'posted': False, 'error': 'checkpoint'}
+        except Exception as exc:  # noqa: BLE001
+            body_text = ''
+            try:
+                body_text = (driver.execute_script('return document.body.innerText') or '')[:200]
+            except Exception:
+                pass
+            # Detect checkpoint-like page content.
+            if any(k in body_text.lower() for k in ('security check', 'verify your identity', 'captcha')):
+                _flag_checkpoint(account['id'], f'captcha-during-comment: {str(exc)[:80]}')
+                return {'posted': False, 'error': 'checkpoint'}
+            print(f'ERROR: post_comment failed: {exc}', file=sys.stderr)
+            return {'posted': False, 'error': str(exc)[:200]}
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass

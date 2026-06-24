@@ -185,6 +185,38 @@ def _run_manifests(_: argparse.Namespace) -> None:
     print(json.dumps(list_manifests(), indent=2, ensure_ascii=False))
 
 
+def _run_draft_comment(args: argparse.Namespace) -> None:
+    """Draft a comment for a FB post using Gemini. Pure — no browser."""
+    from tools.scraper.shared import social_nlp
+    filters = _parse_filters(args.filters)
+    post_excerpt = filters.get('post_excerpt', '')
+    niche = filters.get('niche', '')
+    if not post_excerpt:
+        raise SystemExit("--filters must include 'post_excerpt' for --action draft-comment.")
+    if not niche:
+        raise SystemExit("--filters must include 'niche' for --action draft-comment.")
+    draft = social_nlp.draft_comment_from_post(post_excerpt, niche)
+    print(json.dumps({'text': draft}))
+
+
+async def _run_post_comment(args: argparse.Namespace) -> None:
+    """Post a comment on a FB post via an account's saved session."""
+    from tools.scraper.platforms.facebook import FacebookScraper
+    filters = _parse_filters(args.filters)
+    post_url = filters.get('post_url', '').strip()
+    text = filters.get('text', '').strip()
+    account_id = filters.get('account_id', '').strip()
+    if not post_url:
+        raise SystemExit("--filters must include 'post_url' for --action post-comment.")
+    if not text:
+        raise SystemExit("--filters must include 'text' for --action post-comment.")
+    if not account_id:
+        raise SystemExit("--filters must include 'account_id' for --action post-comment.")
+    scraper = FacebookScraper()
+    result = await asyncio.to_thread(scraper.post_comment, post_url, text, account_id)
+    print(json.dumps(result))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='tools.scraper.run',
@@ -197,7 +229,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         '--action',
         required=True,
-        choices=['list', 'enrich', 'discover-taxonomy', 'manifests', 'search-posts', 'enrich-authors'],
+        choices=[
+            'list', 'enrich', 'discover-taxonomy', 'manifests',
+            'search-posts', 'enrich-authors',
+            'draft-comment', 'post-comment',
+        ],
         help='Pipeline step to execute.',
     )
     # list-specific
@@ -225,7 +261,9 @@ def main() -> None:
         _run_manifests(args)
         return
 
-    if not args.platform:
+    # draft-comment defaults to facebook and doesn't need --platform.
+    # post-comment requires --platform but the per-action check handles it.
+    if not args.platform and args.action not in ('draft-comment', 'post-comment'):
         raise SystemExit("--platform is required for this action.")
 
     if args.action == 'list':
@@ -246,6 +284,14 @@ def main() -> None:
         if not args.input or not args.output:
             raise SystemExit("--input and --output are required for --action enrich-authors.")
         asyncio.run(_run_enrich_authors(args))
+    elif args.action == 'draft-comment':
+        if not args.platform:
+            args.platform = 'facebook'  # only FB has comments for now
+        _run_draft_comment(args)
+    elif args.action == 'post-comment':
+        if not args.platform:
+            raise SystemExit("--platform is required for --action post-comment.")
+        asyncio.run(_run_post_comment(args))
 
 
 if __name__ == '__main__':
