@@ -91,10 +91,19 @@ def resolve_proxy_country(location: Optional[str], fallback: str = 'AT') -> str:
     """
     if not location:
         return fallback
+    loc = location.strip()
+    # Already an ISO-2 country code? The country-pinned-fleet path sets
+    # _CURRENT_LOCATION to the claimed account's own country (e.g. 'PH',
+    # 'US') — an ISO code, not a city. _extract_country_from_excerpt only
+    # maps CITY names, so an ISO code would miss and fall back to 'AT',
+    # silently routing a PH account through an Austrian IP. Accept ISO
+    # codes directly so the proxy matches the account's pinned country.
+    if len(loc) == 2 and loc.isalpha():
+        return loc.upper()
     # Lazy import to avoid a circular import: facebook.py imports this
     # module, and _extract_country_from_excerpt stays in facebook.py.
     from tools.scraper.platforms.facebook import _extract_country_from_excerpt
-    cc = _extract_country_from_excerpt(location)
+    cc = _extract_country_from_excerpt(loc)
     return cc if cc else fallback
 
 
