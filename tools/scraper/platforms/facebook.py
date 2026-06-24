@@ -797,6 +797,22 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     return None
 
 
+def _resolve_lead_country(group_name: Optional[str], location: Optional[str],
+                          excerpt: Optional[str]) -> Optional[str]:
+    """Resolve a consumer lead's country from the richest available signal.
+
+    Combines the group name (which often carries a province/region token like
+    'Ontario' that disambiguates a shared city name), the operator's location,
+    and the post excerpt, then runs _extract_country_from_excerpt over the lot
+    (its PROVINCE_TO_COUNTRY check runs first, so 'London, Ontario' -> 'CA'
+    while bare 'London' -> 'GB'). Falls back to the raw operator location when
+    nothing resolves, so unknown places (e.g. 'Nairobi') are preserved rather
+    than dropped — matching the prior behaviour.
+    """
+    haystack = ' '.join(p for p in (group_name, location, excerpt) if p)
+    return _extract_country_from_excerpt(haystack) or (location or None)
+
+
 def _target_country_from_filters(filters: dict) -> Optional[str]:
     """Resolve the scrape's target country to an uppercased ISO-2 code.
 
@@ -2289,13 +2305,11 @@ class FacebookScraper(SocialPlatformScraper):
                     'rating': None,
                     # Category = the niche the operator searched for.
                     'category': niche or legacy_query,
-                    # Country = the location field the operator typed,
-                    # verbatim. Previously we tried to auto-detect a country
-                    # code from a hardcoded city list (PH-biased, useless
-                    # for Brooklyn / London / Sydney). Operator-provided
-                    # text is the ground truth — Lead Matrix surfaces it
-                    # as-is.
-                    'country': location or None,
+                    # Country: resolve from group name first (it often
+                    # carries a disambiguating province token like "Ontario"),
+                    # then fall back to the raw operator location string so
+                    # unmapped places (e.g. "Nairobi") are preserved as-is.
+                    'country': _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt')),
                     'location_confidence': _derive_location_confidence(
                         s.get('group_name'), s.get('content_excerpt'), location,
                     ),
@@ -2394,8 +2408,10 @@ class FacebookScraper(SocialPlatformScraper):
         for s in stubs:
             if stamp_niche and not s.get('category'):
                 s['category'] = stamp_niche
-            if stamp_location and not s.get('country'):
-                s['country'] = stamp_location
+            if not s.get('country'):
+                resolved = _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt'))
+                if resolved:
+                    s['country'] = resolved
             if not s.get('location_confidence'):
                 s['location_confidence'] = _derive_location_confidence(
                     s.get('group_name'), s.get('content_excerpt'),
