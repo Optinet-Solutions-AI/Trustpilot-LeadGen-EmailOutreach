@@ -641,6 +641,10 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
   // id, falls back to whatever profile-dir env is set in the worker's own
   // env (the single-tenant default for the owner's profile).
   const platformEnv: NodeJS.ProcessEnv = socialProfileEnv(platform, socialAccountId);
+  // Carry the scrape's target filters to EVERY spawned phase (list/search +
+  // enrich) so FB account selection + proxy stay country-consistent across
+  // the separate enrich process, not just during listing.
+  platformEnv.SCRAPE_TARGET_FILTERS = JSON.stringify(filters ?? {});
 
   // Defensive: Linux can't run social scrapes (FB proven 2026-06-01 — Brave
   // fingerprint detected by FB on Linux+Xvfb regardless of stack; IG uses

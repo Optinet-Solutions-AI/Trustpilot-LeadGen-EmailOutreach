@@ -102,6 +102,138 @@ export function isPermanentSendFailure(errorText: string | undefined | null): bo
   return HARD_BOUNCE_PATTERNS.some(p => p.test(errorText));
 }
 
+// A delivery-status notification (NDR) sender. Address is mailer-daemon /
+// postmaster regardless of the "Mail Delivery Subsystem" display name.
+const DAEMON_FROM = /(mailer-daemon|postmaster|mail\s*delivery\s*(sub)?system)/i;
+
+// Subjects MTAs put on bounces. Kept broad — different providers phrase the
+// same failure a dozen ways ("Undelivered Mail Returned to Sender", "Mail
+// delivery failed", "Delivery Status Notification (Failure)", ...).
+const NDR_SUBJECT = /(delivery\s+status\s+notification|undeliverable|undelivered\s+mail|mail\s+delivery\s+(failed|failure|subsystem)|returned\s+mail|delivery\s+(has\s+)?failed|failure\s+notice|message\s+(was\s+not|not|could\s+not\s+be)\s+delivered|address\s+not\s+found)/i;
+
+function pickHeaderValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string {
+  if (!headers) return '';
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== lower) continue;
+    return Array.isArray(value) ? value.join(', ') : String(value ?? '');
+  }
+  return '';
+}
+
+/**
+ * Classify an INBOUND message as a delivery-status notification (bounce/NDR).
+ *
+ * A bounce threads under our original outgoing Message-ID (the NDR quotes the
+ * failed message), so the IMAP reply tracker's References-match strategy picks
+ * it up as if it were a reply. Without this guard, a hard bounce gets counted
+ * as a human reply — inflating reply rate and leaving the dead address active.
+ *
+ * Detection layers four independent signals; any one is sufficient:
+ *   1. From address is mailer-daemon / postmaster
+ *   2. Content-Type is multipart/report; report-type=delivery-status (RFC 3464)
+ *   3. Subject matches a known NDR phrasing
+ *   4. Body carries an RFC 3464 DSN block with Action: failed
+ *
+ * Pure function — no IO. Reuses the existing extractBouncedEmail / classifyBounce
+ * so hard-vs-soft logic stays in one place.
+ */
+export function classifyInboundBounce(input: {
+  fromAddr?: string | null;
+  subject?: string | null;
+  headers?: Record<string, string | string[] | undefined>;
+  body?: string | null;
+}): { isBounce: boolean; type: 'hard' | 'soft'; bouncedEmail: string | null } {
+  const from = (input.fromAddr || '').toLowerCase();
+  const subject = input.subject || '';
+  const body = input.body || '';
+  const contentType = pickHeaderValue(input.headers, 'content-type');
+
+  const fromDaemon = DAEMON_FROM.test(from);
+  const isReport =
+    /multipart\/report/i.test(contentType) &&
+    /report-type\s*=\s*["']?delivery-status/i.test(contentType);
+  const subjectNdr = NDR_SUBJECT.test(subject);
+  const dsnBlock =
+    /^\s*final-recipient\s*:/im.test(body) && /^\s*action\s*:\s*failed/im.test(body);
+
+  if (!(fromDaemon || isReport || subjectNdr || dsnBlock)) {
+    return { isBounce: false, type: 'hard', bouncedEmail: null };
+  }
+
+  const scanText = `${subject}\n${body}`;
+  return {
+    isBounce: true,
+    type: classifyBounce(scanText),
+    bouncedEmail: extractBouncedEmail(scanText),
+  };
+}
+
+// Snippet-safe hard-failure signals. Deliberately EXCLUDES the bare 3-digit
+// SMTP codes (550/551/…) that HARD_BOUNCE_PATTERNS carries: in a real DSN a
+// lone "550 " is reliable, but in free-form reply text it collides with
+// everyday numbers ("we're at 550 King St"). These are unambiguous in prose —
+// dotted DSN codes and named refusal phrases a human reply would never use.
+const SNIPPET_HARD_SIGNALS = [
+  /5\.\d\.\d/,                 // dotted enhanced status code, e.g. 5.1.1
+  /NoSuchUser/i,
+  /user unknown/i,
+  /user does not exist/i,
+  /address.*not found/i,
+  /no such.*mailbox/i,
+  /mailbox not found/i,
+  /recipient.*rejected/i,
+  /account.*does not exist/i,
+];
+
+/**
+ * Classify a stored `campaign_leads.reply_snippet` (body text only) as a
+ * bounce. Used by the one-off backfill that reclassifies rows the live tracker
+ * marked 'replied' before the bounce guard shipped (commit b9cc8fc) — those
+ * rows have no preserved From/Subject/headers, only the body the tracker saved.
+ *
+ * Two layers, conservative by design (a backfill must not flip genuine human
+ * replies):
+ *   1. Run the inbound NDR detector with the snippet as both subject + body so
+ *      its subject-phrasing and RFC 3464 DSN-block signals can fire.
+ *   2. Fall back to snippet-safe hard-failure phrases ("NoSuchUser",
+ *      "account … does not exist", dotted 5.x.x codes) for NDRs whose body
+ *      carries the refusal text without standard NDR subject phrasing.
+ *
+ * Only PERMANENT failures are flagged. A transient/soft snippet (4xx, mailbox
+ * full) returns isBounce=false — a mislabeled transient failure is rare and
+ * not worth the false-positive risk on a bulk reclassify.
+ */
+export function classifyBounceFromSnippet(
+  snippet: string | null | undefined,
+  fallbackEmail?: string | null,
+): { isBounce: boolean; type: 'hard' | 'soft'; bouncedEmail: string | null } {
+  const text = (snippet || '').trim();
+  if (!text) return { isBounce: false, type: 'hard', bouncedEmail: null };
+
+  const inbound = classifyInboundBounce({ subject: text, body: text });
+  if (inbound.isBounce) {
+    return {
+      isBounce: true,
+      type: inbound.type,
+      bouncedEmail: inbound.bouncedEmail ?? fallbackEmail ?? null,
+    };
+  }
+
+  if (SNIPPET_HARD_SIGNALS.some(p => p.test(text))) {
+    return {
+      isBounce: true,
+      type: 'hard',
+      bouncedEmail: extractBouncedEmail(text) ?? fallbackEmail ?? null,
+    };
+  }
+
+  return { isBounce: false, type: 'hard', bouncedEmail: null };
+}
+
 interface GmailClientEntry {
   email: string;
   gmail: ReturnType<typeof getGmailClient>;

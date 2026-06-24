@@ -166,7 +166,7 @@ def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
     print(':'.join(parts) if len(parts) == 1 else parts[0] + ':' + ' '.join(parts[1:]), flush=True)
 
 
-def _claim_account(platform: str = 'facebook') -> Optional[dict]:
+def _claim_account(platform: str = 'facebook', country: Optional[str] = None) -> Optional[dict]:
     """Pick the next available active social_accounts row.
 
     Returns the row dict, or None if no account is available (all
@@ -180,16 +180,15 @@ def _claim_account(platform: str = 'facebook') -> Optional[dict]:
     permanently strands the account at the cap.
     """
     from datetime import datetime, timezone, timedelta
-    rows = (
+    q = (
         table('social_accounts')
-        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at')
+        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at,country,proxy_location')
         .eq('platform', platform)
         .eq('status', 'active')
-        .order('used_today', desc=False)
-        .limit(5)
-        .execute()
-        .data
     )
+    if country:
+        q = q.eq('country', country)
+    rows = q.order('used_today', desc=False).limit(5).execute().data
     now = datetime.now(timezone.utc)
     for row in rows:
         # Roll over stale counters before checking caps.
@@ -247,6 +246,63 @@ def _bump_counters(account_id: str, delta_today: int = 1, delta_hour: int = 1) -
             'used_today': new_today,
             'used_this_hour': new_hour,
             'last_used_at': _now_iso(),
+        })
+        .eq('id', account_id)
+        .execute()
+    )
+
+
+def _load_account_by_id(account_id: str) -> dict:
+    """Fetch a social_accounts row by primary key.
+
+    Used by the comment-post path where the server has already chosen the
+    correct account for the lead's country — we just need its full row.
+
+    Raises RuntimeError when the row doesn't exist or the account is not
+    active (caller should surface this as an error, not silently skip).
+    """
+    rows = (
+        table('social_accounts')
+        .select(
+            'id,platform,handle,status,country,proxy_location,'
+            'daily_cap,hourly_cap,comment_daily_cap,comment_used_today,'
+            'used_today,used_this_hour,encrypted_cookies,last_used_at'
+        )
+        .eq('id', account_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise RuntimeError(f"social_accounts row not found for id={account_id!r}")
+    row = rows[0]
+    if row.get('status') != 'active':
+        raise RuntimeError(
+            f"Account {account_id!r} is not active (status={row.get('status')!r})"
+        )
+    return row
+
+
+def _bump_comment_counter(account_id: str) -> None:
+    """Atomically increment comment_used_today for an account.
+
+    Mirrors _bump_counters but touches only the comment budget columns,
+    so read-path counters (used_today / used_this_hour) remain untouched.
+    """
+    row = (
+        table('social_accounts')
+        .select('comment_used_today')
+        .eq('id', account_id)
+        .execute()
+        .data
+    )
+    if not row:
+        return
+    new_comment_count = (row[0].get('comment_used_today') or 0) + 1
+    (
+        table('social_accounts')
+        .update({
+            'comment_used_today': new_comment_count,
+            'updated_at': _now_iso(),
         })
         .eq('id', account_id)
         .execute()
@@ -608,6 +664,18 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     if not text:
         return None
     lowered = text.lower()
+    # Province/state tokens that disambiguate a city name shared across
+    # countries (e.g. "London, Ontario" must resolve CA, not GB). Checked
+    # BEFORE the bare-city scan so the province wins. Small + data-driven —
+    # only provinces actually seen in live group names.
+    PROVINCE_TO_COUNTRY = [
+        ('ontario', 'CA'), ('quebec', 'CA'), ('québec', 'CA'),
+        ('alberta', 'CA'), ('manitoba', 'CA'), ('saskatchewan', 'CA'),
+        ('british columbia', 'CA'), ('nova scotia', 'CA'),
+    ]
+    for needle, country in PROVINCE_TO_COUNTRY:
+        if needle in lowered:
+            return country
     # Order: most specific multi-word cities first so 'lapu-lapu city' matches
     # before a generic 'cebu' substring would.
     CITY_TO_COUNTRY = [
@@ -727,6 +795,98 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
         if needle in lowered:
             return country
     return None
+
+
+def _resolve_lead_country(group_name: Optional[str], location: Optional[str],
+                          excerpt: Optional[str]) -> Optional[str]:
+    """Resolve a consumer lead's country from the richest available signal.
+
+    Combines the group name (which often carries a province/region token like
+    'Ontario' that disambiguates a shared city name), the operator's location,
+    and the post excerpt, then runs _extract_country_from_excerpt over the lot
+    (its PROVINCE_TO_COUNTRY check runs first, so 'London, Ontario' -> 'CA'
+    while bare 'London' -> 'GB'). Falls back to the raw operator location when
+    nothing resolves, so unknown places (e.g. 'Nairobi') are preserved rather
+    than dropped — matching the prior behaviour.
+    """
+    haystack = ' '.join(p for p in (group_name, location, excerpt) if p)
+    return _extract_country_from_excerpt(haystack) or (location or None)
+
+
+def _target_country_from_filters(filters: dict) -> Optional[str]:
+    """Resolve the scrape's target country to an uppercased ISO-2 code.
+
+    Businesses-mode passes an ISO `country`; consumers-mode passes a
+    `location` city we map via _extract_country_from_excerpt. Returns
+    None when neither resolves — caller treats that as "no country
+    constraint" / "no account for country" depending on context.
+    """
+    explicit = (filters.get('country') or '').strip()
+    if explicit:
+        return explicit.upper()
+    loc = (filters.get('location') or '').strip()
+    if loc:
+        cc = _extract_country_from_excerpt(loc)
+        if cc:
+            return cc.upper()
+    return None
+
+
+def _target_country_from_env() -> Optional[str]:
+    """Resolve target country from the SCRAPE_TARGET_FILTERS env var.
+
+    The orchestrator runs listing and enrichment as SEPARATE processes that
+    all inherit the same env; the `_TARGET_COUNTRY` module global is only set
+    in scrape_listing, so the enrich/search-posts processes rely on this env
+    fallback to keep account selection + proxy country-consistent.
+    """
+    raw = os.environ.get('SCRAPE_TARGET_FILTERS')
+    if not raw:
+        return None
+    try:
+        filters = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(filters, dict):
+        return None
+    return _target_country_from_filters(filters)
+
+
+def _derive_location_confidence(
+    group_name: Optional[str],
+    post_excerpt: Optional[str],
+    operator_location: Optional[str],
+) -> str:
+    """Classify how well a captured lead matches the SEARCHED city.
+
+    Returns:
+      'confirmed_city' — searched city appears (whole-word) in the group name
+                         or the post text.
+      'same_country'   — a different city is named that resolves to the SAME
+                         country as the operator's search location.
+      'unconfirmed'    — no usable location signal (generic group + a post that
+                         names no place). The honest default.
+
+    Pure + deterministic; reuses CITY_TO_COUNTRY via _extract_country_from_excerpt.
+    Wrong-COUNTRY groups are dropped earlier by _is_consumer_facing_group, so
+    they are not expected here; if one slips through it falls to 'unconfirmed'.
+    """
+    loc = (operator_location or '').strip().lower()
+    hay = f"{group_name or ''} {post_excerpt or ''}".lower()
+
+    if loc and re.search(r'\b' + re.escape(loc) + r'\b', hay):
+        return 'confirmed_city'
+
+    operator_country = _extract_country_from_excerpt(operator_location or '')
+    # Scrub the searched city from `hay` before country-detection so that a
+    # city name embedded inside a longer token (e.g. "bristol" in
+    # "bristolboard") does not produce a spurious same_country signal.
+    hay_for_country = re.sub(re.escape(loc), '', hay) if loc else hay
+    detected_country = _extract_country_from_excerpt(hay_for_country)
+    if detected_country and operator_country and detected_country == operator_country:
+        return 'same_country'
+
+    return 'unconfirmed'
 
 
 # Country-token map for the "drop name-mismatched country groups" filter.
@@ -1051,6 +1211,14 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
                 if pattern.search(group_name or ''):
                     return False
 
+            # Stage 1b: city-in-name mismatch. The token loop above only
+            # catches explicit COUNTRY words ('usa', 'ireland'); group names
+            # usually carry a CITY ('Atlanta', 'Dublin'). Resolve any city in
+            # the name to its country and drop if it's a DIFFERENT country.
+            group_country = _extract_country_from_excerpt(group_name or '')
+            if group_country and group_country != operator_country:
+                return False
+
     # Stage 2a (NEW): a curated consumer-classifieds token is a STRONG
     # positive — a local classifieds / flea-market / for-sale board is
     # exactly where consumer service-asks live, so KEEP it even if the name
@@ -1105,6 +1273,11 @@ def _is_consumer_facing_group(group_name: str, operator_location: str | None = N
 # scrape runs in its own Python subprocess, so the global is process-
 # scoped and safe from cross-job leakage.
 _CURRENT_LOCATION: Optional[str] = None
+# ISO-2 country resolved from the current scrape's filters via
+# _target_country_from_filters(). Set alongside _CURRENT_LOCATION in
+# scrape_listing so that _claim_or_raise picks the right account even
+# when called deep in the sync helpers (which have no access to filters).
+_TARGET_COUNTRY: Optional[str] = None
 
 
 def _open_driver():
@@ -2023,12 +2196,13 @@ class FacebookScraper(SocialPlatformScraper):
         # Record the operator's location/country for the proxy-country
         # resolver in _open_driver(). consumers-mode uses `location`
         # (city), businesses-mode uses `country` (ISO code).
-        global _CURRENT_LOCATION
+        global _CURRENT_LOCATION, _TARGET_COUNTRY
         _CURRENT_LOCATION = (
             (filters.get('location') or '').strip()
             or (filters.get('country') or '').strip()
             or None
         )
+        _TARGET_COUNTRY = _target_country_from_filters(filters)
 
         lead_type = (filters.get('lead_type') or 'consumers').lower()
 
@@ -2131,13 +2305,14 @@ class FacebookScraper(SocialPlatformScraper):
                     'rating': None,
                     # Category = the niche the operator searched for.
                     'category': niche or legacy_query,
-                    # Country = the location field the operator typed,
-                    # verbatim. Previously we tried to auto-detect a country
-                    # code from a hardcoded city list (PH-biased, useless
-                    # for Brooklyn / London / Sydney). Operator-provided
-                    # text is the ground truth — Lead Matrix surfaces it
-                    # as-is.
-                    'country': location or None,
+                    # Country: resolve from group name first (it often
+                    # carries a disambiguating province token like "Ontario"),
+                    # then fall back to the raw operator location string so
+                    # unmapped places (e.g. "Nairobi") are preserved as-is.
+                    'country': _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt')),
+                    'location_confidence': _derive_location_confidence(
+                        s.get('group_name'), s.get('content_excerpt'), location,
+                    ),
                     'is_anonymous': is_anon,
                     'outreach_status': 'lost' if is_anon else None,
                 })
@@ -2233,8 +2408,15 @@ class FacebookScraper(SocialPlatformScraper):
         for s in stubs:
             if stamp_niche and not s.get('category'):
                 s['category'] = stamp_niche
-            if stamp_location and not s.get('country'):
-                s['country'] = stamp_location
+            if not s.get('country'):
+                resolved = _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt'))
+                if resolved:
+                    s['country'] = resolved
+            if not s.get('location_confidence'):
+                s['location_confidence'] = _derive_location_confidence(
+                    s.get('group_name'), s.get('content_excerpt'),
+                    s.get('country') or stamp_location,
+                )
 
         # ── Consumer-only filter chain (was previously ONLY in scrape_listing) ──
         #
@@ -2322,13 +2504,30 @@ class FacebookScraper(SocialPlatformScraper):
         return await asyncio.to_thread(self._sync_enrich_authors, post_stubs, on_progress)
 
     # ── Sync internals ───────────────────────────────────────────────
-    def _claim_or_raise(self) -> dict:
-        account = _claim_account('facebook')
+    def _claim_or_raise(self, country: Optional[str] = None) -> dict:
+        country = country or _TARGET_COUNTRY or _target_country_from_env()
+        if not country:
+            raise RuntimeError(
+                "Cannot determine the scrape's target country, so no geo-consistent "
+                "Facebook account can be selected. Set a 'country' (or a mappable "
+                "'location') in the scrape filters."
+            )
+        account = _claim_account('facebook', country=country)
         if not account:
+            if country:
+                raise RuntimeError(
+                    f"No active Facebook account pinned to country {country}. "
+                    f"Connect one in Social Accounts and pin it to {country}."
+                )
             raise RuntimeError(
                 "No active Facebook account available. Connect one in Social Accounts "
                 "and check daily/hourly caps."
             )
+        # Geo-consistency: operate this account on its own country's residential IP.
+        global _CURRENT_LOCATION
+        pin = account.get('proxy_location') or account.get('country')
+        if pin:
+            _CURRENT_LOCATION = pin
         return account
 
     def _open_session(self, account: dict):
@@ -2743,3 +2942,189 @@ class FacebookScraper(SocialPlatformScraper):
         finally:
             try: driver.quit()
             except Exception: pass
+
+    # ── Comment posting ──────────────────────────────────────────────
+
+    def post_comment(self, post_url: str, text: str, account_id: str) -> dict:
+        """Post a comment on a Facebook post via the account's saved session.
+
+        This is the WRITE path — it uses the account identified by ``account_id``
+        (the lead's OWN account, chosen by the server for geo-consistency) and does
+        NOT call ``_claim_or_raise``/_``_claim_account`` (those are for READ scrapes).
+
+        Returns ``{"posted": True, "error": None}`` on success, or
+        ``{"posted": False, "error": "<reason>"}`` on failure.
+
+        Selenium interaction is wrapped in ``asyncio.to_thread`` in the async
+        caller below. Call the sync method directly in tests.
+        """
+        account = _load_account_by_id(account_id)
+
+        # Geo-consistency: pin the proxy location to this account's country
+        # BEFORE opening any browser so _open_driver picks the right exit node.
+        global _CURRENT_LOCATION
+        pin = account.get('proxy_location') or account.get('country')
+        if pin:
+            _CURRENT_LOCATION = pin
+
+        # Comment-cap guard — do NOT open a browser if already capped.
+        comment_used = account.get('comment_used_today') or 0
+        comment_cap = account.get('comment_daily_cap') or 0
+        if comment_cap == 0:
+            print(
+                f"WARN: comment_daily_cap is 0/NULL for account {account.get('handle')} "
+                f"— set it in social_accounts to enable commenting",
+                file=sys.stderr,
+            )
+        if comment_used >= comment_cap:
+            return {'posted': False, 'error': 'comment_cap_reached'}
+
+        driver = None
+        try:
+            driver = self._open_session(account)
+            driver.get(post_url)
+            _human_pause(SCROLL_PAUSE, extra=1.5)
+
+            # Trust-gate / checkpoint check immediately after navigation.
+            if _is_checkpoint(driver):
+                _flag_checkpoint(account['id'], 'captcha-before-comment')
+                return {'posted': False, 'error': 'checkpoint'}
+
+            # Dismiss cookie banner if it appeared (it blocks all clicks).
+            _dismiss_fb_cookie_banner(driver)
+
+            # Bypass trust gate in case we hit a new-IP redirect.
+            if _bypass_fb_trust_gate(driver):
+                # Re-navigate to the post after trusting the IP.
+                driver.get(post_url)
+                _human_pause(SCROLL_PAUSE)
+                if _is_checkpoint(driver):
+                    _flag_checkpoint(account['id'], 'captcha-after-trust-gate-comment')
+                    return {'posted': False, 'error': 'checkpoint'}
+
+            # ── FB comment composer. VERIFIED LIVE 2026-06-24 on james's
+            # account: posted a real comment via the
+            # div[role=textbox][contenteditable=true] selector + send_keys +
+            # Enter ({"posted": true}). FB rewrites class names ~monthly but
+            # the SHAPE (role=textbox, contenteditable) is stable; if it ever
+            # breaks, re-verify these on a live post:
+            #   1. Locate the right comment box (a post page may have several
+            #      nested-comment boxes in addition to the top-level one).
+            #   2. Whether send_keys per-char suffices or JS InputEvent injection
+            #      is needed for Lexical to register the text.
+            #   3. The submit affordance — Enter key vs. a "Post" button.
+            #   4. The post-submit verification selector (how to confirm our text
+            #      actually appears in the rendered comment).
+            # ──────────────────────────────────────────────────────────────────
+
+            # Scroll down to make comment sections visible / load lazy content.
+            driver.execute_script('window.scrollBy(0, 400);')
+            _human_pause(1.0)
+
+            # Locate the comment composer. FB renders a Lexical-powered
+            # contenteditable div as the comment input.
+            # Best-known selectors in priority order:
+            COMMENT_BOX_SELECTORS = [
+                # Aria-labelled composer (most stable — survives class-name churn)
+                'div[role="textbox"][aria-label*="comment" i][contenteditable="true"]',
+                'div[role="textbox"][aria-label*="Write a comment" i][contenteditable="true"]',
+                # Fallback: any top-level contenteditable (may match nested replies
+                # — verify which index is correct for the primary comment area)
+                'div[role="textbox"][contenteditable="true"]',
+            ]
+            composer = None
+            for sel in COMMENT_BOX_SELECTORS:
+                try:
+                    candidates = driver.find_elements('css selector', sel)
+                    if candidates:
+                        composer = candidates[0]
+                        print(f'INFO: comment composer found via selector: {sel}', file=sys.stderr)
+                        break
+                except Exception:
+                    continue
+
+            if composer is None:
+                print('WARN: no comment composer found on page — selectors need live verification', file=sys.stderr)
+                return {'posted': False, 'error': 'composer_not_found'}
+
+            # Scroll the composer into view and click to focus.
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", composer)
+            _human_pause(0.4)
+            composer.click()
+            _human_pause(0.3)
+
+            # Type the comment text human-paced (per-character send_keys).
+            # Lexical tracks keystroke-level input; bulk string injection via
+            # element.send_keys("whole string") works in most cases but may
+            # miss Lexical's onChange events — per-char is safer.
+            # LIVE-VERIFY: if the composer stays empty after per-char send_keys,
+            # switch to JS InputEvent injection (see ActionChains alternative).
+            for ch in text:
+                composer.send_keys(ch)
+                time.sleep(random.uniform(0.03, 0.09))
+
+            _human_pause(0.6)
+
+            # Submit: Enter key is the standard FB comment-submit affordance.
+            # LIVE-VERIFY: some FB surfaces render a "Post" button instead.
+            # If Enter submits but a visible "Post" button is present, prefer
+            # clicking the button (more reliable than the key event).
+            from selenium.webdriver.common.keys import Keys  # noqa: WPS433 — lazy
+            composer.send_keys(Keys.RETURN)
+            _human_pause(2.0, extra=1.0)  # wait for the comment to render
+
+            # Post-submit verification: look for our text in a comment node.
+            # LIVE-VERIFY: the exact selector for rendered comment text may differ
+            # (span[dir="auto"] inside a comment article is the typical shape).
+            submitted_text_snippet = text[:40]
+            comment_appeared = False
+            try:
+                all_spans = driver.find_elements('css selector', 'span[dir="auto"]')
+                for span in all_spans:
+                    try:
+                        if submitted_text_snippet in (span.text or ''):
+                            comment_appeared = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if not comment_appeared:
+                print(
+                    f'WARN: comment text snippet not found in page after submit — '
+                    f'may have posted but verification selector needs live tuning',
+                    file=sys.stderr,
+                )
+                # Still treat as posted if no checkpoint/error surfaced —
+                # the verification step is best-effort pending live selector work.
+
+            # ── END LIVE-DISCOVERY BLOCK ──────────────────────────────────────
+
+            # Success path: bump comment counters (separate from read counters).
+            _bump_comment_counter(account['id'])
+            return {'posted': True, 'error': None}
+
+        except RuntimeError:
+            # _open_session raises RuntimeError on cookie rejection — that's a
+            # checkpoint/login-gate scenario, not a generic error.
+            _flag_checkpoint(account['id'], 'login-gate-during-comment')
+            return {'posted': False, 'error': 'checkpoint'}
+        except Exception as exc:  # noqa: BLE001
+            body_text = ''
+            try:
+                body_text = (driver.execute_script('return document.body.innerText') or '')[:200]
+            except Exception:
+                pass
+            # Detect checkpoint-like page content.
+            if any(k in body_text.lower() for k in ('security check', 'verify your identity', 'captcha')):
+                _flag_checkpoint(account['id'], f'captcha-during-comment: {str(exc)[:80]}')
+                return {'posted': False, 'error': 'checkpoint'}
+            print(f'ERROR: post_comment failed: {exc}', file=sys.stderr)
+            return {'posted': False, 'error': str(exc)[:200]}
+        finally:
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass

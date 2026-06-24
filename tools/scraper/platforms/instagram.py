@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random as _random
 import sys
 import time
 from typing import Optional
@@ -41,6 +42,8 @@ from tools.scraper.platforms.facebook import (
     _flag_checkpoint,
     _inject_cookies,
     _is_checkpoint,
+    _derive_location_confidence,
+    _extract_country_from_excerpt,
 )
 from tools.scraper.shared.session_store import load_cookies
 from tools.scraper.shared.social_nlp import classify_consumer_posts_with_gemini
@@ -140,6 +143,54 @@ def _normalize_hashtag(q: str) -> str:
     return q.strip().lstrip('#').lower()
 
 
+def _paced_sleep(extra_max: float = 2.0) -> None:
+    """Sleep SCROLL_PAUSE plus a random 0.3–extra_max s. IG fingerprints harder
+    than FB and flags fixed-cadence automation, so inter-navigation pauses are
+    jittered (mirrors FB's anti-flag pacing)."""
+    time.sleep(SCROLL_PAUSE + _random.uniform(0.3, extra_max))
+
+
+_CONF_RANK = {'confirmed_city': 3, 'same_country': 2, 'unconfirmed': 1}
+
+
+def _best_location_confidence(posts: list[dict]) -> Optional[str]:
+    """Roll the per-post location_confidence up to the author-level lead: take
+    the strongest signal across the author's matched posts (confirmed_city >
+    same_country > unconfirmed). Returns None when no post carries a stamp."""
+    best = None
+    best_rank = 0
+    for p in posts:
+        rank = _CONF_RANK.get(p.get('location_confidence'), 0)
+        if rank > best_rank:
+            best_rank = rank
+            best = p.get('location_confidence')
+    return best
+
+
+def _location_verdict(text: str, operator_location: Optional[str]) -> tuple[str, bool]:
+    """Stamp location_confidence and decide keep/drop for one IG post.
+
+    IG has no groups and its hashtag search is GLOBAL, so without this a search
+    pollutes results with wrong-country leads — exactly the problem FB had
+    before migration 049. We reuse FB's classifier so both platforms stay
+    consistent, fed by the post caption + author handle (the only location
+    signal IG exposes without an extra profile fetch).
+
+    Returns (location_confidence, keep):
+      • keep=False — a CONFIDENT wrong-country mismatch (caption/handle resolves
+        to a different country than the operator's target). Drop it, mirroring
+        FB's wrong-country group drop.
+      • else (confirmed_city / same_country / unconfirmed, True) — keep, stamped
+        honestly. With no operator location we can't gate, so everything is kept
+        'unconfirmed'.
+    """
+    op_country = _extract_country_from_excerpt(operator_location or '')
+    txt_country = _extract_country_from_excerpt(text or '')
+    if op_country and txt_country and txt_country != op_country:
+        return ('wrong_country', False)
+    return (_derive_location_confidence(None, text, operator_location), True)
+
+
 def _filter_consumer_posts(posts: list[dict], *, niche: str, location):
     """Drop posts the Gemini classifier marks non-consumer. Classifier
     None (no key / API fail) => keep everything (IG relies on the LLM
@@ -170,6 +221,11 @@ class InstagramScraper(SocialPlatformScraper):
              {'value': 'consumers', 'label': 'Consumers asking under a hashtag (intent-filtered)'},
          ]},
         {'name': 'query', 'type': 'text', 'label': 'Niche hashtag (without #)', 'required': True},
+        # Optional city — IG hashtag search is global, so this isn't a search
+        # filter; it's the target used to STAMP location_confidence and DROP
+        # confident wrong-country posts (FB parity, migration 049). Falls back
+        # to `country` when blank.
+        {'name': 'location', 'type': 'text', 'label': 'Location / city (optional)', 'required': False},
         {'name': 'country', 'type': 'select', 'label': 'Country', 'options_source': 'taxonomy:countries'},
     ]
 
@@ -242,8 +298,11 @@ class InstagramScraper(SocialPlatformScraper):
         # Business mode keeps every post author (the advertising SMBs); consumer
         # mode applies the Gemini consumer-intent filter.
         filter_consumers = (filters.get('lead_type') or 'consumers').lower() != 'businesses'
+        # Target location for stamping + the wrong-country gate (city preferred,
+        # country as fallback) — mirrors FacebookScraper's operator_location.
+        operator_location = (filters.get('location') or filters.get('country') or '').strip()
         return await asyncio.to_thread(
-            self._sync_search_hashtag, _normalize_hashtag(query), max_results or 30, on_progress, filter_consumers,
+            self._sync_search_hashtag, _normalize_hashtag(query), max_results or 30, on_progress, filter_consumers, operator_location,
         )
 
     async def search_groups(
@@ -296,7 +355,7 @@ class InstagramScraper(SocialPlatformScraper):
             raise RuntimeError(f"Instagram rejected cookies for {account['handle']} — needs re-connect")
         return driver
 
-    def _sync_search_hashtag(self, tag: str, max_results: int, on_progress: ProgressCallback, filter_consumers: bool = True) -> list[PostStub]:
+    def _sync_search_hashtag(self, tag: str, max_results: int, on_progress: ProgressCallback, filter_consumers: bool = True, operator_location: str = '') -> list[PostStub]:
         account = self._claim_or_raise()
         _emit(on_progress, 'search_start', tag=tag)
         driver = self._open_session(account)
@@ -341,7 +400,7 @@ class InstagramScraper(SocialPlatformScraper):
                 if len(results) >= max_results:
                     break
                 driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                time.sleep(SCROLL_PAUSE)
+                _paced_sleep()
             for stub in results:
                 try:
                     driver.get(stub['post_url'])
@@ -358,12 +417,30 @@ class InstagramScraper(SocialPlatformScraper):
                         stub['author_handle'] = handle
                         stub['author_profile_url'] = f'{IG_BASE}/{handle}/'
                     _emit(on_progress, 'caption_captured', url=stub['post_url'])
+                    _paced_sleep()  # jittered pacing between post fetches (IG flags fixed cadences)
                 except Exception:
                     stub['content_excerpt'] = ''
+            # Location parity with Facebook (migration 049): stamp
+            # location_confidence from caption + author handle, and DROP confident
+            # wrong-country posts. IG hashtag search is GLOBAL, so without this a
+            # #plumber search pollutes results with wrong-country leads — the exact
+            # failure FB had before the location gate. City-based + conservative:
+            # a caption that names no city stays 'unconfirmed' (kept), never a
+            # false-positive drop.
+            kept: list[PostStub] = []
+            for stub in results:
+                text = f"{stub.get('content_excerpt', '')} {stub.get('author_handle', '')}"
+                conf, keep = _location_verdict(text, operator_location)
+                if not keep:
+                    _emit(on_progress, 'dropped_wrong_country', url=stub.get('post_url'))
+                    continue
+                stub['location_confidence'] = conf
+                kept.append(stub)
+            results = kept
             # Consumer mode keeps only intent-matched posts; business mode keeps
             # ALL post authors (under a niche hashtag they ARE the SMB targets).
             if filter_consumers:
-                results = _filter_consumer_posts(results, niche=tag, location=None)
+                results = _filter_consumer_posts(results, niche=tag, location=operator_location or None)
             _bump_counters(account['id'], 1, 1)
             _emit(on_progress, 'search_done', total=len(results))
             return results
@@ -404,6 +481,10 @@ class InstagramScraper(SocialPlatformScraper):
                         'website_url': bio_link,
                         'email': None,
                         'location': None,
+                        # Roll up the per-post location stamp so the lead carries
+                        # the same honesty flag FB writes (migration 049). upsert
+                        # reads lead['location_confidence'].
+                        'location_confidence': _best_location_confidence(posts),
                         'is_business_profile': True,
                         'follower_count': None,
                         'bio_excerpt': None,

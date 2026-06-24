@@ -211,6 +211,7 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
     leads_row = {
         'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
         'country': lead.get('country'),
+        'location_confidence': lead.get('location_confidence'),
         'category': lead.get('category'),
         'website_url': lead.get('website_url'),
         'phone': lead.get('phone'),

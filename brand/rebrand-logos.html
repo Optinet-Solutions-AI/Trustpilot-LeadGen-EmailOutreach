@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Brand Split — OptiRate (blue) + RateUp (green)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..600&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --blue:#2563EB; --blue-deep:#1E3A8A; --blue-bright:#60A5FA;
+    --green:#0E8A5F; --green-deep:#0A6B4A; --green-bright:#1FB877;
+    --ink:#0B1B2A; --ink-soft:#46566B; --mute:#7A899B;
+    --paper:#F3F5FA; --line:#D8DEEA;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Plus Jakarta Sans",sans-serif;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;line-height:1.5}
+  header.page{padding:60px 40px 36px;max-width:1080px;margin:0 auto;text-align:center}
+  header.page .eyebrow{font-size:12px;letter-spacing:.3em;text-transform:uppercase;color:var(--blue);font-weight:700;margin-bottom:16px}
+  header.page h1{font-family:"Fraunces",serif;font-weight:500;font-size:clamp(32px,5vw,48px);letter-spacing:-.01em}
+  header.page p{color:var(--ink-soft);max-width:620px;margin:16px auto 0}
+  main{max-width:1080px;margin:0 auto;padding:0 40px 90px}
+  .block{background:#fff;border:1px solid var(--line);border-radius:22px;overflow:hidden;margin-bottom:30px;box-shadow:0 30px 60px -42px rgba(11,27,42,.35)}
+  .bhead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:24px 32px;border-bottom:1px solid var(--line)}
+  .bhead h2{font-size:21px;font-weight:700}
+  .bhead .tag{font-size:13px;font-weight:600}
+  .bhead .desc{color:var(--ink-soft);font-size:14px;flex:1 1 300px}
+  .pill{font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#fff;border-radius:999px;padding:5px 11px}
+  .pill.blue{background:var(--blue)} .pill.green{background:var(--green)} .pill.pick{background:var(--ink)}
+  .grid{display:grid;grid-template-columns:1.4fr 1fr 1fr;min-height:200px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .cell{padding:36px 30px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;border-right:1px solid var(--line)}
+  .cell:last-child{border-right:none}
+  @media(max-width:760px){.cell{border-right:none;border-bottom:1px solid var(--line)}}
+  .cell.darkblue{background:var(--blue-deep)} .cell.darkgreen{background:var(--green-deep)}
+  .cell .t{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--mute);font-weight:600}
+  .cell.darkblue .t,.cell.darkgreen .t{color:rgba(255,255,255,.6)}
+  .wm{display:inline-flex;align-items:center;font-weight:800;letter-spacing:-.022em;gap:13px}
+  .wm.integ{gap:2px}
+  .wm .txt{font-size:33px;line-height:1}
+  .wm .a{color:var(--ink)} .wm .blue{color:var(--blue)} .wm .green{color:var(--green)}
+  .darkblue .wm .a,.darkgreen .wm .a{color:#fff}
+  .darkblue .wm .blue{color:var(--blue-bright)} .darkgreen .wm .green{color:var(--green-bright)}
+  .favrow{display:flex;align-items:center;gap:18px}.fav{display:flex;flex-direction:column;align-items:center;gap:7px}.fav small{font-size:10px;color:var(--mute)}
+  .note{max-width:1080px;margin:0 auto;padding:0 40px;color:var(--ink-soft);font-size:14px}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3B82F6"/><stop offset="1" stop-color="#1E3A8A"/></linearGradient>
+  <linearGradient id="gg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#18A06B"/><stop offset="1" stop-color="#0A6B4A"/></linearGradient>
+</defs>
+
+  <!-- RateUp = green check-arrow (the old OptiRate mark) -->
+  <symbol id="gl" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="url(#gg)"/><path d="M17 33 L27 43 L50 19" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M39.5 19 L50 19 L50 29.5" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="glr" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="#fff"/><path d="M17 33 L27 43 L50 19" fill="none" stroke="#0A6B4A" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M39.5 19 L50 19 L50 29.5" fill="none" stroke="#0A6B4A" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+
+  <!-- OptiRate concept 1: GAUGE (optimize the rate) -->
+  <symbol id="ob1" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="#D7E3FB" stroke-width="6"/><path d="M32 6 A26 26 0 0 1 58 32" fill="none" stroke="url(#bg)" stroke-width="6" stroke-linecap="round"/><line x1="32" y1="32" x2="46" y2="20" stroke="#1E3A8A" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="32" r="5.2" fill="#1E3A8A"/></symbol>
+  <symbol id="ob1r" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="6"/><path d="M32 6 A26 26 0 0 1 58 32" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round"/><line x1="32" y1="32" x2="46" y2="20" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="32" r="5.2" fill="#fff"/></symbol>
+
+  <!-- OptiRate concept 2: OPTIMIZE RING + ARROW -->
+  <symbol id="ob2" viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="#D7E3FB" stroke-width="6"/><path d="M32 8 A24 24 0 0 1 56 32" fill="none" stroke="url(#bg)" stroke-width="6" stroke-linecap="round"/><path d="M32 44 L32 24 M23 33 L32 24 L41 33" fill="none" stroke="#2563EB" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="ob2r" viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="6"/><path d="M32 8 A24 24 0 0 1 56 32" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round"/><path d="M32 44 L32 24 M23 33 L32 24 L41 33" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+
+  <!-- OptiRate concept 3: SLIDERS (tune / optimize) -->
+  <symbol id="ob3" viewBox="0 0 64 64"><line x1="11" y1="20" x2="53" y2="20" stroke="#D7E3FB" stroke-width="5" stroke-linecap="round"/><circle cx="45" cy="20" r="6.5" fill="url(#bg)"/><line x1="11" y1="32" x2="53" y2="32" stroke="#D7E3FB" stroke-width="5" stroke-linecap="round"/><circle cx="24" cy="32" r="6.5" fill="url(#bg)"/><line x1="11" y1="44" x2="53" y2="44" stroke="#D7E3FB" stroke-width="5" stroke-linecap="round"/><circle cx="40" cy="44" r="6.5" fill="url(#bg)"/></symbol>
+  <symbol id="ob3r" viewBox="0 0 64 64"><line x1="11" y1="20" x2="53" y2="20" stroke="rgba(255,255,255,.3)" stroke-width="5" stroke-linecap="round"/><circle cx="45" cy="20" r="6.5" fill="#fff"/><line x1="11" y1="32" x2="53" y2="32" stroke="rgba(255,255,255,.3)" stroke-width="5" stroke-linecap="round"/><circle cx="24" cy="32" r="6.5" fill="#fff"/><line x1="11" y1="44" x2="53" y2="44" stroke="rgba(255,255,255,.3)" stroke-width="5" stroke-linecap="round"/><circle cx="40" cy="44" r="6.5" fill="#fff"/></symbol>
+</svg>
+
+<header class="page">
+  <div class="eyebrow">Brand Split</div>
+  <h1>OptiRate goes blue, RateUp goes green</h1>
+  <p>RateUp keeps the check→arrow mark (it means “rate up”). OptiRate gets a fresh blue mark built around “optimize the rate.” Pick OptiRate’s mark below — RateUp is shown for confirmation.</p>
+</header>
+
+<main>
+
+  <!-- RATEUP (CONFIRM) -->
+  <section class="block">
+    <div class="bhead"><span class="pill green">RateUp</span><h2>Greenlight</h2><span class="tag" style="color:var(--green)">check → arrow = “rate up”</span><div class="desc">The mark you already have, recoloured home to RateUp. Wordmark sits to the right (no “O” to slot into).</div></div>
+    <div class="grid">
+      <div class="cell"><span class="t">Primary lockup</span>
+        <span class="wm"><svg width="46" height="46"><use href="#gl"/></svg><span class="txt"><span class="a">Rate</span><span class="green">Up</span></span></span>
+      </div>
+      <div class="cell"><span class="t">Mark</span><svg width="80" height="80"><use href="#gl"/></svg>
+        <div class="favrow"><div class="fav"><svg width="32" height="32"><use href="#gl"/></svg><small>32px</small></div><div class="fav"><svg width="18" height="18"><use href="#gl"/></svg><small>16px</small></div></div>
+      </div>
+      <div class="cell darkgreen"><span class="t">Reversed</span>
+        <span class="wm"><svg width="40" height="40"><use href="#glr"/></svg><span class="txt"><span class="a">Rate</span><span class="green">Up</span></span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- OPTIRATE CONCEPT 1 -->
+  <section class="block">
+    <div class="bhead"><span class="pill blue">OptiRate</span><h2>1 · Dial</h2><span class="tag" style="color:var(--blue)">a gauge as the O</span><div class="desc">A performance dial with the needle in the high zone — “optimize your rate.” Instrument-like, precise, premium.</div><span class="pill pick">recommended</span></div>
+    <div class="grid">
+      <div class="cell"><span class="t">Mark as the “O”</span>
+        <span class="wm integ"><svg width="38" height="38"><use href="#ob1"/></svg><span class="txt"><span class="a">pti</span><span class="blue">Rate</span></span></span>
+      </div>
+      <div class="cell"><span class="t">Mark</span><svg width="84" height="84"><use href="#ob1"/></svg>
+        <div class="favrow"><div class="fav"><svg width="32" height="32"><use href="#ob1"/></svg><small>32px</small></div><div class="fav"><svg width="18" height="18"><use href="#ob1"/></svg><small>16px</small></div></div>
+      </div>
+      <div class="cell darkblue"><span class="t">Reversed</span>
+        <span class="wm integ"><svg width="34" height="34"><use href="#ob1r"/></svg><span class="txt"><span class="a">pti</span><span class="blue">Rate</span></span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- OPTIRATE CONCEPT 2 -->
+  <section class="block">
+    <div class="bhead"><span class="pill blue">OptiRate</span><h2>2 · Optimize</h2><span class="tag" style="color:var(--blue)">ring + rising arrow</span><div class="desc">A progress ring with an upward arrow at its core — continuous optimization, always trending up.</div></div>
+    <div class="grid">
+      <div class="cell"><span class="t">Mark as the “O”</span>
+        <span class="wm integ"><svg width="38" height="38"><use href="#ob2"/></svg><span class="txt"><span class="a">pti</span><span class="blue">Rate</span></span></span>
+      </div>
+      <div class="cell"><span class="t">Mark</span><svg width="84" height="84"><use href="#ob2"/></svg>
+        <div class="favrow"><div class="fav"><svg width="32" height="32"><use href="#ob2"/></svg><small>32px</small></div><div class="fav"><svg width="18" height="18"><use href="#ob2"/></svg><small>16px</small></div></div>
+      </div>
+      <div class="cell darkblue"><span class="t">Reversed</span>
+        <span class="wm integ"><svg width="34" height="34"><use href="#ob2r"/></svg><span class="txt"><span class="a">pti</span><span class="blue">Rate</span></span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- OPTIRATE CONCEPT 3 -->
+  <section class="block">
+    <div class="bhead"><span class="pill blue">OptiRate</span><h2>3 · Tune</h2><span class="tag" style="color:var(--blue)">optimization sliders</span><div class="desc">Equalizer-style sliders — the universal sign of tuning and optimizing. Techy and distinctive; sits left of the name.</div></div>
+    <div class="grid">
+      <div class="cell"><span class="t">Primary lockup</span>
+        <span class="wm"><svg width="46" height="46"><use href="#ob3"/></svg><span class="txt"><span class="a">Opti</span><span class="blue">Rate</span></span></span>
+      </div>
+      <div class="cell"><span class="t">Mark</span><svg width="84" height="84"><use href="#ob3"/></svg>
+        <div class="favrow"><div class="fav"><svg width="32" height="32"><use href="#ob3"/></svg><small>32px</small></div><div class="fav"><svg width="18" height="18"><use href="#ob3"/></svg><small>16px</small></div></div>
+      </div>
+      <div class="cell darkblue"><span class="t">Reversed</span>
+        <span class="wm"><svg width="40" height="40"><use href="#ob3r"/></svg><span class="txt"><span class="a">Opti</span><span class="blue">Rate</span></span></span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="note"><b>Palettes</b> — OptiRate blue: <code>#2563EB</code> / deep <code>#1E3A8A</code> / bright <code>#60A5FA</code>. &nbsp; RateUp green: <code>#0E8A5F</code> / <code>#0A6B4A</code> / <code>#1FB877</code>. Ink for body text stays near-black for readability.</div>
+
+</body>
+</html>

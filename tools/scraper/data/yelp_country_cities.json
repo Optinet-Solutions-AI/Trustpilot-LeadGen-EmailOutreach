@@ -88,5 +88,108 @@
     "Monterrey",
     "Puebla",
     "Tijuana"
+  ],
+  "AT": [
+    "Vienna, Austria",
+    "Graz, Austria",
+    "Linz, Austria",
+    "Salzburg, Austria",
+    "Innsbruck, Austria",
+    "Klagenfurt, Austria",
+    "Villach, Austria",
+    "Wels, Austria"
+  ],
+  "NL": [
+    "Amsterdam, Netherlands",
+    "Rotterdam, Netherlands",
+    "The Hague, Netherlands",
+    "Utrecht, Netherlands",
+    "Eindhoven, Netherlands",
+    "Groningen, Netherlands",
+    "Tilburg, Netherlands",
+    "Breda, Netherlands"
+  ],
+  "CH": [
+    "Zurich, Switzerland",
+    "Geneva, Switzerland",
+    "Basel, Switzerland",
+    "Lausanne, Switzerland",
+    "Bern, Switzerland",
+    "Winterthur, Switzerland",
+    "Lucerne, Switzerland",
+    "St. Gallen, Switzerland"
+  ],
+  "SE": [
+    "Stockholm, Sweden",
+    "Gothenburg, Sweden",
+    "Malmo, Sweden",
+    "Uppsala, Sweden",
+    "Vasteras, Sweden",
+    "Orebro, Sweden",
+    "Linkoping, Sweden",
+    "Helsingborg, Sweden"
+  ],
+  "DK": [
+    "Copenhagen, Denmark",
+    "Aarhus, Denmark",
+    "Odense, Denmark",
+    "Aalborg, Denmark",
+    "Esbjerg, Denmark",
+    "Randers, Denmark",
+    "Kolding, Denmark",
+    "Horsens, Denmark"
+  ],
+  "PL": [
+    "Warsaw, Poland",
+    "Krakow, Poland",
+    "Lodz, Poland",
+    "Wroclaw, Poland",
+    "Poznan, Poland",
+    "Gdansk, Poland",
+    "Szczecin, Poland",
+    "Lublin, Poland"
+  ],
+  "PT": [
+    "Lisbon, Portugal",
+    "Porto, Portugal",
+    "Braga, Portugal",
+    "Coimbra, Portugal",
+    "Funchal, Portugal",
+    "Faro, Portugal",
+    "Aveiro, Portugal",
+    "Cascais, Portugal"
+  ],
+  "SG": [
+    "Singapore"
+  ],
+  "TR": [
+    "Istanbul, Turkey",
+    "Ankara, Turkey",
+    "Izmir, Turkey",
+    "Bursa, Turkey",
+    "Antalya, Turkey",
+    "Adana, Turkey",
+    "Gaziantep, Turkey",
+    "Konya, Turkey"
+  ],
+  "CZ": [
+    "Prague, Czech Republic",
+    "Brno, Czech Republic",
+    "Ostrava, Czech Republic",
+    "Plzen, Czech Republic",
+    "Liberec, Czech Republic",
+    "Olomouc, Czech Republic",
+    "Hradec Kralove, Czech Republic",
+    "Pardubice, Czech Republic"
+  ],
+  "NO": [
+    "Oslo, Norway",
+    "Bergen, Norway",
+    "Trondheim, Norway",
+    "Stavanger, Norway",
+    "Drammen, Norway",
+    "Fredrikstad, Norway",
+    "Kristiansand, Norway",
+    "Tromso, Norway"
   ]
 }

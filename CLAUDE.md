@@ -4,6 +4,24 @@
 
 ---
 
+## ⚠️ STANDING DIRECTIVE — Keep the PMS board in sync (do this without being asked)
+
+This project's work is tracked on an external PMS board ("TrustPilot Dashboard" at https://pms-nu-eight.vercel.app, project id `cmnx071c7000004jvmffvk53p`). **Proactively update it as part of finishing work** — the operator should never have to remind you:
+
+- **When a meaningful task/milestone is completed** → log it to **Done**, assigned to the operator (John Campilanan, `cmnx0tu7x000004jlz2vcf34u`), with a one-line description and **`dueDate` set to today** (ISO, e.g. `2026-06-16T12:00:00.000Z`; the board shows no date badge without it — back-fill via `PATCH /api/tasks/{id}` `{dueDate}`).
+  - **CRITICAL — how to actually make it count as "completed today":** the **Daily Report's "Tasks Completed" bucket counts tasks MOVED into Done that day (a move event), NOT tasks created directly in Done.** A card created with `POST … columnId=Done` shows on the board but stays OUT of the daily report (Tasks Completed renders `—`). So **create the card in To Do/In Progress, then `PATCH /api/tasks/{taskId}/move` it to Done** ({columnId: Done, position: 0}). If you already created it in Done, move it OUT (to In Progress `cmnx071cz000304jvambw65wh`) and back to Done `cmnx071cz000604jv36sqn7u8` once to generate the completion event. Verify with `GET /api/users/{userId}/daily-report?date=YYYY-MM-DD` → `data.completed`.
+- **When you start OR identify substantial new/remaining work** → add it to **To Do** / **In Progress** (don't leave follow-on work only in your chat reply — if there's a pending task, it belongs on the board), or move an existing task with `PATCH /api/tasks/{id}/move`.
+- Mention what you logged in your reply so the operator can see it landed.
+
+**How to call the API (full details + IDs in the `project-pms-integration` memory; OpenAPI spec in `api-1.json`):**
+- **Auth:** session cookie only. Send `Cookie: __Secure-authjs.session-token=$PMS_SESSION_COOKIE` (value lives in `.env`; the `__Secure-` prefix is required). Bearer `pms_` API tokens return 401 — they are NOT wired up in this deployment.
+- **CSRF:** every write (POST/PATCH/DELETE) needs an `Origin: https://pms-nu-eight.vercel.app` header or it 403s with `Cross-origin request blocked`. GETs don't.
+- **Verify every write:** this PMS sometimes returns `201` on a write that doesn't actually persist — always re-`GET /api/tasks/{id}` after creating to confirm.
+- **Create:** `POST /api/projects/{pid}/tasks` (req `title`,`columnId`; opt `description`,`priority`,`dueDate` ISO,`assigneeIds[]`). Set `dueDate` so the board shows the date badge. **Update:** `PATCH /api/tasks/{taskId}` (accepts `dueDate` to back-fill). Columns: Backlog/To Do `cmnx071cz000204jvtz9crqn3`/In Progress `cmnx071cz000304jvambw65wh`/Review-QA/Blocked/Done `cmnx071cz000604jv36sqn7u8` (full list in memory).
+- If the cookie 401s, it expired — ask the operator to re-grab `authjs.session-token` from the browser. Don't fall back to bearer.
+
+---
+
 ## Project Overview
 
 A full-stack lead generation and CRM system that scrapes companies from **any platform** — review sites (Trustpilot, Yelp, TripAdvisor — live) and social platforms (Facebook Pages/Groups, Instagram — planned, with post/group keyword search and post-author capture). Each platform is a plugin behind a single `BasePlatformScraper` contract; scraped leads are enriched, verified, managed through a pipeline, and contacted via personalized cold outreach campaigns over multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
@@ -220,7 +238,8 @@ trustpilot-leadgen/
 | `PLAYWRIGHT_HEADLESS` | Headless browser in prod | `true` |
 | `PYTHON_PATH` | Python executable | `/usr/bin/python3` |
 | `SCRAPINGBEE_API_KEY` | Required for TripAdvisor (full pipeline) and Yelp profile enrichment on `/biz/<slug>` via `stealth_proxy` — 75 credits/page. Yelp `/search` is NOT reachable via ScrapingBee (timed out 100% in smoke tests). Sign up at https://scrapingbee.com | set |
-| `YELP_API_KEY` | Required for Yelp listing. Free Fusion API at https://docs.developer.yelp.com/ — 5,000 calls/day, no card required. ~30 calls per typical scrape. | unset |
+| `YELP_API_KEY` | Was Yelp Fusion listing. Fusion is now PAID and this key's trial has EXPIRED (`400 TRIAL_EXPIRED`). Listing now defaults to the free browser path; only needed if `YELP_LISTING_SOURCE=fusion`. | set (trial expired) |
+| `YELP_LISTING_SOURCE` | `browser` (free headed-browser `/search`, owner-local-only — default) or `fusion` (paid Yelp API). | `browser` |
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
@@ -401,15 +420,16 @@ See `docs/deployment.md` for complete reference.
 ### TripAdvisor
 - Direct Playwright is 403'd by Cloudflare — `SCRAPINGBEE_API_KEY` is mandatory, `stealth_proxy` tier only
 - Parsing leans on JSON-LD `schema.org/LocalBusiness`; DOM-fallback selectors drift over time
-- City fan-out via `tripadvisor_cities` table (seed coverage is ~1-2 levels deep per country; hand-add cities if a country's seed is thin)
+- City fan-out via `tripadvisor_cities` table; a country is only scrapable once seeded. `tripadvisor_country_geo.json` holds the root geo per country (65 countries as of 2026-06-18); a country missing from it errors in the seeder.
+- **Seeding (`seed_tripadvisor_cities.py`):** two fetchers via `--fetcher`. `scrapingbee` (paid, server-safe) or **`browser` (FREE)** — a reused **headed** undetected-chromedriver session that clears Cloudflare from the **owner's residential IP** ($0 credits). Headless and curl_cffi are both walled; only headed works. Use slow jittered pacing (`--min-pace`/`--max-pace`, default 5-12s) — TripAdvisor rate-flags the IP at a fast tick (the run aborts cleanly on the "Access is temporarily restricted" wall).
+- **Containment is mandatory:** the seeder verifies each candidate via its JSON-LD breadcrumb (`_in_country`) before keeping it. Without it the old seeder harvested continent up-links + "travelers also viewed" cross-promo (Paris on a Malta page) and the `geo_id`-keyed upsert re-tagged shared city rows to the wrong country. **The pre-migration 41-country seed is still polluted this way** — re-seed with the current code (free `browser` fetcher) to clean a country. City-territories (Hong Kong) and pages whose child module doesn't render fall back to seeding the country geo itself.
+- **After seeding, refresh the taxonomy** (`python -m tools.scraper.run --platform tripadvisor --action discover-taxonomy`, free/DB-only) — it mirrors seeded `tripadvisor_cities` country codes into `platform_countries`, which is what the Scrape-page Country dropdown reads. Seeded-but-not-refreshed countries won't be selectable. (The refresh paginates the city read — it previously hit PostgREST's 1000-row cap and silently dropped the last-seeded countries.)
 
 ### Yelp
 - Direct Playwright is 403 (PerimeterX edge). ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages; `/search` times out 100% (smoke-tested 2026-05-18).
-- **Listing** uses **Yelp Fusion API** — free 5,000 calls/day. Requires `YELP_API_KEY`. Returns name, rating, phone, review_count, address for free.
-- **Profile enrichment** uses **ScrapingBee `stealth_proxy`** on `/biz/<slug>` (75 credits/page). `premium_proxy` is rejected with 500.
-- Country fan-out via `tools/scraper/data/yelp_country_cities.json` (13 markets: US, CA, UK, IE, AU, NZ, DE, FR, IT, ES, JP, BR, MX).
-- Category dropdown comes from a curated seed at `tools/scraper/data/yelp_categories.json`. Add verticals by editing that file and re-running taxonomy refresh.
-- In-process rating + min_review_count filter applies BEFORE profile enrichment to bound ScrapingBee credit spend.
+- **Listing**: Yelp Fusion moved to a PAID plan and the trial has expired (returns `400 TRIAL_EXPIRED`), so listing now defaults to a FREE headed-browser `/search` scraper (`YELP_LISTING_SOURCE=browser`, the default). It is **owner-local-only** (headed Chrome + residential IP; cannot run on Cloud Run/EC2). Set `YELP_LISTING_SOURCE=fusion` to use the API again if a paid plan is restored. PerimeterX is aggressive — conservative jittered pacing + hard-block abort (`"Access to this page has been denied"` only; the `perimeterx`/`captcha` SDK strings appear on every successful page, so they are NOT treated as blocks).
+- **Profile enrichment** still uses ScrapingBee `stealth_proxy` on `/biz/<slug>` (75 credits/page) — unchanged.
+- Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
 
 ### Social platforms (planned — Facebook, Instagram, FB Groups)
 - Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)

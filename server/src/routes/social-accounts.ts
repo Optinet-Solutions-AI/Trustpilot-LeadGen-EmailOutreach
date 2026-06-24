@@ -34,7 +34,7 @@ router.get('/', async (_req: Request, res: Response) => {
     const supabase = getSupabase();
     const { data, error } = await supabase
       .from('social_accounts')
-      .select('id,platform,handle,display_name,status,daily_cap,hourly_cap,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies')
+      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies')
       .order('created_at', { ascending: true });
     if (error) throw new Error(error.message);
     // Don't ship the ciphertext over the wire — just a boolean signal.
@@ -52,9 +52,10 @@ router.get('/', async (_req: Request, res: Response) => {
 // Create the row only — operator must then click "Connect" to do login.
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { platform, handle, display_name, daily_cap, hourly_cap } = req.body as {
+    const { platform, handle, display_name, country, proxy_location, daily_cap, hourly_cap, comment_daily_cap } = req.body as {
       platform?: Platform; handle?: string; display_name?: string;
-      daily_cap?: number; hourly_cap?: number;
+      country?: string; proxy_location?: string;
+      daily_cap?: number; hourly_cap?: number; comment_daily_cap?: number;
     };
     if (!platform || !['facebook', 'instagram'].includes(platform)) {
       res.status(400).json({ success: false, error: 'platform must be facebook or instagram' });
@@ -72,8 +73,11 @@ router.post('/', async (req: Request, res: Response) => {
         handle: handle.trim(),
         display_name: display_name ?? null,
         status: 'disabled',                // becomes 'active' once cookies land
+        country: country ?? null,
+        proxy_location: proxy_location ?? null,
         daily_cap: daily_cap ?? (platform === 'instagram' ? 25 : 50),
         hourly_cap: hourly_cap ?? 10,
+        comment_daily_cap: comment_daily_cap ?? 3,
       })
       .select()
       .single();
@@ -89,7 +93,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const supabase = getSupabase();
     const allowed: Record<string, unknown> = {};
-    for (const k of ['daily_cap', 'hourly_cap', 'status', 'notes', 'display_name']) {
+    for (const k of ['daily_cap', 'hourly_cap', 'status', 'notes', 'display_name', 'country', 'proxy_location', 'comment_daily_cap']) {
       if (k in req.body) allowed[k] = (req.body as Record<string, unknown>)[k];
     }
     allowed.updated_at = new Date().toISOString();

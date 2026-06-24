@@ -152,7 +152,9 @@ export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) 
     .in('id', leadIds)
     // Never add Trustpilot-flagged (blocked) leads to a campaign, even if the
     // caller hands their IDs in explicitly (migration 048).
-    .eq('blocked', false);
+    .eq('blocked', false)
+    // Never re-contact a lead that opted out / asked to be removed (migration 050).
+    .eq('do_not_contact', false);
   if (leadsError) throw new Error(leadsError.message);
 
   // Pre-fetch the global "already contacted" set so anything that came
@@ -219,7 +221,8 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
     .from('leads')
     .select('id, primary_email, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status')
     .not('primary_email', 'is', null)
-    .eq('blocked', false); // skip Trustpilot-flagged leads (migration 048)
+    .eq('blocked', false) // skip Trustpilot-flagged leads (migration 048)
+    .eq('do_not_contact', false); // skip opted-out leads (migration 050)
 
   if (filters.country) query = query.eq('country', filters.country);
   if (filters.category) query = query.eq('category', filters.category);
@@ -318,7 +321,8 @@ export async function previewRecipientCount(filters: { country?: string; categor
     .from('leads')
     .select('id, company_name, primary_email, star_rating', { count: 'exact' })
     .not('primary_email', 'is', null)
-    .eq('blocked', false); // preview must match the recipients we'd actually send to (migration 048)
+    .eq('blocked', false) // preview must match the recipients we'd actually send to (migration 048)
+    .eq('do_not_contact', false); // exclude opted-out leads (migration 050)
 
   if (filters.country) query = query.eq('country', filters.country);
   if (filters.category) query = query.eq('category', filters.category);

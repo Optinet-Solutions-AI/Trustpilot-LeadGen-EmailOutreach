@@ -149,24 +149,30 @@ def _extract_listing_cards(html: str) -> list[dict]:
     Parse TripAdvisor listing HTML and return profile stubs:
       {name, profile_url, rating}
 
-    Approach (verified against live HTML on 2026-05-13):
-      • TripAdvisor wraps each card-title in `[data-automation$="-card-title"]`
-        with the variant hotel-card-title / restaurant-card-title /
-        attractions-card-title. Their immediate parent <div> is the full card
-        (contains title + rating + review snippet).
-      • The title div contains the anchor with the profile URL and the name.
+    Approach (verified against live HTML on 2026-05-25):
+      • Hotels and Restaurants still use the legacy `[data-automation$="-card-title"]`
+        wrapper (hotel-card-title / restaurant-card-title).
+      • Attractions pages were restructured: titles now use
+        [data-automation="cardTitle"] (with cardHeaderTitleLink as the anchor),
+        and the Attractions listing primarily surfaces bookable products
+        (AttractionProductReview-* URLs) rather than venues. For cold-outreach
+        on actual business owners, prefer listing_type=hotels or restaurants
+        — Attractions products are mostly third-party tour aggregators with
+        no individually reachable operator.
       • Rating lives in `[data-automation="bubbleRatingValue"]` somewhere
         inside the same parent — first hit in DOM order is the venue's own
         rating (subsequent hits are embedded review snippets).
     """
     soup = BeautifulSoup(html, 'lxml')
 
-    # Selectors for the card-title element across all three listing types,
+    # Selectors for the card-title element across all listing types,
     # plus a permissive fallback so the parser survives minor renames.
     title_selectors = (
         '[data-automation="hotel-card-title"]',
         '[data-automation="restaurant-card-title"]',
-        '[data-automation="attractions-card-title"]',
+        '[data-automation="attractions-card-title"]',  # legacy attractions DOM
+        '[data-automation="cardTitle"]',               # modern attractions DOM (2026-05)
+        '[data-automation="cardHeaderTitleLink"]',     # modern attractions anchor
         '[data-automation$="-card-title"]',
     )
 
@@ -187,11 +193,16 @@ def _extract_listing_cards(html: str) -> list[dict]:
         # reason the title is the document root or detached, skip it.
         card = title.parent or title
 
-        link = title.select_one('a[href]')
+        # If `title` is itself the anchor (cardHeaderTitleLink case), use it directly.
+        if title.name == 'a' and title.get('href'):
+            link = title
+        else:
+            link = title.select_one('a[href]')
         if link is None:
             link = card.select_one(
                 'a[href*="-Review-"], a[href*="Hotel_Review"], '
-                'a[href*="Restaurant_Review"], a[href*="Attraction_Review"]'
+                'a[href*="Restaurant_Review"], a[href*="Attraction_Review"], '
+                'a[href*="AttractionProductReview"]'
             )
         if link is None:
             continue
@@ -683,18 +694,28 @@ class TripAdvisorScraper(BasePlatformScraper):
         try:
             from tools.db.supabase_client import table
 
-            # Distinct country codes from seeded cities (active=true only)
-            result = (
-                table('tripadvisor_cities')
-                .select('country_code')
-                .eq('active', True)
-                .execute()
-            )
-            country_codes = sorted({
-                row['country_code']
-                for row in (result.data or [])
-                if row.get('country_code')
-            })
+            # Distinct country codes from seeded cities (active=true only).
+            # PostgREST caps a single read at 1000 rows and tripadvisor_cities
+            # now exceeds that — so paginate, or we silently drop the countries
+            # whose rows sit past the first page (the most-recently-seeded ones).
+            seen_codes: set[str] = set()
+            offset, PAGE = 0, 1000
+            while True:
+                page = (
+                    table('tripadvisor_cities')
+                    .select('country_code')
+                    .eq('active', True)
+                    .range(offset, offset + PAGE - 1)
+                    .execute()
+                )
+                rows = page.data or []
+                for row in rows:
+                    if row.get('country_code'):
+                        seen_codes.add(row['country_code'])
+                if len(rows) < PAGE:
+                    break
+                offset += PAGE
+            country_codes = sorted(seen_codes)
 
             if not country_codes:
                 print(
@@ -780,4 +801,6 @@ _ISO_COUNTRY_NAMES = {
     'RO': 'Romania', 'RU': 'Russia', 'SA': 'Saudi Arabia', 'SE': 'Sweden', 'SG': 'Singapore',
     'SI': 'Slovenia', 'SK': 'Slovakia', 'TH': 'Thailand', 'TR': 'Turkey', 'TW': 'Taiwan',
     'UA': 'Ukraine', 'US': 'United States', 'VN': 'Vietnam', 'ZA': 'South Africa',
+    'BH': 'Bahrain', 'DO': 'Dominican Republic', 'JO': 'Jordan', 'MA': 'Morocco',
+    'OM': 'Oman', 'QA': 'Qatar',
 }

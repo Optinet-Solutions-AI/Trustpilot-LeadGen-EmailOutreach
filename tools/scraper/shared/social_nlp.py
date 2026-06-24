@@ -159,3 +159,77 @@ Posts:
     except Exception as exc:  # noqa: BLE001
         print(f'[gemini-classifier] failed, falling back to substring filter only: {exc}', file=sys.stderr)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Low-level Gemini helper — plain-text response (no JSON mode)
+# ---------------------------------------------------------------------------
+
+def _gemini_text_call(prompt: str, *, timeout_s: int = 20) -> str:
+    """POST a single prompt to Gemini Flash and return the raw text response.
+
+    Raises on HTTP / network errors — callers are responsible for catching.
+    Returns '' if the candidate text is absent (safety filter, budget exhausted,
+    etc.).
+    """
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')
+    url = (
+        'https://generativelanguage.googleapis.com/v1beta/models/'
+        f'gemini-2.5-flash:generateContent?key={api_key}'
+    )
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'temperature': 0.7,
+            # gemini-2.5-flash spends thinking tokens AGAINST maxOutputTokens
+            # before emitting visible text. 256 was exhausted before the comment
+            # finished (live truncation: "...going on for"). 1024 leaves ample
+            # headroom — a 2-sentence comment is ~60 tokens; the classifier
+            # in this file uses 8192 for the same reason.
+            'maxOutputTokens': 1024,
+            # No responseMimeType — we want natural prose output
+        },
+    }
+    import requests as _requests  # noqa: WPS433 — lazy
+    resp = _requests.post(url, json=payload, timeout=timeout_s)
+    resp.raise_for_status()
+    body = resp.json()
+    return (
+        body.get('candidates', [{}])[0]
+            .get('content', {})
+            .get('parts', [{}])[0]
+            .get('text', '')
+    ).strip()
+
+
+# ---------------------------------------------------------------------------
+# Per-post comment drafter
+# ---------------------------------------------------------------------------
+
+def draft_comment_from_post(
+    post_excerpt: str,
+    niche: str,
+    *,
+    brand: str = 'OptiRate',
+    tone: str = 'helpful, human, non-salesy',
+) -> Optional[str]:
+    """Draft ONE short FB comment tailored to a specific post.
+
+    Per-post, never templated: the comment must reference what the post
+    actually says. Returns None when GEMINI_API_KEY is unset or the call
+    fails — the operator then writes their own.
+    """
+    if not (os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')):
+        return None
+    prompt = (
+        f"You are a {tone} small-business owner replying on Facebook as {brand}.\n"
+        f"Service area/niche: {niche}.\n"
+        f"Write ONE short (max 2 sentences) comment replying to THIS post. "
+        f"Reference what they actually asked. No links, no hard sell, no emojis spam.\n\n"
+        f"POST:\n{post_excerpt}\n\nCOMMENT:"
+    )
+    try:
+        text = _gemini_text_call(prompt)
+        return (text or '').strip() or None
+    except Exception:  # noqa: BLE001
+        return None

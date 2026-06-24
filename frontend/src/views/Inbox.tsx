@@ -1392,13 +1392,16 @@ export default function Inbox() {
                               DNC
                             </span>
                           ) : msg.opt_out_detected ? (
-                            <span
-                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-error inline-flex items-center gap-0.5"
-                              title="Opt-out language detected — open to review and mark Do Not Contact"
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); markDoNotContact(msg); }}
+                              disabled={dncBusy}
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-error inline-flex items-center gap-0.5 hover:bg-error hover:text-white transition-colors disabled:opacity-40"
+                              title="Opt-out detected — click to mark Do Not Contact (suppresses this lead from all future campaigns)"
                             >
                               <span className="material-symbols-outlined text-[11px]">person_off</span>
                               Opt-out?
-                            </span>
+                            </button>
                           ) : null}
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.classes}`}>
                             {badge.label}
@@ -1517,6 +1520,16 @@ export default function Inbox() {
                 </button>
               )}
             </div>
+
+            {/* Transient action feedback — mirrored here in the thread pane so a
+                Do-Not-Contact / reply result is visible right next to the button.
+                The list-column header also shows it, but that column is hidden
+                while a thread is open on narrow viewports. */}
+            {checkStatus && (
+              <div className="px-4 py-2 text-xs font-semibold text-secondary bg-surface-container border-b border-slate-100">
+                {checkStatus}
+              </div>
+            )}
 
             <div className="flex-1">
               {threadLoading ? (

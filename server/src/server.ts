@@ -27,7 +27,23 @@ import settingsRoutes from './routes/settings.js';
 import discoveredContactsRoutes, { leadDiscoveredContactsRouter } from './routes/discovered-contacts.js';
 import adminRoutes from './routes/admin.js';
 import tripadvisorRoutes from './routes/tripadvisor.js';
+import commentDraftsRouter from './routes/comment-drafts.js';
 import { startSocialConnectWorker } from './worker/social-connect-worker.js';
+
+// ── Process-level crash guard ────────────────────────────────────────────────
+// Long-running enrichment drives Playwright through many tabs; an occasional
+// "Target page/context/browser has been closed" surfaces as an *unhandled*
+// promise rejection from playwright-extra's CDP shim, which under Node 20+
+// terminates the whole process — taking the API and any in-flight enrich/verify
+// jobs down with it. These handlers log and keep the server alive; a single
+// dead browser tab should not kill the service.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? `${reason.message}\n${reason.stack}` : String(reason);
+  console.error('[unhandledRejection] (kept alive)', msg);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException] (kept alive)', err?.stack || err);
+});
 
 const app = express();
 
@@ -77,6 +93,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/discovered-contacts', discoveredContactsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tripadvisor', tripadvisorRoutes);
+app.use('/api/comment-drafts', commentDraftsRouter);
 
 // Serve screenshots — two paths. Local disk first (legacy dev rows that
 // haven't been migrated to Supabase yet); falls through to a 302 redirect
@@ -284,18 +301,18 @@ const server = app.listen(config.port, async () => {
   setInterval(async () => {
     try {
       const { checkForReplies } = await import('./services/reply-tracker.js');
-      const { repliesFound, autoRepliesFound } = await checkForReplies();
-      if (repliesFound > 0 || autoRepliesFound > 0) {
-        console.log(`[ReplyTracker] Gmail: ${repliesFound} human / ${autoRepliesFound} auto reply(s)`);
+      const { repliesFound, autoRepliesFound, bouncesFound } = await checkForReplies();
+      if (repliesFound > 0 || autoRepliesFound > 0 || bouncesFound > 0) {
+        console.log(`[ReplyTracker] Gmail: ${repliesFound} human / ${autoRepliesFound} auto reply(s)${bouncesFound > 0 ? ` / ${bouncesFound} bounce(s)` : ''}`);
       }
     } catch (e) {
       console.error('[ReplyTracker] Gmail poll error:', e instanceof Error ? e.message : e);
     }
     try {
       const { checkAllImapReplies } = await import('./services/reply-tracker.imap.js');
-      const { accountsChecked, repliesFound, autoRepliesFound } = await checkAllImapReplies();
+      const { accountsChecked, repliesFound, autoRepliesFound, bouncesFound } = await checkAllImapReplies();
       if (accountsChecked > 0) {
-        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} human / ${autoRepliesFound} auto reply(s)`);
+        console.log(`[ReplyTracker] IMAP: checked ${accountsChecked} account(s), ${repliesFound} human / ${autoRepliesFound} auto reply(s)${bouncesFound > 0 ? ` / ${bouncesFound} bounce(s)` : ''}`);
       }
     } catch (e) {
       console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
