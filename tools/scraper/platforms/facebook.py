@@ -2433,6 +2433,12 @@ class FacebookScraper(SocialPlatformScraper):
     # ── Sync internals ───────────────────────────────────────────────
     def _claim_or_raise(self, country: Optional[str] = None) -> dict:
         country = country or _TARGET_COUNTRY or _target_country_from_env()
+        if not country:
+            raise RuntimeError(
+                "Cannot determine the scrape's target country, so no geo-consistent "
+                "Facebook account can be selected. Set a 'country' (or a mappable "
+                "'location') in the scrape filters."
+            )
         account = _claim_account('facebook', country=country)
         if not account:
             if country:

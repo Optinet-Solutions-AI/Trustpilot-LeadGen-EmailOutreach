@@ -125,3 +125,21 @@ def test_claim_or_raise_uses_env_country(monkeypatch):
     scraper = fb.FacebookScraper()
     got = scraper._claim_or_raise()
     assert got is not None and got['id'] == 'de'
+
+
+def test_claim_or_raise_fails_closed_when_country_unresolved(monkeypatch):
+    """_claim_or_raise must REFUSE (not silently pick any account) when country is unresolvable.
+
+    Without a country we cannot guarantee geo-consistency: the PH-pinned account
+    would be selected for non-PH targets. Fail closed so the caller is forced to
+    supply a resolvable country filter.
+    """
+    _install_fake_table(monkeypatch, [_acct(id='ph', country='PH')])
+    monkeypatch.setattr(fb, '_TARGET_COUNTRY', None)
+    monkeypatch.delenv('SCRAPE_TARGET_FILTERS', raising=False)
+    scraper = fb.FacebookScraper()
+    try:
+        scraper._claim_or_raise()  # no country anywhere — must raise
+        assert False, "expected RuntimeError (fail closed)"
+    except RuntimeError as e:
+        assert 'target country' in str(e).lower()
