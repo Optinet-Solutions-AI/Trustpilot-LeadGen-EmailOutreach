@@ -166,7 +166,7 @@ def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
     print(':'.join(parts) if len(parts) == 1 else parts[0] + ':' + ' '.join(parts[1:]), flush=True)
 
 
-def _claim_account(platform: str = 'facebook') -> Optional[dict]:
+def _claim_account(platform: str = 'facebook', country: Optional[str] = None) -> Optional[dict]:
     """Pick the next available active social_accounts row.
 
     Returns the row dict, or None if no account is available (all
@@ -180,16 +180,15 @@ def _claim_account(platform: str = 'facebook') -> Optional[dict]:
     permanently strands the account at the cap.
     """
     from datetime import datetime, timezone, timedelta
-    rows = (
+    q = (
         table('social_accounts')
-        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at')
+        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at,country,proxy_location')
         .eq('platform', platform)
         .eq('status', 'active')
-        .order('used_today', desc=False)
-        .limit(5)
-        .execute()
-        .data
     )
+    if country:
+        q = q.eq('country', country)
+    rows = q.order('used_today', desc=False).limit(5).execute().data
     now = datetime.now(timezone.utc)
     for row in rows:
         # Roll over stale counters before checking caps.
