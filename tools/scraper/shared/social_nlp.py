@@ -181,7 +181,12 @@ def _gemini_text_call(prompt: str, *, timeout_s: int = 20) -> str:
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {
             'temperature': 0.7,
-            'maxOutputTokens': 256,
+            # gemini-2.5-flash spends thinking tokens AGAINST maxOutputTokens
+            # before emitting visible text. 256 was exhausted before the comment
+            # finished (live truncation: "...going on for"). 1024 leaves ample
+            # headroom — a 2-sentence comment is ~60 tokens; the classifier
+            # in this file uses 8192 for the same reason.
+            'maxOutputTokens': 1024,
             # No responseMimeType — we want natural prose output
         },
     }
