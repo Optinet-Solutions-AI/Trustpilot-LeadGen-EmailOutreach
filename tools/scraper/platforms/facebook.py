@@ -2986,14 +2986,12 @@ class FacebookScraper(SocialPlatformScraper):
                     _flag_checkpoint(account['id'], 'captcha-after-trust-gate-comment')
                     return {'posted': False, 'error': 'checkpoint'}
 
-            # ── LIVE-DISCOVERY: verify these selectors against a real FB post
-            # before trusting (repo rule). FB comment box is a Lexical
-            # contenteditable; see _open_session/_bypass_fb_trust_gate for the
-            # driver patterns. The selectors below are best-known as of 2026-06
-            # but Facebook rewrites class names roughly monthly — the SHAPE
-            # (div[role=textbox][contenteditable=true]) is stable; the
-            # containing hierarchy and placeholder text are not.
-            # Steps that NEED live verification on james's account:
+            # ── FB comment composer. VERIFIED LIVE 2026-06-24 on james's
+            # account: posted a real comment via the
+            # div[role=textbox][contenteditable=true] selector + send_keys +
+            # Enter ({"posted": true}). FB rewrites class names ~monthly but
+            # the SHAPE (role=textbox, contenteditable) is stable; if it ever
+            # breaks, re-verify these on a live post:
             #   1. Locate the right comment box (a post page may have several
             #      nested-comment boxes in addition to the top-level one).
             #   2. Whether send_keys per-char suffices or JS InputEvent injection
