@@ -6,10 +6,8 @@ export interface CommentDraft {
   lead_id: string;
   account_id: string | null;
   post_url: string | null;
-  post_excerpt: string | null;
   draft_text: string;
-  status: 'pending' | 'approved' | 'discarded' | 'posted';
-  niche: string | null;
+  status: 'draft' | 'approved' | 'posted' | 'discarded' | 'failed';
   posted_at: string | null;
   created_at: string;
   updated_at: string;

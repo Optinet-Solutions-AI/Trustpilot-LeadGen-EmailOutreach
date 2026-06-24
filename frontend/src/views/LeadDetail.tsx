@@ -661,9 +661,10 @@ export default function LeadDetail() {
                 Facebook Comment
                 {activeDraft && (
                   <span className={`ml-2 text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                    activeDraft.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                    activeDraft.status === 'posted'   ? 'bg-blue-100 text-blue-700' :
+                    activeDraft.status === 'approved'  ? 'bg-emerald-100 text-emerald-700' :
+                    activeDraft.status === 'posted'    ? 'bg-blue-100 text-blue-700' :
                     activeDraft.status === 'discarded' ? 'bg-slate-100 text-slate-500' :
+                    activeDraft.status === 'failed'    ? 'bg-red-100 text-red-700' :
                     'bg-amber-100 text-amber-700'
                   } uppercase tracking-wide`}>
                     {activeDraft.status}

@@ -186,10 +186,21 @@ router.post('/draft', async (req: Request, res: Response) => {
       niche?: string;
     };
 
-    if (!lead_id || !post_url || !post_excerpt || !niche) {
+    if (!lead_id || !post_url) {
       res.status(400).json({
         success: false,
-        error: 'Missing required fields: lead_id, post_url, post_excerpt, niche',
+        error: 'Missing required fields: lead_id, post_url',
+      });
+      return;
+    }
+
+    const excerpt = post_excerpt ?? '';
+    const niche2 = niche ?? '';
+
+    if (excerpt.trim() === '') {
+      res.status(502).json({
+        success: false,
+        error: 'This post has no captured text to draft a comment from.',
       });
       return;
     }
@@ -214,7 +225,7 @@ router.post('/draft', async (req: Request, res: Response) => {
     const result = await runPythonJson([
       '--platform', 'facebook',
       '--action', 'draft-comment',
-      '--filters', JSON.stringify({ post_excerpt, niche }),
+      '--filters', JSON.stringify({ post_excerpt: excerpt, niche: niche2 }),
     ]) as { text?: string | null };
 
     if (!result.text) {
