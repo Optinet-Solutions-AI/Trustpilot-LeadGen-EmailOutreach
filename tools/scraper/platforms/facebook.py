@@ -2954,11 +2954,18 @@ class FacebookScraper(SocialPlatformScraper):
         # Comment-cap guard — do NOT open a browser if already capped.
         comment_used = account.get('comment_used_today') or 0
         comment_cap = account.get('comment_daily_cap') or 0
+        if comment_cap == 0:
+            print(
+                f"WARN: comment_daily_cap is 0/NULL for account {account.get('handle')} "
+                f"— set it in social_accounts to enable commenting",
+                file=sys.stderr,
+            )
         if comment_used >= comment_cap:
             return {'posted': False, 'error': 'comment_cap_reached'}
 
-        driver = self._open_session(account)
+        driver = None
         try:
+            driver = self._open_session(account)
             driver.get(post_url)
             _human_pause(SCROLL_PAUSE, extra=1.5)
 
@@ -3102,7 +3109,8 @@ class FacebookScraper(SocialPlatformScraper):
             print(f'ERROR: post_comment failed: {exc}', file=sys.stderr)
             return {'posted': False, 'error': str(exc)[:200]}
         finally:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass

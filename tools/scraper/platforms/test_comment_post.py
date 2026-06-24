@@ -158,3 +158,45 @@ def test_draft_comment_action_null_when_no_api_key(monkeypatch, capsys):
     assert parsed == {'text': None}, (
         f"Expected {{\"text\": null}} but got: {parsed!r}"
     )
+
+
+def test_post_comment_open_session_checkpoint(monkeypatch):
+    """C1 regression test: RuntimeError from _open_session is caught and flagged
+    as a checkpoint. driver.quit() must NOT raise NameError/UnboundLocalError.
+    """
+    active_account = _fake_account(
+        id='x',
+        handle='h',
+        comment_used_today=0,
+        comment_daily_cap=3,
+    )
+
+    # _load_account_by_id returns a valid, non-capped account.
+    monkeypatch.setattr(fb, '_load_account_by_id', lambda _id: active_account)
+
+    # _open_session raises RuntimeError (e.g. cookies rejected / login gate).
+    def _open_session_raises(self, account):
+        raise RuntimeError('cookies rejected')
+    monkeypatch.setattr(fb.FacebookScraper, '_open_session', _open_session_raises)
+
+    # Track whether _flag_checkpoint was called and with what args.
+    checkpoint_calls: list[tuple] = []
+
+    def _record_checkpoint(account_id: str, reason: str) -> None:
+        checkpoint_calls.append((account_id, reason))
+
+    monkeypatch.setattr(fb, '_flag_checkpoint', _record_checkpoint)
+
+    scraper = fb.FacebookScraper()
+    result = scraper.post_comment(
+        post_url='https://www.facebook.com/groups/123/posts/456',
+        text='Test comment',
+        account_id='x',
+    )
+
+    assert result == {'posted': False, 'error': 'checkpoint'}, (
+        f"Expected checkpoint result but got: {result!r}"
+    )
+    assert len(checkpoint_calls) == 1, (
+        f"Expected _flag_checkpoint called once, got: {checkpoint_calls!r}"
+    )

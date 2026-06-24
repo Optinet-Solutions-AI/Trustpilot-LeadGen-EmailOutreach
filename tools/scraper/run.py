@@ -201,6 +201,8 @@ def _run_draft_comment(args: argparse.Namespace) -> None:
 
 async def _run_post_comment(args: argparse.Namespace) -> None:
     """Post a comment on a FB post via an account's saved session."""
+    if args.platform and args.platform != 'facebook':
+        raise SystemExit("post-comment is only supported for --platform facebook")
     from tools.scraper.platforms.facebook import FacebookScraper
     filters = _parse_filters(args.filters)
     post_url = filters.get('post_url', '').strip()
