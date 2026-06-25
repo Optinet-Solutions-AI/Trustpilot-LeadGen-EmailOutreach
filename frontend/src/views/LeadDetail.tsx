@@ -117,9 +117,54 @@ export default function LeadDetail() {
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
 
   // FB comment draft panel state
-  const { loading: draftLoading, error: draftError, listDrafts, createDraft, updateDraft, postDraft } = useCommentDrafts();
+  const { loading: draftLoading, error: draftError, listDrafts, createDraft, updateDraft } = useCommentDrafts();
   const [activeDraft, setActiveDraft] = useState<CommentDraft | null>(null);
   const [draftText, setDraftText] = useState('');
+
+  // "Post as James" — fires post-local, then polls listDrafts() until the draft
+  // transitions to posted/failed (the local tool updates the DB itself).
+  type PostLocalStatus = 'idle' | 'launching' | 'polling' | 'done' | 'error';
+  const [postLocalStatus, setPostLocalStatus] = useState<PostLocalStatus>('idle');
+  const [postLocalError, setPostLocalError] = useState<string | null>(null);
+  const postViaLocal = async (draftId: string) => {
+    setPostLocalStatus('launching');
+    setPostLocalError(null);
+    try {
+      await api.post(`/comment-drafts/${draftId}/post-local`);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
+        ?? (err instanceof Error ? err.message : 'Failed to launch local poster');
+      setPostLocalStatus('error');
+      setPostLocalError(msg);
+      return;
+    }
+    // Tool launched — now poll until the draft flips to posted or failed (max 60s)
+    setPostLocalStatus('polling');
+    const deadline = Date.now() + 60_000;
+    const poll = async () => {
+      if (Date.now() > deadline) {
+        setPostLocalStatus('error');
+        setPostLocalError('Timed out waiting for the local tool to post the comment');
+        return;
+      }
+      try {
+        const fetched = await listDrafts(id!);
+        const updated = fetched.find((d: CommentDraft) => d.id === draftId);
+        if (updated) setActiveDraft(updated);
+        if (updated?.status === 'posted') {
+          setPostLocalStatus('done');
+          return;
+        }
+        if (updated?.status === 'failed') {
+          setPostLocalStatus('error');
+          setPostLocalError('Local tool reported a failure — check the browser window for details');
+          return;
+        }
+      } catch { /* keep polling */ }
+      setTimeout(poll, 3_000);
+    };
+    setTimeout(poll, 3_000);
+  };
 
   // "Open as James" — spawns the local open_lead_browser tool on the operator's
   // machine (localhost only). Simple three-state: idle → launching → ok|error.
@@ -826,20 +871,29 @@ export default function LeadDetail() {
                   </button>
                 )}
 
-                {/* Post — only enabled when approved */}
+                {/* Post — only enabled when approved; posts via the local app */}
                 {activeDraft && activeDraft.status !== 'posted' && (
                   <button
-                    disabled={draftLoading || !canPost}
-                    title={!canPost ? 'Approve the draft first before posting' : undefined}
-                    onClick={async () => {
-                      const posted = await postDraft(activeDraft.id);
-                      if (posted) setActiveDraft(posted);
-                    }}
+                    disabled={draftLoading || !canPost || postLocalStatus === 'launching' || postLocalStatus === 'polling'}
+                    title={
+                      !canPost
+                        ? 'Approve the draft first before posting'
+                        : 'Posts as the account from your machine — local app only'
+                    }
+                    onClick={() => postViaLocal(activeDraft.id)}
                     className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     <span className="material-symbols-outlined text-[14px]">send</span>
-                    Post
+                    {postLocalStatus === 'launching' ? 'Opening…' : postLocalStatus === 'polling' ? 'Posting as James on your machine…' : 'Post'}
                   </button>
+                )}
+
+                {/* Post-local feedback */}
+                {postLocalStatus === 'error' && postLocalError && (
+                  <p className="text-xs text-red-600 flex items-center gap-1 mt-1">
+                    <span className="material-symbols-outlined text-[14px]">error</span>
+                    {postLocalError}
+                  </p>
                 )}
 
                 {activeDraft?.status === 'posted' && (

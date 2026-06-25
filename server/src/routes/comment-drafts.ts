@@ -216,6 +216,43 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /api/comment-drafts/:id/post-local ──────────────────────────────────
+// LOCAL-ONLY — spawns a GUI process on the operator's machine (localhost:3001).
+// No gateway entry is needed and this must never be called on the deployed
+// Cloud Run instance. The tool opens the approved draft's post in the operator's
+// logged-in local Chrome, posts the comment as the account, and self-updates the
+// lead_comment_drafts row to status=posted or status=failed. We respond 202
+// immediately; the frontend polls listDrafts() to observe the status transition.
+router.post('/:id/post-local', (req: Request, res: Response) => {
+  const draftId = String(req.params.id);
+
+  const PYTHON_RAW_LOCAL = config.pythonPath || 'python';
+  const PYTHON_LOCAL = path.isAbsolute(PYTHON_RAW_LOCAL)
+    ? PYTHON_RAW_LOCAL
+    : path.resolve(config.projectRoot, PYTHON_RAW_LOCAL);
+
+  const child = spawn(
+    PYTHON_LOCAL,
+    ['-m', 'tools.social.open_lead_browser', '--draft-id', draftId],
+    {
+      cwd: config.projectRoot,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      windowsHide: false, // GUI — keep the Chrome window visible on the operator's desktop
+      detached: true,
+      stdio: 'ignore',
+    },
+  );
+
+  child.on('error', (err) => {
+    console.error(`[comment-drafts/post-local] spawn error for draft ${draftId}: ${err.message}`);
+  });
+
+  // Unref so the parent process doesn't wait for the browser to close.
+  child.unref();
+
+  res.status(202).json({ success: true, data: { launching: true } });
+});
+
 // ── POST /api/comment-drafts/:id/post ────────────────────────────────────────
 router.post('/:id/post', async (req: Request, res: Response) => {
   try {
