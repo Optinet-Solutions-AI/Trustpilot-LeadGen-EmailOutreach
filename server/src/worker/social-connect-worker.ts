@@ -29,14 +29,23 @@ const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
 const END_WATCH_INTERVAL_MS = 3_000;
 const PROFILES_ROOT = process.env.FB_PROFILES_ROOT ?? 'C:\\fb-profiles';
+
+/**
+ * BROWSE_STREAM controls which spawner is used for browse-mode sessions.
+ *   'novnc' (default) — existing full-desktop noVNC path (unchanged)
+ *   'cdp'             — lightweight CDP screencast + Node bridge
+ * Set BROWSE_STREAM=cdp on the Windows EC2 worker to enable the new path.
+ */
+const BROWSE_STREAM = (process.env.BROWSE_STREAM ?? 'novnc') as 'novnc' | 'cdp';
+
 // Locate the PowerShell spawn script. The Node process's cwd depends on
 // where NSSM/npm started it (typically server/ on Windows EC2, repo root
 // on dev machines). The script lives at <repo>/scripts/ regardless. Probe
 // both candidates and pick the one that exists.
-function resolveSpawnScript(): string {
+function resolveScript(scriptName: string): string {
   const candidates = [
-    path.resolve(process.cwd(), '..', 'scripts', 'ec2-windows-spawn-noVNC.ps1'),
-    path.resolve(process.cwd(), 'scripts', 'ec2-windows-spawn-noVNC.ps1'),
+    path.resolve(process.cwd(), '..', 'scripts', scriptName),
+    path.resolve(process.cwd(), 'scripts', scriptName),
   ];
   for (const c of candidates) {
     if (existsSync(c)) return c;
@@ -45,6 +54,13 @@ function resolveSpawnScript(): string {
   // — better than a silent path-mangling bug.
   return candidates[0];
 }
+
+const SPAWN_SCRIPT_NOVNC = resolveScript('ec2-windows-spawn-noVNC.ps1');
+const SPAWN_SCRIPT_CDP   = resolveScript('ec2-windows-spawn-cdp.ps1');
+
+/** Resolved spawner for the current mode (connect always uses noVNC). */
+function resolveSpawnScript(): string { return SPAWN_SCRIPT_NOVNC; }
+// Keep the function so any future callers of the old name still compile.
 const SPAWN_SCRIPT = resolveSpawnScript();
 const FB_SESSION_COOKIE = 'c_user';
 
@@ -133,16 +149,34 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
     void (async () => {
       await fs.mkdir(profileDir, { recursive: true });
 
-      // Build spawn args — pass Mode and (for browse) TargetUrl to the script.
+      // Choose the spawner script.
+      // - Connect mode always uses noVNC (operator needs OS-level access).
+      // - Browse mode uses the CDP bridge when BROWSE_STREAM=cdp; otherwise
+      //   falls back to noVNC (the default, so nothing breaks while validating).
+      const useCdp = isBrowse && BROWSE_STREAM === 'cdp';
+      const spawnerScript = useCdp ? SPAWN_SCRIPT_CDP : SPAWN_SCRIPT_NOVNC;
+      log(`spawner=${useCdp ? 'cdp' : 'novnc'} script=${spawnerScript}`);
+
+      // Build spawn args.
+      // CDP spawner: -ProfileDir, -AccountId, -TargetUrl (no -Mode param needed).
+      // noVNC spawner: -ProfileDir, -AccountId, -Mode, [-TargetUrl].
       const spawnArgs: string[] = [
         '-ExecutionPolicy', 'Bypass',
-        '-File', SPAWN_SCRIPT,
+        '-File', spawnerScript,
         '-ProfileDir', profileDir,
         '-AccountId', row.id,
-        '-Mode', isBrowse ? 'browse' : 'connect',
       ];
-      if (isBrowse && row.connect_target_url) {
-        spawnArgs.push('-TargetUrl', row.connect_target_url);
+      if (useCdp) {
+        // CDP spawner takes -TargetUrl directly (no -Mode).
+        if (row.connect_target_url) {
+          spawnArgs.push('-TargetUrl', row.connect_target_url);
+        }
+      } else {
+        // noVNC spawner takes -Mode and optional -TargetUrl.
+        spawnArgs.push('-Mode', isBrowse ? 'browse' : 'connect');
+        if (isBrowse && row.connect_target_url) {
+          spawnArgs.push('-TargetUrl', row.connect_target_url);
+        }
       }
 
       // Spawn the PowerShell script which prints the tunnel URL to stdout on its
