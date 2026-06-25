@@ -735,15 +735,28 @@ export default function LeadsTable({
         const excerptDisplay = cleanExcerpt.slice(0, 110);
         return (
           <td key={col} className="px-4 py-3 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
+            {/* Fast default: open the raw post in the operator's own browser
+                (instant, no remote session). */}
+            <a
+              href={targetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#b0004a] underline hover:text-[#900040] text-xs inline-flex items-center gap-1"
+              title={`Open in your browser → ${targetUrl}`}
+            >
+              <span className="truncate max-w-[200px]">{linkLabel}</span>
+              <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
+            </a>
+            {/* On-demand: take over as James in a live streamed browser (~15s). */}
             <button
               type="button"
               onClick={() => openInJames(lead.id, targetUrl)}
               disabled={browseLeadId === lead.id && (browseStatus === 'starting' || browseStatus === 'provisioning')}
-              className="text-[#b0004a] underline hover:text-[#900040] text-xs inline-flex items-center gap-1 disabled:opacity-60 text-left"
-              title={`Open in James's browser → ${targetUrl}`}
+              className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-1.5 py-0.5 rounded transition-colors disabled:opacity-60 w-fit"
+              title="Open this post inside James's logged-in browser (live, ~15s) — for commenting or when FB gates your own browser"
             >
-              <span className="truncate max-w-[200px]">{linkLabel}</span>
-              <span className="material-symbols-outlined text-[12px] shrink-0">smart_display</span>
+              <span className="material-symbols-outlined text-[12px]">smart_display</span>
+              Open as James
             </button>
             {browseLeadId === lead.id && (browseStatus === 'starting' || browseStatus === 'provisioning') && (
               <p className="mt-0.5 text-[10px] text-blue-700 font-semibold">Starting James&apos;s browser…</p>
