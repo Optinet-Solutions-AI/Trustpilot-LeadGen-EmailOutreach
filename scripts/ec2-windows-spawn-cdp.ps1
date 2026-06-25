@@ -27,6 +27,10 @@ param(
 
 $ErrorActionPreference = "Continue"
 
+# Refresh PATH from the registry so node / cloudflared resolve even when the
+# spawning service handed us a stale PATH.
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
 # CDP and bridge ports — must not conflict with noVNC's :6080.
 $CDP_PORT    = 9222
 $BRIDGE_PORT = 6090
@@ -65,7 +69,8 @@ function Find-RepoRoot {
 
 $BRAVE        = Find-Brave
 $CLOUDFLARED  = "C:\tools\cloudflared\cloudflared.exe"
-$NODE         = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+$nodeCmd      = Get-Command node -ErrorAction SilentlyContinue
+$NODE         = if ($nodeCmd) { $nodeCmd.Source } else { $null }
 $REPO_ROOT    = Find-RepoRoot
 $BRIDGE_SCRIPT = Join-Path $REPO_ROOT "server\dist\worker\browse-stream-bridge.js"
 
