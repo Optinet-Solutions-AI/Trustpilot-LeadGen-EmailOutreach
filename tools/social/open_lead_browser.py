@@ -1,6 +1,6 @@
 """Local operator tool — open a Facebook lead's post as the assigned account.
 
-Launches a real Brave window (headful, persistent profile), auto-fills stored
+Launches a real Chrome window (headful, persistent profile), auto-fills stored
 credentials, waits for the operator to solve any captcha, then navigates to
 the lead's scraped Facebook post and leaves the browser OPEN.
 
@@ -37,8 +37,17 @@ from typing import Optional, Tuple
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-BRAVE_CANDIDATES_WIN = [
-    # Per-user install (most common on operator laptops)
+# Chrome first — the operator uses Brave personally, so this automation runs in
+# Chrome to stay out of their personal browser. Brave is kept as a fallback.
+# Override either with the BROWSER_BIN env var.
+BROWSER_CANDIDATES_WIN = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.join(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Google", "Chrome", "Application", "chrome.exe",
+    ),
+    # Brave fallback
     os.path.join(
         os.environ.get("LOCALAPPDATA", ""),
         "BraveSoftware", "Brave-Browser", "Application", "brave.exe",
@@ -52,18 +61,19 @@ POLL_INTERVAL_S = 2
 POLL_TIMEOUT_S = 180  # 3 minutes for operator to solve captcha
 
 
-# ── Brave binary probe ───────────────────────────────────────────────────────
+# ── Browser binary probe (Chrome preferred, Brave fallback) ──────────────────
 
-def _find_brave() -> str:
-    """Return path to Brave executable, or raise if not found."""
+def _find_browser() -> str:
+    """Return path to the automation browser (Chrome preferred, Brave fallback)."""
     override = os.environ.get("BROWSER_BIN")
     if override and os.path.isfile(override):
         return override
-    for candidate in BRAVE_CANDIDATES_WIN:
+    for candidate in BROWSER_CANDIDATES_WIN:
         if candidate and os.path.isfile(candidate):
             return candidate
     raise FileNotFoundError(
-        "Brave not found. Install from https://brave.com or set BROWSER_BIN env var."
+        "No Chrome or Brave install found. Install Chrome from "
+        "https://www.google.com/chrome or set the BROWSER_BIN env var."
     )
 
 
@@ -254,8 +264,8 @@ def _open_brave_driver(profile_dir: str):
     """
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy
 
-    brave_bin = _find_brave()
-    print(f"INFO: using Brave binary: {brave_bin}", file=sys.stderr)
+    browser_bin = _find_browser()
+    print(f"INFO: using browser binary: {browser_bin}", file=sys.stderr)
     print(f"INFO: persistent profile: {profile_dir}", file=sys.stderr)
 
     # Clean up stale singleton lock files from a prior crashed session.
@@ -270,7 +280,7 @@ def _open_brave_driver(profile_dir: str):
             print(f"WARN: could not remove {stale_path}: {exc}", file=sys.stderr)
 
     options = uc.ChromeOptions()
-    options.binary_location = brave_bin
+    options.binary_location = browser_bin
     # Always headful — this tool is for operator interaction.
     options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--window-size=1280,900")
@@ -350,7 +360,7 @@ def _wait_for_login(driver) -> bool:
         file=sys.stderr,
     )
     print(
-        "NOTICE: solve it in the Brave window. This script will continue",
+        "NOTICE: solve it in the Chrome window. This script will continue",
         file=sys.stderr,
     )
     print(
@@ -476,7 +486,7 @@ def main(argv: Optional[list] = None) -> int:
 
     if not username or not password:
         print(
-            "INFO: no credentials available — Brave will open Facebook and you can log in manually.",
+            "INFO: no credentials available — Chrome will open Facebook and you can log in manually.",
             file=sys.stderr,
         )
 
@@ -492,7 +502,7 @@ def main(argv: Optional[list] = None) -> int:
 
     # ── 4. Launch Brave + Selenium ───────────────────────────────────────────
     target_url = post_url or FB_URL
-    print(f"INFO: launching Brave (profile: {profile_dir})", file=sys.stderr)
+    print(f"INFO: launching Chrome (profile: {profile_dir})", file=sys.stderr)
 
     driver = _open_brave_driver(profile_dir)
 
@@ -519,7 +529,7 @@ def main(argv: Optional[list] = None) -> int:
         else:
             print(
                 "INFO: not logged in and no credentials provided. "
-                "Log in manually in the Brave window.",
+                "Log in manually in the Chrome window.",
                 file=sys.stderr,
             )
 
@@ -542,7 +552,7 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps(result))  # stdout — the machine-readable signal
 
         print(
-            "INFO: browser is open. Close the Brave window when you are done.",
+            "INFO: browser is open. Close the Chrome window when you are done.",
             file=sys.stderr,
         )
 
