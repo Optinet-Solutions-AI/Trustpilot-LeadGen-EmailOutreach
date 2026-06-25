@@ -17,6 +17,8 @@ export function useBrowseSession() {
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Track the active account id so end() works for BOTH the start and startForLead paths.
+  const activeAccountIdRef = useRef<string | null>(null);
 
   // Cleanup interval on unmount.
   useEffect(() => {
@@ -28,38 +30,8 @@ export function useBrowseSession() {
     };
   }, []);
 
-  const start = useCallback(async (
-    accountId: string,
-    opts: { targetUrl?: string | null; requestedBy: string },
-  ): Promise<void> => {
-    // Cancel any existing poll before starting a new one.
-    if (intervalRef.current !== null) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-
-    setLoading(true);
-    setError(null);
-    setStatus('starting');
-    setTunnelUrl(null);
-
-    try {
-      await api.post(`/social-accounts/${accountId}/browse`, {
-        targetUrl: opts.targetUrl ?? null,
-        requestedBy: opts.requestedBy,
-      });
-    } catch (err) {
-      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
-        .response?.data?.error ?? (err as Error).message ?? 'Failed';
-      setError(msg);
-      setStatus('failed');
-      setLoading(false);
-      return;
-    }
-
-    setStatus('provisioning');
-
-    // Poll /connect-status every 2s.
+  // ── Private helper: begin polling /connect-status for accountId ──────────
+  const beginPolling = useCallback((accountId: string): void => {
     const interval = setInterval(() => {
       void (async () => {
         try {
@@ -122,12 +94,90 @@ export function useBrowseSession() {
     intervalRef.current = interval;
   }, []);
 
-  const end = useCallback(async (accountId: string): Promise<void> => {
-    // Best-effort POST — swallow errors.
+  // ── start: enqueue via account route then poll ────────────────────────────
+  const start = useCallback(async (
+    accountId: string,
+    opts: { targetUrl?: string | null; requestedBy: string },
+  ): Promise<void> => {
+    // Cancel any existing poll before starting a new one.
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    setLoading(true);
+    setError(null);
+    setStatus('starting');
+    setTunnelUrl(null);
+    activeAccountIdRef.current = accountId;
+
     try {
-      await api.post(`/social-accounts/${accountId}/browse/end`);
-    } catch {
-      // silently swallowed
+      await api.post(`/social-accounts/${accountId}/browse`, {
+        targetUrl: opts.targetUrl ?? null,
+        requestedBy: opts.requestedBy,
+      });
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        .response?.data?.error ?? (err as Error).message ?? 'Failed';
+      setError(msg);
+      setStatus('failed');
+      setLoading(false);
+      activeAccountIdRef.current = null;
+      return;
+    }
+
+    setStatus('provisioning');
+    beginPolling(accountId);
+  }, [beginPolling]);
+
+  // ── startForLead: resolve account server-side then poll ───────────────────
+  const startForLead = useCallback(async (
+    leadId: string,
+    opts: { targetUrl?: string | null; requestedBy: string },
+  ): Promise<void> => {
+    // Cancel any existing poll before starting a new one.
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    setLoading(true);
+    setError(null);
+    setStatus('starting');
+    setTunnelUrl(null);
+    activeAccountIdRef.current = null;
+
+    let accountId: string;
+    try {
+      const res = await api.post(`/leads/${leadId}/browse`, {
+        targetUrl: opts.targetUrl ?? null,
+        requestedBy: opts.requestedBy,
+      });
+      accountId = (res.data.data as { account_id: string }).account_id;
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        .response?.data?.error ?? (err as Error).message ?? 'Failed';
+      setError(msg);
+      setStatus('failed');
+      setLoading(false);
+      return;
+    }
+
+    activeAccountIdRef.current = accountId;
+    setStatus('provisioning');
+    beginPolling(accountId);
+  }, [beginPolling]);
+
+  // ── end: POST browse/end; accountId arg is optional (defaults to ref) ─────
+  const end = useCallback(async (accountId?: string): Promise<void> => {
+    const id = accountId ?? activeAccountIdRef.current;
+    // Best-effort POST — swallow errors.
+    if (id) {
+      try {
+        await api.post(`/social-accounts/${id}/browse/end`);
+      } catch {
+        // silently swallowed
+      }
     }
 
     if (intervalRef.current !== null) {
@@ -135,11 +185,12 @@ export function useBrowseSession() {
       intervalRef.current = null;
     }
 
+    activeAccountIdRef.current = null;
     setLoading(false);
     setError(null);
     setStatus('idle');
     setTunnelUrl(null);
   }, []);
 
-  return { loading, error, status, tunnelUrl, start, end };
+  return { loading, error, status, tunnelUrl, start, startForLead, end };
 }
