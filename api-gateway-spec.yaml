@@ -273,6 +273,18 @@ paths:
       responses:
         "200":
           description: OK
+  /api/leads/{id}/browse:
+    post:
+      operationId: leadBrowse
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/affiliates/check-links:
     post:
       operationId: affiliatesCheckLinks
@@ -862,6 +874,30 @@ paths:
   /api/social-accounts/{id}/recover:
     post:
       operationId: recoverSocialAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/{id}/browse:
+    post:
+      operationId: browseSocialAccount
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/{id}/browse/end:
+    post:
+      operationId: browseSocialAccountEnd
       security: []
       parameters:
         - in: path
