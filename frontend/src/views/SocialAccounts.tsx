@@ -29,6 +29,7 @@ interface SocialAccount {
   created_at: string;
   updated_at: string;
   has_cookies: boolean;
+  has_credentials: boolean;
 }
 
 // ── Connect flow (DB-row poll) ──────────────────────────────────────────
@@ -360,6 +361,24 @@ export default function SocialAccounts() {
     }
   };
 
+  // ── credentials edit ──
+  const [editCredsId, setEditCredsId] = useState<string | null>(null);
+  const [credsDraft, setCredsDraft] = useState<{ fb_username: string; fb_password: string }>({ fb_username: '', fb_password: '' });
+  const [credsSaving, setCredsSaving] = useState(false);
+  const onSaveCreds = async (id: string) => {
+    setCredsSaving(true);
+    try {
+      await api.patch(`/social-accounts/${id}`, credsDraft);
+      setEditCredsId(null);
+      setCredsDraft({ fb_username: '', fb_password: '' });
+      void load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setCredsSaving(false);
+    }
+  };
+
   // ── delete ──
   const onDelete = async (id: string) => {
     if (!confirm('Delete this account? Cookies will be lost.')) return;
@@ -489,6 +508,19 @@ export default function SocialAccounts() {
                   onSaveCaps={() => onSaveCaps(a.id)}
                   onCancelCaps={() => setEditCapsId(null)}
                   onDelete={() => onDelete(a.id)}
+                  editingCreds={editCredsId === a.id}
+                  credsDraft={credsDraft}
+                  credsSaving={credsSaving}
+                  onEditCreds={() => {
+                    setEditCredsId(a.id);
+                    setCredsDraft({ fb_username: '', fb_password: '' });
+                  }}
+                  onChangeCreds={setCredsDraft}
+                  onSaveCreds={() => onSaveCreds(a.id)}
+                  onCancelCreds={() => {
+                    setEditCredsId(null);
+                    setCredsDraft({ fb_username: '', fb_password: '' });
+                  }}
                   onBrowse={() => {
                     setBrowseAccountId(a.id);
                     void browseStart(a.id, { requestedBy: 'operator' });
@@ -525,6 +557,13 @@ interface AccountCardProps {
   onSaveCaps: () => void;
   onCancelCaps: () => void;
   onDelete: () => void;
+  editingCreds: boolean;
+  credsDraft: { fb_username: string; fb_password: string };
+  credsSaving: boolean;
+  onEditCreds: () => void;
+  onChangeCreds: (v: { fb_username: string; fb_password: string }) => void;
+  onSaveCreds: () => void;
+  onCancelCreds: () => void;
   onBrowse: () => void;
   onBrowseEnd: () => void;
   browseBusy: boolean;
@@ -536,6 +575,7 @@ interface AccountCardProps {
 function AccountCard({
   account: a, stream, editingCaps, capsDraft,
   onConnect, onRecover, onRetryConnect, onEditCaps, onChangeCaps, onSaveCaps, onCancelCaps, onDelete,
+  editingCreds, credsDraft, credsSaving, onEditCreds, onChangeCreds, onSaveCreds, onCancelCreds,
   onBrowse, onBrowseEnd, browseBusy, browseStatus, browseTunnelUrl, browseError,
 }: AccountCardProps) {
   const lastSeen = a.last_login_at
@@ -557,6 +597,7 @@ function AccountCard({
             </span>
             <Pill variant={STATUS_VARIANT[a.status]}>{a.status}</Pill>
             {a.has_cookies && <Pill variant="info">cookies on file</Pill>}
+            {a.has_credentials && <Pill variant="success">credentials on file</Pill>}
           </div>
           <div className="text-xs text-slate-500 mt-1">
             <code className="bg-slate-100 px-1 rounded">{a.handle}</code>
@@ -640,6 +681,71 @@ function AccountCard({
             <button className="text-blue-600 underline" onClick={onEditCaps}>edit caps</button>
             <button className="text-red-600 underline ml-auto" onClick={onDelete}>delete</button>
           </>
+        )}
+      </div>
+
+      {/* Login credentials */}
+      <div className="mt-3 border-t border-slate-100 pt-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-slate-600">Login credentials</span>
+          {!editingCreds && (
+            <button className="text-xs text-blue-600 underline" onClick={onEditCreds}>
+              {a.has_credentials ? 'update' : 'set credentials'}
+            </button>
+          )}
+        </div>
+        {editingCreds ? (
+          <div className="mt-2 space-y-2">
+            <label className="block">
+              <span className="block text-xs text-slate-500 mb-0.5">Login email</span>
+              <input
+                type="text"
+                autoComplete="off"
+                className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+                placeholder={a.handle || 'jane@example.com'}
+                value={credsDraft.fb_username}
+                onChange={(e) => onChangeCreds({ ...credsDraft, fb_username: e.target.value })}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs text-slate-500 mb-0.5">Password</span>
+              <input
+                type="password"
+                autoComplete="new-password"
+                className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+                placeholder="Enter password"
+                value={credsDraft.fb_password}
+                onChange={(e) => onChangeCreds({ ...credsDraft, fb_password: e.target.value })}
+              />
+            </label>
+            <div className="flex items-center gap-2 pt-0.5">
+              <Button
+                onClick={onSaveCreds}
+                disabled={credsSaving || (!credsDraft.fb_username.trim() && !credsDraft.fb_password)}
+              >
+                {credsSaving ? 'Saving…' : 'Save'}
+              </Button>
+              <button className="text-xs text-slate-500 underline" onClick={onCancelCreds}>cancel</button>
+              {a.has_credentials && (
+                <button
+                  className="text-xs text-red-600 underline ml-auto"
+                  onClick={() => onChangeCreds({ fb_username: '', fb_password: '' })}
+                  title="Clear both fields to remove stored credentials on Save"
+                >
+                  clear on save
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Credentials are AES-256 encrypted at rest. Leave both fields empty and click Save to remove them.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400 mt-1">
+            {a.has_credentials
+              ? 'Stored — used by the local open-lead browser tool for autofill.'
+              : 'Not set — the open-lead tool will prompt for credentials manually.'}
+          </p>
         )}
       </div>
 

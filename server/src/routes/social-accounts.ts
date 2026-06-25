@@ -12,6 +12,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
+import { encryptCookie } from '../lib/encryption.js';
 import { enqueueConnectRequest, getConnectRequestStatus, enqueueBrowseSession, endBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
 
 const router = Router();
@@ -34,13 +35,17 @@ router.get('/', async (_req: Request, res: Response) => {
     const supabase = getSupabase();
     const { data, error } = await supabase
       .from('social_accounts')
-      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies')
+      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies,encrypted_fb_username,encrypted_fb_password')
       .order('created_at', { ascending: true });
     if (error) throw new Error(error.message);
-    // Don't ship the ciphertext over the wire — just a boolean signal.
+    // Don't ship any ciphertext over the wire — just boolean signals.
     const masked = (data ?? []).map((row: Record<string, unknown>) => {
-      const { encrypted_cookies, ...rest } = row;
-      return { ...rest, has_cookies: !!encrypted_cookies };
+      const { encrypted_cookies, encrypted_fb_username, encrypted_fb_password, ...rest } = row;
+      return {
+        ...rest,
+        has_cookies: !!encrypted_cookies,
+        has_credentials: !!(encrypted_fb_username && encrypted_fb_password),
+      };
     });
     res.json({ success: true, data: masked });
   } catch (err) {
@@ -92,19 +97,40 @@ router.post('/', async (req: Request, res: Response) => {
 router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const supabase = getSupabase();
+    const body = req.body as Record<string, unknown>;
     const allowed: Record<string, unknown> = {};
     for (const k of ['daily_cap', 'hourly_cap', 'status', 'notes', 'display_name', 'country', 'proxy_location', 'comment_daily_cap']) {
-      if (k in req.body) allowed[k] = (req.body as Record<string, unknown>)[k];
+      if (k in body) allowed[k] = body[k];
     }
+
+    // Credential fields — encrypt before storage; empty string clears (null).
+    // These are NOT in the plain allowlist loop above so raw values never slip through.
+    if ('fb_username' in body) {
+      const raw = typeof body.fb_username === 'string' ? body.fb_username.trim() : '';
+      allowed.encrypted_fb_username = raw ? encryptCookie(raw) : null;
+    }
+    if ('fb_password' in body) {
+      const raw = typeof body.fb_password === 'string' ? body.fb_password : '';
+      allowed.encrypted_fb_password = raw ? encryptCookie(raw) : null;
+    }
+
     allowed.updated_at = new Date().toISOString();
     const { data, error } = await supabase
       .from('social_accounts')
       .update(allowed)
       .eq('id', req.params.id)
-      .select()
+      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies,encrypted_fb_username,encrypted_fb_password')
       .single();
     if (error) throw new Error(error.message);
-    res.json({ success: true, data });
+    // Mask ciphertext before returning — same transform as GET /.
+    const { encrypted_cookies, encrypted_fb_username, encrypted_fb_password, ...rest } =
+      data as Record<string, unknown>;
+    const masked = {
+      ...rest,
+      has_cookies: !!encrypted_cookies,
+      has_credentials: !!(encrypted_fb_username && encrypted_fb_password),
+    };
+    res.json({ success: true, data: masked });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
