@@ -164,7 +164,18 @@ export async function getLeadIds(
 
 export async function getLeadById(id: string) {
   const supabase = getSupabase();
-  const { data, error } = await supabase.from('leads').select('*').eq('id', id).single();
+  // LEFT-join platform presences + posts (no !inner) so review-platform leads
+  // still return, while social leads carry their profile + captured posts. The
+  // lead detail page needs lead_platform_posts to render the Facebook panel
+  // (comment draft + "Open in James's browser"); the list endpoint already
+  // joins these, but the single-lead fetch previously did not.
+  const { data, error } = await supabase
+    .from('leads')
+    .select(
+      '*, lead_platform_presences(platform, profile_url, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)',
+    )
+    .eq('id', id)
+    .single();
   if (error) throw new Error(error.message);
   return data;
 }
