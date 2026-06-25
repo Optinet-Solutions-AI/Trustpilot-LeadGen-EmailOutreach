@@ -333,7 +333,6 @@ function startCdpBridge(
 ): void {
   let cdpWs: WebSocket | null = null;
   let nextId = 1000;
-  let screencastSessionId: number | null = null;
   // Track whether the client ws is still connected (may have closed during async discover).
   let clientAlive = true;
   clientWs.on('close', () => { clientAlive = false; });
@@ -389,7 +388,6 @@ function startCdpBridge(
           metadata: Record<string, unknown>;
           sessionId: number;
         };
-        screencastSessionId = params.sessionId;
         // Forward frame to client.
         if (clientAlive && clientWs.readyState === WebSocket.OPEN) {
           clientWs.send(JSON.stringify({
