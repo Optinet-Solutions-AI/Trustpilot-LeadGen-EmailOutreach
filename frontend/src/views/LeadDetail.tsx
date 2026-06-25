@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
@@ -9,7 +9,6 @@ import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
 import { useLeadDiscoveries, useDiscoveryActions } from '../hooks/useDiscoveredContacts';
 import { useCommentDrafts } from '../hooks/useCommentDrafts';
 import type { CommentDraft } from '../hooks/useCommentDrafts';
-import { useBrowseSession } from '../hooks/useBrowseSession';
 import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
@@ -122,23 +121,24 @@ export default function LeadDetail() {
   const [activeDraft, setActiveDraft] = useState<CommentDraft | null>(null);
   const [draftText, setDraftText] = useState('');
 
-  // Remote browser session (lead deep-link path)
-  const { startForLead, end: browseEnd, status: browseStatus, tunnelUrl: browseTunnelUrl,
-          error: browseError, loading: browseLoading } = useBrowseSession();
-  // Guard: open the browse tab exactly once when the session reaches 'ready'.
-  const browseTabOpened = useRef(false);
-  useEffect(() => {
-    if (browseStatus === 'ready' && browseTunnelUrl && !browseTabOpened.current) {
-      browseTabOpened.current = true;
-      window.open(browseTunnelUrl, '_blank', 'noopener');
+  // "Open as James" — spawns the local open_lead_browser tool on the operator's
+  // machine (localhost only). Simple three-state: idle → launching → ok|error.
+  type OpenLocalStatus = 'idle' | 'launching' | 'ok' | 'error';
+  const [openLocalStatus, setOpenLocalStatus] = useState<OpenLocalStatus>('idle');
+  const [openLocalError, setOpenLocalError] = useState<string | null>(null);
+  const openInJames = async (targetLeadId: string) => {
+    setOpenLocalStatus('launching');
+    setOpenLocalError(null);
+    try {
+      await api.post(`/leads/${targetLeadId}/open-local`);
+      setOpenLocalStatus('ok');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
+        ?? (err instanceof Error ? err.message : 'Failed to launch');
+      setOpenLocalStatus('error');
+      setOpenLocalError(msg);
     }
-  }, [browseStatus, browseTunnelUrl]);
-  // Reset the guard whenever a new session starts.
-  useEffect(() => {
-    if (browseStatus === 'starting') {
-      browseTabOpened.current = false;
-    }
-  }, [browseStatus]);
+  };
   // Three-state lifecycle for the screenshot tile: 'loading' until the
   // browser raises load or error, then 'ready' or 'failed'. Resets every
   // time the lead's screenshot_path changes so navigating between leads
@@ -703,51 +703,32 @@ export default function LeadDetail() {
                   View source post
                 </a>
 
-                {/* "Open in James's browser" — only shown when no session is active */}
-                {(browseStatus === 'idle' || browseStatus === 'ended') && (
-                  <button
-                    disabled={browseLoading}
-                    onClick={() => {
-                      void startForLead(lead.id, {
-                        targetUrl: fbPost.post_url!,
-                        requestedBy: 'operator',
-                      });
-                    }}
-                    className="inline-flex items-center gap-1 text-xs text-blue-700 border border-blue-300 rounded-md px-2 py-1 hover:bg-blue-50 disabled:opacity-50 transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">open_in_browser</span>
-                    Open in James&apos;s browser
-                  </button>
-                )}
+                {/* "Open as James" — spawns local Chrome on the operator's machine */}
+                <button
+                  disabled={openLocalStatus === 'launching'}
+                  onClick={() => void openInJames(lead.id)}
+                  className="inline-flex items-center gap-1 text-xs text-blue-700 border border-blue-300 rounded-md px-2 py-1 hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                  title="Open as James (opens Chrome on your machine — local app only)"
+                >
+                  <span className="material-symbols-outlined text-[13px]">open_in_browser</span>
+                  Open as James
+                </button>
               </div>
 
-              {/* Remote browser session status */}
-              {browseStatus !== 'idle' && browseStatus !== 'ended' && (
-                <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs space-y-1">
-                  {(browseStatus === 'starting' || browseStatus === 'provisioning') && (
-                    <p className="font-semibold text-blue-700">Starting remote browser…</p>
-                  )}
-                  {browseStatus === 'ready' && browseTunnelUrl && (
-                    <div className="flex items-center gap-3">
-                      <a
-                        href={browseTunnelUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 underline"
-                      >
-                        Open remote browser ↗
-                      </a>
-                      <button
-                        onClick={() => void browseEnd()}
-                        className="text-xs text-slate-600 border border-slate-300 rounded px-2 py-0.5 hover:bg-slate-50 transition-colors"
-                      >
-                        End session
-                      </button>
-                    </div>
-                  )}
-                  {(browseStatus === 'failed' || browseStatus === 'expired') && browseError && (
-                    <p className="text-red-700 font-semibold">{browseError}</p>
-                  )}
+              {/* Local launch status */}
+              {openLocalStatus === 'launching' && (
+                <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs">
+                  <p className="font-semibold text-blue-700">Opening Chrome on your machine…</p>
+                </div>
+              )}
+              {openLocalStatus === 'ok' && (
+                <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded text-xs">
+                  <p className="font-semibold text-green-700">Chrome launched on your machine</p>
+                </div>
+              )}
+              {openLocalStatus === 'error' && openLocalError && (
+                <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded text-xs">
+                  <p className="font-semibold text-red-700">{openLocalError}</p>
                 </div>
               )}
 

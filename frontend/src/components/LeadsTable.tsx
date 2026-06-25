@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
 import LeadLinkWarning from './LeadLinkWarning';
 import LeadsCardList from './LeadsCardList';
-import { useBrowseSession } from '../hooks/useBrowseSession';
+import api from '../api/client';
 
 function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
@@ -256,24 +256,23 @@ export default function LeadsTable({
   const [pinStyle, setPinStyle] = useState<React.CSSProperties | null>(null);
   const [pinHeight, setPinHeight] = useState(0);
 
-  // Remote "open in James's browser" session, shared across rows. Only one
-  // browse session can be live at a time (server enforces a per-account lock),
-  // so we track which lead is currently driving it. Clicking the source link
-  // opens the post inside James's logged-in remote browser instead of the
-  // user's own browser.
-  const { startForLead: browseStart, status: browseStatus, tunnelUrl: browseTunnelUrl, error: browseError } = useBrowseSession();
-  const [browseLeadId, setBrowseLeadId] = useState<string | null>(null);
-  const browseTabOpened = useRef(false);
-  useEffect(() => { browseTabOpened.current = false; }, [browseLeadId]);
-  useEffect(() => {
-    if (browseStatus === 'ready' && browseTunnelUrl && !browseTabOpened.current) {
-      browseTabOpened.current = true;
-      window.open(browseTunnelUrl, '_blank', 'noopener');
+  // "Open as James" — spawns the local open_lead_browser tool on the operator's
+  // machine (localhost only). Per-lead in-flight + last-result state.
+  type OpenLocalStatus = 'idle' | 'launching' | 'ok' | 'error';
+  const [openLocalStatus, setOpenLocalStatus] = useState<Record<string, OpenLocalStatus>>({});
+  const [openLocalError, setOpenLocalError] = useState<Record<string, string>>({});
+  const openInJames = async (leadId: string) => {
+    setOpenLocalStatus((s) => ({ ...s, [leadId]: 'launching' }));
+    setOpenLocalError((s) => { const n = { ...s }; delete n[leadId]; return n; });
+    try {
+      await api.post(`/leads/${leadId}/open-local`);
+      setOpenLocalStatus((s) => ({ ...s, [leadId]: 'ok' }));
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
+        ?? (err instanceof Error ? err.message : 'Failed to launch');
+      setOpenLocalStatus((s) => ({ ...s, [leadId]: 'error' }));
+      setOpenLocalError((s) => ({ ...s, [leadId]: msg }));
     }
-  }, [browseStatus, browseTunnelUrl]);
-  const openInJames = (leadId: string, targetUrl: string) => {
-    setBrowseLeadId(leadId);
-    void browseStart(leadId, { targetUrl, requestedBy: 'operator' });
   };
   useEffect(() => {
     let rafId = 0;
@@ -747,25 +746,25 @@ export default function LeadsTable({
               <span className="truncate max-w-[200px]">{linkLabel}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
-            {/* On-demand: take over as James in a live streamed browser (~15s). */}
+            {/* On-demand: spawn the local open_lead_browser tool on the operator's machine. */}
             <button
               type="button"
-              onClick={() => openInJames(lead.id, targetUrl)}
-              disabled={browseLeadId === lead.id && (browseStatus === 'starting' || browseStatus === 'provisioning')}
+              onClick={() => void openInJames(lead.id)}
+              disabled={openLocalStatus[lead.id] === 'launching'}
               className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-1.5 py-0.5 rounded transition-colors disabled:opacity-60 w-fit"
-              title="Open this post inside James's logged-in browser (live, ~15s) — for commenting or when FB gates your own browser"
+              title="Open as James (opens Chrome on your machine — local app only)"
             >
-              <span className="material-symbols-outlined text-[12px]">smart_display</span>
+              <span className="material-symbols-outlined text-[12px]">open_in_browser</span>
               Open as James
             </button>
-            {browseLeadId === lead.id && (browseStatus === 'starting' || browseStatus === 'provisioning') && (
-              <p className="mt-0.5 text-[10px] text-blue-700 font-semibold">Starting James&apos;s browser…</p>
+            {openLocalStatus[lead.id] === 'launching' && (
+              <p className="mt-0.5 text-[10px] text-blue-700 font-semibold">Opening Chrome on your machine…</p>
             )}
-            {browseLeadId === lead.id && browseStatus === 'ready' && browseTunnelUrl && (
-              <a href={browseTunnelUrl} target="_blank" rel="noopener noreferrer" className="mt-0.5 block text-[10px] text-green-700 font-semibold underline">Open remote browser ↗</a>
+            {openLocalStatus[lead.id] === 'ok' && (
+              <p className="mt-0.5 text-[10px] text-green-700 font-semibold">Chrome launched</p>
             )}
-            {browseLeadId === lead.id && (browseStatus === 'failed' || browseStatus === 'expired') && browseError && (
-              <p className="mt-0.5 text-[10px] text-red-600 font-semibold">{browseError}</p>
+            {openLocalStatus[lead.id] === 'error' && openLocalError[lead.id] && (
+              <p className="mt-0.5 text-[10px] text-red-600 font-semibold">{openLocalError[lead.id]}</p>
             )}
             {excerptDisplay && (
               <p

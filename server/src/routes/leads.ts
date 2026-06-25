@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { spawn } from 'child_process';
+import path from 'path';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads, getLeadIds } from '../db/leads.js';
 import { getCampaignLeadsByLead } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
@@ -14,6 +16,7 @@ import {
 import { launchBrowser, TIER_CONFIGS } from '../services/scrapers/browser-launcher.js';
 import { enqueueBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
 import { resolveLeadAccount } from '../services/lead-account-resolver.js';
+import { config } from '../config.js';
 
 // Shared per-process registry — survives across requests so the SSE stream
 // can attach to a job that was kicked off by an earlier POST.
@@ -483,6 +486,40 @@ router.patch('/bulk', async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
+});
+
+// POST /api/leads/:id/open-local — spawn the local open-lead tool DETACHED so
+// Chrome opens on the operator's machine with the lead's country-account
+// credentials pre-loaded. Fire-and-forget: responds 202 immediately and the
+// browser keeps running after the request closes.
+//
+// LOCAL-ONLY by design — this spawns a GUI process on the host that serves
+// localhost:3001. No gateway entry is needed; it must never be called on the
+// deployed Cloud Run instance.
+router.post('/:id/open-local', (req: Request, res: Response) => {
+  const leadId = param(req.params.id);
+
+  const PYTHON_RAW = config.pythonPath || 'python';
+  const PYTHON = path.isAbsolute(PYTHON_RAW)
+    ? PYTHON_RAW
+    : path.resolve(config.projectRoot, PYTHON_RAW);
+
+  const child = spawn(PYTHON, ['-m', 'tools.social.open_lead_browser', '--lead-id', leadId], {
+    cwd: config.projectRoot,
+    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+    windowsHide: false, // this is a GUI — keep the Chrome window visible
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  child.on('error', (err) => {
+    console.error(`[leads/open-local] spawn error for lead ${leadId}: ${err.message}`);
+  });
+
+  // Unref so the parent process doesn't wait for the browser to close.
+  child.unref();
+
+  res.status(202).json({ success: true, data: { launching: true } });
 });
 
 // POST /api/leads/:id/browse — resolve the lead's Facebook account server-side
