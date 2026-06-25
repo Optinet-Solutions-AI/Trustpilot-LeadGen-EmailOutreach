@@ -46,7 +46,10 @@ export function useBrowseSession() {
           let nextStatus: BrowseStatus;
           if (s === 'requested' || s === 'provisioning') {
             nextStatus = 'provisioning';
-          } else if (s === 'ready') {
+          } else if (s === 'ready' || s === 'active') {
+            // Browse mode reaches 'active' (tunnel live); connect mode reaches
+            // 'ready'. Both mean "the streamed browser is up" — treat them the
+            // same: open the tab, surface the link, and stop polling.
             nextStatus = 'ready';
           } else if (s === 'failed') {
             nextStatus = 'failed';
