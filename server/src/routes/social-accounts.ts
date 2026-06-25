@@ -268,6 +268,10 @@ router.post('/:id/connect', async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
+    if (err instanceof AccountInUseError) {
+      res.status(409).json({ success: false, error: `In use by ${err.heldBy ?? 'another user'}${err.expiresAt ? ` until ${err.expiresAt}` : ''}` });
+      return;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: msg });
   }
