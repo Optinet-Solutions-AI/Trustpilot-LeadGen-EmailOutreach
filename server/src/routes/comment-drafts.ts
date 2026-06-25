@@ -40,6 +40,7 @@ import {
   markFailed,
   type DraftStatus,
 } from '../db/comment-drafts.js';
+import { resolveLeadAccount } from '../services/lead-account-resolver.js';
 
 const router = Router();
 
@@ -101,79 +102,6 @@ function runPythonJson(args: string[]): Promise<unknown> {
       }
     });
   });
-}
-
-// ── Account resolution ────────────────────────────────────────────────────────
-interface ResolvedAccount {
-  account_id: string;
-  country: string | null;
-}
-
-/**
- * Resolve which social account to use for a given lead's Facebook comment.
- *
- * Priority:
- *   1. lead_platform_presences.social_account_id (lead's own capturing account)
- *      — only if that account is currently active.
- *   2. Active facebook social_accounts row pinned to the lead's country.
- *
- * Returns null if no suitable account is found (caller must 409).
- */
-async function resolveLeadAccount(lead_id: string): Promise<ResolvedAccount | null> {
-  const supabase = getSupabase();
-
-  // 1. Check presence row for the lead's own capturing account
-  const { data: presences, error: presenceErr } = await supabase
-    .from('lead_platform_presences')
-    .select('social_account_id')
-    .eq('lead_id', lead_id)
-    .eq('platform', 'facebook')
-    .not('social_account_id', 'is', null)
-    .limit(1);
-  if (presenceErr) throw new Error(`resolveLeadAccount presence lookup: ${presenceErr.message}`);
-
-  const presenceSocialId = presences?.[0]?.social_account_id as string | null | undefined;
-  if (presenceSocialId) {
-    const { data: acct, error: acctErr } = await supabase
-      .from('social_accounts')
-      .select('id, country, status')
-      .eq('id', presenceSocialId)
-      .eq('status', 'active')
-      .maybeSingle();
-    if (acctErr) throw new Error(`resolveLeadAccount account lookup: ${acctErr.message}`);
-    if (acct) {
-      return { account_id: acct.id as string, country: acct.country as string | null };
-    }
-    // Account found but not active — fall through to country-based lookup
-  }
-
-  // 2. Country-based fallback — find the lead's country, then an active account there
-  const { data: leadRow, error: leadErr } = await supabase
-    .from('leads')
-    .select('country')
-    .eq('id', lead_id)
-    .maybeSingle();
-  if (leadErr) throw new Error(`resolveLeadAccount lead lookup: ${leadErr.message}`);
-
-  const country = (leadRow as { country?: string | null } | null)?.country ?? null;
-
-  // No country on the lead and no capturing account → cannot resolve safely.
-  if (!country) return null;
-
-  // Single fluent chain — country filter is unambiguously applied before await.
-  const { data: accts, error: acctErr2 } = await supabase
-    .from('social_accounts')
-    .select('id, country')
-    .eq('platform', 'facebook')
-    .eq('status', 'active')
-    .eq('country', country)
-    .limit(1);
-  if (acctErr2) throw new Error(`resolveLeadAccount country account lookup: ${acctErr2.message}`);
-
-  const fallback = accts?.[0] as { id: string; country: string | null } | undefined;
-  if (!fallback) return null;
-
-  return { account_id: fallback.id, country: fallback.country };
 }
 
 // ── POST /api/comment-drafts/draft ───────────────────────────────────────────

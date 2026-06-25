@@ -20,12 +20,14 @@ import {
   claimPendingConnectRequest,
   updateConnectStatus,
   finalizeConnectRequest,
+  getConnectStatusValue,
 } from '../db/social-connect-requests.js';
 import { encryptCookie } from '../lib/encryption.js';
 import { getSupabase } from '../lib/supabase.js';
 
 const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
+const END_WATCH_INTERVAL_MS = 3_000;
 const PROFILES_ROOT = process.env.FB_PROFILES_ROOT ?? 'C:\\fb-profiles';
 // Locate the PowerShell spawn script. The Node process's cwd depends on
 // where NSSM/npm started it (typically server/ on Windows EC2, repo root
@@ -120,8 +122,9 @@ async function fetchCookiesViaCDP(): Promise<Record<string, unknown>[]> {
 }
 
 async function handleRequest(row: ConnectRequestRow): Promise<void> {
+  const isBrowse = row.connect_mode === 'browse';
   return new Promise((resolve) => {
-    log(`claimed account=${row.id} session=${row.connect_session_id}`);
+    log(`claimed account=${row.id} session=${row.connect_session_id} mode=${isBrowse ? 'browse' : 'connect'}`);
     const profileDir = path.join(PROFILES_ROOT, row.id);
 
     // Kick off the profile-dir creation and then the rest of the session setup.
@@ -130,34 +133,45 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
     void (async () => {
       await fs.mkdir(profileDir, { recursive: true });
 
+      // Build spawn args — pass Mode and (for browse) TargetUrl to the script.
+      const spawnArgs: string[] = [
+        '-ExecutionPolicy', 'Bypass',
+        '-File', SPAWN_SCRIPT,
+        '-ProfileDir', profileDir,
+        '-AccountId', row.id,
+        '-Mode', isBrowse ? 'browse' : 'connect',
+      ];
+      if (isBrowse && row.connect_target_url) {
+        spawnArgs.push('-TargetUrl', row.connect_target_url);
+      }
+
       // Spawn the PowerShell script which prints the tunnel URL to stdout on its
       // first non-blank line, then keeps running to host the noVNC + Brave session.
-      const child = spawn(
-        'powershell',
-        [
-          '-ExecutionPolicy', 'Bypass',
-          '-File', SPAWN_SCRIPT,
-          '-ProfileDir', profileDir,
-          '-AccountId', row.id,
-        ],
-        { windowsHide: true },
-      );
+      const child = spawn('powershell', spawnArgs, { windowsHide: true });
 
       let tunnelUrl: string | null = null;
       // finalized tracks whether we have reached a terminal state (captured OR
-      // expired). Used by the child exit handler to avoid double-marking a row
-      // that was already transitioned by the expiry sweep.
+      // expired/ended). Used by the child exit handler to avoid double-marking a
+      // row that was already transitioned by the expiry sweep or end-watch.
       let finalized = false;
       // sessionEnded ensures finishSession resolves the Promise exactly once
       // regardless of which termination path fires first.
       let sessionEnded = false;
 
-      // Called from every termination path (capture, expiry, child.exit).
+      // Holds whichever periodic interval is active for this mode:
+      //   connect mode → watchInterval (cookie capture)
+      //   browse mode  → endWatchInterval (polls for 'ended' status)
+      // Both are nullable so finishSession can safely clear either.
+      let watchInterval: ReturnType<typeof setInterval> | null = null;
+      let endWatchInterval: ReturnType<typeof setInterval> | null = null;
+
+      // Called from every termination path (capture, expiry, end, child.exit).
       // Idempotent — first caller wins; subsequent calls are no-ops.
       const finishSession = (): void => {
         if (sessionEnded) return;
         sessionEnded = true;
-        clearInterval(watchInterval);
+        if (watchInterval !== null) clearInterval(watchInterval);
+        if (endWatchInterval !== null) clearInterval(endWatchInterval);
         clearInterval(expirySweep);
         resolve();
       };
@@ -186,11 +200,13 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
             const match = trimmed.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com[^\s]*/i);
             if (match) {
               tunnelUrl = match[0];
+              // browse: session is now live — mark 'active'. connect: mark 'ready' (unchanged).
+              const statusOnTunnel = isBrowse ? 'active' : 'ready';
               await updateConnectStatus(row.id, {
-                connect_status: 'ready',
+                connect_status: statusOnTunnel,
                 connect_tunnel_url: tunnelUrl,
               });
-              log(`tunnel ready: ${tunnelUrl}`);
+              log(`tunnel ready (${statusOnTunnel}): ${tunnelUrl}`);
             }
           }
         }
@@ -206,57 +222,84 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
         }
       });
 
-      // Watch Brave's Cookies SQLite for the c_user marker. The cookies live at
-      // <profileDir>\Default\Network\Cookies — a SQLite file. Polling its binary
-      // content for the FB_SESSION_COOKIE string acts as a cheap trigger; the
-      // actual cookie extraction goes through CDP so we get structured JSON that
-      // session_store.py can deserialise with json.loads() instead of raw SQLite.
-      const cookiesPath = path.join(profileDir, 'Default', 'Network', 'Cookies');
-      const watchInterval = setInterval(async () => {
-        if (finalized) return;
-        try {
-          const stat = await fs.stat(cookiesPath);
-          if (!stat.isFile()) return;
-          // Cheap trigger: the SQLite file stores cookie names as plaintext,
-          // so we can detect c_user without parsing the binary format.
-          const buf = await fs.readFile(cookiesPath);
-          if (!buf.includes(FB_SESSION_COOKIE)) return;
-          // c_user is present — extract structured cookies via CDP so the Python
-          // scraper receives a JSON array it can json.loads() directly.
+      if (!isBrowse) {
+        // CONNECT MODE: Watch Brave's Cookies SQLite for the c_user marker. The
+        // cookies live at <profileDir>\Default\Network\Cookies — a SQLite file.
+        // Polling its binary content for the FB_SESSION_COOKIE string acts as a
+        // cheap trigger; the actual cookie extraction goes through CDP so we get
+        // structured JSON that session_store.py can deserialise with json.loads()
+        // instead of raw SQLite.
+        const cookiesPath = path.join(profileDir, 'Default', 'Network', 'Cookies');
+        watchInterval = setInterval(async () => {
+          if (finalized) return;
           try {
-            const fbCookies = await fetchCookiesViaCDP();
-            if (fbCookies.length === 0) {
-              log('CDP returned 0 facebook.com cookies — will retry next tick');
-              return;
+            const stat = await fs.stat(cookiesPath);
+            if (!stat.isFile()) return;
+            // Cheap trigger: the SQLite file stores cookie names as plaintext,
+            // so we can detect c_user without parsing the binary format.
+            const buf = await fs.readFile(cookiesPath);
+            if (!buf.includes(FB_SESSION_COOKIE)) return;
+            // c_user is present — extract structured cookies via CDP so the Python
+            // scraper receives a JSON array it can json.loads() directly.
+            try {
+              const fbCookies = await fetchCookiesViaCDP();
+              if (fbCookies.length === 0) {
+                log('CDP returned 0 facebook.com cookies — will retry next tick');
+                return;
+              }
+              const encrypted = encryptCookie(JSON.stringify(fbCookies));
+              await finalizeConnectRequest(row.id, encrypted);
+              finalized = true;
+              log(`captured ${fbCookies.length} cookies for account=${row.id}, killing browser`);
+              killProcessTree(child.pid);
+              finishSession();
+            } catch (cdpErr) {
+              log(`CDP cookie fetch failed (will retry next tick): ${(cdpErr as Error).message}`);
             }
-            const encrypted = encryptCookie(JSON.stringify(fbCookies));
-            await finalizeConnectRequest(row.id, encrypted);
-            finalized = true;
-            log(`captured ${fbCookies.length} cookies for account=${row.id}, killing browser`);
-            killProcessTree(child.pid);
-            finishSession();
-          } catch (cdpErr) {
-            log(`CDP cookie fetch failed (will retry next tick): ${(cdpErr as Error).message}`);
+          } catch (err) {
+            // Cookies file may not exist yet — that's fine, will appear once Brave starts.
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+              log(`cookies watch error: ${(err as Error).message}`);
+            }
           }
-        } catch (err) {
-          // Cookies file may not exist yet — that's fine, will appear once Brave starts.
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            log(`cookies watch error: ${(err as Error).message}`);
+        }, COOKIE_WATCH_INTERVAL_MS);
+      } else {
+        // BROWSE MODE: Poll the DB for 'ended' status set by endBrowseSession()
+        // (triggered when the operator clicks End in the frontend). When detected,
+        // kill the process tree and finish — do NOT write status (already 'ended').
+        endWatchInterval = setInterval(async () => {
+          if (finalized) return;
+          try {
+            const status = await getConnectStatusValue(row.id);
+            if (status === 'ended') {
+              finalized = true;
+              log(`account=${row.id} browse session ended by operator; killing browser`);
+              killProcessTree(child.pid);
+              finishSession();
+            }
+          } catch (err) {
+            log(`end-watch poll error: ${(err as Error).message}`);
           }
-        }
-      }, COOKIE_WATCH_INTERVAL_MS);
+        }, END_WATCH_INTERVAL_MS);
+      }
 
-      // Expiry sweep — if we hit connect_expires_at without capturing, give up.
+      // Expiry sweep — if we hit connect_expires_at without finishing, give up.
+      // connect: marks 'expired'. browse: marks 'ended' (session is over either way).
       const expiresAt = row.connect_expires_at ? new Date(row.connect_expires_at).getTime() : Date.now() + 600_000;
       const expirySweep = setInterval(async () => {
         if (finalized) return;
         if (Date.now() > expiresAt) {
-          log(`account=${row.id} expired without capture`);
           finalized = true; // set before async work so the exit handler sees it
-          await updateConnectStatus(row.id, {
-            connect_status: 'expired',
-            connect_error: 'login not completed within 10 minutes',
-          });
+          if (isBrowse) {
+            log(`account=${row.id} browse session expired; marking ended`);
+            await updateConnectStatus(row.id, { connect_status: 'ended' });
+          } else {
+            log(`account=${row.id} expired without capture`);
+            await updateConnectStatus(row.id, {
+              connect_status: 'expired',
+              connect_error: 'login not completed within 10 minutes',
+            });
+          }
           killProcessTree(child.pid);
           finishSession();
         }
@@ -264,17 +307,24 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
 
       child.on('exit', (code) => {
         if (!finalized) {
-          // Browser/script died before we captured cookies. Mark failed unless we
-          // already marked expired above. Surface the tail of stdout+stderr in
-          // connect_error so the operator can diagnose PowerShell failures from
-          // the API without needing to RDP/SSM into the EC2.
-          const tail = recentOutput.slice(-20).join(' | ');
-          const errMsg = `spawn exit=${code} | recent: ${tail}`.slice(0, 1800);
-          log(`script exited code=${code} before capture; marking failed`);
-          void updateConnectStatus(row.id, {
-            connect_status: 'failed',
-            connect_error: errMsg,
-          });
+          if (isBrowse) {
+            // Browse: operator closed the browser tab / killed Brave manually.
+            // Treat as a clean end rather than a failure.
+            log(`script exited code=${code} (browse); marking ended`);
+            void updateConnectStatus(row.id, { connect_status: 'ended' });
+          } else {
+            // Connect: browser/script died before we captured cookies. Mark failed
+            // unless we already marked expired above. Surface the tail of
+            // stdout+stderr in connect_error so the operator can diagnose
+            // PowerShell failures from the API without needing to RDP/SSM into EC2.
+            const tail = recentOutput.slice(-20).join(' | ');
+            const errMsg = `spawn exit=${code} | recent: ${tail}`.slice(0, 1800);
+            log(`script exited code=${code} before capture; marking failed`);
+            void updateConnectStatus(row.id, {
+              connect_status: 'failed',
+              connect_error: errMsg,
+            });
+          }
         }
         finishSession();
       });

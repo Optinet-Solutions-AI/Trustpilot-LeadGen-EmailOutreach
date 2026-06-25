@@ -2,7 +2,17 @@ import crypto from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
 
 export type ConnectStatus =
-  | 'requested' | 'provisioning' | 'ready' | 'captured' | 'expired' | 'failed';
+  | 'requested' | 'provisioning' | 'ready' | 'captured' | 'expired' | 'failed'
+  | 'active' | 'ended';
+
+export const BROWSE_ACTIVE_STATES = ['requested', 'provisioning', 'ready', 'active'] as const;
+
+export class AccountInUseError extends Error {
+  constructor(public heldBy: string | null, public expiresAt: string | null) {
+    super(`account in use by ${heldBy ?? 'another user'}`);
+    this.name = 'AccountInUseError';
+  }
+}
 
 export interface ConnectRequestRow {
   id: string;
@@ -12,6 +22,8 @@ export interface ConnectRequestRow {
   connect_started_at: string | null;
   connect_expires_at: string | null;
   connect_error: string | null;
+  connect_mode: string | null;
+  connect_target_url: string | null;
 }
 
 export interface ConnectStatusView {
@@ -21,17 +33,44 @@ export interface ConnectStatusView {
   connect_expires_at: string | null;
 }
 
-// 45 min — the operator needs time to clear VNC/Windows-login/2FA/captcha
-// before the worker tears the session down. 10 min was too short in practice.
-const TTL_MS = 45 * 60 * 1000;
+// 45 min — connect mode needs time to clear VNC/Windows-login/2FA/captcha before
+// the worker tears the session down; browse mode needs time for human
+// captcha-solving + active browsing. 10 min was too short in practice. Exported
+// because the browse-session enqueue path reuses the same TTL.
+export const TTL_MS = 45 * 60 * 1000;
 
 export async function enqueueConnectRequest(accountId: string): Promise<ConnectRequestRow> {
+  const sb = getSupabase();
+
+  // I2: refuse to stomp an in-flight browse session with a Re-login request.
+  const { data: cur, error: readErr } = await sb
+    .from('social_accounts')
+    .select('connect_status, connect_mode, connect_requested_by, connect_expires_at')
+    .eq('id', accountId)
+    .single();
+  if (readErr && (readErr as { code?: string }).code !== 'PGRST116') {
+    throw new Error(`enqueueConnectRequest read: ${readErr.message}`);
+  }
+  if (
+    cur &&
+    cur.connect_mode === 'browse' &&
+    (BROWSE_ACTIVE_STATES as readonly string[]).includes(cur.connect_status)
+  ) {
+    throw new AccountInUseError(
+      cur.connect_requested_by ?? null,
+      cur.connect_expires_at ?? null,
+    );
+  }
+
   const sessionId = crypto.randomUUID();
   const now = new Date();
   const expires = new Date(now.getTime() + TTL_MS);
-  const { data, error } = await getSupabase()
+  // C1: always reset connect_mode to 'connect' so the worker takes the
+  // cookie-capture branch (not the browse branch) after any prior browse session.
+  const { data, error } = await sb
     .from('social_accounts')
     .update({
+      connect_mode: 'connect',
       connect_session_id: sessionId,
       connect_status: 'requested' as ConnectStatus,
       connect_tunnel_url: null,
@@ -63,7 +102,7 @@ export async function claimPendingConnectRequest(platform: string): Promise<Conn
   const sb = getSupabase();
   const { data: candidates, error: selectErr } = await sb
     .from('social_accounts')
-    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error')
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
     .eq('platform', platform)
     .eq('connect_status', 'requested')
     .order('connect_started_at', { ascending: true })
@@ -81,7 +120,7 @@ export async function claimPendingConnectRequest(platform: string): Promise<Conn
     .eq('id', candidate.id)
     .eq('connect_session_id', candidate.connect_session_id ?? '')
     .eq('connect_status', 'requested')
-    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error')
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
     .single();
   if (updateErr) {
     // PGRST116 = no rows matched the WHERE — someone else claimed it. Not an error.
@@ -119,4 +158,83 @@ export async function finalizeConnectRequest(
     })
     .eq('id', accountId);
   if (error) throw new Error(`finalizeConnectRequest: ${error.message}`);
+}
+
+export async function enqueueBrowseSession(
+  accountId: string,
+  opts: { targetUrl: string | null; requestedBy: string },
+): Promise<ConnectRequestRow> {
+  const sb = getSupabase();
+
+  // Pre-read: populate heldBy/expiresAt for error reporting and early-exit on
+  // an obvious active hit (gives a clean message in the common case).
+  const { data: cur, error: e1 } = await sb
+    .from('social_accounts')
+    .select('connect_status, connect_mode, connect_requested_by, connect_expires_at')
+    .eq('id', accountId)
+    .single();
+  if (e1) throw new Error(`enqueueBrowseSession read: ${e1.message}`);
+  if (cur && (BROWSE_ACTIVE_STATES as readonly string[]).includes(cur.connect_status)) {
+    throw new AccountInUseError(
+      cur.connect_requested_by ?? null,
+      cur.connect_expires_at ?? null,
+    );
+  }
+
+  const sessionId = crypto.randomUUID();
+  const now = new Date();
+  const expires = new Date(now.getTime() + TTL_MS);
+
+  // I1: Make the UPDATE itself conditional so concurrent requests can't both
+  // win. NULL-handling gotcha: `status NOT IN (...)` returns NULL for NULL rows
+  // (won't match), so we must explicitly allow NULL with an .or().
+  // PostgREST ANDs the .eq() and .or() together:
+  //   id = X AND (connect_status IS NULL OR connect_status NOT IN (...))
+  const { data: updated, error: e2 } = await sb
+    .from('social_accounts')
+    .update({
+      connect_mode: 'browse',
+      connect_session_id: sessionId,
+      connect_status: 'requested' as ConnectStatus,
+      connect_tunnel_url: null,
+      connect_target_url: opts.targetUrl,
+      connect_requested_by: opts.requestedBy,
+      connect_started_at: now.toISOString(),
+      connect_expires_at: expires.toISOString(),
+      connect_error: null,
+    })
+    .eq('id', accountId)
+    .or('connect_status.is.null,connect_status.not.in.("requested","provisioning","ready","active")')
+    .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
+    .single();
+
+  if (e2) {
+    // PGRST116 = 0 rows matched the conditional WHERE — lost the race.
+    if ((e2 as { code?: string }).code === 'PGRST116') {
+      throw new AccountInUseError(
+        cur?.connect_requested_by ?? null,
+        cur?.connect_expires_at ?? null,
+      );
+    }
+    throw new Error(`enqueueBrowseSession: ${e2.message}`);
+  }
+  return updated as ConnectRequestRow;
+}
+
+export async function endBrowseSession(accountId: string): Promise<void> {
+  // Guard on connect_mode='browse' so an accidental call with a connect-mode
+  // account id can't clobber a live login session to 'ended'.
+  const { error } = await getSupabase()
+    .from('social_accounts')
+    .update({ connect_status: 'ended' as ConnectStatus })
+    .eq('id', accountId)
+    .eq('connect_mode', 'browse');
+  if (error) throw new Error(`endBrowseSession: ${error.message}`);
+}
+
+export async function getConnectStatusValue(accountId: string): Promise<string | null> {
+  const { data, error } = await getSupabase().from('social_accounts')
+    .select('connect_status').eq('id', accountId).single();
+  if (error) return null;
+  return (data as { connect_status: string | null }).connect_status;
 }

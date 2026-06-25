@@ -12,6 +12,8 @@ import {
   runClaimedCheckJob,
 } from '../services/claimed-check-job.js';
 import { launchBrowser, TIER_CONFIGS } from '../services/scrapers/browser-launcher.js';
+import { enqueueBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
+import { resolveLeadAccount } from '../services/lead-account-resolver.js';
 
 // Shared per-process registry — survives across requests so the SSE stream
 // can attach to a job that was kicked off by an earlier POST.
@@ -478,6 +480,51 @@ router.patch('/bulk', async (req: Request, res: Response) => {
     const data = await bulkUpdateLeads(ids, patch);
     res.json({ success: true, data });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// POST /api/leads/:id/browse — resolve the lead's Facebook account server-side
+// and enqueue a browse session pointed at the lead's post URL.
+router.post('/:id/browse', async (req: Request, res: Response) => {
+  try {
+    const { targetUrl, requestedBy } = req.body as { targetUrl?: string | null; requestedBy?: string };
+    if (!requestedBy) {
+      res.status(400).json({ success: false, error: 'requestedBy is required' });
+      return;
+    }
+
+    const resolved = await resolveLeadAccount(param(req.params.id));
+    if (!resolved) {
+      // Fetch the lead's country for the error message (same pattern as comment-drafts).
+      const { data: leadRow } = await getSupabase()
+        .from('leads')
+        .select('country')
+        .eq('id', param(req.params.id))
+        .maybeSingle();
+      const country = (leadRow as { country?: string | null } | null)?.country ?? 'unknown';
+      res.status(409).json({
+        success: false,
+        error: `No active Facebook account pinned to this lead's country (${country})`,
+      });
+      return;
+    }
+
+    const row = await enqueueBrowseSession(resolved.account_id, {
+      targetUrl: targetUrl ?? null,
+      requestedBy,
+    });
+
+    res.json({ success: true, data: { account_id: resolved.account_id, ...row } });
+  } catch (err) {
+    if (err instanceof AccountInUseError) {
+      res.status(409).json({
+        success: false,
+        error: `In use by ${err.heldBy ?? 'another user'}${err.expiresAt ? ` until ${err.expiresAt}` : ''}`,
+      });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }

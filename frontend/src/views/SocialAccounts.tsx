@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api/client';
+import { useBrowseSession, type BrowseStatus } from '../hooks/useBrowseSession';
 import Button from '../ui/Button';
 import LoadingState from '../ui/LoadingState';
 import Pill from '../ui/Pill';
@@ -78,6 +79,25 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export default function SocialAccounts() {
+  const { loading: browseLoading, error: browseError, status: browseStatus,
+          tunnelUrl: browseTunnelUrl, start: browseStart, end: browseEnd } = useBrowseSession();
+  const [browseAccountId, setBrowseAccountId] = useState<string | null>(null);
+  // Guard: open the browse tab exactly once when status transitions to 'ready'.
+  const browseTabOpened = useRef(false);
+
+  // Reset the tab-opened guard when a different account starts a browse session.
+  useEffect(() => {
+    browseTabOpened.current = false;
+  }, [browseAccountId]);
+
+  // Open a new tab exactly once when the session reaches 'ready'.
+  useEffect(() => {
+    if (browseStatus === 'ready' && browseTunnelUrl && !browseTabOpened.current) {
+      browseTabOpened.current = true;
+      window.open(browseTunnelUrl, '_blank', 'noopener');
+    }
+  }, [browseStatus, browseTunnelUrl]);
+
   const [accounts, setAccounts] = useState<SocialAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -469,6 +489,18 @@ export default function SocialAccounts() {
                   onSaveCaps={() => onSaveCaps(a.id)}
                   onCancelCaps={() => setEditCapsId(null)}
                   onDelete={() => onDelete(a.id)}
+                  onBrowse={() => {
+                    setBrowseAccountId(a.id);
+                    void browseStart(a.id, { requestedBy: 'operator' });
+                  }}
+                  onBrowseEnd={() => {
+                    void browseEnd(a.id);
+                    setBrowseAccountId(null);
+                  }}
+                  browseBusy={browseAccountId === a.id && browseLoading}
+                  browseStatus={browseAccountId === a.id ? browseStatus : 'idle'}
+                  browseTunnelUrl={browseAccountId === a.id ? browseTunnelUrl : null}
+                  browseError={browseAccountId === a.id ? browseError : null}
                 />
               ))}
             </div>
@@ -493,11 +525,18 @@ interface AccountCardProps {
   onSaveCaps: () => void;
   onCancelCaps: () => void;
   onDelete: () => void;
+  onBrowse: () => void;
+  onBrowseEnd: () => void;
+  browseBusy: boolean;
+  browseStatus: BrowseStatus;
+  browseTunnelUrl: string | null;
+  browseError: string | null;
 }
 
 function AccountCard({
   account: a, stream, editingCaps, capsDraft,
   onConnect, onRecover, onRetryConnect, onEditCaps, onChangeCaps, onSaveCaps, onCancelCaps, onDelete,
+  onBrowse, onBrowseEnd, browseBusy, browseStatus, browseTunnelUrl, browseError,
 }: AccountCardProps) {
   const lastSeen = a.last_login_at
     ? new Date(a.last_login_at).toLocaleString()
@@ -544,6 +583,23 @@ function AccountCard({
             <Button onClick={onConnect} disabled={connectBusy || recoverBusy}>
               Re-login
             </Button>
+          )}
+          {(a.platform === 'facebook' || a.platform === 'instagram') && (
+            browseStatus === 'ready' && browseTunnelUrl ? (
+              <Button
+                onClick={onBrowseEnd}
+                variant="secondary"
+              >
+                Session active — End session
+              </Button>
+            ) : (
+              <Button
+                onClick={onBrowse}
+                disabled={browseBusy}
+              >
+                {browseBusy ? 'Starting remote browser…' : 'Open session'}
+              </Button>
+            )
           )}
         </div>
       </div>
@@ -625,6 +681,27 @@ function AccountCard({
                 Try again
               </button>
             </>
+          )}
+        </div>
+      )}
+
+      {/* Browse session status */}
+      {browseStatus !== 'idle' && browseStatus !== 'ended' && (
+        <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs space-y-1">
+          {(browseStatus === 'starting' || browseStatus === 'provisioning') && (
+            <p className="font-semibold text-blue-700">Starting remote browser…</p>
+          )}
+          {browseStatus === 'ready' && browseTunnelUrl && (
+            <>
+              <p className="font-semibold text-blue-700">Browser session active.</p>
+              <a href={browseTunnelUrl} target="_blank" rel="noopener noreferrer"
+                 className="text-blue-600 underline">
+                Re-open tab
+              </a>
+            </>
+          )}
+          {(browseStatus === 'failed' || browseStatus === 'expired') && browseError && (
+            <p className="text-red-700 font-semibold">{browseError}</p>
           )}
         </div>
       )}
