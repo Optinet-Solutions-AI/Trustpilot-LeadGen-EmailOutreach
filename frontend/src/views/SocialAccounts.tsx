@@ -598,12 +598,20 @@ function AccountCard({
           )}
           {stream.status === 'ready' && (
             <>
-              <p className="font-semibold text-[#b0004a]">Browser opened in a new tab.</p>
-              <p className="text-slate-600">Log into Facebook in the new tab. This window will update automatically once your cookies are captured.</p>
+              <p className="font-semibold text-[#b0004a]">Remote browser is ready.</p>
+              <p className="text-slate-600">Click to open it (the browser may block auto-open), then log into Facebook. This window updates automatically once cookies are captured.</p>
               {stream.tunnelUrl && (
-                <a href={stream.tunnelUrl} target="_blank" rel="noopener noreferrer" className="text-[#b0004a] underline">
-                  Re-open tab
-                </a>
+                <div className="mt-1 space-y-1">
+                  <a
+                    href={stream.tunnelUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block px-3 py-1.5 rounded bg-[#b0004a] text-white font-semibold no-underline"
+                  >
+                    Open remote browser ↗
+                  </a>
+                  <p className="text-[11px] text-slate-500 break-all select-all">{stream.tunnelUrl}</p>
+                </div>
               )}
             </>
           )}

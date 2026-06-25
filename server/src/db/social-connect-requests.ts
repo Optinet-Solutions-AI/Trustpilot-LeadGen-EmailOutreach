@@ -21,7 +21,9 @@ export interface ConnectStatusView {
   connect_expires_at: string | null;
 }
 
-const TTL_MS = 10 * 60 * 1000;
+// 45 min — the operator needs time to clear VNC/Windows-login/2FA/captcha
+// before the worker tears the session down. 10 min was too short in practice.
+const TTL_MS = 45 * 60 * 1000;
 
 export async function enqueueConnectRequest(accountId: string): Promise<ConnectRequestRow> {
   const sessionId = crypto.randomUUID();
