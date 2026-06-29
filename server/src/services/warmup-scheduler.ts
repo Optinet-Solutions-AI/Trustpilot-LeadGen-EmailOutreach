@@ -622,8 +622,22 @@ export async function runWarmupTick(): Promise<void> {
   ]);
 }
 
+/**
+ * WARMUP_ENABLED gate (default on, so production is unchanged). Set
+ * WARMUP_ENABLED=false to suppress the warmup send/open/reply loop — required
+ * for safe local/dev boots so the scheduler never fires real warmup emails.
+ * Mirrors COLLEAGUE_WARMUP_ENABLED on the colleague-warmup scheduler.
+ */
+export function isWarmupSchedulerEnabled(): boolean {
+  return (process.env.WARMUP_ENABLED ?? 'true').toLowerCase() !== 'false';
+}
+
 /** Start the background warmup scheduler */
 export function startWarmupScheduler(): void {
+  if (!isWarmupSchedulerEnabled()) {
+    console.log(`${TAG} WARMUP_ENABLED=false — scheduler not started.`);
+    return;
+  }
   console.log(`${TAG} Scheduler started (interval: ${SCHEDULER_INTERVAL_MS / 60_000} min)`);
 
   runWarmupTick().catch(err =>
