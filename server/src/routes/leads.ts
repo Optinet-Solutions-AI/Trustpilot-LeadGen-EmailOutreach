@@ -553,6 +553,14 @@ router.post('/:id/browse', async (req: Request, res: Response) => {
       requestedBy,
     });
 
+    // Smoke-log so a live hosted-comment test is traceable in Cloud Run logs:
+    // shows the lead → resolved account/country → enqueued browse session.
+    console.log(
+      `[leads/browse] lead=${param(req.params.id)} account=${resolved.account_id} ` +
+      `country=${resolved.country ?? 'n/a'} requestedBy=${requestedBy} ` +
+      `session=${row.connect_session_id} status=${row.connect_status}`,
+    );
+
     res.json({ success: true, data: { account_id: resolved.account_id, ...row } });
   } catch (err) {
     if (err instanceof AccountInUseError) {

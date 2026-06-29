@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import api from '../api/client';
 import { useNotes } from '../hooks/useNotes';
@@ -9,6 +9,7 @@ import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
 import { useLeadDiscoveries, useDiscoveryActions } from '../hooks/useDiscoveredContacts';
 import { useCommentDrafts } from '../hooks/useCommentDrafts';
 import type { CommentDraft } from '../hooks/useCommentDrafts';
+import { useBrowseSession } from '../hooks/useBrowseSession';
 import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
@@ -183,6 +184,32 @@ export default function LeadDetail() {
       setOpenLocalStatus('error');
       setOpenLocalError(msg);
     }
+  };
+
+  // "Open as James (hosted)" — opens the lead's post live in the worker's
+  // logged-in browser via the CDP stream (server-side, no local Chrome). The
+  // /leads/:id/browse route resolves the country-pinned account and enqueues a
+  // browse session; the worker provisions the stream and the tunnel URL opens in
+  // a new tab. The operator reviews the AI draft here, then types/posts the
+  // comment in the streamed browser (review-and-approve in-stream — ban-safe).
+  const {
+    status: hostedStatus,
+    error: hostedError,
+    tunnelUrl: hostedTunnelUrl,
+    startForLead: hostedStartForLead,
+    end: hostedEnd,
+  } = useBrowseSession();
+  // Open the streamed-browser tab exactly once when the session reaches 'ready'.
+  const hostedTabOpened = useRef(false);
+  useEffect(() => {
+    if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
+      hostedTabOpened.current = true;
+      window.open(hostedTunnelUrl, '_blank', 'noopener');
+    }
+  }, [hostedStatus, hostedTunnelUrl]);
+  const openInJamesHosted = (targetLeadId: string, postUrl: string) => {
+    hostedTabOpened.current = false;
+    void hostedStartForLead(targetLeadId, { targetUrl: postUrl, requestedBy: 'operator' });
   };
   // Three-state lifecycle for the screenshot tile: 'loading' until the
   // browser raises load or error, then 'ready' or 'failed'. Resets every
@@ -758,7 +785,49 @@ export default function LeadDetail() {
                   <span className="material-symbols-outlined text-[13px]">open_in_browser</span>
                   Open as James
                 </button>
+
+                {/* "Open as James (hosted)" — opens the post live in the worker's
+                    logged-in browser via the CDP stream; works from any machine. */}
+                <button
+                  disabled={hostedStatus === 'starting' || hostedStatus === 'provisioning'}
+                  onClick={() => openInJamesHosted(lead.id, fbPost.post_url!)}
+                  className="inline-flex items-center gap-1 text-xs text-purple-700 border border-purple-300 rounded-md px-2 py-1 hover:bg-purple-50 disabled:opacity-50 transition-colors"
+                  title="Open as James (hosted) — streams the worker's logged-in browser to your tab; review the draft, then post in-stream"
+                >
+                  <span className="material-symbols-outlined text-[13px]">cast</span>
+                  {hostedStatus === 'starting' || hostedStatus === 'provisioning'
+                    ? 'Starting stream…'
+                    : 'Open as James (hosted)'}
+                </button>
               </div>
+
+              {/* Hosted browse-stream status */}
+              {(hostedStatus === 'starting' || hostedStatus === 'provisioning') && (
+                <div className="mb-3 p-3 bg-purple-50 border border-purple-200 rounded text-xs">
+                  <p className="font-semibold text-purple-700">Provisioning the streamed browser… this can take ~20–40s.</p>
+                </div>
+              )}
+              {hostedStatus === 'ready' && (
+                <div className="mb-3 p-3 bg-purple-50 border border-purple-200 rounded text-xs space-y-1">
+                  <p className="font-semibold text-purple-700">Streamed browser open in a new tab — review the draft below, then type and post it there.</p>
+                  {hostedTunnelUrl && (
+                    <a href={hostedTunnelUrl} target="_blank" rel="noopener noreferrer" className="text-purple-700 underline break-all">
+                      Reopen stream
+                    </a>
+                  )}
+                  <button
+                    onClick={() => void hostedEnd()}
+                    className="block mt-1 text-[11px] text-purple-600 hover:underline"
+                  >
+                    End session
+                  </button>
+                </div>
+              )}
+              {(hostedStatus === 'failed' || hostedStatus === 'expired') && hostedError && (
+                <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded text-xs">
+                  <p className="font-semibold text-red-700">{hostedError}</p>
+                </div>
+              )}
 
               {/* Local launch status */}
               {openLocalStatus === 'launching' && (
