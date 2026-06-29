@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyInboundBounce, classifyBounceFromSnippet } from './bounce-tracker';
+import { classifyInboundBounce, classifyBounceFromSnippet, isPermanentSendFailure } from './bounce-tracker';
 
 // A realistic Google "Address not found" NDR as it arrives in a sender's
 // IMAP inbox: from mailer-daemon, multipart/report content type, the
@@ -98,5 +98,38 @@ describe('classifyBounceFromSnippet', () => {
     expect(classifyBounceFromSnippet(null).isBounce).toBe(false);
     expect(classifyBounceFromSnippet('').isBounce).toBe(false);
     expect(classifyBounceFromSnippet('   ').isBounce).toBe(false);
+  });
+});
+
+describe('isPermanentSendFailure', () => {
+  it('flags a genuine recipient hard bounce (550 5.1.1 user unknown) as permanent', () => {
+    expect(isPermanentSendFailure(
+      "Can't send mail - all recipients were rejected: 550 5.1.1 The email account that you tried to reach does not exist.",
+    )).toBe(true);
+  });
+
+  it('does NOT flag a Titan sender hourly bounce-limit throttle as a recipient bounce', () => {
+    // The real OpenSRS/Titan refusal that mis-marked support@wintingo.com as
+    // bounced on 2026-06-29. It carries a 550 / 5.4.6 code but is a SENDER-side
+    // throttle (the account bounced too much this hour), not a dead recipient —
+    // the send must be retried after the window resets, never killed.
+    const throttle =
+      "Can't send mail - all recipients were rejected: 550 5.4.6 Sender Hourly " +
+      "Bounce Limit Exceeded - [account=james@optiratesolutions.net] will not be " +
+      "allowed to send emails till [time=2026-06-29 05:12:05 UTC] as hourly bounce " +
+      "limit is exceeded([bounces=7] out of [limit=5]). Please refer to this: hubs.li/H0BWrn60";
+    expect(isPermanentSendFailure(throttle)).toBe(false);
+  });
+
+  it('does NOT flag a generic sender rate-limit / sending-limit refusal as a recipient bounce', () => {
+    expect(isPermanentSendFailure('550 5.7.1 Daily sending limit exceeded for this account')).toBe(false);
+    expect(isPermanentSendFailure('421 4.7.0 Rate limit exceeded, try again later')).toBe(false);
+    expect(isPermanentSendFailure('Account temporarily throttled — too many messages per hour')).toBe(false);
+  });
+
+  it('returns false for transient (4xx) and empty errors', () => {
+    expect(isPermanentSendFailure('421 4.3.2 Service temporarily unavailable')).toBe(false);
+    expect(isPermanentSendFailure(null)).toBe(false);
+    expect(isPermanentSendFailure(undefined)).toBe(false);
   });
 });

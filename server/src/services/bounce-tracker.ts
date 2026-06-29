@@ -47,6 +47,34 @@ const HARD_BOUNCE_PATTERNS = [
   /mailbox not found/i,
 ];
 
+// Sender-side throttle / refusal — the SENDING account was blocked, the
+// recipient was never the problem. These look like hard bounces (they carry a
+// 5xx / dotted DSN code) but mean "your account is rate/bounce/quota limited,
+// retry later", NOT "dead address". They MUST be classified transient so the
+// schedulers retry after the window resets instead of marking the lead bounced
+// and killing the sequence.
+//
+// Root case (2026-06-29): Titan/OpenSRS rejected a send from
+// james@optiratesolutions.net with "550 5.4.6 Sender Hourly Bounce Limit
+// Exceeded ... will not be allowed to send emails till ...", which the old
+// 550/5.x.x hard-bounce match flagged as a permanent recipient bounce.
+//
+// Kept tight on purpose — every phrase here unambiguously references the
+// SENDER's account (bounce/sending/rate limit, "will not be allowed to send",
+// throttled). A real recipient bounce never uses this language, so we won't
+// turn a genuinely dead address into an infinite retry.
+const SENDER_THROTTLE_PATTERNS = [
+  /bounce limit/i,                          // "Sender Hourly Bounce Limit Exceeded" (Titan/OpenSRS)
+  /will not be allowed to send/i,           // Titan throttle phrasing
+  /sender[^.\n]{0,40}limit/i,               // "Sender Hourly … Limit"
+  /(hourly|daily|sending|message)[^.\n]{0,20}limit\s+(is\s+)?(exceeded|reached)/i,
+  /sending limit/i,
+  /rate[\s\-]?limit/i,                      // generic provider rate-limit refusal
+  /throttl/i,                               // throttled / throttling
+  /sending quota/i,
+  /too many (messages|emails|recipients|connections)/i,
+];
+
 // Soft bounce: temporary failure — may succeed on retry
 const SOFT_BOUNCE_PATTERNS = [
   /452[\s\-]/,       // 452 — insufficient system storage
@@ -98,6 +126,11 @@ function classifyBounce(text: string): 'hard' | 'soft' {
  */
 export function isPermanentSendFailure(errorText: string | undefined | null): boolean {
   if (!errorText) return false;
+  // Sender-side throttles come first — they carry 5xx codes that would
+  // otherwise match HARD_BOUNCE_PATTERNS, but they mean "retry later", not
+  // "dead recipient". Returning false here keeps the schedulers retrying the
+  // send instead of marking the lead bounced and stopping the sequence.
+  if (SENDER_THROTTLE_PATTERNS.some(p => p.test(errorText))) return false;
   if (SOFT_BOUNCE_PATTERNS.some(p => p.test(errorText))) return false;
   return HARD_BOUNCE_PATTERNS.some(p => p.test(errorText));
 }
