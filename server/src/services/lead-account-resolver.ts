@@ -10,6 +10,7 @@
  * NEVER falls back to an arbitrary cross-country account.
  */
 import { getSupabase } from '../lib/supabase.js';
+import { resolvePoolAccountForCountry } from './pool-account-resolver.js';
 
 export interface ResolvedAccount {
   account_id: string;
@@ -57,18 +58,9 @@ export async function resolveLeadAccount(lead_id: string): Promise<ResolvedAccou
   // No country on the lead and no capturing account → cannot resolve safely.
   if (!country) return null;
 
-  // Single fluent chain — country filter is unambiguously applied before await.
-  const { data: accts, error: acctErr2 } = await supabase
-    .from('social_accounts')
-    .select('id, country')
-    .eq('platform', 'facebook')
-    .eq('status', 'active')
-    .eq('country', country)
-    .limit(1);
-  if (acctErr2) throw new Error(`resolveLeadAccount country account lookup: ${acctErr2.message}`);
-
-  const fallback = accts?.[0] as { id: string; country: string | null } | undefined;
-  if (!fallback) return null;
-
-  return { account_id: fallback.id, country: fallback.country };
+  // Country fallback → delegate to the shared pool resolver so a free,
+  // lowest-usage account is picked (skipping accounts busy in a browse session
+  // or flipped to checkpoint). With a single account this returns it as before;
+  // with several it spreads load across the country's pool for multiple users.
+  return resolvePoolAccountForCountry(country);
 }

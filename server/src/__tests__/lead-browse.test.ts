@@ -80,6 +80,16 @@ function makeFakeClient() {
                 error: row ? null : { message: 'not found', code: 'PGRST116' },
               };
             }),
+            // resolvePoolAccountForCountry orders then awaits the chain directly
+            // (no .limit()/.maybeSingle()), so order() returns the chain and the
+            // chain is thenable, resolving to the filtered rows.
+            order: vi.fn((_col: string, _opts?: unknown) => chain),
+            then: (resolve: (v: { data: any[]; error: null }) => unknown) => {
+              let matched = rows();
+              for (const f of filters) matched = matched.filter(f);
+              if (notFilter) matched = matched.filter(notFilter);
+              return Promise.resolve(resolve({ data: matched, error: null }));
+            },
           };
           return chain;
         }),
