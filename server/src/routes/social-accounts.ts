@@ -83,6 +83,9 @@ router.post('/', async (req: Request, res: Response) => {
         daily_cap: daily_cap ?? (platform === 'instagram' ? 25 : 50),
         hourly_cap: hourly_cap ?? 10,
         comment_daily_cap: comment_daily_cap ?? 3,
+        // Start the comment-budget warmup ramp now — a new account posts at a
+        // reduced cap for its first ~3 weeks (see effectiveCommentCap).
+        warmup_started_at: new Date().toISOString(),
       })
       .select()
       .single();

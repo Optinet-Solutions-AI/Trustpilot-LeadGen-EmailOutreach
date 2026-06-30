@@ -29,6 +29,27 @@ interface PoolCandidate {
 
 const BUSY_STATES = BROWSE_ACTIVE_STATES as readonly string[];
 
+/**
+ * Warmup ramp for a pooled account's comment budget. A freshly-onboarded
+ * account should not post at full cap on day one (that's a checkpoint magnet),
+ * so the effective daily comment cap ramps over three weeks:
+ *   week 1 → 1/day, week 2 → 2/day, week 3 → 3/day, day 21+ → full configured cap.
+ * `warmupStartedAt` null means "not tracked / already warmed" → full cap
+ * (preserves existing accounts that predate warmup tracking). Never exceeds the
+ * configured cap. `now` is injected so the calculation stays pure/testable.
+ */
+export function effectiveCommentCap(
+  configuredCap: number,
+  warmupStartedAt: string | null,
+  now: Date,
+): number {
+  if (!warmupStartedAt) return configuredCap;
+  const days = Math.floor((now.getTime() - Date.parse(warmupStartedAt)) / 86_400_000);
+  if (days >= 21) return configuredCap;
+  const rampCap = days < 7 ? 1 : days < 14 ? 2 : 3;
+  return Math.min(configuredCap, rampCap);
+}
+
 export async function resolvePoolAccountForCountry(
   country: string,
   opts: { excludeBusy?: boolean } = {},

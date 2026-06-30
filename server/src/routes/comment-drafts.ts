@@ -41,6 +41,7 @@ import {
   type DraftStatus,
 } from '../db/comment-drafts.js';
 import { resolveLeadAccount } from '../services/lead-account-resolver.js';
+import { effectiveCommentCap } from '../services/pool-account-resolver.js';
 
 const router = Router();
 
@@ -269,10 +270,10 @@ router.post('/:id/post', async (req: Request, res: Response) => {
       return;
     }
 
-    // 3. Check daily cap before spawning
+    // 3. Check the (warmup-adjusted) daily cap before spawning
     const { data: acctRow, error: acctErr } = await getSupabase()
       .from('social_accounts')
-      .select('comment_used_today, comment_daily_cap')
+      .select('comment_used_today, comment_daily_cap, warmup_started_at')
       .eq('id', draft.account_id)
       .maybeSingle();
     if (acctErr) throw new Error(`account cap lookup: ${acctErr.message}`);
@@ -280,12 +281,17 @@ router.post('/:id/post', async (req: Request, res: Response) => {
       res.status(404).json({ success: false, error: 'account for this draft no longer exists' });
       return;
     }
-    const { comment_used_today, comment_daily_cap } = acctRow as {
+    const { comment_used_today, comment_daily_cap, warmup_started_at } = acctRow as {
       comment_used_today: number;
       comment_daily_cap: number;
+      warmup_started_at: string | null;
     };
-    if (comment_used_today >= comment_daily_cap) {
-      res.status(409).json({ success: false, error: 'comment cap reached' });
+    // A freshly-onboarded account ramps its comment budget over 3 weeks so it
+    // doesn't post at full cap on day one (checkpoint risk). Warmed accounts
+    // (warmup_started_at null) keep the full configured cap.
+    const effectiveCap = effectiveCommentCap(comment_daily_cap, warmup_started_at, new Date());
+    if (comment_used_today >= effectiveCap) {
+      res.status(409).json({ success: false, error: `comment cap reached (${comment_used_today}/${effectiveCap} today)` });
       return;
     }
 

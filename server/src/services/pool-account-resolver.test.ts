@@ -12,7 +12,38 @@ vi.mock('../lib/supabase.js', () => ({
   getSupabase: () => mockSupabase,
 }));
 
-import { resolvePoolAccountForCountry } from './pool-account-resolver.js';
+import { resolvePoolAccountForCountry, effectiveCommentCap } from './pool-account-resolver.js';
+
+describe('effectiveCommentCap (warmup ramp)', () => {
+  const start = '2026-06-01T00:00:00.000Z';
+  const at = (days: number) => new Date(Date.parse(start) + days * 86_400_000);
+
+  test('no warmup_started_at → full configured cap (existing/warmed accounts)', () => {
+    expect(effectiveCommentCap(3, null, at(0))).toBe(3);
+  });
+
+  test('week 1 (days 0-6) → ramped to 1', () => {
+    expect(effectiveCommentCap(3, start, at(0))).toBe(1);
+    expect(effectiveCommentCap(3, start, at(6))).toBe(1);
+  });
+
+  test('week 2 (days 7-13) → ramped to 2', () => {
+    expect(effectiveCommentCap(3, start, at(7))).toBe(2);
+    expect(effectiveCommentCap(3, start, at(13))).toBe(2);
+  });
+
+  test('week 3 (days 14-20) → ramped to 3', () => {
+    expect(effectiveCommentCap(5, start, at(14))).toBe(3);
+  });
+
+  test('day 21+ → full configured cap', () => {
+    expect(effectiveCommentCap(5, start, at(21))).toBe(5);
+  });
+
+  test('never exceeds the configured cap (cap smaller than the ramp step)', () => {
+    expect(effectiveCommentCap(1, start, at(14))).toBe(1);
+  });
+});
 
 /**
  * Build a chainable supabase mock whose terminal await resolves to `result`.
