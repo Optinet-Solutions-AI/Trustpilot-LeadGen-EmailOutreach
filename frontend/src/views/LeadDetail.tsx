@@ -211,6 +211,14 @@ export default function LeadDetail() {
     hostedTabOpened.current = false;
     void hostedStartForLead(targetLeadId, { targetUrl: postUrl, requestedBy: 'operator' });
   };
+
+  // The local "Open as James" / "Post" tools spawn a browser on the operator's
+  // OWN machine and only work when the app runs against localhost — their
+  // endpoints (/open-local, /post-local) are not exposed on the deployed API
+  // gateway (they 404). Show them only in local dev so colleagues on the
+  // deployed app see just the hosted (CDP-stream) path.
+  const isLocalhost = typeof window !== 'undefined'
+    && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
   // Three-state lifecycle for the screenshot tile: 'loading' until the
   // browser raises load or error, then 'ready' or 'failed'. Resets every
   // time the lead's screenshot_path changes so navigating between leads
@@ -775,7 +783,9 @@ export default function LeadDetail() {
                   View source post
                 </a>
 
-                {/* "Open as James" — spawns local Chrome on the operator's machine */}
+                {/* "Open as James" — spawns local Chrome on the operator's machine.
+                    Local-dev only: /open-local isn't on the deployed gateway (404). */}
+                {isLocalhost && (
                 <button
                   disabled={openLocalStatus === 'launching'}
                   onClick={() => void openInJames(lead.id)}
@@ -785,6 +795,7 @@ export default function LeadDetail() {
                   <span className="material-symbols-outlined text-[13px]">open_in_browser</span>
                   Open as James
                 </button>
+                )}
 
                 {/* "Open as James (hosted)" — opens the post live in the worker's
                     logged-in browser via the CDP stream; works from any machine. */}
@@ -940,8 +951,10 @@ export default function LeadDetail() {
                   </button>
                 )}
 
-                {/* Post — only enabled when approved; posts via the local app */}
-                {activeDraft && activeDraft.status !== 'posted' && (
+                {/* Post — local-dev only (posts via the local app; /post-local
+                    isn't on the deployed gateway). On the deployed app, post the
+                    approved comment in the hosted stream instead. */}
+                {isLocalhost && activeDraft && activeDraft.status !== 'posted' && (
                   <button
                     disabled={draftLoading || !canPost || postLocalStatus === 'launching' || postLocalStatus === 'polling'}
                     title={
@@ -955,6 +968,14 @@ export default function LeadDetail() {
                     <span className="material-symbols-outlined text-[14px]">send</span>
                     {postLocalStatus === 'launching' ? 'Opening…' : postLocalStatus === 'polling' ? 'Posting as James on your machine…' : 'Post'}
                   </button>
+                )}
+                {/* Deployed app: the approved comment is posted by hand in the
+                    hosted stream (ban-safe review-and-approve). */}
+                {!isLocalhost && activeDraft?.status === 'approved' && (
+                  <span className="text-xs text-purple-700 inline-flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">cast</span>
+                    Approved — open "Open as James (hosted)" and post it in the stream
+                  </span>
                 )}
 
                 {/* Post-local feedback */}
