@@ -256,6 +256,13 @@ export default function LeadsTable({
   const [pinStyle, setPinStyle] = useState<React.CSSProperties | null>(null);
   const [pinHeight, setPinHeight] = useState(0);
 
+  // The local "Open as James" tool spawns a browser on the operator's OWN
+  // machine via /open-local, which is not exposed on the deployed API gateway
+  // (it 404s). Only show it in local dev; on the deployed app, opening a lead's
+  // post as the account happens via the hosted stream on the lead detail page.
+  const isLocalhost = typeof window !== 'undefined'
+    && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+
   // "Open as James" — spawns the local open_lead_browser tool on the operator's
   // machine (localhost only). Per-lead in-flight + last-result state.
   type OpenLocalStatus = 'idle' | 'launching' | 'ok' | 'error';
@@ -746,7 +753,11 @@ export default function LeadsTable({
               <span className="truncate max-w-[200px]">{linkLabel}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
-            {/* On-demand: spawn the local open_lead_browser tool on the operator's machine. */}
+            {/* On-demand: spawn the local open_lead_browser tool on the operator's
+                machine. Local-dev only — /open-local 404s on the deployed gateway;
+                on the deployed app, open the post as James from the lead detail page
+                (hosted CDP stream). */}
+            {isLocalhost && (
             <button
               type="button"
               onClick={() => void openInJames(lead.id)}
@@ -757,13 +768,14 @@ export default function LeadsTable({
               <span className="material-symbols-outlined text-[12px]">open_in_browser</span>
               Open as James
             </button>
-            {openLocalStatus[lead.id] === 'launching' && (
+            )}
+            {isLocalhost && openLocalStatus[lead.id] === 'launching' && (
               <p className="mt-0.5 text-[10px] text-blue-700 font-semibold">Opening Chrome on your machine…</p>
             )}
-            {openLocalStatus[lead.id] === 'ok' && (
+            {isLocalhost && openLocalStatus[lead.id] === 'ok' && (
               <p className="mt-0.5 text-[10px] text-green-700 font-semibold">Chrome launched</p>
             )}
-            {openLocalStatus[lead.id] === 'error' && openLocalError[lead.id] && (
+            {isLocalhost && openLocalStatus[lead.id] === 'error' && openLocalError[lead.id] && (
               <p className="mt-0.5 text-[10px] text-red-600 font-semibold">{openLocalError[lead.id]}</p>
             )}
             {excerptDisplay && (
