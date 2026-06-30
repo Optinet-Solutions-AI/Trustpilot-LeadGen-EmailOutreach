@@ -201,14 +201,31 @@ export default function LeadDetail() {
   } = useBrowseSession();
   // Open the streamed-browser tab exactly once when the session reaches 'ready'.
   const hostedTabOpened = useRef(false);
+  const hostedWindowRef = useRef<Window | null>(null);
   useEffect(() => {
     if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
       hostedTabOpened.current = true;
-      window.open(hostedTunnelUrl, '_blank', 'noopener');
+      // Navigate the tab we pre-opened during the click (popup blockers allow a
+      // window opened in a user gesture; a window.open inside this effect is
+      // usually blocked). Fall back to a fresh open if that tab was closed.
+      const w = hostedWindowRef.current;
+      if (w && !w.closed) w.location.href = hostedTunnelUrl;
+      else window.open(hostedTunnelUrl, '_blank');
     }
   }, [hostedStatus, hostedTunnelUrl]);
   const openInJamesHosted = (targetLeadId: string, postUrl: string) => {
     hostedTabOpened.current = false;
+    // Open the tab NOW, during the click (a user gesture), so the browser
+    // doesn't block it; show a placeholder until the stream URL is ready.
+    const w = window.open('about:blank', '_blank');
+    if (w) {
+      hostedWindowRef.current = w;
+      try {
+        w.document.write(
+          '<title>Browser Session</title><body style="font:14px sans-serif;padding:24px;color:#444">Provisioning the streamed browser… this tab will load the stream in ~20–40s.</body>',
+        );
+      } catch { /* about:blank is same-origin; ignore if it ever isn't */ }
+    }
     void hostedStartForLead(targetLeadId, { targetUrl: postUrl, requestedBy: 'operator' });
   };
 

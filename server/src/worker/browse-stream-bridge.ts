@@ -369,11 +369,13 @@ function startCdpBridge(
     cdpWs.on('open', () => {
       log('CDP websocket open; enabling Page domain + starting screencast');
       sendToCdp('Page.enable');
+      // Higher JPEG quality + larger frame so FB text (posts, comment box) is
+      // legible. quality 60 read as blurry; 85 is sharp and still tunnel-friendly.
       sendToCdp('Page.startScreencast', {
         format: 'jpeg',
-        quality: 60,
-        maxWidth: 1280,
-        maxHeight: 900,
+        quality: 85,
+        maxWidth: 1600,
+        maxHeight: 1000,
         everyNthFrame: 1,
       });
     });
