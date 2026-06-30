@@ -438,12 +438,23 @@ function startCdpBridge(
         });
       } else if (type === 'key') {
         const text = msg['text'] as string | undefined;
+        // CDP needs windowsVirtualKeyCode for non-text editing keys — without it
+        // Backspace/Enter/Tab/arrows/Delete no-op in the page. Printable chars
+        // are inserted via Input.insertText below (no virtual key code needed).
+        const VK: Record<string, number> = {
+          Backspace: 8, Tab: 9, Enter: 13, Escape: 27,
+          PageUp: 33, PageDown: 34, End: 35, Home: 36,
+          ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46,
+        };
+        const vk = VK[msg['key'] as string] ?? 0;
         sendToCdp('Input.dispatchKeyEvent', {
           type: msg['event'],
           key: msg['key'],
           code: msg['code'],
           text: text ?? '',
           unmodifiedText: text ?? '',
+          windowsVirtualKeyCode: vk,
+          nativeVirtualKeyCode: vk,
         });
         // insertText for printable characters so they land in input fields.
         if (msg['event'] === 'keyDown' && text && text.length === 1) {
