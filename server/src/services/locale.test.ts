@@ -56,4 +56,30 @@ describe('localizeText (commonwealth)', () => {
     expect(localizeText(s, 'US')).toBe(s);
     expect(localizeText(s, undefined)).toBe(s);
   });
+
+  // Regression: mask/restore previously used " 0 ", " 1 " (space-digit-space)
+  // tokens, so a literal digit surrounded by spaces in real copy collided
+  // with the restore regex and got replaced with `masks[n]` (undefined).
+  it('does not corrupt literal digits in the text (placeholder collision)', () => {
+    expect(localizeText('We have 3 locations to organize', 'AU'))
+      .toBe('We have 3 locations to organise');
+  });
+
+  it('preserves numbers alongside a masked URL', () => {
+    expect(localizeText('Save 20 percent — visit https://organize.com now', 'AU'))
+      .toBe('Save 20 percent — visit https://organize.com now');
+  });
+
+  // Regression: MASK_PATTERNS only covered http(s)/www/email, so a bare
+  // domain like "organize.com" was left exposed to the word pass and its
+  // matching substring got rewritten (e.g. -> "organise.com").
+  it('does not localize bare domains', () => {
+    expect(localizeText('Visit organize.com today', 'AU'))
+      .toBe('Visit organize.com today');
+  });
+
+  it('still localizes ordinary prose with sentence-ending periods', () => {
+    expect(localizeText('We optimize. Then we organize.', 'AU'))
+      .toBe('We optimise. Then we organise.');
+  });
 });

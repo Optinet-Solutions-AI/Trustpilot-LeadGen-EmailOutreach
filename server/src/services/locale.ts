@@ -81,6 +81,10 @@ const PHRASE_MAP: Array<[RegExp, string]> = [
   [/\bzip code\b/gi, 'postcode'],
 ];
 
+// NOTE: only leading-capital and ALL-CAPS casing is detected/restored.
+// Irregular internal casing (e.g. "oRganize") falls through unmatched and
+// is returned lowercase-replacement-as-is; deliberately out of scope since
+// campaign copy never legitimately mixes case mid-word.
 function matchCase(source: string, replacement: string): string {
   if (source === source.toUpperCase()) return replacement.toUpperCase();
   if (source[0] === source[0].toUpperCase()) {
@@ -89,13 +93,29 @@ function matchCase(source: string, replacement: string): string {
   return replacement;
 }
 
-// Mask URLs, emails, and HTML tags so their internals are never rewritten.
+// Mask URLs, emails, HTML tags, and bare domains so their internals are
+// never rewritten. Order matters: full URLs and emails must be masked
+// before the bare-domain fallback pattern runs, otherwise the fallback
+// would only ever see what's left after the more specific patterns already
+// replaced their matches with placeholder tokens.
 const MASK_PATTERNS = [
   /<[^>]+>/g,                        // HTML tags
   /https?:\/\/[^\s"'<>]+/gi,         // http(s) URLs
   /\bwww\.[^\s"'<>]+/gi,             // bare www URLs
   /[\w.+-]+@[\w-]+\.[\w.-]+/gi,      // emails
+  // Bare domains (e.g. "organize.com"). Requires the TLD-like suffix to
+  // immediately follow the dot with no whitespace, so an end-of-sentence
+  // period ("We optimize. Then...") never qualifies — there's always a
+  // space before the next word in real prose.
+  /\b[a-z0-9-]+\.[a-z]{2,}(?:\/[^\s"'<>]*)?\b/gi,
 ];
+
+// Placeholder delimiters use Unicode Private Use Area code points, which
+// cannot appear in real email copy or HTML, so the restore step can never
+// collide with literal digits in the text (e.g. "3 locations").
+const MASK_OPEN = '';
+const MASK_CLOSE = '';
+const MASK_TOKEN_RE = new RegExp(`${MASK_OPEN}(\\d+)${MASK_CLOSE}`, 'g');
 
 export function localizeText(text: string, country?: string): string {
   if (resolveLocale(country).variant !== 'commonwealth') return text;
@@ -105,7 +125,7 @@ export function localizeText(text: string, country?: string): string {
   let masked = text;
   for (const re of MASK_PATTERNS) {
     masked = masked.replace(re, (m) => {
-      const token = ` ${masks.length} `;
+      const token = `${MASK_OPEN}${masks.length}${MASK_CLOSE}`;
       masks.push(m);
       return token;
     });
@@ -123,5 +143,5 @@ export function localizeText(text: string, country?: string): string {
   });
 
   // Restore masked spans.
-  return masked.replace(/ (\d+) /g, (_, i) => masks[Number(i)]);
+  return masked.replace(MASK_TOKEN_RE, (_, i) => masks[Number(i)]);
 }
