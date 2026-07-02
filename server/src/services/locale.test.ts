@@ -82,4 +82,38 @@ describe('localizeText (commonwealth)', () => {
     expect(localizeText('We optimize. Then we organize.', 'AU'))
       .toBe('We optimise. Then we organise.');
   });
+
+  // Regression: the URL/www/bare-domain mask patterns used trailing
+  // char classes like [^\s"'<>]+ that did not exclude the PUA mask
+  // sentinels. When a URL/domain sat directly adjacent (no whitespace) to
+  // an already-inserted mask token, the later greedy pattern swallowed
+  // that token; since restore is a single left-to-right pass, the nested
+  // token never came back, leaking a raw sentinel and dropping the
+  // adjacent tag/content.
+  it('does not swallow an adjacent tag when a URL is immediately followed by its own anchor tag', () => {
+    const html = '<a href="https://foo.com">https://foo.com</a>';
+    expect(localizeText(html, 'AU')).toBe(html);
+  });
+
+  it('does not swallow a <br> tag glued directly to a masked URL', () => {
+    expect(localizeText('Visit https://organize.com<br>then organize', 'AU'))
+      .toBe('Visit https://organize.com<br>then organise');
+  });
+
+  it('does not swallow a tag glued directly to a masked bare www domain', () => {
+    expect(localizeText('See www.foo.com<b>organize</b>', 'AU'))
+      .toBe('See www.foo.com<b>organise</b>');
+  });
+
+  it('never leaks raw mask sentinel characters into the output', () => {
+    const out = localizeText('Visit https://organize.com<br>then organize', 'AU');
+    expect(out).not.toMatch(/[]/);
+  });
+
+  // Spec: "license" (verb) is left alone in Commonwealth English — only
+  // "licence" (noun) differs from US spelling, so a blanket map entry
+  // would wrongly mangle verb usage.
+  it('leaves "license" (verb) unchanged', () => {
+    expect(localizeText('we license our software', 'AU')).toBe('we license our software');
+  });
 });

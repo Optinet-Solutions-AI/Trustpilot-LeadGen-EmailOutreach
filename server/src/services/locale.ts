@@ -65,7 +65,7 @@ const WORD_MAP: Record<string, string> = {
   analyze: 'analyse', analyzes: 'analyses', analyzed: 'analysed', analyzing: 'analysing',
   // other common irregulars
   catalog: 'catalogue', catalogs: 'catalogues',
-  defense: 'defence', offense: 'offence', license: 'licence',
+  defense: 'defence', offense: 'offence',
   traveler: 'traveller', travelers: 'travellers', traveling: 'travelling', traveled: 'travelled',
   fulfill: 'fulfil', fulfillment: 'fulfilment',
   enrollment: 'enrolment', canceled: 'cancelled', canceling: 'cancelling',
@@ -98,16 +98,24 @@ function matchCase(source: string, replacement: string): string {
 // before the bare-domain fallback pattern runs, otherwise the fallback
 // would only ever see what's left after the more specific patterns already
 // replaced their matches with placeholder tokens.
+// The trailing character classes below exclude / (the mask
+// sentinels) in addition to whitespace/quotes/angle-brackets. Without this,
+// a greedy URL/www/bare-domain match immediately adjacent (no whitespace)
+// to an already-inserted mask token — e.g. an <a> tag right after its own
+// URL text, or a <br>/<b> tag glued to a domain — would swallow that token
+// whole. Because restore is a single left-to-right pass over the final
+// string, a token nested inside another match's captured text never gets
+// its own turn to restore, leaking a raw sentinel and losing the tag.
 const MASK_PATTERNS = [
   /<[^>]+>/g,                        // HTML tags
-  /https?:\/\/[^\s"'<>]+/gi,         // http(s) URLs
-  /\bwww\.[^\s"'<>]+/gi,             // bare www URLs
+  /https?:\/\/[^\s"'<>]+/gi,         // http(s) URLs
+  /\bwww\.[^\s"'<>]+/gi,             // bare www URLs
   /[\w.+-]+@[\w-]+\.[\w.-]+/gi,      // emails
   // Bare domains (e.g. "organize.com"). Requires the TLD-like suffix to
   // immediately follow the dot with no whitespace, so an end-of-sentence
   // period ("We optimize. Then...") never qualifies — there's always a
   // space before the next word in real prose.
-  /\b[a-z0-9-]+\.[a-z]{2,}(?:\/[^\s"'<>]*)?\b/gi,
+  /\b[a-z0-9-]+\.[a-z]{2,}(?:\/[^\s"'<>]*)?\b/gi,
 ];
 
 // Placeholder delimiters use Unicode Private Use Area code points, which
