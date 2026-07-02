@@ -9,6 +9,7 @@
  */
 
 import { resolveSpintax } from './spintax.js';
+import { resolveLocale, localizeText } from './locale.js';
 
 interface LeadData {
   company_name?: string;
@@ -43,6 +44,9 @@ const TOKEN_MAP: Record<string, (lead: LeadData) => string> = {
   category:     (l) => l.category || 'your industry',
   country:      (l) => l.country || 'your market',
   email:        (l) => l.primary_email || '',
+  currency_code:   (l) => resolveLocale(l.country).currencyCode,
+  currency_symbol: (l) => resolveLocale(l.country).currencySymbol,
+  signoff:         (l) => resolveLocale(l.country).signoff,
   // Social-platform tokens — see lead_platform_posts (migration 039).
   // Campaign-scheduler populates post_excerpt/post_url on the LeadData
   // it hands to renderTemplate; if the lead has no observed posts,
@@ -86,5 +90,6 @@ export function renderTemplate(template: string, lead: LeadData): string {
  */
 export function renderAndSpin(template: string, lead: LeadData): string {
   const tokenResolved = renderTemplate(template, lead);
-  return resolveSpintax(tokenResolved);
+  const spun = resolveSpintax(tokenResolved);
+  return localizeText(spun, lead.country);
 }
