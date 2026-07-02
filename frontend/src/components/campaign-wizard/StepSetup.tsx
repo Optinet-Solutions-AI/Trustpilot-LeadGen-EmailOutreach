@@ -86,6 +86,14 @@ export const DEFAULT_SCHEDULE: SendingSchedule = {
   dailyLimit: 50,
 };
 
+// When the operator targets AU/NZ, default the send window to that market's
+// timezone (both values already exist in TIMEZONES). Only a default — the
+// operator can still override via the Sending Schedule dropdown.
+const COUNTRY_TIMEZONE_DEFAULTS: Record<string, string> = {
+  AU: 'Australia/Melbourne',
+  NZ: 'Pacific/Auckland',
+};
+
 interface Props {
   name: string;
   filterCountry: string;
@@ -157,7 +165,15 @@ export default function StepSetup({ name, filterCountry, filterCategory, schedul
             <label className="block text-xs font-bold text-secondary uppercase tracking-wider mb-1.5">Country</label>
             <select
               value={filterCountry}
-              onChange={(e) => onChange({ filterCountry: e.target.value })}
+              onChange={(e) => {
+                const country = e.target.value;
+                const tz = COUNTRY_TIMEZONE_DEFAULTS[country];
+                onChange(
+                  tz
+                    ? { filterCountry: country, schedule: { ...schedule, timezone: tz } }
+                    : { filterCountry: country }
+                );
+              }}
               className="w-full bg-surface-container-lowest rounded-lg px-3 py-2.5 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
               {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
