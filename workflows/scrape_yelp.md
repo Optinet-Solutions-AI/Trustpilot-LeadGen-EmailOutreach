@@ -167,6 +167,20 @@ Requires the shared `RESIDENTIAL_PROXY_*` (Enigma) env already used by FB/IG.
 
 ## EC2 activation runbook — making Yelp discovery run for ALL users
 
+> **Preferred host: the Linux worker under xvfb (cheaper).** The Windows box
+> carries a Windows-license premium and is only needed for FB/IG. To avoid
+> paying for it, run Yelp on the **Linux** worker headed-under-xvfb and *stop*
+> (not terminate) the Windows box — see **`scripts/ec2-linux-yelp-setup.sh`**,
+> which installs xvfb+x11vnc, and its printed steps (env vars, one-time cookie
+> mint via the existing `ec2-expose-vnc.sh` noVNC tunnel, a **verification scrape**,
+> then worker restart). **Verify Yelp actually returns cards under xvfb BEFORE
+> stopping the Windows box** — xvfb-headed vs DataDome is unproven (though it's a
+> different anti-bot system from the Meta checkpoints that block FB/IG on Linux,
+> so the FB-on-Linux failure does not predict Yelp's outcome). Stopping the
+> Windows box is reversible (Start it again to resume FB/IG; disk is preserved).
+>
+> The Windows two-worker setup below remains the fallback if xvfb is challenged.
+
 The relay path only activates when a **headed** worker with `YELP_LISTING_SOURCE=relay`
 claims the Yelp jobs. The default worker topology does NOT do this: the claim RPC's
 `PLATFORM_FILTER` is exact single-match (migration 043), so the FB worker (headed,
