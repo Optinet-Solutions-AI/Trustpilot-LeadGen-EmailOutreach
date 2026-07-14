@@ -165,6 +165,55 @@ Requires the shared `RESIDENTIAL_PROXY_*` (Enigma) env already used by FB/IG.
 
 ---
 
+## EC2 activation runbook — making Yelp discovery run for ALL users
+
+The relay path only activates when a **headed** worker with `YELP_LISTING_SOURCE=relay`
+claims the Yelp jobs. The default worker topology does NOT do this: the claim RPC's
+`PLATFORM_FILTER` is exact single-match (migration 043), so the FB worker (headed,
+`PLATFORM_FILTER=facebook`) won't take Yelp, and the Linux worker (which claims
+"everything except fb/ig" via the comma-list `PLATFORM_EXCLUDE`, migration 047) is
+**headless** and can't run the relay. So Yelp needs its OWN headed worker.
+
+**One-time setup (operator, on the boxes — needs box access + one human slider-solve):**
+
+1. **Deploy** — push to `main`; the Windows EC2 box auto-pulls, or force via
+   `scripts/ec2-windows-deploy.ps1`. Then `cd C:\scraper\server; npm run build`.
+2. **Mint the cookie once** in the noVNC desktop (interactive — NOT as a service):
+   ```powershell
+   cd C:\scraper
+   $env:YELP_STICKY_SESSION="optirate-yelp"; $env:YELP_PROXY_COUNTRY="US"
+   python -m tools.scraper.mint_yelp_datadome    # solve the DataDome slider in the window
+   ```
+   Cookie lands in `C:\scraper\tools\scraper\data\yelp_datadome_cookie.json`.
+3. **Install the dedicated Yelp worker service** (mirrors the FB worker service):
+   ```powershell
+   # PowerShell as Administrator; STICKY inside the script must match step 2
+   .\scripts\ec2-windows-install-yelp-worker-service.ps1
+   nssm edit scraper-worker-yelp     # Log on -> .\Administrator + password
+   nssm start scraper-worker-yelp
+   Get-Content C:\scraper\server\logs\worker-yelp.log -Wait -Tail 20
+   ```
+   Confirm `RESIDENTIAL_PROXY_*` (Enigma) env is present for the service account.
+4. **Stop the Linux worker from grabbing Yelp** (it can't run it headed): on the
+   Singapore Linux box, add `yelp` to the exclude list and restart:
+   ```bash
+   sudo sed -i 's/^PLATFORM_EXCLUDE=.*/PLATFORM_EXCLUDE=facebook,instagram,yelp/' /etc/scraper-worker.env
+   # (add the line if it doesn't exist)
+   sudo systemctl restart scraper-worker.service
+   ```
+5. **Re-solve on expiry** — when the cookie expires / sticky IP drifts, the worker
+   logs `FAILED:listing|yelp|datadome_challenge`; re-run step 2 in noVNC. Same cadence
+   as an FB checkpoint.
+
+**Session-0 caveat:** the NSSM service runs in session 0 (no visible desktop). It
+launches a real (non-`--headless`) Chrome, which normally reads as headed to
+DataDome. If the worker log shows repeated `datadome_challenge` right after a fresh
+mint, DataDome is treating session-0 Chrome as headless — fall back to running the
+worker **inside the interactive noVNC session** (same place FB login runs), e.g.
+`cd C:\scraper\server; $env:PLATFORM_FILTER="yelp"; ...; node dist/worker/scraper-worker.js`.
+
+---
+
 ## Adding markets and categories
 
 - **New country:** add a `"XX": ["City, Region", ...]` entry to `tools/scraper/data/yelp_country_cities.json`. Format mirrors what Yelp's `find_loc=` param accepts. JSON edit only — no code change.
