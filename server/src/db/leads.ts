@@ -1,5 +1,19 @@
 import { getSupabase } from '../lib/supabase.js';
 
+// The legacy leads.screenshot_path is only populated for Trustpilot. Every
+// other platform stores its canonical screenshot on lead_platform_presences.
+// The frontend renders the top-level lead.screenshot_path, so when the legacy
+// column is null we backfill it from the first presence that has one — this is
+// what makes Yelp/TripAdvisor lead images actually show in the UI.
+function coalesceScreenshot(row: any): any {
+  if (row && !row.screenshot_path) {
+    const presences = Array.isArray(row.lead_platform_presences) ? row.lead_platform_presences : [];
+    const withShot = presences.find((p: any) => p && p.screenshot_path);
+    if (withShot) row.screenshot_path = withShot.screenshot_path;
+  }
+  return row;
+}
+
 export interface LeadFilters {
   status?: string;
   country?: string;
@@ -43,11 +57,13 @@ export async function getLeads(filters: LeadFilters = {}) {
     ? supabase
         .from('leads')
         .select(
-          '*, lead_platform_presences!inner(platform, profile_url, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)',
+          '*, lead_platform_presences!inner(platform, profile_url, screenshot_path, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)',
           { count: 'exact' },
         )
         .eq('lead_platform_presences.platform', filters.platform)
-    : supabase.from('leads').select('*', { count: 'exact' });
+    : supabase
+        .from('leads')
+        .select('*, lead_platform_presences(platform, screenshot_path)', { count: 'exact' });
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
   // country + category use ILIKE substring match so operator typos and
@@ -103,7 +119,7 @@ export async function getLeads(filters: LeadFilters = {}) {
   if (error) throw new Error(error.message);
 
   return {
-    data: data || [],
+    data: (data || []).map(coalesceScreenshot),
     total: count || 0,
     page,
     totalPages: Math.ceil((count || 0) / limit),
@@ -172,12 +188,12 @@ export async function getLeadById(id: string) {
   const { data, error } = await supabase
     .from('leads')
     .select(
-      '*, lead_platform_presences(platform, profile_url, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)',
+      '*, lead_platform_presences(platform, profile_url, screenshot_path, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)',
     )
     .eq('id', id)
     .single();
   if (error) throw new Error(error.message);
-  return data;
+  return coalesceScreenshot(data);
 }
 
 export async function updateLead(id: string, patch: Record<string, unknown>) {

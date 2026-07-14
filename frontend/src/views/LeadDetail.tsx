@@ -702,7 +702,7 @@ export default function LeadDetail() {
               {probe}
               <h3 className="text-sm font-bold text-on-surface mb-3 flex items-center gap-2">
                 <span className="material-symbols-outlined text-[16px] text-secondary">screenshot</span>
-                Trustpilot Profile Screenshot
+                Profile Screenshot
                 {screenshotState === 'ready' && resolvedUrl && (
                   <a
                     href={resolvedUrl}

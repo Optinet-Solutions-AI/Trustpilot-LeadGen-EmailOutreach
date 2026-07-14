@@ -665,7 +665,7 @@ export default function LeadsTable({
                 setPreviewSrc(shotSrc);
                 setPreviewName(lead.company_name);
               }}
-              title={hasShot ? 'View Trustpilot screenshot' : 'No screenshot captured'}
+              title={hasShot ? 'View screenshot' : 'No screenshot captured'}
               className={`p-1 rounded-lg transition-colors ${
                 hasShot
                   ? 'text-[#b0004a] hover:bg-[#ffd9de]'
