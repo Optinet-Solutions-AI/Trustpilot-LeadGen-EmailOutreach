@@ -160,8 +160,29 @@ Smoke-verified 2026-07-14: minted once (10 cards, plumbers/Chicago), then headed
 | `YELP_DATADOME_COOKIE_FILE` | `tools/scraper/data/yelp_datadome_cookie.json` | Minted cookie bundle |
 | `YELP_DATADOME_COOKIE` | none | Raw cookie value (overrides the file) |
 | `YELP_RELAY_HEADLESS` | `false` | Keep false — headless is re-challenged. Only true under xvfb where the fingerprint reads as headed. |
+| `YELP_RELAY_SOFTWARE_GL` | `false` | **Set `true` on the GPU-less Linux EC2 box.** Enables software WebGL (SwiftShader) + managed-window flags so xvfb Chrome fingerprints as a real desktop. Leave `false` on the owner's real-GPU desktop — forcing SwiftShader there is itself a headless tell. |
 
 Requires the shared `RESIDENTIAL_PROXY_*` (Enigma) env already used by FB/IG.
+
+### Linux EC2 (headless box under xvfb) — DataDome fingerprint hardening
+
+Live-tested 2026-07-14: on a GPU-less Linux EC2 box under xvfb the relay flow **HARD-BLOCKED** (not a solvable slider) on two clean Enigma US IPs — block reasons "Something is preventing JavaScript from working" + "browsing faster than a human" + headless-like. The SAME cookie/relay flow gets a **solvable slider** on a real Windows desktop, so the differentiator is the **xvfb browser fingerprint**, not the IP. Chief tell: with no GPU, Chrome's WebGL silently fails and `getParameter(UNMASKED_RENDERER_WEBGL)` returns null.
+
+The hardening (gated behind `YELP_RELAY_SOFTWARE_GL=true`, applied to BOTH `mint_yelp_datadome.py` and the relay scrape via `local_browser.software_gl`):
+
+- **Software WebGL** — `--enable-unsafe-swiftshader` (Chrome 120+), `--use-gl=angle`, `--use-angle=swiftshader`, `--ignore-gpu-blocklist`, `--enable-webgl`. Do NOT add `--disable-gpu` (kills WebGL → reads headless).
+- **Window manager** — `scripts/ec2-linux-yelp-setup.sh` installs and starts **fluxbox** on `:99` so windows are managed (focus/decorations) like a desktop.
+- **Realistic display** — Xvfb `1920x1080x24`, `--window-size=1920,1080`, never `--headless`, keep `--disable-blink-features=AutomationControlled` and the default Linux-desktop UA.
+
+**Re-test runbook (operator, on the EC2 box):**
+
+1. `sudo /opt/scraper/scripts/ec2-linux-yelp-setup.sh` — installs fluxbox, starts Xvfb `:99` + fluxbox + x11vnc.
+2. Add `YELP_RELAY_SOFTWARE_GL=true` (plus the other relay vars) to `/etc/scraper-worker.env`.
+3. Confirm WebGL renders: `DISPLAY=:99 python3 -m tools.scraper.verify_webgl` → expect `PASS` with a SwiftShader/ANGLE renderer (a null renderer means the flags didn't take — fix before continuing).
+4. Mint under xvfb via noVNC: `DISPLAY=:99 YELP_RELAY_SOFTWARE_GL=true YELP_STICKY_SESSION=optirate-yelp YELP_PROXY_COUNTRY=US python3 -m tools.scraper.mint_yelp_datadome` → **expect a SOLVABLE slider** (not the hard-block page); solve it.
+5. Smoke one city: `DISPLAY=:99 YELP_LISTING_SOURCE=relay YELP_RELAY_SOFTWARE_GL=true ... python3 -m tools.scraper.run --platform yelp --action list --filters '{"country":"US","category":"plumbers","max_rating":5.0,"min_review_count":1}' --max-results 6` → PASS = real rows; FAIL = `FAILED:listing|yelp|datadome_challenge`.
+
+**Unverified until the operator tests on the box** — this dev machine is a real-GPU Windows desktop and already gets a slider, so it cannot reproduce the xvfb hard-block. If step 4 still hard-blocks, capture the block page and report; keep Yelp on Windows meanwhile.
 
 ---
 

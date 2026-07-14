@@ -483,6 +483,11 @@ class YelpScraper(BasePlatformScraper):
             session = os.environ.get('YELP_STICKY_SESSION', 'optirate-yelp')
             profile_dir = os.environ.get('YELP_PROXY_PROFILE_DIR') or None
             headless = os.environ.get('YELP_RELAY_HEADLESS', 'false').lower() == 'true'
+            # Software-WebGL + managed-window hardening for a GPU-less Linux box
+            # under xvfb (see local_browser.software_gl). Leave OFF on the
+            # owner's real-GPU desktop — forcing SwiftShader there is itself a
+            # headless tell.
+            software_gl = os.environ.get('YELP_RELAY_SOFTWARE_GL', 'false').lower() == 'true'
             dd_cookie = _load_datadome_cdp_cookie()
             if not dd_cookie:
                 print(
@@ -497,7 +502,8 @@ class YelpScraper(BasePlatformScraper):
             relay_ctx.__enter__()
             print(
                 f"  [relay] non-MITM proxy on 127.0.0.1:{relay_ctx.port} "
-                f"exit={exit_country} session={session} headless={headless}",
+                f"exit={exit_country} session={session} headless={headless} "
+                f"software_gl={software_gl}",
                 flush=True,
             )
             browser_ctx = LocalBrowserFetcher(
@@ -511,6 +517,7 @@ class YelpScraper(BasePlatformScraper):
                 profile_dir=profile_dir,
                 inject_cookies=[dd_cookie],
                 headless=headless,
+                software_gl=software_gl,
             )
         elif source == 'browser':
             browser_ctx = LocalBrowserFetcher(
