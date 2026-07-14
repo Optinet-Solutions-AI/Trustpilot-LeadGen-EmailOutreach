@@ -113,6 +113,58 @@ Per lead:
 
 ---
 
+## Server-side listing via residential proxy — `YELP_LISTING_SOURCE=relay` (DataDome)
+
+Yelp's `/search` is guarded by **DataDome** (not PerimeterX). Verified empirically 2026-07-14:
+
+- ScrapingBee (stealth/premium, JS on/off) → HTTP 500 / timeout on `/search` (DataDome defeats it server-side). Only `/biz/<slug>` works on ScrapingBee.
+- A residential exit IP + **real (non-MITM) browser TLS** is required. selenium-wire (the FB/IG proxy path in `uc_driver.py`) MITMs TLS and is flagged instantly by DataDome — and crashes on Windows — so it is NOT usable here.
+- DataDome serves an **interactive slider** to every fresh cookieless session (headed or headless, US or owner IP). It does not auto-clear. A human solves it **once**; that mints a `datadome` cookie which then unlocks other cities/searches.
+- Cookie reuse **works only in a HEADED browser**. Headless is re-fingerprinted and re-challenged even with a valid cookie + same IP. So the server path is **headed Chrome under a virtual display (xvfb/noVNC)** on the EC2 worker — the same pattern as Facebook.
+- The `datadome` cookie is bound to the **exit IP**, so the whole crawl must hold ONE IP. Enigma pins an IP when the password carries a `_session-<token>` suffix (verified sticky for minutes+).
+
+**How it's wired:**
+
+| Piece | File |
+|---|---|
+| Non-MITM CONNECT auth relay (real TLS end-to-end, upstream `Proxy-Authorization`) | `tools/scraper/shared/proxy_relay.py` (`RelayServer`) |
+| Opt-in proxy/profile/cookie/headless options on the browser fetcher | `tools/scraper/shared/local_browser.py` (`LocalBrowserFetcher`) |
+| `relay` listing source (starts relay on sticky session, injects cookie) | `tools/scraper/platforms/yelp.py` (`scrape_listing`) |
+| One-time human cookie mint (solve the slider) | `tools/scraper/mint_yelp_datadome.py` |
+
+**Operator flow (mirror the FB noVNC checkpoint pattern):**
+
+1. On a machine with a visible display (owner desktop, or EC2 under xvfb/noVNC), mint the cookie once:
+   ```
+   PYTHONUTF8=1 .venv/Scripts/python.exe -m tools.scraper.mint_yelp_datadome
+   ```
+   A Chrome window opens on Yelp `/search`; **drag the DataDome slider to solve it**. On success the `datadome` cookie is saved to `tools/scraper/data/yelp_datadome_cookie.json` (override with `YELP_DATADOME_COOKIE_FILE`), along with the exit IP and sticky-session token.
+2. Run listing with the relay source (headed / xvfb), reusing the SAME sticky session + country:
+   ```
+   YELP_LISTING_SOURCE=relay YELP_STICKY_SESSION=<token> YELP_PROXY_COUNTRY=US \
+   .venv/Scripts/python.exe -m tools.scraper.run --platform yelp --action list \
+     --filters '{"country":"US","category":"plumbers","max_rating":5.0,"min_review_count":1}'
+   ```
+3. **Re-solve when it expires.** When the cookie expires or the sticky IP drifts, the relay source emits `FAILED:listing|yelp|datadome_challenge` — just re-run step 1 (solve the slider again). This is the Yelp equivalent of an FB checkpoint recovery.
+
+Smoke-verified 2026-07-14: minted once (10 cards, plumbers/Chicago), then headed reuse returned real cards for other cities — dentists/Austin (24), and via the wired `relay` source, plumbers/New York (5 rows written). Headless reuse returned the slider (expected).
+
+**Relay-source env vars:**
+
+| Variable | Default | Notes |
+|---|---|---|
+| `YELP_LISTING_SOURCE=relay` | `browser` | Selects this path |
+| `YELP_PROXY_COUNTRY` | the scrape's `country` | Enigma exit country ISO-2; must match the country the cookie was minted on |
+| `YELP_STICKY_SESSION` | `optirate-yelp` | Enigma `_session-<token>`; must match the mint |
+| `YELP_PROXY_PROFILE_DIR` | none | Optional persistent Chrome profile (also carries the solved state) |
+| `YELP_DATADOME_COOKIE_FILE` | `tools/scraper/data/yelp_datadome_cookie.json` | Minted cookie bundle |
+| `YELP_DATADOME_COOKIE` | none | Raw cookie value (overrides the file) |
+| `YELP_RELAY_HEADLESS` | `false` | Keep false — headless is re-challenged. Only true under xvfb where the fingerprint reads as headed. |
+
+Requires the shared `RESIDENTIAL_PROXY_*` (Enigma) env already used by FB/IG.
+
+---
+
 ## Adding markets and categories
 
 - **New country:** add a `"XX": ["City, Region", ...]` entry to `tools/scraper/data/yelp_country_cities.json`. Format mirrors what Yelp's `find_loc=` param accepts. JSON edit only — no code change.

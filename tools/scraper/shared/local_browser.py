@@ -76,6 +76,21 @@ class LocalBrowserFetcher:
         reloads: int = 1,
         page_timeout: int = 70,
         block_markers: tuple[str, ...] = BLOCK_MARKERS,
+        # ── Opt-in residential-proxy path (Yelp DataDome). All default to the
+        # legacy owner-local, no-proxy, headed behaviour so TripAdvisor and the
+        # existing Yelp browser source are unaffected. ──
+        # Port of a running non-MITM CONNECT relay (see proxy_relay.RelayServer);
+        # when set, Chrome is launched with --proxy-server=http://127.0.0.1:port
+        # so its REAL TLS reaches the origin (no selenium-wire / no MITM).
+        proxy_relay_port: Optional[int] = None,
+        # Persistent user-data-dir (carries the solved-DataDome browser state).
+        profile_dir: Optional[str] = None,
+        # CDP Network.setCookie payloads injected before the first navigation
+        # (used to replay a minted `datadome` cookie into a fresh profile).
+        inject_cookies: Optional[list] = None,
+        # None → legacy headed. DataDome re-challenges headless, so the server
+        # path is headed-under-xvfb; keep this False/None in production.
+        headless: bool = False,
     ):
         self._driver = None
         self.min_bytes = min_bytes
@@ -87,19 +102,43 @@ class LocalBrowserFetcher:
         self.reloads = reloads
         self.page_timeout = page_timeout
         self.block_markers = block_markers
+        self.proxy_relay_port = proxy_relay_port
+        self.profile_dir = profile_dir
+        self.inject_cookies = inject_cookies or []
+        self.headless = headless
         self._last_load = 0.0
 
     def __enter__(self):
+        import os
         import undetected_chromedriver as uc
 
         opts = uc.ChromeOptions()
         opts.add_argument('--window-size=1366,900')
         opts.add_argument('--no-sandbox')
         opts.add_argument('--disable-dev-shm-usage')
+        opts.add_argument('--lang=en-US,en')
+        if self.proxy_relay_port:
+            opts.add_argument(f'--proxy-server=http://127.0.0.1:{self.proxy_relay_port}')
+        if self.profile_dir:
+            os.makedirs(self.profile_dir, exist_ok=True)
+            # Clear stale singleton locks left by a prior crashed session.
+            for stale in ('SingletonLock', 'SingletonCookie', 'SingletonSocket'):
+                try:
+                    os.remove(os.path.join(self.profile_dir, stale))
+                except OSError:
+                    pass
+            opts.add_argument(f'--user-data-dir={self.profile_dir}')
         major = _chrome_major()
-        # headless=False is REQUIRED — Cloudflare walls UC headless on TripAdvisor.
-        self._driver = uc.Chrome(options=opts, headless=False, version_main=major)
+        # headless=False is REQUIRED for TripAdvisor (Cloudflare walls UC
+        # headless) AND for Yelp/DataDome (headless is re-challenged even with a
+        # valid cookie). Only overridden under a virtual display (xvfb) on Linux.
+        self._driver = uc.Chrome(options=opts, headless=self.headless, version_main=major)
         self._driver.set_page_load_timeout(self.page_timeout)
+        for cookie in self.inject_cookies:
+            try:
+                self._driver.execute_cdp_cmd('Network.setCookie', cookie)
+            except Exception as e:
+                print(f"[local_browser] cookie inject failed: {e}")
         return self.get
 
     def __exit__(self, *exc):
