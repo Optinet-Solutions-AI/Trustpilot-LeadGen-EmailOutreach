@@ -84,6 +84,7 @@ from tools.scraper.shared.scrapingbee import (
     scrapingbee_enabled,
 )
 from tools.scraper.shared.local_browser import LocalBrowserFetcher, BrowserBlocked
+from tools.scraper.shared.proxy_relay import RelayServer
 
 
 # Where the country → list-of-cities seed lives.
@@ -133,6 +134,34 @@ def _load_categories_seed() -> list[dict]:
 
 def _strip_query(url: str) -> str:
     return url.split('?', 1)[0].split('#', 1)[0]
+
+
+# Default on-disk location for the human-minted DataDome cookie bundle
+# (written by tools/scraper/mint_yelp_datadome.py). Overridable via
+# YELP_DATADOME_COOKIE_FILE. The bundle is the get_cookies() shape:
+# {"datadome_cookie": {"value": ...}, "exit_ip": {...}, "sticky_session": ...}.
+_DATADOME_COOKIE_PATH = os.path.join(_DATA_DIR, 'yelp_datadome_cookie.json')
+
+
+def _load_datadome_cdp_cookie() -> Optional[dict]:
+    """Return a CDP Network.setCookie payload for the minted `datadome` cookie,
+    or None if unavailable. Reads YELP_DATADOME_COOKIE (raw value) first, then
+    the bundle file at YELP_DATADOME_COOKIE_FILE / _DATADOME_COOKIE_PATH."""
+    value = os.environ.get('YELP_DATADOME_COOKIE', '').strip()
+    if not value:
+        path = os.environ.get('YELP_DATADOME_COOKIE_FILE', _DATADOME_COOKIE_PATH)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                bundle = json.load(f)
+            value = ((bundle.get('datadome_cookie') or {}).get('value') or '').strip()
+        except (OSError, json.JSONDecodeError):
+            return None
+    if not value:
+        return None
+    return {
+        'name': 'datadome', 'value': value, 'domain': '.yelp.com',
+        'path': '/', 'secure': True, 'httpOnly': False, 'sameSite': 'Lax',
+    }
 
 
 def _unwrap_biz_redir(href: str) -> Optional[str]:
@@ -442,28 +471,68 @@ class YelpScraper(BasePlatformScraper):
         global_page = 0  # SSE event counter — frontend's "page N" label
         total_seen_pre_filter = 0  # counts every Fusion result, for diagnostics
 
-        browser_ctx = (
-            LocalBrowserFetcher(
+        use_browser = source in ('browser', 'relay')
+
+        # ── relay source: headed Chrome through the non-MITM residential-proxy
+        # relay on a STICKY US session, replaying a human-minted DataDome cookie.
+        # The only server-side path to Yelp /search (see proxy_relay.py). ──
+        relay_ctx = None
+        browser_ctx = None
+        if source == 'relay':
+            exit_country = os.environ.get('YELP_PROXY_COUNTRY', country or 'US')
+            session = os.environ.get('YELP_STICKY_SESSION', 'optirate-yelp')
+            profile_dir = os.environ.get('YELP_PROXY_PROFILE_DIR') or None
+            headless = os.environ.get('YELP_RELAY_HEADLESS', 'false').lower() == 'true'
+            dd_cookie = _load_datadome_cdp_cookie()
+            if not dd_cookie:
+                print(
+                    "FAILED:listing|yelp|no_datadome_cookie|YELP_LISTING_SOURCE=relay "
+                    "needs a minted DataDome cookie. Run "
+                    "tools/scraper/mint_yelp_datadome.py (headed, solve the slider once) "
+                    "or set YELP_DATADOME_COOKIE.",
+                    flush=True,
+                )
+                return []
+            relay_ctx = RelayServer(country=exit_country, session=session)
+            relay_ctx.__enter__()
+            print(
+                f"  [relay] non-MITM proxy on 127.0.0.1:{relay_ctx.port} "
+                f"exit={exit_country} session={session} headless={headless}",
+                flush=True,
+            )
+            browser_ctx = LocalBrowserFetcher(
+                markers=('/biz/',),
+                # DataDome challenge shell → surface as a block so the operator
+                # knows to re-mint the cookie (IP drift / cookie expiry).
+                block_markers=('captcha-delivery', 'DataDome CAPTCHA'),
+                min_pace=8.0, max_pace=18.0,
+                max_wait=25.0,
+                proxy_relay_port=relay_ctx.port,
+                profile_dir=profile_dir,
+                inject_cookies=[dd_cookie],
+                headless=headless,
+            )
+        elif source == 'browser':
+            browser_ctx = LocalBrowserFetcher(
                 markers=('/biz/',),
                 block_markers=('Access to this page has been denied',),
                 min_pace=8.0, max_pace=18.0,
                 # max_wait trimmed: an empty results page has no /biz/ marker, so cap the terminal-page wait
                 max_wait=25.0,
-            ) if source == 'browser' else None
-        )
+            )
         fetch_fn = browser_ctx.__enter__() if browser_ctx else None
         try:
             for city_idx, city in enumerate(cities):
                 global_page += 1
                 print(
                     f"  [city {city_idx + 1}/{len(cities)}] {city}: "
-                    + ("querying Yelp /search (browser)..." if source == 'browser' else "querying Fusion..."),
+                    + ("querying Yelp /search (browser)..." if use_browser else "querying Fusion..."),
                     flush=True,
                 )
                 # Emit "we're looking at page N" the moment we START fetching.
                 print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
 
-                if source == 'browser':
+                if use_browser:
                     businesses = await asyncio.to_thread(
                         _search_city_browser, fetch_fn, city, category, per_city_cap,
                     )
@@ -549,15 +618,27 @@ class YelpScraper(BasePlatformScraper):
                     break
 
         except BrowserBlocked as e:
-            print(
-                f"FAILED:listing|yelp|ip_blocked|PerimeterX hard-blocked the IP "
-                f"(last URL: {e}). Stopping; {len(results)} businesses collected from "
-                f"earlier cities. Wait for cooldown and re-run remaining cities.",
-                flush=True,
-            )
+            if source == 'relay':
+                print(
+                    f"FAILED:listing|yelp|datadome_challenge|DataDome served the "
+                    f"slider (last URL: {e}) — the minted cookie was rejected "
+                    f"(cookie expired or the sticky exit IP drifted). Re-mint via "
+                    f"tools/scraper/mint_yelp_datadome.py (headed, solve once). "
+                    f"{len(results)} businesses collected from earlier cities.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"FAILED:listing|yelp|ip_blocked|PerimeterX hard-blocked the IP "
+                    f"(last URL: {e}). Stopping; {len(results)} businesses collected from "
+                    f"earlier cities. Wait for cooldown and re-run remaining cities.",
+                    flush=True,
+                )
         finally:
             if browser_ctx:
                 browser_ctx.__exit__(None, None, None)
+            if relay_ctx:
+                relay_ctx.__exit__(None, None, None)
 
         print(f"\nTotal: {len(results)} Yelp businesses matched filter.", flush=True)
         # Diagnostic for the "Fusion returned data but everything got filtered

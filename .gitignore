@@ -12,6 +12,9 @@ build/
 *.log
 credentials.json
 token.json
+# Human-minted Yelp DataDome cookie bundle (secret, IP-bound) + its Chrome profile
+tools/scraper/data/yelp_datadome_cookie.json
+.tmp/yelp_profile/
 
 # Next.js build output
 frontend/.next/
