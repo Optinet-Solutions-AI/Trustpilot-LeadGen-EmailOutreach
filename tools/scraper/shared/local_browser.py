@@ -91,6 +91,16 @@ class LocalBrowserFetcher:
         # None → legacy headed. DataDome re-challenges headless, so the server
         # path is headed-under-xvfb; keep this False/None in production.
         headless: bool = False,
+        # ── xvfb / no-GPU hardening (Linux server only) ──
+        # On a headless Linux EC2 box under xvfb with no GPU, Chrome's WebGL
+        # silently fails (SwiftShader for WebGL is disabled by default since
+        # Chrome ~120), so getParameter(UNMASKED_RENDERER_WEBGL) returns
+        # null/empty — a dead giveaway that DataDome uses to HARD-BLOCK (vs the
+        # solvable slider a real desktop gets). Enabling software WebGL +
+        # managed-window flags makes xvfb Chrome fingerprint as a real desktop.
+        # MUST stay False on the owner's real-GPU desktop — forcing SwiftShader
+        # on a machine that has a GPU is itself a headless tell.
+        software_gl: bool = False,
     ):
         self._driver = None
         self.min_bytes = min_bytes
@@ -106,6 +116,7 @@ class LocalBrowserFetcher:
         self.profile_dir = profile_dir
         self.inject_cookies = inject_cookies or []
         self.headless = headless
+        self.software_gl = software_gl
         self._last_load = 0.0
 
     def __enter__(self):
@@ -113,10 +124,26 @@ class LocalBrowserFetcher:
         import undetected_chromedriver as uc
 
         opts = uc.ChromeOptions()
-        opts.add_argument('--window-size=1366,900')
+        # On the software-GL (xvfb) path, present a full-desktop window matching
+        # the 1920x1080 virtual screen; elsewhere keep the legacy laptop size.
+        opts.add_argument('--window-size=1920,1080' if self.software_gl else '--window-size=1366,900')
         opts.add_argument('--no-sandbox')
         opts.add_argument('--disable-dev-shm-usage')
         opts.add_argument('--lang=en-US,en')
+        if self.software_gl:
+            # Software WebGL so getParameter(UNMASKED_RENDERER_WEBGL) returns a
+            # real SwiftShader string on a GPU-less box (the biggest DataDome
+            # lever). Do NOT add --disable-gpu here — that kills WebGL entirely
+            # and reads as headless. --enable-unsafe-swiftshader is required on
+            # Chrome 120+ (SwiftShader-for-WebGL is gated off by default).
+            opts.add_argument('--enable-unsafe-swiftshader')
+            opts.add_argument('--use-gl=angle')
+            opts.add_argument('--use-angle=swiftshader')
+            opts.add_argument('--ignore-gpu-blocklist')
+            opts.add_argument('--enable-webgl')
+            # Reinforce the non-automation fingerprint (undetected-chromedriver
+            # sets some of these, but be explicit on the server path).
+            opts.add_argument('--disable-blink-features=AutomationControlled')
         if self.proxy_relay_port:
             opts.add_argument(f'--proxy-server=http://127.0.0.1:{self.proxy_relay_port}')
         if self.profile_dir:

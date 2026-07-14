@@ -43,13 +43,19 @@ def main() -> int:
     profile_dir = os.environ.get('YELP_PROXY_PROFILE_DIR') or os.path.join(
         _REPO_ROOT, '.tmp', 'yelp_profile')
     cookie_file = os.environ.get('YELP_DATADOME_COOKIE_FILE', _DATADOME_COOKIE_PATH)
+    # Match the relay scrape browser's xvfb hardening so the cookie is minted
+    # under the SAME fingerprint it will later be replayed with. On a GPU-less
+    # Linux box under xvfb, set YELP_RELAY_SOFTWARE_GL=true (see the scrape
+    # path in local_browser.software_gl). Leave off on a real-GPU desktop.
+    software_gl = os.environ.get('YELP_RELAY_SOFTWARE_GL', 'false').lower() == 'true'
     os.makedirs(profile_dir, exist_ok=True)
     os.makedirs(os.path.dirname(cookie_file), exist_ok=True)
 
     import undetected_chromedriver as uc
 
     with RelayServer(country=country, session=session) as relay:
-        print(f"[mint] relay 127.0.0.1:{relay.port} exit={country} session={session}", flush=True)
+        print(f"[mint] relay 127.0.0.1:{relay.port} exit={country} session={session} "
+              f"software_gl={software_gl}", flush=True)
         opts = uc.ChromeOptions()
         for c in (r'C:\Program Files\Google\Chrome\Application\chrome.exe',
                   r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'):
@@ -58,8 +64,18 @@ def main() -> int:
                 break
         opts.add_argument(f'--proxy-server=http://127.0.0.1:{relay.port}')
         opts.add_argument(f'--user-data-dir={profile_dir}')
-        opts.add_argument('--window-size=1366,900')
         opts.add_argument('--lang=en-US,en')
+        if software_gl:
+            # Software WebGL on a GPU-less xvfb box (see local_browser.software_gl).
+            opts.add_argument('--window-size=1920,1080')
+            opts.add_argument('--enable-unsafe-swiftshader')
+            opts.add_argument('--use-gl=angle')
+            opts.add_argument('--use-angle=swiftshader')
+            opts.add_argument('--ignore-gpu-blocklist')
+            opts.add_argument('--enable-webgl')
+            opts.add_argument('--disable-blink-features=AutomationControlled')
+        else:
+            opts.add_argument('--window-size=1366,900')
         driver = uc.Chrome(options=opts, headless=False,
                            version_main=_detect_chrome_major_version())
         driver.set_page_load_timeout(50)
