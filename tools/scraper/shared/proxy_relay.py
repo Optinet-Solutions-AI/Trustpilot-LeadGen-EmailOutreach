@@ -48,7 +48,18 @@ UPSTREAM_PORT = int(os.environ.get('RESIDENTIAL_PROXY_PORT', '12321'))
 
 def _build_upstream_password(country: Optional[str], session: Optional[str]) -> str:
     """Swap the country code in the env password and append the sticky-session
-    token. Enigma format: `<pw>_country-XX[_session-YYY]`."""
+    token. Enigma format: `<pw>_country-XX[_session-YYY][_lifetime-ZZ]`.
+
+    A `_session-<token>` alone pins ONE exit IP across separate connections /
+    processes — measured stable for 10+ min with zero drift (2026-07-14). We
+    also append a `_lifetime-<val>` suffix requesting a longer hold; the exact
+    Enigma TTL convention is UNVERIFIED (it may be ignored), but it's accepted
+    (returns 200) and harmless. Override/disable via
+    RESIDENTIAL_PROXY_SESSION_LIFETIME (empty = omit the suffix).
+
+    CRITICAL: mint and scrape MUST build the IDENTICAL password (same token AND
+    same lifetime) or they land on different IPs — and the DataDome cookie is
+    IP-bound. Both go through this one function, so they stay in lockstep."""
     pw = os.environ.get('RESIDENTIAL_PROXY_PASSWORD', '')
     if country:
         cc = country.strip().upper()
@@ -58,6 +69,9 @@ def _build_upstream_password(country: Optional[str], session: Optional[str]) -> 
             pw = f'{pw}_country-{cc}'
     if session and '_session-' not in pw:
         pw = f'{pw}_session-{session}'
+        lifetime = os.environ.get('RESIDENTIAL_PROXY_SESSION_LIFETIME', '30m').strip()
+        if lifetime and '_lifetime-' not in pw:
+            pw = f'{pw}_lifetime-{lifetime}'
     return pw
 
 
@@ -65,6 +79,31 @@ def _auth_header(country: Optional[str], session: Optional[str]) -> bytes:
     user = os.environ.get('RESIDENTIAL_PROXY_USERNAME', '')
     pw = _build_upstream_password(country, session)
     return base64.b64encode(f'{user}:{pw}'.encode()).decode().encode()
+
+
+def get_exit_ip(
+    country: Optional[str] = None,
+    session: Optional[str] = None,
+    timeout: int = 30,
+) -> Optional[str]:
+    """Return the current exit IP for the given sticky session by hitting
+    ipinfo directly through the Enigma upstream (no relay/browser needed).
+    Used to detect sticky-IP drift before trusting an IP-bound DataDome cookie.
+    Returns None on any error."""
+    import requests  # lazy — only the Yelp relay path needs it
+
+    user = os.environ.get('RESIDENTIAL_PROXY_USERNAME', '')
+    pw = _build_upstream_password(country, session)
+    purl = f'http://{user}:{pw}@{UPSTREAM_HOST}:{UPSTREAM_PORT}'
+    try:
+        r = requests.get(
+            'https://ipinfo.io/json',
+            proxies={'http': purl, 'https': purl},
+            timeout=timeout,
+        )
+        return (r.json() or {}).get('ip')
+    except Exception:
+        return None
 
 
 async def _pipe(reader, writer):

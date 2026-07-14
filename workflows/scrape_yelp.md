@@ -184,6 +184,17 @@ The hardening (gated behind `YELP_RELAY_SOFTWARE_GL=true`, applied to BOTH `mint
 
 **Unverified until the operator tests on the box** — this dev machine is a real-GPU Windows desktop and already gets a slider, so it cannot reproduce the xvfb hard-block. If step 4 still hard-blocks, capture the block page and report; keep Yelp on Windows meanwhile.
 
+### Sticky exit IP & cookie lifetime (the mint→scrape IP must match)
+
+The DataDome cookie is **bound to the exit IP** it was minted on. Both the mint and the scrape build the **identical** Enigma sticky password via `proxy_relay._build_upstream_password` (`..._country-US_session-<token>_lifetime-<ttl>`), so they land on the same IP — as long as the session still holds it.
+
+Measured 2026-07-14 (network-level, from the dev box): a `_session-<token>` pins **one** exit IP across **separate connections/processes**, held **stable for 10+ minutes with zero drift**. Enigma's exact TTL/lifetime convention is **unverified** — `_lifetime-30m` is accepted (HTTP 200) and appended best-effort via `RESIDENTIAL_PROXY_SESSION_LIFETIME` (default `30m`; set empty to omit), but it may be ignored. Residential exit nodes can also drop at any time, forcing reassignment regardless of TTL.
+
+- **Drift guard:** the relay scrape probes the current exit IP and compares it to the minted IP (recorded in the cookie bundle, or `YELP_DATADOME_EXPECTED_IP`). On mismatch it fails fast with `FAILED:listing|yelp|sticky_ip_drift` (re-mint needed) instead of a wasted load + confusing `datadome_challenge`.
+- **`RESIDENTIAL_PROXY_SESSION_LIFETIME`** (default `30m`) — appended to the sticky password; keep it identical for mint and scrape (it is, since both use the same builder).
+
+**Operating model (honest):** one mint reliably covers a crawl started within ~10 min of minting (sticky held ≥10 min with no drift in testing; anecdotally ~20 min). It is **not** guaranteed to survive a mint-once-scrape-hours-later gap — residential IPs drift/drop. So the practical pattern is **mint immediately before a batch run** (or when the worker is about to process queued Yelp jobs), not a set-once-forget cookie. The drift guard makes a stale cookie a clear "re-mint" signal rather than a silent failure. Longer-hold viability (30–60 min+) is unconfirmed and should be soak-tested on the box if hands-off on-demand scraping is required.
+
 ---
 
 ## EC2 activation runbook — making Yelp discovery run for ALL users
