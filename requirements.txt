@@ -22,6 +22,15 @@ curl_cffi>=0.7.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
 
+# Pillow — crops the TripAdvisor profile screenshot down to the business
+# header (name + rating) before upload, so the CRM shows a small, relevant
+# shot instead of a multi-thousand-pixel full-page strip. Used by
+# tools/scraper/shared/screenshot_crop.py, which imports PIL lazily and
+# no-ops if it's missing — so this is a soft dependency, but install it
+# wherever TripAdvisor enrichment runs (Cloud Run / EC2 worker) to get the
+# cropped shots.
+Pillow>=10.0.0
+
 # cryptography — AES-256-GCM for social_accounts.encrypted_cookies.
 # Required by tools/scraper/shared/encryption.py; cookies must round-trip
 # byte-compatibly with server/src/lib/encryption.ts (Node built-in crypto).

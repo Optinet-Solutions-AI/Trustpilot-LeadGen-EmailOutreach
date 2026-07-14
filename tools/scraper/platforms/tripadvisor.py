@@ -59,6 +59,7 @@ from tools.scraper.shared.supabase_storage import (
     supabase_storage_enabled,
     upload_screenshot_bytes,
 )
+from tools.scraper.shared.screenshot_crop import crop_tripadvisor_header
 
 
 # URL templates per listing type. (geo_id, location_slug, offset)
@@ -631,6 +632,10 @@ class TripAdvisorScraper(BasePlatformScraper):
                         render_js=True,
                     )
                     if png:
+                        # Crop the tall full-page capture down to the business
+                        # header (name + rating) so the CRM shows a small,
+                        # relevant shot — no-ops if Pillow is unavailable.
+                        png = crop_tripadvisor_header(png)
                         if screenshots_dir:
                             try:
                                 local_path = os.path.join(screenshots_dir, f"{slug_for_file}.png")
