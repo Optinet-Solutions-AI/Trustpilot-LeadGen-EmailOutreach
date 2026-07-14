@@ -110,6 +110,12 @@ cat <<EOF
          --max-results 6 --output /tmp/yelp_linux_smoke.json
      # PASS = real business rows in the JSON. FAIL = FAILED:listing|yelp|datadome_challenge
      #   -> xvfb still reads as headless to DataDome on this box; keep Yelp on Windows.
+     # FAIL = FAILED:listing|yelp|sticky_ip_drift -> the Enigma sticky session no
+     #   longer exits the IP the cookie was minted on (cookie is IP-bound). Just
+     #   re-run the step-3 mint right before scraping. The sticky IP held ~10min+
+     #   in testing, so MINT IMMEDIATELY BEFORE a batch run (not hours ahead).
+     #   Optional: RESIDENTIAL_PROXY_SESSION_LIFETIME=30m (default) requests a
+     #   longer hold; mint + scrape must share it (they do, same code path).
 
 5) Only if step 4 PASSES: restart the worker so it serves Yelp for all users:
 

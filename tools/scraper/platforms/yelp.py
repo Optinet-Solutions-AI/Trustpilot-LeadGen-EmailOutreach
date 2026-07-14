@@ -84,7 +84,7 @@ from tools.scraper.shared.scrapingbee import (
     scrapingbee_enabled,
 )
 from tools.scraper.shared.local_browser import LocalBrowserFetcher, BrowserBlocked
-from tools.scraper.shared.proxy_relay import RelayServer
+from tools.scraper.shared.proxy_relay import RelayServer, get_exit_ip
 
 
 # Where the country → list-of-cities seed lives.
@@ -162,6 +162,22 @@ def _load_datadome_cdp_cookie() -> Optional[dict]:
         'name': 'datadome', 'value': value, 'domain': '.yelp.com',
         'path': '/', 'secure': True, 'httpOnly': False, 'sameSite': 'Lax',
     }
+
+
+def _load_datadome_minted_ip() -> Optional[str]:
+    """The exit IP the DataDome cookie was minted on. Prefer the explicit
+    YELP_DATADOME_EXPECTED_IP override, else read it from the cookie bundle.
+    Used to detect sticky-IP drift (the cookie is IP-bound)."""
+    override = os.environ.get('YELP_DATADOME_EXPECTED_IP', '').strip()
+    if override:
+        return override
+    path = os.environ.get('YELP_DATADOME_COOKIE_FILE', _DATADOME_COOKIE_PATH)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            bundle = json.load(f)
+        return ((bundle.get('exit_ip') or {}).get('ip') or '').strip() or None
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _unwrap_biz_redir(href: str) -> Optional[str]:
@@ -495,6 +511,28 @@ class YelpScraper(BasePlatformScraper):
                     "needs a minted DataDome cookie. Run "
                     "tools/scraper/mint_yelp_datadome.py (headed, solve the slider once) "
                     "or set YELP_DATADOME_COOKIE.",
+                    flush=True,
+                )
+                return []
+            # Sticky-IP drift guard: the DataDome cookie is bound to the exit IP
+            # it was minted on. If the sticky Enigma session now hands a
+            # different IP (residential node dropped, or the mint→scrape gap
+            # outlived the ~10min+ hold), the cookie is dead — fail fast with an
+            # actionable message instead of a confusing datadome_challenge after
+            # a wasted browser load. Best-effort: skipped if we can't read either IP.
+            minted_ip = _load_datadome_minted_ip()
+            observed_ip = get_exit_ip(exit_country, session)
+            print(
+                f"  [relay] sticky exit IP now={observed_ip} minted={minted_ip}",
+                flush=True,
+            )
+            if minted_ip and observed_ip and observed_ip != minted_ip:
+                print(
+                    f"FAILED:listing|yelp|sticky_ip_drift|Enigma sticky session "
+                    f"'{session}' now exits {observed_ip} but the DataDome cookie was "
+                    f"minted on {minted_ip} (cookie is IP-bound). Re-mint immediately "
+                    f"before the run: python -m tools.scraper.mint_yelp_datadome "
+                    f"(the sticky IP held ~10min+ in testing, so mint right before a batch).",
                     flush=True,
                 )
                 return []
