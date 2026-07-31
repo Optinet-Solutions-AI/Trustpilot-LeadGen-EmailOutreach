@@ -77,3 +77,51 @@ def test_non_list_payload_raises(monkeypatch):
     )
     with pytest.raises(apify.ApifyError):
         apify.run_actor('some/actor', {})
+
+
+def test_plain_4xx_raises(monkeypatch):
+    """Test that plain 4xx errors (404, 401) are handled correctly."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(
+        apify.requests, 'post',
+        lambda url, **kw: _Resp(404, None, 'actor not found'),
+    )
+    with pytest.raises(apify.ApifyError) as exc:
+        apify.run_actor('some/actor', {})
+    assert 'some/actor' in str(exc.value)
+    assert '404' in str(exc.value)
+
+
+def test_get_actor_input_schema_success(monkeypatch):
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    schema = {'input': {'properties': {'query': {'type': 'string'}}}}
+    monkeypatch.setattr(
+        apify.requests, 'get',
+        lambda url, **kw: _Resp(200, schema),
+    )
+    result = apify.get_actor_input_schema('scrapeforge/facebook-search-posts')
+    assert result == schema
+
+
+def test_get_actor_input_schema_4xx_raises(monkeypatch):
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(
+        apify.requests, 'get',
+        lambda url, **kw: _Resp(404, None, 'actor not found'),
+    )
+    with pytest.raises(apify.ApifyError) as exc:
+        apify.get_actor_input_schema('nonexistent/actor')
+    assert 'nonexistent/actor' in str(exc.value)
+    assert '404' in str(exc.value)
+
+
+def test_get_actor_input_schema_malformed_json(monkeypatch):
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(
+        apify.requests, 'get',
+        lambda url, **kw: _Resp(200, None, 'invalid json'),
+    )
+    with pytest.raises(apify.ApifyError) as exc:
+        apify.get_actor_input_schema('some/actor')
+    assert 'some/actor' in str(exc.value)
+    assert 'non-JSON' in str(exc.value)

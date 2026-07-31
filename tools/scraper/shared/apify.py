@@ -22,6 +22,7 @@ FAILURE POLICY
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Any
 
@@ -69,7 +70,6 @@ def run_actor(
     returns the dataset in one response — no polling loop to maintain.
     """
     url = f'{APIFY_BASE}/acts/{_actor_path(actor_id)}/run-sync-get-dataset-items'
-    last_error = ''
     for attempt in range(1, MAX_ATTEMPTS + 1):
         started = time.time()
         resp = requests.post(
@@ -81,30 +81,32 @@ def run_actor(
         elapsed = round(time.time() - started, 1)
 
         if resp.status_code == 402:
+            print(f'INFO: apify actor={actor_id} status=402 elapsed={elapsed}s', file=sys.stderr, flush=True)
             raise ApifyCreditError(
                 f'Apify returned 402 (out of credit / plan limit) for actor '
                 f'{actor_id}: {resp.text[:300]}'
             )
         if resp.status_code >= 500:
-            last_error = f'HTTP {resp.status_code}: {resp.text[:200]}'
+            print(f'INFO: apify actor={actor_id} status={resp.status_code} elapsed={elapsed}s attempt={attempt}', file=sys.stderr, flush=True)
             if attempt < MAX_ATTEMPTS:
                 time.sleep(BACKOFF_SECONDS[min(attempt - 1, len(BACKOFF_SECONDS) - 1)])
                 continue
-            raise ApifyError(f'Apify actor {actor_id} failed after {MAX_ATTEMPTS} attempts: {last_error}')
+            raise ApifyError(f'Apify actor {actor_id} failed after {MAX_ATTEMPTS} attempts: HTTP {resp.status_code}: {resp.text[:200]}')
         if resp.status_code >= 400:
+            print(f'INFO: apify actor={actor_id} status={resp.status_code} elapsed={elapsed}s', file=sys.stderr, flush=True)
             raise ApifyError(f'Apify actor {actor_id} rejected the request — HTTP {resp.status_code}: {resp.text[:300]}')
 
         try:
             payload: Any = resp.json()
         except ValueError as exc:
+            print(f'INFO: apify actor={actor_id} status={resp.status_code} elapsed={elapsed}s error=non-JSON', file=sys.stderr, flush=True)
             raise ApifyError(f'Apify actor {actor_id} returned non-JSON: {resp.text[:200]}') from exc
         if not isinstance(payload, list):
+            print(f'INFO: apify actor={actor_id} status={resp.status_code} elapsed={elapsed}s error=non-list', file=sys.stderr, flush=True)
             raise ApifyError(f'Apify actor {actor_id} returned {type(payload).__name__}, expected a dataset list: {str(payload)[:300]}')
 
-        print(f'INFO: apify actor={actor_id} items={len(payload)} elapsed={elapsed}s', flush=True)
+        print(f'INFO: apify actor={actor_id} items={len(payload)} elapsed={elapsed}s', file=sys.stderr, flush=True)
         return payload
-
-    raise ApifyError(f'Apify actor {actor_id} failed: {last_error}')
 
 
 def get_actor_input_schema(actor_id: str) -> dict:
@@ -113,11 +115,20 @@ def get_actor_input_schema(actor_id: str) -> dict:
     Community actors document inputs in prose that does not always match the
     JSON keys. Read the schema rather than guessing.
     """
+    started = time.time()
     resp = requests.get(
         f'{APIFY_BASE}/acts/{_actor_path(actor_id)}',
         params={'token': _token()},
         timeout=30,
     )
+    elapsed = round(time.time() - started, 1)
     if resp.status_code >= 400:
+        print(f'INFO: apify get_actor_input_schema actor={actor_id} status={resp.status_code} elapsed={elapsed}s', file=sys.stderr, flush=True)
         raise ApifyError(f'Could not read actor {actor_id} metadata — HTTP {resp.status_code}: {resp.text[:200]}')
-    return resp.json()
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        print(f'INFO: apify get_actor_input_schema actor={actor_id} status={resp.status_code} elapsed={elapsed}s error=non-JSON', file=sys.stderr, flush=True)
+        raise ApifyError(f'Could not parse actor {actor_id} metadata — non-JSON response: {resp.text[:200]}') from exc
+    print(f'INFO: apify get_actor_input_schema actor={actor_id} elapsed={elapsed}s', file=sys.stderr, flush=True)
+    return payload
