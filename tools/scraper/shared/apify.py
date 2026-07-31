@@ -70,14 +70,25 @@ def run_actor(
     returns the dataset in one response — no polling loop to maintain.
     """
     url = f'{APIFY_BASE}/acts/{_actor_path(actor_id)}/run-sync-get-dataset-items'
+    last_error = ''
     for attempt in range(1, MAX_ATTEMPTS + 1):
         started = time.time()
-        resp = requests.post(
-            url,
-            params={'token': _token()},
-            json=run_input,
-            timeout=timeout,
-        )
+        try:
+            resp = requests.post(
+                url,
+                params={'token': _token()},
+                json=run_input,
+                timeout=timeout,
+            )
+        except requests.exceptions.RequestException as exc:
+            elapsed = round(time.time() - started, 1)
+            last_error = f'{type(exc).__name__}: {str(exc)[:200]}'
+            print(f'INFO: apify actor={actor_id} error={type(exc).__name__} elapsed={elapsed}s attempt={attempt}', file=sys.stderr, flush=True)
+            if attempt < MAX_ATTEMPTS:
+                time.sleep(BACKOFF_SECONDS[min(attempt - 1, len(BACKOFF_SECONDS) - 1)])
+                continue
+            raise ApifyError(f'Apify actor {actor_id} failed after {MAX_ATTEMPTS} attempts: {last_error}') from exc
+
         elapsed = round(time.time() - started, 1)
 
         if resp.status_code == 402:
@@ -116,11 +127,17 @@ def get_actor_input_schema(actor_id: str) -> dict:
     JSON keys. Read the schema rather than guessing.
     """
     started = time.time()
-    resp = requests.get(
-        f'{APIFY_BASE}/acts/{_actor_path(actor_id)}',
-        params={'token': _token()},
-        timeout=30,
-    )
+    try:
+        resp = requests.get(
+            f'{APIFY_BASE}/acts/{_actor_path(actor_id)}',
+            params={'token': _token()},
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as exc:
+        elapsed = round(time.time() - started, 1)
+        print(f'INFO: apify get_actor_input_schema actor={actor_id} error={type(exc).__name__} elapsed={elapsed}s', file=sys.stderr, flush=True)
+        raise ApifyError(f'Could not read actor {actor_id} metadata — transport error {type(exc).__name__}: {str(exc)[:200]}') from exc
+
     elapsed = round(time.time() - started, 1)
     if resp.status_code >= 400:
         print(f'INFO: apify get_actor_input_schema actor={actor_id} status={resp.status_code} elapsed={elapsed}s', file=sys.stderr, flush=True)

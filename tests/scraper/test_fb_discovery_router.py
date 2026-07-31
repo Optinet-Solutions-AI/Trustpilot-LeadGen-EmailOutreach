@@ -121,3 +121,21 @@ def test_group_posts_survives_one_failing_group(monkeypatch):
     stubs = fb._group_posts_via_apify([('111', 'A'), ('222', 'B')], 10, None)
     assert len(stubs) == 1
     assert stubs[0]['group_id'] == '222'
+
+
+def test_group_posts_survives_transport_error_on_one_group(monkeypatch):
+    """Transport errors (as ApifyError) on one group must not lose other groups' results."""
+    calls = {'n': 0}
+
+    def transport_flaky(actor, run_input, **kw):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            # Simulate a transport error surfaced as ApifyError (as apify.py now does)
+            raise fb.apify.ApifyError('Apify actor some/actor failed after 3 attempts: ConnectionError: network down')
+        return [{'url': 'https://fb/p/2', 'message': 'roofer?',
+                 'user': {'profile_url': 'https://fb/bob'}}]
+
+    monkeypatch.setattr(fb.apify, 'run_actor', transport_flaky)
+    stubs = fb._group_posts_via_apify([('111', 'A'), ('222', 'B')], 10, None)
+    assert len(stubs) == 1
+    assert stubs[0]['group_id'] == '222'

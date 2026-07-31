@@ -1,5 +1,6 @@
 """Tests for the Apify actor runner. No network — requests.post is patched."""
 import pytest
+import requests
 
 from tools.scraper.shared import apify
 
@@ -125,3 +126,50 @@ def test_get_actor_input_schema_malformed_json(monkeypatch):
         apify.get_actor_input_schema('some/actor')
     assert 'some/actor' in str(exc.value)
     assert 'non-JSON' in str(exc.value)
+
+
+def test_connection_error_on_all_attempts_raises_apify_error(monkeypatch):
+    """Transport errors are caught and retried, then raised as ApifyError."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(
+        apify.requests, 'post',
+        lambda url, **kw: (_ for _ in ()).throw(requests.exceptions.ConnectionError('network down'))
+    )
+    monkeypatch.setattr(apify.time, 'sleep', lambda s: None)
+    with pytest.raises(apify.ApifyError) as exc:
+        apify.run_actor('some/actor', {})
+    assert 'some/actor' in str(exc.value)
+    assert 'ConnectionError' in str(exc.value)
+    # Ensure it's not the raw requests exception
+    assert not isinstance(exc.value, requests.exceptions.ConnectionError)
+
+
+def test_connection_error_then_success_retries(monkeypatch):
+    """First attempt raises ConnectionError; second attempt succeeds."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    seq = [
+        lambda url, **kw: (_ for _ in ()).throw(requests.exceptions.ConnectionError('net')),
+        lambda url, **kw: _Resp(200, [{'item': 1}])
+    ]
+    seq_iter = iter(seq)
+    monkeypatch.setattr(apify.requests, 'post', lambda url, **kw: next(seq_iter)(url, **kw))
+    slept = []
+    monkeypatch.setattr(apify.time, 'sleep', slept.append)
+    result = apify.run_actor('some/actor', {})
+    assert result == [{'item': 1}]
+    assert slept, 'should have backed off before retrying'
+
+
+def test_get_actor_input_schema_connection_error_raises_apify_error(monkeypatch):
+    """Transport errors in get_actor_input_schema are raised as ApifyError."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(
+        apify.requests, 'get',
+        lambda url, **kw: (_ for _ in ()).throw(requests.exceptions.Timeout('request timeout'))
+    )
+    with pytest.raises(apify.ApifyError) as exc:
+        apify.get_actor_input_schema('some/actor')
+    assert 'some/actor' in str(exc.value)
+    assert 'Timeout' in str(exc.value)
+    # Ensure it's not the raw requests exception
+    assert not isinstance(exc.value, requests.exceptions.Timeout)
