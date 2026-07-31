@@ -187,6 +187,38 @@ def _detect_chrome_major_version() -> Optional[int]:
         return None
 
 
+def _open_adspower_driver(profile_id: str):
+    """Attach Selenium to a running AdsPower profile.
+
+    AdsPower launches its own Chromium with the profile's fingerprint and
+    proxy already applied, then hands back a CDP debugger address. We attach
+    to it rather than launching Chrome ourselves — undetected-chromedriver's
+    patches are unnecessary and would fight AdsPower's own stealth build.
+    """
+    from selenium import webdriver  # noqa: WPS433 — lazy
+    from selenium.webdriver.chrome.service import Service  # noqa: WPS433
+
+    from tools.scraper.shared import adspower  # noqa: WPS433
+
+    session = adspower.start_profile(profile_id)
+    options = webdriver.ChromeOptions()
+    options.add_experimental_option('debuggerAddress', session['debugger_address'])
+    service = Service(executable_path=session['webdriver_path']) if session.get('webdriver_path') else Service()
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    try:
+        driver.execute_cdp_cmd(
+            'Browser.grantPermissions',
+            {
+                'origin': 'https://www.facebook.com',
+                'permissions': ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f'WARN: clipboard CDP grant failed on AdsPower profile: {exc}', file=sys.stderr)
+    return driver
+
+
 def open_uc_driver(
     profile_dir_env: str,
     *,
@@ -194,6 +226,7 @@ def open_uc_driver(
     window_size: tuple[int, int] = (1280, 900),
     headless: Optional[bool] = None,
     proxy_location: Optional[str] = None,
+    adspower_profile_id: Optional[str] = None,
 ):
     """Open an undetected-chromedriver, headless if PLAYWRIGHT_HEADLESS=true.
 
@@ -213,6 +246,16 @@ def open_uc_driver(
       • ``proxy_location`` — city/location string the proxy country-code
         resolver maps to a country (FB passes its module global).
     """
+    # AdsPower branch. When the account being used is bound to an AdsPower
+    # profile, that profile IS the browser — it carries its own fingerprint,
+    # its own persistent cookies and its own proxy, so none of the flags,
+    # profile-dir handling or selenium-wire proxy wiring below applies.
+    # Everything below this branch is the original undetected-chromedriver
+    # path, unchanged, and is what runs for any account without a profile id.
+    adspower_id = adspower_profile_id or (os.environ.get('ADSPOWER_PROFILE_ID') or '').strip()
+    if adspower_id:
+        return _open_adspower_driver(adspower_id)
+
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy
 
     if headless is None:

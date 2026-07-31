@@ -118,3 +118,66 @@ def test_stop_profile_propagates_connection_error(monkeypatch):
     with pytest.raises(adspower.AdsPowerError) as exc:
         adspower.stop_profile('kxxxxx')
     assert 'AdsPower desktop app' in str(exc.value)
+
+
+from tools.scraper.shared import uc_driver
+
+
+class _FakeDriver:
+    def __init__(self, *a, **kw):
+        self.kwargs = kw
+        self.page_load_timeout = None
+
+    def set_page_load_timeout(self, t):
+        self.page_load_timeout = t
+
+    def execute_cdp_cmd(self, *a, **kw):
+        return {}
+
+
+def test_opener_uses_adspower_when_profile_id_passed(monkeypatch):
+    monkeypatch.setattr(uc_driver, '_open_adspower_driver', lambda pid: _FakeDriver(pid=pid))
+
+    def boom(*a, **kw):
+        raise AssertionError('must not fall through to undetected-chromedriver')
+
+    monkeypatch.setattr(uc_driver, '_detect_chrome_major_version', boom)
+    drv = uc_driver.open_uc_driver('FB_PROFILE_DIR', adspower_profile_id='kxxxxx')
+    assert isinstance(drv, _FakeDriver)
+
+
+def test_opener_reads_adspower_id_from_env_when_not_passed(monkeypatch):
+    monkeypatch.setenv('ADSPOWER_PROFILE_ID', 'from-env')
+    seen = {}
+
+    def fake_open(pid):
+        seen['pid'] = pid
+        return _FakeDriver()
+
+    monkeypatch.setattr(uc_driver, '_open_adspower_driver', fake_open)
+    uc_driver.open_uc_driver('FB_PROFILE_DIR')
+    assert seen['pid'] == 'from-env'
+
+
+def test_explicit_argument_beats_env(monkeypatch):
+    monkeypatch.setenv('ADSPOWER_PROFILE_ID', 'from-env')
+    seen = {}
+    monkeypatch.setattr(uc_driver, '_open_adspower_driver',
+                        lambda pid: seen.setdefault('pid', pid) or _FakeDriver())
+    uc_driver.open_uc_driver('FB_PROFILE_DIR', adspower_profile_id='explicit')
+    assert seen['pid'] == 'explicit'
+
+
+def test_opener_falls_through_when_no_adspower_id(monkeypatch):
+    monkeypatch.delenv('ADSPOWER_PROFILE_ID', raising=False)
+
+    def marker(pid):
+        raise AssertionError('AdsPower must not be used without a profile id')
+
+    monkeypatch.setattr(uc_driver, '_open_adspower_driver', marker)
+    # Prove we reached the legacy body by making its first real call raise a
+    # distinctive error instead of launching Chrome.
+    monkeypatch.setattr(uc_driver, '_detect_chrome_major_version',
+                        lambda: (_ for _ in ()).throw(RuntimeError('reached legacy path')))
+    with pytest.raises(RuntimeError, match='reached legacy path'):
+        uc_driver.open_uc_driver('FB_PROFILE_DIR')
