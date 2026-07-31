@@ -1344,7 +1344,7 @@ This is mandatory before merge (project standing rule: no scraper change ships o
 
 ```bash
 .venv/Scripts/python.exe -m tools.scraper.run --platform facebook --action search-posts \
-  --filters '{"query":"looking for a plumber in Manchester","niche":"plumber","location":"Manchester","lead_type":"consumers","groups_only":false,"max_results":25}' \
+  --filters '{"query":"looking for a plumber in Manchester","niche":"plumber","location":"Manchester","lead_type":"consumers","groups_only":false,"max_results":20}' \
   --output .tmp/fb_apify_smoke.json
 ```
 
@@ -1358,7 +1358,7 @@ Confirm: the run prints `PROGRESS:apify_run` with a non-zero `returned`, then `P
 .venv/Scripts/python.exe -m tools.scraper.run --platform facebook --action enrich-authors \
   --input .tmp/fb_apify_smoke.json --output .tmp/fb_apify_leads.json
 
-.venv/Scripts/python.exe tools/db/upsert_leads.py --input .tmp/fb_apify_leads.json --platform facebook
+.venv/Scripts/python.exe tools/db/upsert_leads.py --input .tmp/fb_apify_leads.json
 ```
 
 Confirm in Supabase: new rows in `leads` and `lead_platform_presences` with `platform='facebook'`, and **no row with `company_name` matching `(N) Facebook`**.
