@@ -18,6 +18,12 @@ from urllib.parse import urlparse
 from tools.scraper.platforms._social_base import PostStub
 
 
+# UNVERIFIED ASSUMPTION: assumes ~10 posts per group page.
+# The actor's schema documents maxPages: integer with default 1, but does NOT
+# document page size. The live smoke test should confirm the real rate.
+ASSUMED_POSTS_PER_GROUP_PAGE = 10
+
+
 def search_actor() -> str:
     """Keyword post/group search actor. Read from env on every call so
     swapping a broken community actor needs no code change or restart."""
@@ -56,7 +62,7 @@ def build_search_input(
 
 def build_group_posts_input(group_id: str, *, max_results: int) -> dict:
     """Build the public-group actor's run input."""
-    return {'groupId': group_id, 'maxPages': max(1, max_results // 10)}
+    return {'groupId': group_id, 'maxPages': max(1, max_results // ASSUMED_POSTS_PER_GROUP_PAGE)}
 
 
 def _handle_from_profile_url(profile_url: str) -> str:
@@ -102,7 +108,7 @@ def post_to_stub(
         'platform': 'facebook',
         'post_url': post_url,
         'author_profile_url': profile_url,
-        'author_handle': (user.get('id') or '').strip() or _handle_from_profile_url(profile_url),
+        'author_handle': str(user.get('id') or '').strip() or _handle_from_profile_url(profile_url),
         'content_excerpt': (item.get('message') or item.get('text') or '').strip(),
         'posted_at': item.get('timestamp') or item.get('published_at'),
         'media_urls': media,
