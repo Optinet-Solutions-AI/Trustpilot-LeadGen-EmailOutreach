@@ -1,14 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { shouldRefuseSocialOnLinux, socialProfileEnv } from './social-routing.js';
+import { shouldRefuseSocialOnLinux, socialProfileEnv, facebookJobUsesBrowser } from './social-routing.js';
 
 describe('shouldRefuseSocialOnLinux', () => {
-  it('refuses facebook and instagram on linux', () => {
+  it('refuses browser-driven facebook and instagram on linux', () => {
+    expect(shouldRefuseSocialOnLinux('facebook', 'linux', { usesBrowser: true })).toBe(true);
+    expect(shouldRefuseSocialOnLinux('instagram', 'linux', { usesBrowser: true })).toBe(true);
+  });
+  it('defaults to refusing when the caller says nothing about the browser', () => {
     expect(shouldRefuseSocialOnLinux('facebook', 'linux')).toBe(true);
-    expect(shouldRefuseSocialOnLinux('instagram', 'linux')).toBe(true);
+  });
+  it('allows a browserless facebook job on linux', () => {
+    expect(shouldRefuseSocialOnLinux('facebook', 'linux', { usesBrowser: false })).toBe(false);
   });
   it('allows review platforms on linux and any platform on win32', () => {
-    expect(shouldRefuseSocialOnLinux('yelp', 'linux')).toBe(false);
-    expect(shouldRefuseSocialOnLinux('instagram', 'win32')).toBe(false);
+    expect(shouldRefuseSocialOnLinux('yelp', 'linux', { usesBrowser: true })).toBe(false);
+    expect(shouldRefuseSocialOnLinux('instagram', 'win32', { usesBrowser: true })).toBe(false);
+  });
+});
+
+describe('facebookJobUsesBrowser', () => {
+  it('is false only when discovery is apify AND enrichment is stub', () => {
+    expect(facebookJobUsesBrowser({ FB_DISCOVERY: 'apify', FB_ENRICH: 'stub' })).toBe(false);
+    expect(facebookJobUsesBrowser({ FB_DISCOVERY: 'browser', FB_ENRICH: 'stub' })).toBe(true);
+    expect(facebookJobUsesBrowser({ FB_DISCOVERY: 'apify', FB_ENRICH: 'browser' })).toBe(true);
+  });
+  it('treats the defaults (both unset) as browserless', () => {
+    expect(facebookJobUsesBrowser({})).toBe(false);
   });
 });
 

@@ -20,7 +20,7 @@ import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
 import { listActiveCitiesForCountry, type TripAdvisorCity } from '../db/tripadvisor-cities.js';
-import { shouldRefuseSocialOnLinux, socialProfileEnv } from './social-routing.js';
+import { shouldRefuseSocialOnLinux, socialProfileEnv, facebookJobUsesBrowser } from './social-routing.js';
 
 export const scrapeEvents = new EventEmitter();
 
@@ -654,7 +654,8 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
   // and the Windows worker will claim it on the next retry. The previous
   // silent-success-with-zero-results behavior caused jobs to complete with
   // no leads, hiding the routing bug from the dashboard.
-  if (shouldRefuseSocialOnLinux(platform, process.platform)) {
+  const usesBrowser = platform === 'facebook' ? facebookJobUsesBrowser(process.env) : true;
+  if (shouldRefuseSocialOnLinux(platform, process.platform, { usesBrowser })) {
     throw new Error(
       `${platform} scraping is not supported on Linux workers — set ` +
       `PLATFORM_EXCLUDE=${platform} on this worker. Job will be re-queued for a Windows worker.`,
