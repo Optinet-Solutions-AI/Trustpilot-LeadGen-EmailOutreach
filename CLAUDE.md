@@ -244,6 +244,13 @@ trustpilot-leadgen/
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
+| `APIFY_API_TOKEN` | Cookieless Apify actor runs for FB post/group discovery — no account, no daily cap, runs on Cloud Run/Linux. Free plan caps 20 results/run + 1 run/24h; paid (~$39/mo) needed for real volume. Sign up at https://apify.com | unset |
+| `APIFY_FB_SEARCH_ACTOR` | Keyword post/group search actor. Required input key is `query` (NOT `search_query`, verified live 2026-07-31). $2.59/1,000 results | `scrapeforge/facebook-search-posts` (build 1.0.19) |
+| `APIFY_FB_GROUP_POSTS_ACTOR` | Public-group post actor (`groupId`, `maxPages`). $5.00/1,000 results | `data-slayer/facebook-group-posts` (build 1.0.5) |
+| `FB_DISCOVERY` | `apify` (cookieless, no browser, runs on Cloud Run/Linux — default) or `browser` (legacy logged-in crawl, required only for PRIVATE groups an account has joined) | `apify` |
+| `FB_ENRICH` | `stub` (build leads from the Apify search result, no browser — default) or `browser` (visit each author profile for bio/website/email, burns account quota) | `stub` |
+| `ADSPOWER_API_BASE` | Local API base URL for the AdsPower engagement browser (isolated per-account fingerprints — NOT a proxy). Requires the desktop client running on this host + a paid plan. AdsPower's own docs say `local.adspower.net`; verified live 2026-07-31 the real host was `local.adspower.com` — their docs are wrong (also wrong on the local config file path: real is `%APPDATA%\adspower_global\cwd_global\source\local_api`, not `%LOCALAPPDATA%`) | `http://local.adspower.com:50325` |
+| `ADSPOWER_API_KEY` | Only needed when AdsPower's "Security Verification" is enabled in the client; sent as `Authorization: Bearer <key>`. Generating a key requires a paid plan | unset |
 | `API_SECRET_KEY` | Internal API auth | set |
 | `PORT` | API port | `3001` |
 
@@ -433,6 +440,17 @@ See `docs/deployment.md` for complete reference.
 - Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
 
 ### Social platforms (planned — Facebook, Instagram, FB Groups)
+- **Discovery is cookieless via Apify** (`FB_DISCOVERY=apify`, the default) — no account,
+  no daily cap, and it runs on Cloud Run and Linux workers because it opens no browser.
+  Public groups and open keyword search only; PRIVATE groups still need
+  `FB_DISCOVERY=browser` with an account that has joined them.
+- **Author enrichment defaults to `FB_ENRICH=stub`** — leads are built from the search
+  result, no profile visits. Set `FB_ENRICH=browser` only when a campaign needs
+  bio/website/email, and expect it to consume account quota.
+- **Open-feed keyword search is ad-heavy.** The Gemini consumer classifier is the gate;
+  measure qualified yield before scaling Apify spend.
+- Engagement (opening a lead's post, commenting, DMs) still requires a logged-in
+  account and stays on the browser path.
 - Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)
 - Per-account daily caps + residential proxies + undetected-chromium to avoid bans
 - Captcha checkpoints are routine; the in-app social-account recovery UI (planned) is how operators resolve them
