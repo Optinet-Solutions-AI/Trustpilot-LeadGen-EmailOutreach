@@ -7,8 +7,8 @@ const SOCIAL_PLATFORMS = new Set(['facebook', 'instagram']);
  *  fingerprint risk that motivated the refusal below. Both default to the
  *  browserless mode, matching the Python defaults in facebook.py. */
 export function facebookJobUsesBrowser(env: Record<string, string | undefined>): boolean {
-  const discovery = (env.FB_DISCOVERY ?? 'apify').toLowerCase();
-  const enrich = (env.FB_ENRICH ?? 'stub').toLowerCase();
+  const discovery = (env.FB_DISCOVERY || 'apify').trim().toLowerCase();
+  const enrich = (env.FB_ENRICH || 'stub').trim().toLowerCase();
   return discovery !== 'apify' || enrich !== 'stub';
 }
 

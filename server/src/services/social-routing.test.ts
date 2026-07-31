@@ -27,6 +27,15 @@ describe('facebookJobUsesBrowser', () => {
   it('treats the defaults (both unset) as browserless', () => {
     expect(facebookJobUsesBrowser({})).toBe(false);
   });
+  it('treats blank env values as unset, matching Python `or` semantics', () => {
+    expect(facebookJobUsesBrowser({ FB_DISCOVERY: '', FB_ENRICH: '' })).toBe(false);
+  });
+  it('tolerates surrounding whitespace, matching Python `.strip()`', () => {
+    expect(facebookJobUsesBrowser({ FB_DISCOVERY: ' apify ', FB_ENRICH: ' stub ' })).toBe(false);
+  });
+  it('still reports browser-driven for an unrecognised value (safe direction)', () => {
+    expect(facebookJobUsesBrowser({ FB_DISCOVERY: 'apfiy' })).toBe(true);
+  });
 });
 
 describe('socialProfileEnv', () => {
