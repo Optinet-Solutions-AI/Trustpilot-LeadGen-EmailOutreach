@@ -1295,6 +1295,66 @@ def _discovery_source() -> str:
     return (os.environ.get('FB_DISCOVERY') or 'apify').strip().lower()
 
 
+def _enrich_mode() -> str:
+    """Whether author enrichment opens a browser.
+
+    'stub'    — build AuthorLead from the PostStub the discovery step already
+                returned. Zero account usage. The default since 2026-07-31.
+    'browser' — visit each author's profile with a logged-in account to pull
+                bio/website/email. Rare payoff, high account cost; opt in only
+                when a campaign genuinely needs those fields.
+    """
+    return (os.environ.get('FB_ENRICH') or 'stub').strip().lower()
+
+
+# Tab titles Brave/Chrome produce on a profile page that are NOT a person's
+# name. The browser path historically wrote these into leads.company_name.
+_NON_NAME_TITLES = {'facebook', '', 'log in to facebook', 'log into facebook', 'meta'}
+
+
+def _is_non_name(value: str) -> bool:
+    s = (value or '').strip().lower()
+    if s in _NON_NAME_TITLES:
+        return True
+    return re.sub(r'^\(\d+\)\s*', '', s).strip() == 'facebook'
+
+
+def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
+    """Build AuthorLeads straight from PostStubs — no browser, no account.
+
+    Apify already returns the two fields that key a lead row (display name and
+    profile URL). The fields a profile visit would add (website_url, email,
+    bio_excerpt) are rare on personal FB profiles and cost one account-quota
+    visit each, which is what previously locked the account out for 24h.
+    """
+    seen: dict[str, AuthorLead] = {}
+    for stub in post_stubs:
+        profile_url = (stub.get('author_profile_url') or '').strip()
+        if not profile_url or profile_url in seen:
+            continue
+        handle = (stub.get('author_handle') or '').strip()
+        name = (stub.get('display_name') or '').strip()
+        if not name or _is_non_name(name):
+            name = handle
+        lead: AuthorLead = {
+            'platform': 'facebook',
+            'profile_url': profile_url,
+            'author_handle': handle,
+            'display_name': name,
+            'website_url': None,
+            'email': None,
+            'location': stub.get('country') or None,
+            'is_business_profile': False,
+            'follower_count': None,
+            'bio_excerpt': None,
+        }
+        for passthrough in ('country', 'category', 'location_confidence'):
+            if stub.get(passthrough):
+                lead[passthrough] = stub[passthrough]
+        seen[profile_url] = lead
+    return list(seen.values())
+
+
 def _search_posts_via_apify(
     query: str,
     filters: dict,
@@ -2610,6 +2670,14 @@ class FacebookScraper(SocialPlatformScraper):
     ) -> list[AuthorLead]:
         if not post_stubs:
             return []
+        if _enrich_mode() == 'stub':
+            leads = _stub_enrich_authors(post_stubs)
+            # Detail key is `total=` on BOTH events, matching the browser
+            # path (facebook.py:2900 and :3041/:3109). Anything parsing these
+            # events reads `total`; emitting `enriched=` would break it.
+            _emit(on_progress, 'enrich_start', total=len(leads), source='stub')
+            _emit(on_progress, 'enrich_done', total=len(leads), source='stub')
+            return leads
         return await asyncio.to_thread(self._sync_enrich_authors, post_stubs, on_progress)
 
     # ── Sync internals ───────────────────────────────────────────────

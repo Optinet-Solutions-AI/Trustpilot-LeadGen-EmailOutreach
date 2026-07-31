@@ -139,3 +139,55 @@ def test_group_posts_survives_transport_error_on_one_group(monkeypatch):
     stubs = fb._group_posts_via_apify([('111', 'A'), ('222', 'B')], 10, None)
     assert len(stubs) == 1
     assert stubs[0]['group_id'] == '222'
+
+
+def test_enrich_mode_defaults_to_stub(monkeypatch):
+    monkeypatch.delenv('FB_ENRICH', raising=False)
+    assert fb._enrich_mode() == 'stub'
+
+
+def test_stub_enrich_builds_leads_without_a_browser(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError('stub enrichment must not open a browser')
+
+    monkeypatch.setattr(fb, '_open_driver', boom)
+    leads = fb._stub_enrich_authors([
+        {'platform': 'facebook', 'author_profile_url': 'https://fb/jane',
+         'author_handle': 'jane', 'display_name': 'Jane Doe',
+         'content_excerpt': 'need a plumber', 'country': 'GB', 'category': 'plumber'},
+    ])
+    assert len(leads) == 1
+    assert leads[0]['profile_url'] == 'https://fb/jane'
+    assert leads[0]['display_name'] == 'Jane Doe'
+    assert leads[0]['platform'] == 'facebook'
+    assert leads[0]['is_business_profile'] is False
+
+
+def test_stub_enrich_dedupes_by_profile_url():
+    leads = fb._stub_enrich_authors([
+        {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane', 'author_handle': 'jane'},
+        {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane', 'author_handle': 'jane'},
+        {'author_profile_url': 'https://fb/bob', 'display_name': 'Bob', 'author_handle': 'bob'},
+    ])
+    assert len(leads) == 2
+
+
+def test_stub_enrich_falls_back_to_handle_when_no_display_name():
+    leads = fb._stub_enrich_authors([
+        {'author_profile_url': 'https://fb/jane', 'author_handle': 'jane.doe'},
+    ])
+    assert leads[0]['display_name'] == 'jane.doe'
+
+
+def test_stub_enrich_never_emits_the_facebook_title_bug():
+    """The browser path once wrote company_name='(2) Facebook' from a tab
+    title. The stub path reads no titles, so this must hold by construction."""
+    leads = fb._stub_enrich_authors([
+        {'author_profile_url': 'https://fb/jane', 'author_handle': 'jane',
+         'display_name': '(2) Facebook'},
+    ])
+    assert leads[0]['display_name'] == 'jane'
+
+
+def test_stub_enrich_skips_stubs_without_profile_url():
+    assert fb._stub_enrich_authors([{'author_handle': 'nobody'}]) == []
