@@ -17,6 +17,9 @@ REQUIREMENTS
   The AdsPower desktop app must be running on the SAME host as this process —
   the API listens on localhost. That keeps this half host-bound, unlike the
   Apify discovery path which is a plain outbound HTTPS call.
+
+  The Local API is PAID-ONLY — only available in the paid version of AdsPower.
+  Free accounts cannot use this API.
 """
 from __future__ import annotations
 
@@ -44,7 +47,7 @@ def _base() -> str:
 
 def _headers() -> dict:
     key = (os.environ.get('ADSPOWER_API_KEY') or '').strip()
-    return {'Authorization': key} if key else {}
+    return {'Authorization': f'Bearer {key}'} if key else {}
 
 
 def _throttle() -> None:

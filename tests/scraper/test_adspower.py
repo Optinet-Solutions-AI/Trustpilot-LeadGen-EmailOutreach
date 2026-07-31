@@ -89,7 +89,21 @@ def test_api_key_is_sent_when_configured(monkeypatch):
 
     monkeypatch.setattr(adspower.requests, 'get', capture)
     adspower.start_profile('a')
-    assert seen['headers']['Authorization'] == 'secret'
+    assert seen['headers']['Authorization'] == 'Bearer secret'
+
+
+def test_api_key_header_not_sent_when_unset(monkeypatch):
+    monkeypatch.delenv('ADSPOWER_API_KEY', raising=False)
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    seen = {}
+
+    def capture(url, **kw):
+        seen.update(kw)
+        return _Resp(200, {'code': 0, 'data': {'ws': {'selenium': '1:2'}, 'webdriver': 'd'}})
+
+    monkeypatch.setattr(adspower.requests, 'get', capture)
+    adspower.start_profile('a')
+    assert 'Authorization' not in seen.get('headers', {}), 'no Authorization header when key is unset'
 
 
 def test_start_profile_raises_on_non_json_response(monkeypatch):
