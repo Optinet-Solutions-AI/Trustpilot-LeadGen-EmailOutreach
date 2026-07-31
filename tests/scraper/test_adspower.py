@@ -72,10 +72,22 @@ def test_calls_are_throttled_to_one_per_second(monkeypatch):
 
 def test_stop_profile_tolerates_already_stopped(monkeypatch):
     monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    # Real response observed live on 2026-07-31 (client 8.7.23, Local API).
+    # Do not "correct" this — the string is pinned to observed behavior.
     monkeypatch.setattr(adspower.requests, 'get', lambda url, **kw: _Resp(200, {
-        'code': -1, 'msg': 'browser is not open',
+        'code': -1, 'msg': 'User_id is not open',
     }))
     adspower.stop_profile('kxxxxx')  # must not raise
+
+
+def test_stop_profile_propagates_other_failures(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(adspower.requests, 'get', lambda url, **kw: _Resp(200, {
+        'code': -1, 'msg': 'Unknown error',
+    }))
+    with pytest.raises(adspower.AdsPowerError) as exc:
+        adspower.stop_profile('kxxxxx')
+    assert 'Unknown error' in str(exc.value)
 
 
 def test_api_key_is_sent_when_configured(monkeypatch):

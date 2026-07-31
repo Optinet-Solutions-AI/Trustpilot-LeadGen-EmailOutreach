@@ -20,6 +20,12 @@ REQUIREMENTS
 
   The Local API is PAID-ONLY — only available in the paid version of AdsPower.
   Free accounts cannot use this API.
+
+OPTIONAL ENDPOINTS (NOT CALLED HERE)
+
+  /api/v1/browser/active reports Inactive/Active with ws details if profile
+  state needs querying. We deliberately do not call it — start_profile is
+  idempotent and returns the existing session if already running.
 """
 from __future__ import annotations
 
@@ -82,7 +88,16 @@ def _call(path: str, params: dict) -> dict:
 
 
 def start_profile(profile_id: str) -> dict:
-    """Launch an AdsPower profile and return its Selenium attach details."""
+    """Launch an AdsPower profile and return its Selenium attach details.
+
+    Idempotent: if the profile is already running, AdsPower returns code 0 with
+    the existing debug port and webdriver path (verified live on 2026-07-31).
+    Callers need no is_running check.
+
+    The webdriver_path points to AdsPower's bundled chromedriver (e.g.
+    .../cwd_global/chrome_150/chromedriver.exe), so there is no version-matching
+    problem on this path (unlike the legacy Brave path).
+    """
     data = _call('/api/v1/browser/start', {
         'user_id': profile_id,
         'open_tabs': 1,       # don't restore the previous session's tabs
