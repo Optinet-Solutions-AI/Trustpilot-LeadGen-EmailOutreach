@@ -58,7 +58,12 @@ def resolve_base_url() -> tuple[str, str]:
     if override:
         return override.rstrip('/'), 'ADSPOWER_API_BASE env var'
 
+    # AdsPower's docs say %LOCALAPPDATA% on Windows, but client 8.7.23
+    # actually writes it to %APPDATA% (Roaming). Check Roaming FIRST -
+    # verified 2026-07-31 on a real install. Keep the documented Local path
+    # as a fallback in case other versions differ.
     candidates = [
+        os.path.join(os.environ.get('APPDATA', ''), 'adspower_global', 'cwd_global', 'source', 'local_api'),
         os.path.join(os.environ.get('LOCALAPPDATA', ''), 'adspower_global', 'cwd_global', 'source', 'local_api'),
         os.path.expanduser('~/Library/Application Support/adspower_global/cwd_global/source/local_api'),
         os.path.expanduser('~/.config/adspower_global/cwd_global/source/local_api'),
@@ -104,11 +109,25 @@ def verdict_on_plan_gating(payload: Optional[dict], note: str) -> str:
     code = payload.get('code')
     msg = str(payload.get('msg') or '')
     if code == 0:
-        return 'FREE PLAN HAS API ACCESS - their docs are stale. No subscription needed.'
+        return 'API ACCESS WORKS on this plan - no subscription needed for automation.'
     lowered = msg.lower()
+    # Auth, NOT plan. Verified 2026-07-31: a free-plan install with Security
+    # Verification enabled answers every endpoint with "Require api-key", and
+    # answers a wrong key with "API Key mismatch". Both mean the service is
+    # running and willing - it just wants credentials. Distinguishing this
+    # from a genuine plan wall matters, because generating an API key IS a
+    # paid feature while TURNING SECURITY VERIFICATION OFF is free.
+    if 'api-key' in lowered or 'api key' in lowered:
+        return (
+            f'AUTH REQUIRED, not plan-gated - server said: {msg!r}. The service is '
+            'running. Either turn OFF "Security Verification" in the client '
+            '(Settings -> API & MCP) so no key is needed, or set ADSPOWER_API_KEY '
+            'to a generated key. Note: generating a key is a PAID feature, but '
+            'disabling Security Verification is not.'
+        )
     if any(word in lowered for word in ('permission', 'vip', 'upgrade', 'package', 'plan', 'purchase', 'subscri')):
         return f'API IS PLAN-GATED - server said: {msg!r}. A paid plan or the 7-day trial is required.'
-    return f'API reachable but returned code={code} msg={msg!r} (not a plan error - likely a bad user_id or an app-state issue).'
+    return f'API reachable but returned code={code} msg={msg!r} (not a plan or auth error - likely a bad user_id or an app-state issue).'
 
 
 def check_our_field_assumptions(data: dict) -> list[str]:
