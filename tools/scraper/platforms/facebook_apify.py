@@ -1,0 +1,119 @@
+"""Facebook <-> Apify translation: actor input building and PostStub mapping.
+
+Pure functions only, no I/O — facebook.py is already ~3000 lines and this
+logic is independently testable, so it lives here rather than growing that
+file further.
+
+ACTOR INPUT KEYS
+  Verified against the live input schema on 2026-07-31. If the actor is
+  swapped via APIFY_FB_SEARCH_ACTOR, re-probe with
+  apify.get_actor_input_schema() and update build_search_input.
+"""
+from __future__ import annotations
+
+import os
+from typing import Optional
+from urllib.parse import urlparse
+
+from tools.scraper.platforms._social_base import PostStub
+
+
+def search_actor() -> str:
+    """Keyword post/group search actor. Read from env on every call so
+    swapping a broken community actor needs no code change or restart."""
+    return os.environ.get('APIFY_FB_SEARCH_ACTOR') or 'scrapeforge/facebook-search-posts'
+
+
+def group_posts_actor() -> str:
+    """Public-group post actor. Same env-on-every-call rule as above."""
+    return os.environ.get('APIFY_FB_GROUP_POSTS_ACTOR') or 'data-slayer/facebook-group-posts'
+
+
+def build_search_input(
+    query: str,
+    *,
+    max_results: int,
+    search_type: str = 'posts',
+    start_date: Optional[str] = None,
+    recent: bool = True,
+) -> dict:
+    """Build the keyword-search actor's run input.
+
+    location_uid is deliberately unused: location already travels inside the
+    query string ("plumber Manchester"), and adopting Facebook's internal geo
+    IDs would require seeding a location table for marginal gain.
+    """
+    run_input: dict = {
+        'query': query,
+        'search_type': search_type,
+        'max_results': max_results,
+        'recent_posts': recent,
+    }
+    if start_date:
+        run_input['start_date'] = start_date
+    return run_input
+
+
+def build_group_posts_input(group_id: str, *, max_results: int) -> dict:
+    """Build the public-group actor's run input."""
+    return {'groupId': group_id, 'maxPages': max(1, max_results // 10)}
+
+
+def _handle_from_profile_url(profile_url: str) -> str:
+    """Derive a stable handle from a profile URL.
+
+    facebook.com/jane.doe.5           -> jane.doe.5
+    facebook.com/profile.php?id=123   -> 123
+    """
+    parsed = urlparse(profile_url)
+    if 'profile.php' in parsed.path:
+        for part in (parsed.query or '').split('&'):
+            if part.startswith('id='):
+                return part[3:]
+    return parsed.path.strip('/').split('/')[-1]
+
+
+def post_to_stub(
+    item: dict,
+    *,
+    group_id: Optional[str] = None,
+    group_name: Optional[str] = None,
+) -> Optional[PostStub]:
+    """Map one Apify dataset item onto the PostStub contract.
+
+    Returns None for items missing a post URL or an author profile URL — both
+    are required downstream (post_url identifies the lead's post,
+    author_profile_url keys lead_platform_presences), so an item without them
+    cannot become a lead.
+    """
+    post_url = (item.get('url') or item.get('post_url') or '').strip()
+    user = item.get('user') or item.get('author') or {}
+    profile_url = (user.get('profile_url') or user.get('url') or '').strip()
+    if not post_url or not profile_url:
+        return None
+
+    media = []
+    for att in (item.get('attachments') or []):
+        url = (att or {}).get('url') if isinstance(att, dict) else att
+        if url:
+            media.append(url)
+
+    stub: PostStub = {
+        'platform': 'facebook',
+        'post_url': post_url,
+        'author_profile_url': profile_url,
+        'author_handle': (user.get('id') or '').strip() or _handle_from_profile_url(profile_url),
+        'content_excerpt': (item.get('message') or item.get('text') or '').strip(),
+        'posted_at': item.get('timestamp') or item.get('published_at'),
+        'media_urls': media,
+    }
+    # display_name is not part of the PostStub contract but the stub-enrich
+    # path in facebook.py reads it to build AuthorLead without a browser visit.
+    name = (user.get('name') or '').strip()
+    if name:
+        stub['display_name'] = name
+    if group_id:
+        stub['group_id'] = group_id
+    if group_name:
+        stub['group_name'] = group_name
+    return stub
