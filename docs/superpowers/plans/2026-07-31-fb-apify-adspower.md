@@ -1070,14 +1070,35 @@ def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
     profile URL). The fields a profile visit would add (website_url, email,
     bio_excerpt) are rare on personal FB profiles and cost one account-quota
     visit each, which is what previously locked the account out for 24h.
+
+    TWO KEYS ARE LOAD-BEARING AND EASY TO MISS — an earlier draft of this plan
+    omitted both, and the omission survived six passing tests because they
+    checked this function's spec rather than the downstream upsert contract:
+
+      • ``company_name`` — upsert_leads.py reads
+        ``lead.get('company_name') or lead.get('name', 'Unknown')`` and NEVER
+        reads display_name. Omit it and every lead lands as "Unknown".
+      • ``posts`` — upsert_leads.py writes these into lead_platform_posts
+        (post_url, content_excerpt, group_name). That excerpt is what powers
+        "we saw your post about X" personalization. Omit it and every FB lead
+        gets zero post rows.
+
+    Both mirror the browser path, which sets them explicitly.
     """
-    seen: dict[str, AuthorLead] = {}
+    # Group by author FIRST, keeping every stub — a repeat author must yield
+    # ONE lead carrying ALL their posts, not just the first.
+    unique_authors: dict[str, list[PostStub]] = {}
     for stub in post_stubs:
         profile_url = (stub.get('author_profile_url') or '').strip()
-        if not profile_url or profile_url in seen:
+        if not profile_url:
             continue
-        handle = (stub.get('author_handle') or '').strip()
-        name = (stub.get('display_name') or '').strip()
+        unique_authors.setdefault(profile_url, []).append(stub)
+
+    leads: list[AuthorLead] = []
+    for profile_url, posts in unique_authors.items():
+        first = posts[0]
+        handle = (first.get('author_handle') or '').strip()
+        name = (first.get('display_name') or '').strip()
         if not name or _is_non_name(name):
             name = handle
         lead: AuthorLead = {
@@ -1085,18 +1106,24 @@ def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
             'profile_url': profile_url,
             'author_handle': handle,
             'display_name': name,
+            'company_name': name,  # mapped to leads.company_name by upsert
             'website_url': None,
             'email': None,
-            'location': stub.get('country') or None,
+            # location means a bio-derived place string, not a country code —
+            # the browser path leaves it None and lets country travel below.
+            'location': None,
             'is_business_profile': False,
             'follower_count': None,
             'bio_excerpt': None,
+            # upsert_leads.py writes these into lead_platform_posts.
+            'posts': posts,
         }
+        # From the FIRST stub, matching the browser path's posts[0] precedent.
         for passthrough in ('country', 'category', 'location_confidence'):
-            if stub.get(passthrough):
-                lead[passthrough] = stub[passthrough]
-        seen[profile_url] = lead
-    return list(seen.values())
+            if first.get(passthrough):
+                lead[passthrough] = first[passthrough]
+        leads.append(lead)
+    return leads
 ```
 
 - [ ] **Step 4: Route `enrich_authors` through it**
