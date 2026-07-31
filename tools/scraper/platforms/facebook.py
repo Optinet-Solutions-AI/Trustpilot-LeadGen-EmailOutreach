@@ -1327,13 +1327,24 @@ def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
     bio_excerpt) are rare on personal FB profiles and cost one account-quota
     visit each, which is what previously locked the account out for 24h.
     """
-    seen: dict[str, AuthorLead] = {}
+    # Dedup by author_profile_url FIRST, but — unlike a plain dedup — keep
+    # EVERY stub for that author as a `posts` entry. upsert_leads.py:279-304
+    # writes each into lead_platform_posts (content_excerpt/group_name),
+    # which is what powers "we saw your post about X" outreach
+    # personalization. Mirrors the browser path's `unique_authors` grouping
+    # (facebook.py around :2900) — same idea, just without opening a browser.
+    unique_authors: dict[str, list[PostStub]] = {}
     for stub in post_stubs:
         profile_url = (stub.get('author_profile_url') or '').strip()
-        if not profile_url or profile_url in seen:
+        if not profile_url:
             continue
-        handle = (stub.get('author_handle') or '').strip()
-        name = (stub.get('display_name') or '').strip()
+        unique_authors.setdefault(profile_url, []).append(stub)
+
+    leads: list[AuthorLead] = []
+    for profile_url, posts in unique_authors.items():
+        first = posts[0]
+        handle = (first.get('author_handle') or '').strip()
+        name = (first.get('display_name') or '').strip()
         if not name or _is_non_name(name):
             name = handle
         lead: AuthorLead = {
@@ -1341,18 +1352,25 @@ def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
             'profile_url': profile_url,
             'author_handle': handle,
             'display_name': name,
+            'company_name': name,  # mapped to leads.company_name by upsert
             'website_url': None,
             'email': None,
-            'location': stub.get('country') or None,
+            'location': None,
             'is_business_profile': False,
             'follower_count': None,
             'bio_excerpt': None,
+            # Attach every observed post — upsert_leads.py writes them into
+            # lead_platform_posts keyed on (platform, post_url).
+            'posts': posts,
         }
+        # country/category/location_confidence come from the FIRST stub for
+        # this author — matches the browser path's posts[0] precedent
+        # (facebook.py :3028-3029); later stubs never override them.
         for passthrough in ('country', 'category', 'location_confidence'):
-            if stub.get(passthrough):
-                lead[passthrough] = stub[passthrough]
-        seen[profile_url] = lead
-    return list(seen.values())
+            if first.get(passthrough):
+                lead[passthrough] = first[passthrough]
+        leads.append(lead)
+    return leads
 
 
 def _search_posts_via_apify(

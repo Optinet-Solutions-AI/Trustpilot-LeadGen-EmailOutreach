@@ -161,15 +161,61 @@ def test_stub_enrich_builds_leads_without_a_browser(monkeypatch):
     assert leads[0]['display_name'] == 'Jane Doe'
     assert leads[0]['platform'] == 'facebook'
     assert leads[0]['is_business_profile'] is False
+    # location is a bio-derived string in the browser path (always None
+    # there) — country travels separately via the `country` passthrough.
+    assert leads[0]['location'] is None
 
 
-def test_stub_enrich_dedupes_by_profile_url():
+def test_stub_enrich_sets_company_name_for_upsert():
+    """upsert_leads.py:212 reads `company_name`, not `display_name` — every
+    stub-enriched lead would land in the CRM as 'Unknown' without this."""
+    leads = fb._stub_enrich_authors([
+        {'author_profile_url': 'https://fb/jane', 'author_handle': 'jane',
+         'display_name': 'Jane Doe'},
+    ])
+    assert leads[0]['company_name'] == 'Jane Doe'
+
+
+def test_stub_enrich_company_name_falls_back_with_display_name():
+    """company_name must track display_name's own handle/non-name fallback,
+    not just display_name, so a missing/junk name still resolves in the CRM."""
+    leads = fb._stub_enrich_authors([
+        {'author_profile_url': 'https://fb/jane', 'author_handle': 'jane',
+         'display_name': '(2) Facebook'},
+    ])
+    assert leads[0]['display_name'] == 'jane'
+    assert leads[0]['company_name'] == 'jane'
+
+
+def test_stub_enrich_dedupes_keeping_first_stubs_values():
+    """A repeat author might post in two groups: one stub resolves a
+    country, the other doesn't. The FIRST stub's stamped fields must win
+    (matching the browser path's posts[0] precedent at facebook.py
+    :3028-3029) — a later stub must never override them."""
     leads = fb._stub_enrich_authors([
         {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane', 'author_handle': 'jane'},
-        {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane', 'author_handle': 'jane'},
+        {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane', 'author_handle': 'jane',
+         'country': 'FR'},
         {'author_profile_url': 'https://fb/bob', 'display_name': 'Bob', 'author_handle': 'bob'},
     ])
     assert len(leads) == 2
+    jane = next(l for l in leads if l['profile_url'] == 'https://fb/jane')
+    assert 'country' not in jane
+
+
+def test_stub_enrich_keeps_every_post_for_a_repeat_author():
+    """Beyond-first stubs must not be discarded — upsert_leads.py:279-304
+    writes each into lead_platform_posts, which is what powers 'we saw
+    your post about X' outreach personalization."""
+    stub_a = {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane',
+              'author_handle': 'jane', 'post_url': 'https://fb/p/1',
+              'content_excerpt': 'need a plumber'}
+    stub_b = {'author_profile_url': 'https://fb/jane', 'display_name': 'Jane',
+              'author_handle': 'jane', 'post_url': 'https://fb/p/2',
+              'content_excerpt': 'also need a roofer'}
+    leads = fb._stub_enrich_authors([stub_a, stub_b])
+    assert len(leads) == 1
+    assert leads[0]['posts'] == [stub_a, stub_b]
 
 
 def test_stub_enrich_falls_back_to_handle_when_no_display_name():
@@ -191,3 +237,24 @@ def test_stub_enrich_never_emits_the_facebook_title_bug():
 
 def test_stub_enrich_skips_stubs_without_profile_url():
     assert fb._stub_enrich_authors([{'author_handle': 'nobody'}]) == []
+
+
+def test_enrich_authors_uses_stub_path_by_default_and_never_opens_browser(monkeypatch):
+    """The dispatch inside enrich_authors is what actually matters in
+    production — a test that only calls _stub_enrich_authors directly
+    would still pass even if the `if _enrich_mode() == 'stub':` branch in
+    enrich_authors were deleted, inverted, or mis-indented."""
+    monkeypatch.delenv('FB_ENRICH', raising=False)
+
+    def boom(*a, **k):
+        raise AssertionError('enrich_authors default mode must not open a browser')
+
+    monkeypatch.setattr(fb, '_open_driver', boom)
+    scraper = fb.FacebookScraper()
+    leads = asyncio.run(scraper.enrich_authors([
+        {'author_profile_url': 'https://fb/jane', 'author_handle': 'jane',
+         'display_name': 'Jane Doe'},
+    ]))
+    assert len(leads) == 1
+    assert leads[0]['profile_url'] == 'https://fb/jane'
+    assert leads[0]['company_name'] == 'Jane Doe'
