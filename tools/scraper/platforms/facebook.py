@@ -1280,15 +1280,13 @@ _CURRENT_LOCATION: Optional[str] = None
 _TARGET_COUNTRY: Optional[str] = None
 
 
-def _open_driver():
-    """Open Facebook's proxy-aware undetected-chromedriver.
+def _open_driver(account: Optional[dict] = None):
+    """Open Facebook's browser session.
 
-    Thin wrapper over the shared opener (extracted to
-    tools.scraper.shared.uc_driver so Instagram can reuse the same
-    residential-proxy + persistent-profile stack). Behavior is
-    unchanged: FB reads its persistent profile from FB_PROFILE_DIR,
-    passes no custom user-agent, uses a 1280x900 window, and hands the
-    current scrape location to the proxy country-code resolver.
+    When the claimed social_accounts row carries an adspower_profile_id, the
+    session opens through AdsPower (isolated fingerprint + the profile's own
+    proxy). Otherwise this is unchanged: the shared undetected-chromedriver
+    opener with FB_PROFILE_DIR and the residential-proxy wiring.
     """
     from tools.scraper.shared.uc_driver import open_uc_driver  # noqa: WPS433 — lazy
     return open_uc_driver(
@@ -1296,6 +1294,7 @@ def _open_driver():
         user_agent=None,
         window_size=(1280, 900),
         proxy_location=_CURRENT_LOCATION,
+        adspower_profile_id=(account or {}).get('adspower_profile_id') or None,
     )
 
 
@@ -2546,7 +2545,7 @@ class FacebookScraper(SocialPlatformScraper):
         then the session is established for the new IP and subsequent
         requests proceed normally.
         """
-        driver = _open_driver()
+        driver = _open_driver(account)
         driver.get(FB_BASE)
         time.sleep(3)
         # Persistent-profile mode skips the DB cookie jar entirely — the

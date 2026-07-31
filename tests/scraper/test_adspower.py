@@ -181,3 +181,37 @@ def test_opener_falls_through_when_no_adspower_id(monkeypatch):
                         lambda: (_ for _ in ()).throw(RuntimeError('reached legacy path')))
     with pytest.raises(RuntimeError, match='reached legacy path'):
         uc_driver.open_uc_driver('FB_PROFILE_DIR')
+
+
+from tools.scraper.platforms import facebook as fbp
+
+
+def test_open_driver_passes_account_adspower_id(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        'tools.scraper.shared.uc_driver.open_uc_driver',
+        lambda env, **kw: seen.update(kw) or 'driver',
+    )
+    fbp._open_driver({'id': 'a', 'adspower_profile_id': 'kxxxxx'})
+    assert seen['adspower_profile_id'] == 'kxxxxx'
+
+
+def test_open_driver_without_account_passes_none(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        'tools.scraper.shared.uc_driver.open_uc_driver',
+        lambda env, **kw: seen.update(kw) or 'driver',
+    )
+    fbp._open_driver()
+    assert seen['adspower_profile_id'] is None
+
+
+def test_open_driver_tolerates_account_without_the_column(monkeypatch):
+    """Rows read before migration 057 have no adspower_profile_id key."""
+    seen = {}
+    monkeypatch.setattr(
+        'tools.scraper.shared.uc_driver.open_uc_driver',
+        lambda env, **kw: seen.update(kw) or 'driver',
+    )
+    fbp._open_driver({'id': 'a'})
+    assert seen['adspower_profile_id'] is None
