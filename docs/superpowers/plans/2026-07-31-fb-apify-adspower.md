@@ -322,22 +322,31 @@ git commit -m "feat(scraper): add Apify actor runner for cookieless discovery"
 
 - [ ] **Step 1: Probe the live actor's real input keys**
 
-The actor's prose docs list "a required search keyword" plus `search_type`, `max_results`, `start_date`, `end_date`, `location_uid`, `recent_posts` — but not the exact JSON key for the keyword. Read it from the schema:
+**ALREADY DONE — the schema was probed live on 2026-07-31 and the results are baked into this
+task. Do not re-probe; use the verified key names below.**
 
-```bash
-.venv/Scripts/python.exe -c "
-import json
-from tools.scraper.shared.apify import get_actor_input_schema
-meta = get_actor_input_schema('scrapeforge/facebook-search-posts')
-schema = (meta.get('data') or meta).get('defaultRunOptions') and None
-props = ((meta.get('data') or meta).get('exampleRunInput') or {})
-print('EXAMPLE INPUT:', json.dumps(props, indent=2)[:2000])
-"
-```
+`exampleRunInput` is a useless placeholder on both actors (`{"helloWorld": 123}`). The real schema
+lives on the build: `GET /v2/acts/{id}` → `taggedBuilds.latest.buildId`, then
+`GET /v2/actor-builds/{buildId}` → `inputSchema`.
 
-Also open <https://apify.com/scrapeforge/facebook-search-posts/input-schema> in a browser and copy the exact property names.
+`scrapeforge/facebook-search-posts` build **1.0.19**, public, not deprecated:
 
-**Record the real key names in a comment at the top of `facebook_apify.py` before writing code.** If the keyword key is not `search_query`, change it in Step 3 and in the test in Step 2 — do not leave a guess in the code.
+| key | type | default | notes |
+|---|---|---|---|
+| `query` | string | — | **required. The keyword key is `query`, NOT `search_query`.** |
+| `search_type` | string | `posts` | `groups` for the group-first path in Task 4 |
+| `max_results` | integer | 5 | |
+| `start_date` / `end_date` | string | null | `YYYY-MM-DD` |
+| `recent_posts` | boolean | false | we pass true — consumer asks are time-sensitive |
+| `location_uid` | string | null | deliberately unused, see below |
+
+`data-slayer/facebook-group-posts` build **1.0.5**: `groupId` (string, required) + `maxPages`
+(integer, default 1). Matches what Task 2's `build_group_posts_input` already assumes.
+
+**Plan-wide caveat for Task 7:** the Apify account is on the FREE plan ($5/mo usage). The search
+actor restricts free accounts to **20 results per run and 1 run per 24 hours.** That is enough for
+one live smoke run, so do not burn actor runs casually — schema reads are metadata calls and are
+free, but every `run-sync-get-dataset-items` call consumes the daily allowance.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -359,7 +368,7 @@ def test_actor_ids_come_from_env_not_literals(monkeypatch):
 
 def test_build_search_input_sets_keyword_and_caps():
     got = fa.build_search_input('plumber Manchester', max_results=25)
-    assert got['search_query'] == 'plumber Manchester'
+    assert got['query'] == 'plumber Manchester'
     assert got['search_type'] == 'posts'
     assert got['max_results'] == 25
     assert got['recent_posts'] is True
@@ -485,7 +494,7 @@ def build_search_input(
     IDs would require seeding a location table for marginal gain.
     """
     run_input: dict = {
-        'search_query': query,
+        'query': query,
         'search_type': search_type,
         'max_results': max_results,
         'recent_posts': recent,
@@ -1106,8 +1115,11 @@ Replace the body of `enrich_authors` (facebook.py:2495-2504):
             return []
         if _enrich_mode() == 'stub':
             leads = _stub_enrich_authors(post_stubs)
+            # Detail key is `total=` on BOTH events, matching the browser
+            # path (facebook.py:2731 and :2872). Anything parsing these
+            # events reads `total`; emitting `enriched=` would break it.
             _emit(on_progress, 'enrich_start', total=len(leads), source='stub')
-            _emit(on_progress, 'enrich_done', enriched=len(leads), source='stub')
+            _emit(on_progress, 'enrich_done', total=len(leads), source='stub')
             return leads
         return await asyncio.to_thread(self._sync_enrich_authors, post_stubs, on_progress)
 ```
