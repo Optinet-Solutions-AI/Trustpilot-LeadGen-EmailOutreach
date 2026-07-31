@@ -90,3 +90,31 @@ def test_api_key_is_sent_when_configured(monkeypatch):
     monkeypatch.setattr(adspower.requests, 'get', capture)
     adspower.start_profile('a')
     assert seen['headers']['Authorization'] == 'secret'
+
+
+def test_start_profile_raises_on_non_json_response(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+
+    class BadResp:
+        status_code = 200
+        text = '<html>Internal Server Error</html>'
+
+        def json(self):
+            raise ValueError('Invalid JSON')
+
+    monkeypatch.setattr(adspower.requests, 'get', lambda url, **kw: BadResp())
+    with pytest.raises(adspower.AdsPowerError) as exc:
+        adspower.start_profile('kxxxxx')
+    assert 'non-JSON' in str(exc.value)
+
+
+def test_stop_profile_propagates_connection_error(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+
+    def refuse(url, **kw):
+        raise adspower.requests.exceptions.ConnectionError('connection refused')
+
+    monkeypatch.setattr(adspower.requests, 'get', refuse)
+    with pytest.raises(adspower.AdsPowerError) as exc:
+        adspower.stop_profile('kxxxxx')
+    assert 'AdsPower desktop app' in str(exc.value)

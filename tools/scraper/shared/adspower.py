@@ -21,8 +21,8 @@ REQUIREMENTS
 from __future__ import annotations
 
 import os
+import sys
 import time
-from typing import Optional
 
 import requests
 
@@ -67,7 +67,12 @@ def _call(path: str, params: dict) -> dict:
         ) from exc
     if resp.status_code >= 400:
         raise AdsPowerError(f'AdsPower {path} returned HTTP {resp.status_code}: {resp.text[:200]}')
-    payload = resp.json()
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise AdsPowerError(
+            f'AdsPower {path} returned non-JSON response: {resp.text[:200]}'
+        ) from exc
     if payload.get('code') != 0:
         raise AdsPowerError(f'AdsPower {path} failed: {payload.get("msg") or payload}')
     return payload.get('data') or {}
@@ -87,7 +92,7 @@ def start_profile(profile_id: str) -> dict:
             f'AdsPower started profile {profile_id} but returned no selenium '
             f'debugger address. Response data: {data}'
         )
-    print(f'INFO: AdsPower profile {profile_id} at {debugger_address}', flush=True)
+    print(f'INFO: AdsPower profile {profile_id} at {debugger_address}', file=sys.stderr, flush=True)
     return {'debugger_address': debugger_address, 'webdriver_path': webdriver_path}
 
 
@@ -96,4 +101,8 @@ def stop_profile(profile_id: str) -> None:
     try:
         _call('/api/v1/browser/stop', {'user_id': profile_id})
     except AdsPowerError as exc:
-        print(f'WARN: AdsPower stop for {profile_id}: {exc}', flush=True)
+        # Only suppress the "browser is not open" case. Let real failures propagate.
+        if 'not open' in str(exc).lower():
+            print(f'WARN: AdsPower stop for {profile_id}: {exc}', file=sys.stderr, flush=True)
+        else:
+            raise
