@@ -1320,6 +1320,51 @@ def _search_posts_via_apify(
     return stubs
 
 
+def _discover_group_ids_via_apify(query: str, limit: int) -> list[tuple[str, str]]:
+    """Find public groups matching a keyword. Returns (group_id, group_name)."""
+    actor = facebook_apify.search_actor()
+    items = apify.run_actor(
+        actor,
+        facebook_apify.build_search_input(query, max_results=limit, search_type='groups'),
+    )
+    pairs: list[tuple[str, str]] = []
+    for item in items:
+        gid = str(item.get('id') or item.get('group_id') or '').strip()
+        if not gid:
+            continue
+        pairs.append((gid, (item.get('name') or item.get('title') or '').strip()))
+    return pairs
+
+
+def _group_posts_via_apify(
+    groups: list[tuple[str, str]],
+    max_results: int,
+    on_progress: ProgressCallback,
+) -> list[PostStub]:
+    """Pull posts from each public group. A group that fails is skipped, not fatal.
+
+    Private groups are invisible to this actor by design (it is cookieless).
+    Those remain the browser path's job, with an account that has joined them.
+    """
+    actor = facebook_apify.group_posts_actor()
+    per_group = max(1, max_results // max(1, len(groups)))
+    stubs: list[PostStub] = []
+    for gid, gname in groups:
+        try:
+            items = apify.run_actor(
+                actor, facebook_apify.build_group_posts_input(gid, max_results=per_group),
+            )
+        except apify.ApifyError as exc:
+            _emit(on_progress, 'group_skipped', group_id=gid, reason=str(exc)[:120])
+            continue
+        for item in items:
+            stub = facebook_apify.post_to_stub(item, group_id=gid, group_name=gname)
+            if stub:
+                stubs.append(stub)
+    _emit(on_progress, 'apify_groups_done', groups=len(groups), posts=len(stubs))
+    return stubs
+
+
 def _open_driver(account: Optional[dict] = None):
     """Open Facebook's browser session.
 
@@ -2431,11 +2476,24 @@ class FacebookScraper(SocialPlatformScraper):
         # below the stamping would silently drop category/country on every
         # Apify lead.
         if _discovery_source() == 'apify':
-            stubs = await asyncio.to_thread(
-                _search_posts_via_apify,
-                f'{niche} {location}'.strip() if niche and location else query,
-                filters, max_results or 50, on_progress,
-            )
+            search_term = f'{niche} {location}'.strip() if niche and location else query
+            if groups_only:
+                if not niche or not location:
+                    raise ValueError(
+                        "Group-first search requires both 'niche' and 'location' in filters. "
+                        "Pass groups_only=False to fall back to the open-feed search."
+                    )
+                groups = await asyncio.to_thread(
+                    _discover_group_ids_via_apify, search_term, 10,
+                )
+                stubs = await asyncio.to_thread(
+                    _group_posts_via_apify, groups, max_results or 50, on_progress,
+                )
+            else:
+                stubs = await asyncio.to_thread(
+                    _search_posts_via_apify, search_term, filters,
+                    max_results or 50, on_progress,
+                )
         elif groups_only:
             if not niche or not location:
                 raise ValueError(

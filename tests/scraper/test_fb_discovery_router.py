@@ -84,3 +84,40 @@ def test_browser_mode_never_calls_apify(monkeypatch):
     scraper = fb.FacebookScraper()
     out = asyncio.run(scraper.search_posts('q', {'groups_only': False}, max_results=5))
     assert out == []
+
+
+def test_discover_group_ids_returns_id_name_pairs(monkeypatch):
+    monkeypatch.setattr(fb.apify, 'run_actor', lambda actor, run_input, **kw: [
+        {'id': '111', 'name': 'Manchester Tradespeople'},
+        {'group_id': '222', 'title': 'Manchester Home Help'},
+        {'name': 'no id here'},
+    ])
+    pairs = fb._discover_group_ids_via_apify('plumber Manchester', 10)
+    assert pairs == [('111', 'Manchester Tradespeople'), ('222', 'Manchester Home Help')]
+
+
+def test_group_posts_via_apify_stamps_group_context(monkeypatch):
+    monkeypatch.setattr(fb.apify, 'run_actor', lambda actor, run_input, **kw: [
+        {'url': 'https://fb/p/1', 'message': 'need a plumber',
+         'user': {'profile_url': 'https://fb/jane'}},
+    ])
+    stubs = fb._group_posts_via_apify([('111', 'Manchester Tradespeople')], 10, None)
+    assert stubs[0]['group_id'] == '111'
+    assert stubs[0]['group_name'] == 'Manchester Tradespeople'
+
+
+def test_group_posts_survives_one_failing_group(monkeypatch):
+    """One broken group must not lose the other groups' results."""
+    calls = {'n': 0}
+
+    def flaky(actor, run_input, **kw):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise fb.apify.ApifyError('group 111 is private')
+        return [{'url': 'https://fb/p/2', 'message': 'roofer?',
+                 'user': {'profile_url': 'https://fb/bob'}}]
+
+    monkeypatch.setattr(fb.apify, 'run_actor', flaky)
+    stubs = fb._group_posts_via_apify([('111', 'A'), ('222', 'B')], 10, None)
+    assert len(stubs) == 1
+    assert stubs[0]['group_id'] == '222'
