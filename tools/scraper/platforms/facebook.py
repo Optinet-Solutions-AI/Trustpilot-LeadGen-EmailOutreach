@@ -1279,6 +1279,46 @@ _CURRENT_LOCATION: Optional[str] = None
 # when called deep in the sync helpers (which have no access to filters).
 _TARGET_COUNTRY: Optional[str] = None
 
+from tools.scraper.shared import apify
+from tools.scraper.platforms import facebook_apify
+
+
+def _discovery_source() -> str:
+    """Which discovery backend search_posts uses.
+
+    'apify'   — cookieless Apify actor. No account, no daily cap, runs on any
+                host including Cloud Run. The default since 2026-07-31.
+    'browser' — the original logged-in undetected-chromedriver crawl. Kept for
+                private-group search (Apify can only see public groups) and as
+                the rollback path. Behaviour is unchanged from before Apify.
+    """
+    return (os.environ.get('FB_DISCOVERY') or 'apify').strip().lower()
+
+
+def _search_posts_via_apify(
+    query: str,
+    filters: dict,
+    max_results: int,
+    on_progress: ProgressCallback,
+) -> list[PostStub]:
+    """Keyword post discovery through Apify. Opens no browser, claims no account."""
+    actor = facebook_apify.search_actor()
+    _emit(on_progress, 'search_started', query=query, source='apify', actor=actor)
+    run_input = facebook_apify.build_search_input(
+        query,
+        max_results=max_results,
+        start_date=filters.get('start_date') or None,
+    )
+    items = apify.run_actor(actor, run_input)
+    stubs: list[PostStub] = []
+    for item in items:
+        stub = facebook_apify.post_to_stub(item)
+        if stub:
+            stubs.append(stub)
+    _emit(on_progress, 'apify_run', actor=actor, requested=max_results,
+          returned=len(items), mapped=len(stubs))
+    return stubs
+
 
 def _open_driver(account: Optional[dict] = None):
     """Open Facebook's browser session.
@@ -2384,7 +2424,19 @@ class FacebookScraper(SocialPlatformScraper):
                 )
                 niche = translated
 
-        if groups_only:
+        # Discovery source. The Apify branch sits HERE — after niche
+        # translation (so it searches the local-language term) and before the
+        # country/category stamping and consumer filter chain below (so Apify
+        # stubs get exactly the same treatment browser stubs do). Moving it
+        # below the stamping would silently drop category/country on every
+        # Apify lead.
+        if _discovery_source() == 'apify':
+            stubs = await asyncio.to_thread(
+                _search_posts_via_apify,
+                f'{niche} {location}'.strip() if niche and location else query,
+                filters, max_results or 50, on_progress,
+            )
+        elif groups_only:
             if not niche or not location:
                 raise ValueError(
                     "Group-first search requires both 'niche' and 'location' in filters. "
