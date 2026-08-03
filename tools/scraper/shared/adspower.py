@@ -35,7 +35,12 @@ import time
 
 import requests
 
-DEFAULT_BASE = 'http://local.adspower.net:50325'
+# AdsPower's own published docs give the Local API host as
+# local.adspower.NET. That is incorrect: the AdsPower client writes
+# local.adspower.COM into its own config file, and .com is the host that
+# actually answers — verified against a real install (client 8.7.23) on
+# 2026-07-31. Override with ADSPOWER_API_BASE if a future build moves it.
+DEFAULT_BASE = 'http://local.adspower.com:50325'
 REQUEST_TIMEOUT = 60
 # AdsPower documents a 1 request/second limit on the Local API.
 MIN_INTERVAL_SECONDS = 1.1
@@ -119,7 +124,12 @@ def stop_profile(profile_id: str) -> None:
     try:
         _call('/api/v1/browser/stop', {'user_id': profile_id})
     except AdsPowerError as exc:
-        # Only suppress the "browser is not open" case. Let real failures propagate.
+        # Only suppress the already-stopped case. AdsPower words it
+        # "User_id is not open" — observed live on 2026-07-31 (client
+        # 8.7.23), and the test is pinned to that exact string. Match on
+        # the loose "not open" substring rather than the full message so a
+        # reworded variant still counts as already-stopped; do NOT narrow
+        # it. Let real failures propagate.
         if 'not open' in str(exc).lower():
             print(f'WARN: AdsPower stop for {profile_id}: {exc}', file=sys.stderr, flush=True)
         else:
