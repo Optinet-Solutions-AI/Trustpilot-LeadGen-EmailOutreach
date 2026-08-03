@@ -2564,9 +2564,32 @@ class FacebookScraper(SocialPlatformScraper):
                 groups = await asyncio.to_thread(
                     _discover_group_ids_via_apify, search_term, 10,
                 )
-                stubs = await asyncio.to_thread(
-                    _group_posts_via_apify, groups, max_results or 50, on_progress,
-                )
+                if not groups:
+                    # Live-tested 2026-08-03: both community group actors
+                    # (scrapeforge/facebook-search-posts search_type=groups,
+                    # data-slayer/facebook-group-posts) return 0 items even
+                    # for broad/default inputs — group search on these
+                    # community actors is known non-functional. Without this
+                    # branch, groups=[] means _group_posts_via_apify loops
+                    # zero times and the job silently returns 0 leads with no
+                    # explanation. Surface a loud, actionable event, then
+                    # degrade to the open-feed search, which demonstrably
+                    # works, so the job still produces leads.
+                    _emit(
+                        on_progress, 'apify_groups_unavailable',
+                        actor=facebook_apify.search_actor(),
+                        reason='group discovery returned no groups; group search on '
+                               'community Apify actors is known non-functional — '
+                               'falling back to open-feed keyword search',
+                    )
+                    stubs = await asyncio.to_thread(
+                        _search_posts_via_apify, search_term, filters,
+                        max_results or 50, on_progress,
+                    )
+                else:
+                    stubs = await asyncio.to_thread(
+                        _group_posts_via_apify, groups, max_results or 50, on_progress,
+                    )
             else:
                 stubs = await asyncio.to_thread(
                     _search_posts_via_apify, search_term, filters,

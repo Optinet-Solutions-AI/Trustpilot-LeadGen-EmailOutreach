@@ -449,6 +449,20 @@ See `docs/deployment.md` for complete reference.
   bio/website/email, and expect it to consume account quota.
 - **Open-feed keyword search is ad-heavy.** The Gemini consumer classifier is the gate;
   measure qualified yield before scaling Apify spend.
+- **Both community group actors are non-functional (live-tested 2026-08-03).**
+  `scrapeforge/facebook-search-posts` `search_type=groups` returns 0 items even for a
+  deliberately broad one-word query; `data-slayer/facebook-group-posts` returns 0 items
+  even for its own documented default input. `search_type=posts` (open-feed) works fine —
+  20 real posts in the same test. **Apify discovery is therefore open-feed in practice**,
+  regardless of `groups_only`: the code still attempts group discovery first (actor IDs
+  stay env-swappable via `APIFY_FB_SEARCH_ACTOR`/`APIFY_FB_GROUP_POSTS_ACTOR` for if a
+  working group actor turns up), but an empty result now emits `apify_groups_unavailable`
+  (actor id + reason) and falls back to the open-feed search automatically instead of
+  silently returning 0 leads. Private/group-scoped work still needs `FB_DISCOVERY=browser`.
+  Query phrasing dominates yield: geo-stuffed phrasings like "looking for a plumber in
+  Manchester" returned 0 usable results out of 20 (all adverts), while intent phrasings
+  like "need a plumber recommendation" returned real consumer asks — the biggest lever on
+  cost per lead.
 - Engagement (opening a lead's post, commenting, DMs) still requires a logged-in
   account and stays on the browser path.
 - Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)

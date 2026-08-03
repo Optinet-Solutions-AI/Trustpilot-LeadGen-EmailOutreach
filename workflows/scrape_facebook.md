@@ -81,6 +81,10 @@ If either actor is swapped via `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_A
 
 **Private groups remain invisible to the Apify actors** — they are cookieless by design and can only enumerate what's public. There is no workaround inside the Apify path; it is `FB_DISCOVERY=browser` with an account that has already joined the group, or nothing.
 
+**Both community group actors are non-functional (live-tested 2026-08-03).** `scrapeforge/facebook-search-posts` with `search_type=groups` returned **0 items** even for a deliberately broad one-word query (`"Manchester"`) — `groups` is a documented enum value in the actor's inputSchema, but the actor does not deliver on it. `data-slayer/facebook-group-posts` returned **0 items** even for its own documented default input (`groupId: "new york"`). `search_type=posts` (open-feed) works fine — it returned 20 real, well-formed consumer posts in the same test session. **Practical consequence: Apify discovery is open-feed only right now**, regardless of the `groups_only` filter — the code still attempts group discovery first (actor IDs are env-swappable via `APIFY_FB_SEARCH_ACTOR`/`APIFY_FB_GROUP_POSTS_ACTOR`, so the capability stays wired for whenever a working group actor turns up), but when discovery comes back empty it emits `apify_groups_unavailable` (actor id + reason) and falls back to `_search_posts_via_apify` automatically — the job still produces leads instead of silently returning zero. Any work that genuinely needs group-scoped or private-group coverage still requires `FB_DISCOVERY=browser` with an account that has joined the group.
+
+**Query phrasing is the biggest lever on cost per lead (2026-08-03 finding).** Geo-stuffed advertisement-shaped phrasings like `"looking for a plumber in Manchester"` returned 0 usable results out of 20 (all ads). Intent-shaped phrasings like `"need a plumber recommendation"` returned real consumer asks. Prefer short, natural "someone asking a friend" phrasing over keyword-stuffed geo+service strings when building the `query`/`niche`+`location` search term.
+
 ---
 
 ## Mapping Apify output → `PostStub`
@@ -147,6 +151,7 @@ If either actor is swapped via `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_A
 | `RuntimeError: Cannot determine the scrape's target country` | Browser mode with no resolvable `country`/`location` in filters | Pass a `country`, or a `location` that maps via `_extract_country_from_excerpt` |
 | `RuntimeError: No active Facebook account pinned to country X` (browser mode only) | No `social_accounts` row active for that country | Connect/pin an account in Social Accounts |
 | Group posts return 0 for a real public group | `data-slayer/facebook-group-posts` skipped that group and emitted `group_skipped` | Non-fatal by design — check the `reason` in the progress event; other groups in the batch still run |
+| `apify_groups_unavailable` progress event, run still completes with leads | Group discovery (`_discover_group_ids_via_apify`) returned no groups — both community group actors are known non-functional as of 2026-08-03 | Expected today; not an error. The run auto-falls-back to the open-feed search. If you need real group-scoped results, use `FB_DISCOVERY=browser` |
 | A lead lands with `company_name = "(N) Facebook"` | Historical bug in the browser-path tab-title scrape (fixed) — the tab title, not the person's name, got written to `leads.company_name` | Should not reproduce; `_is_non_name()` in `facebook.py` filters `(N) Facebook` / `Facebook` / `Log in to Facebook` titles before falling back to the handle. If it recurs, it's a regression — file it, don't just clean the row |
 
 ---

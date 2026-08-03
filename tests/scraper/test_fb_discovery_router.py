@@ -239,6 +239,97 @@ def test_stub_enrich_skips_stubs_without_profile_url():
     assert fb._stub_enrich_authors([{'author_handle': 'nobody'}]) == []
 
 
+def test_apify_groups_only_falls_back_to_open_feed_when_no_groups_found(monkeypatch):
+    """Live-tested 2026-08-03: both community group actors return 0 items.
+    groups_only defaults True + FB_DISCOVERY defaults apify, so a naive
+    implementation loops zero times over an empty group list and returns
+    nothing. The run must instead fall back to the open-feed keyword search,
+    which demonstrably works, so the job still produces leads."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    calls = {'groups': 0, 'posts': 0}
+
+    def fake_run_actor(actor, run_input, **kw):
+        if run_input.get('search_type') == 'groups':
+            calls['groups'] += 1
+            return []
+        calls['posts'] += 1
+        return [
+            {'url': 'https://fb/p/1', 'message': 'need a reliable plumber',
+             'user': {'name': 'Jane', 'profile_url': 'https://fb/jane'}},
+        ]
+
+    monkeypatch.setattr(fb.apify, 'run_actor', fake_run_actor)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'plumber Manchester',
+        {'niche': 'plumber', 'location': 'Manchester', 'groups_only': True},
+        max_results=10,
+    ))
+    assert calls['groups'] == 1, 'group discovery must still be attempted first'
+    assert calls['posts'] == 1, 'must fall back to the open-feed search'
+    assert len(stubs) == 1, 'fallback must actually produce leads, not another empty result'
+    assert stubs[0]['author_profile_url'] == 'https://fb/jane'
+
+
+def test_apify_groups_unavailable_event_emitted_with_actor_id(monkeypatch):
+    """The diagnostic operators need: a loud, actionable progress event
+    naming the actor that returned nothing, not a silent search_done:0."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+
+    def fake_run_actor(actor, run_input, **kw):
+        return []  # both the groups call and the open-feed fallback come back empty
+
+    monkeypatch.setattr(fb.apify, 'run_actor', fake_run_actor)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    events = []
+    scraper = fb.FacebookScraper()
+    asyncio.run(scraper.search_posts(
+        'plumber Manchester',
+        {'niche': 'plumber', 'location': 'Manchester', 'groups_only': True},
+        max_results=10,
+        on_progress=events.append,
+    ))
+    unavailable = [e for e in events if e.get('stage') == 'apify_groups_unavailable']
+    assert len(unavailable) == 1
+    assert unavailable[0]['actor'] == fb.facebook_apify.search_actor()
+    assert unavailable[0].get('reason')
+
+
+def test_apify_groups_found_uses_group_path_and_skips_unavailable_event(monkeypatch):
+    """When group discovery DOES return groups, the existing group-posts
+    path must run unchanged and must NOT emit apify_groups_unavailable —
+    even if every group then yields zero posts, apify_groups_done already
+    tells that story."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+
+    def fake_run_actor(actor, run_input, **kw):
+        if run_input.get('search_type') == 'groups':
+            return [{'id': '111', 'name': 'Manchester Tradespeople'}]
+        return [{'url': 'https://fb/p/1', 'message': 'need a reliable plumber',
+                  'user': {'profile_url': 'https://fb/jane'}}]
+
+    monkeypatch.setattr(fb.apify, 'run_actor', fake_run_actor)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    events = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'plumber Manchester',
+        {'niche': 'plumber', 'location': 'Manchester', 'groups_only': True},
+        max_results=10,
+        on_progress=events.append,
+    ))
+    assert len(stubs) == 1
+    assert not any(e.get('stage') == 'apify_groups_unavailable' for e in events)
+    assert any(e.get('stage') == 'apify_groups_done' for e in events)
+
+
 def test_enrich_authors_uses_stub_path_by_default_and_never_opens_browser(monkeypatch):
     """The dispatch inside enrich_authors is what actually matters in
     production — a test that only calls _stub_enrich_authors directly
