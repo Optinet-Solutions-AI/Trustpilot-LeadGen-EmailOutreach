@@ -182,7 +182,13 @@ def _claim_account(platform: str = 'facebook', country: Optional[str] = None) ->
     from datetime import datetime, timezone, timedelta
     q = (
         table('social_accounts')
-        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at,country,proxy_location')
+        # select('*') — NOT an explicit column list. An explicit projection
+        # silently DROPPED adspower_profile_id (added by migration 057), so
+        # _open_driver never activated AdsPower. Naming the column instead
+        # would 400 on any database where 057 has not been applied yet, which
+        # would break every Facebook scrape; '*' is correct either way and
+        # makes future columns available without touching this call.
+        .select('*')
         .eq('platform', platform)
         .eq('status', 'active')
     )
@@ -263,11 +269,11 @@ def _load_account_by_id(account_id: str) -> dict:
     """
     rows = (
         table('social_accounts')
-        .select(
-            'id,platform,handle,status,country,proxy_location,'
-            'daily_cap,hourly_cap,comment_daily_cap,comment_used_today,'
-            'used_today,used_this_hour,encrypted_cookies,last_used_at'
-        )
+        # select('*') for the same reason as _claim_account: an explicit
+        # projection dropped adspower_profile_id on the comment path — the
+        # engagement path AdsPower exists for — and naming the column would
+        # 400 wherever migration 057 has not been applied.
+        .select('*')
         .eq('id', account_id)
         .execute()
         .data
@@ -1283,6 +1289,9 @@ from tools.scraper.shared import apify
 from tools.scraper.platforms import facebook_apify
 
 
+_DISCOVERY_SOURCES = {'apify', 'browser'}
+
+
 def _discovery_source() -> str:
     """Which discovery backend search_posts uses.
 
@@ -1291,8 +1300,21 @@ def _discovery_source() -> str:
     'browser' — the original logged-in undetected-chromedriver crawl. Kept for
                 private-group search (Apify can only see public groups) and as
                 the rollback path. Behaviour is unchanged from before Apify.
+
+    An unrecognised value fails SAFE to 'browser' (the pre-Apify behaviour)
+    but WARNS loudly first: a typo like FB_DISCOVERY=apfiy would otherwise
+    silently open a browser and burn a Facebook account's daily cap.
     """
-    return (os.environ.get('FB_DISCOVERY') or 'apify').strip().lower()
+    raw = (os.environ.get('FB_DISCOVERY') or 'apify').strip().lower()
+    if raw not in _DISCOVERY_SOURCES:
+        print(
+            f'WARN: unrecognised FB_DISCOVERY={raw!r} — expected one of '
+            f'{sorted(_DISCOVERY_SOURCES)}; falling back to the browser path '
+            f'(this claims a Facebook account and spends its daily cap)',
+            file=sys.stderr, flush=True,
+        )
+        return 'browser'
+    return raw
 
 
 def _enrich_mode() -> str:
@@ -1319,7 +1341,52 @@ def _is_non_name(value: str) -> bool:
     return re.sub(r'^\(\d+\)\s*', '', s).strip() == 'facebook'
 
 
-def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
+# Display-name markers that identify a COMPANY rather than a consumer.
+# Module-level (not inline in the browser enrich loop) because BOTH the
+# browser path (_sync_enrich_authors) and the browserless default path
+# (_stub_enrich_authors) gate on them — a second inline copy would drift.
+#
+# Generic biz suffixes (ltd/inc/llc/corp/...) catch profiles that are
+# clearly companies, not individuals. Medical-niche tokens stay because
+# plumber/handyman searches commonly surface medical-clinic ads that
+# happen to mention the niche.
+_BIZ_NAME_SUFFIXES = (
+    # Company-form markers
+    ' ltd', ' ltd.', ' limited', ' inc', ' inc.', ' llc',
+    ' corp', ' corp.', ' corporation', ' co.', ' co ',
+    ' plc', ' gmbh', ' s.r.l', ' pty', ' ag',
+    # Common business-tail descriptors
+    ' agency', ' agencies', ' services', ' solutions',
+    ' consultancy', ' consulting', ' group',
+    ' studios', ' studio',
+)
+_BIZ_NAME_NICHE_TOKENS = (
+    'clinic', 'dental', 'dentist', 'dds', 'orthodontic',
+    'spa', 'salon', 'medspa', 'wellness',
+    'pharmacy', 'medical', 'pediatric',
+)
+
+
+def _display_name_looks_like_business(display_name: str) -> bool:
+    """True when a recovered display name reads as a company, not a person.
+
+    Pure string logic, so the browserless enrichment path can apply the same
+    gate the browser path applies — Apify supplies display_name directly.
+    """
+    name_lower = (display_name or '').strip().lower()
+    if not name_lower:
+        return False
+    name_lower_padded = ' ' + name_lower + ' '
+    return (
+        any(suffix in name_lower_padded for suffix in _BIZ_NAME_SUFFIXES)
+        or any(tok in name_lower for tok in _BIZ_NAME_NICHE_TOKENS)
+    )
+
+
+def _stub_enrich_authors(
+    post_stubs: list[PostStub],
+    on_progress: ProgressCallback = None,
+) -> list[AuthorLead]:
     """Build AuthorLeads straight from PostStubs — no browser, no account.
 
     Apify already returns the two fields that key a lead row (display name and
@@ -1347,6 +1414,14 @@ def _stub_enrich_authors(post_stubs: list[PostStub]) -> list[AuthorLead]:
         name = (first.get('display_name') or '').strip()
         if not name or _is_non_name(name):
             name = handle
+        # Same display-name business gate the browser path applies
+        # (_sync_enrich_authors), using the shared marker lists. Without it
+        # 'RCA Dental Clinic' — a post that survives the excerpt filters —
+        # lands in the CRM as a consumer lead. Pure string logic, so no
+        # browser is needed; Apify already gave us the display name.
+        if _display_name_looks_like_business(name):
+            _emit(on_progress, 'enrich_skipped_business', name=name, url=profile_url)
+            continue
         lead: AuthorLead = {
             'platform': 'facebook',
             'profile_url': profile_url,
@@ -2387,6 +2462,23 @@ class FacebookScraper(SocialPlatformScraper):
                     query, filters, max_results=max_results, on_progress=on_progress,
                 )
             else:
+                # scrape_listing's group-first branch is browser-ONLY: it
+                # claims an account and drives undetected-chromedriver. When
+                # FB_DISCOVERY selects the browserless Apify path, running it
+                # anyway would silently contradict the operator's config and
+                # spend a Facebook account's daily cap. Fail loudly instead of
+                # rerouting — `list` and `search-posts` are different entry
+                # points with different contracts (list returns reshaped
+                # profile stubs), so quietly swapping one for the other would
+                # be a second surprise on top of the first.
+                if _discovery_source() == 'apify':
+                    raise RuntimeError(
+                        "FB_DISCOVERY=apify selects the browserless Apify discovery path, "
+                        "but --action list (scrape_listing) with groups_only implements only "
+                        "the browser crawl. Use --action search-posts (then --action "
+                        "enrich-authors) for Apify discovery, or set FB_DISCOVERY=browser "
+                        "to run --action list on the logged-in browser path."
+                    )
                 post_stubs = await asyncio.to_thread(
                     self._sync_group_first_scrape, niche, location, on_progress,
                     _resolve_generic_cap(filters),
@@ -2502,6 +2594,20 @@ class FacebookScraper(SocialPlatformScraper):
             return []
         # Detect consumer-mode reshape: PostStubs carry a 'post_url'.
         if any('post_url' in s for s in profile_stubs):
+            # This pivot is browser-ONLY (_sync_enrich_authors visits each
+            # profile with a logged-in account). FB_ENRICH=stub asks for the
+            # browserless path, which lives on --action enrich-authors. Fail
+            # loudly rather than rerouting: enrich_profiles' contract is
+            # profile stubs in / enriched profile dicts out, while
+            # enrich_authors returns AuthorLeads.
+            if _enrich_mode() == 'stub':
+                raise RuntimeError(
+                    "FB_ENRICH=stub selects the browserless stub-enrichment path, but "
+                    "--action enrich (enrich_profiles) implements only the browser "
+                    "profile-visit crawl. Use --action enrich-authors for stub "
+                    "enrichment, or set FB_ENRICH=browser to run --action enrich on "
+                    "the logged-in browser path."
+                )
             return await asyncio.to_thread(self._sync_enrich_authors, profile_stubs, on_progress)
         return await asyncio.to_thread(self._sync_enrich_pages, profile_stubs, screenshots_dir, on_progress)
 
@@ -2554,7 +2660,13 @@ class FacebookScraper(SocialPlatformScraper):
         # below the stamping would silently drop category/country on every
         # Apify lead.
         if _discovery_source() == 'apify':
-            search_term = f'{niche} {location}'.strip() if niche and location else query
+            # `max_results or 50` would turn an explicit 0 into 50 and spend a
+            # billable actor run (on the free plan, the day's only run).
+            resolved_max = max_results if max_results is not None else 50
+            # GROUP DISCOVERY wants a geo-stuffed term — matching a group by
+            # place name is exactly the point ("plumber Manchester" finds
+            # "Manchester Tradespeople").
+            group_search_term = f'{niche} {location}'.strip() if niche and location else query
             if groups_only:
                 if not niche or not location:
                     raise ValueError(
@@ -2562,7 +2674,7 @@ class FacebookScraper(SocialPlatformScraper):
                         "Pass groups_only=False to fall back to the open-feed search."
                     )
                 groups = await asyncio.to_thread(
-                    _discover_group_ids_via_apify, search_term, 10,
+                    _discover_group_ids_via_apify, group_search_term, 10,
                 )
                 if not groups:
                     # Live-tested 2026-08-03: both community group actors
@@ -2582,18 +2694,27 @@ class FacebookScraper(SocialPlatformScraper):
                                'community Apify actors is known non-functional — '
                                'falling back to open-feed keyword search',
                     )
+                    # OPEN-FEED fallback: the operator's `query` verbatim, same
+                    # as the non-groups_only branch below. See the comment there.
                     stubs = await asyncio.to_thread(
-                        _search_posts_via_apify, search_term, filters,
-                        max_results or 50, on_progress,
+                        _search_posts_via_apify, query, filters,
+                        resolved_max, on_progress,
                     )
                 else:
                     stubs = await asyncio.to_thread(
-                        _group_posts_via_apify, groups, max_results or 50, on_progress,
+                        _group_posts_via_apify, groups, resolved_max, on_progress,
                     )
             else:
+                # OPEN-FEED search: pass the operator's `query` through
+                # VERBATIM, exactly as the browser path does below. Replacing
+                # it with f'{niche} {location}' removed the operator's only
+                # channel for an intent-shaped query — measured live, the
+                # geo-stuffed "looking for a plumber in Manchester" returned
+                # 0 usable of 20 (all adverts), while intent phrasing like
+                # "need a plumber recommendation" returned real consumer asks.
                 stubs = await asyncio.to_thread(
-                    _search_posts_via_apify, search_term, filters,
-                    max_results or 50, on_progress,
+                    _search_posts_via_apify, query, filters,
+                    resolved_max, on_progress,
                 )
         elif groups_only:
             if not niche or not location:
@@ -2712,7 +2833,7 @@ class FacebookScraper(SocialPlatformScraper):
         if not post_stubs:
             return []
         if _enrich_mode() == 'stub':
-            leads = _stub_enrich_authors(post_stubs)
+            leads = _stub_enrich_authors(post_stubs, on_progress)
             # Detail key is `total=` on BOTH events, matching the browser
             # path (facebook.py:2900 and :3041/:3109). Anything parsing these
             # events reads `total`; emitting `enriched=` would break it.
@@ -3017,33 +3138,10 @@ class FacebookScraper(SocialPlatformScraper):
                     # Handles cases like /profile.php?id=N where the handle gave
                     # no signal but og:title revealed 'RCA Dental Clinic',
                     # 'XLRT LTD', 'Acme Web Agency', etc.
-                    #
-                    # Generic biz suffixes (ltd/inc/llc/corp/...) catch profiles
-                    # that are clearly companies, not individuals. Medical-niche
-                    # tokens stay because plumber/handyman searches commonly
-                    # surface medical-clinic ads that happen to mention the niche.
-                    biz_suffixes = (
-                        # Company-form markers
-                        ' ltd', ' ltd.', ' limited', ' inc', ' inc.', ' llc',
-                        ' corp', ' corp.', ' corporation', ' co.', ' co ',
-                        ' plc', ' gmbh', ' s.r.l', ' pty', ' ag',
-                        # Common business-tail descriptors
-                        ' agency', ' agencies', ' services', ' solutions',
-                        ' consultancy', ' consulting', ' group',
-                        ' studios', ' studio',
-                    )
-                    biz_niche_tokens = (
-                        'clinic', 'dental', 'dentist', 'dds', 'orthodontic',
-                        'spa', 'salon', 'medspa', 'wellness',
-                        'pharmacy', 'medical', 'pediatric',
-                    )
-                    name_lower = display_name.lower()
-                    name_lower_padded = ' ' + name_lower + ' '
-                    matched_biz = (
-                        any(suffix in name_lower_padded for suffix in biz_suffixes)
-                        or any(tok in name_lower for tok in biz_niche_tokens)
-                    )
-                    if matched_biz:
+                    # Marker lists live at module level (_BIZ_NAME_SUFFIXES /
+                    # _BIZ_NAME_NICHE_TOKENS) and are shared with the
+                    # browserless _stub_enrich_authors path.
+                    if _display_name_looks_like_business(display_name):
                         _emit(on_progress, 'enrich_skipped_business', name=display_name, url=profile_url)
                         continue
                     # Bio link — the first external anchor in the intro section.

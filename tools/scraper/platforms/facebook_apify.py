@@ -115,9 +115,16 @@ def build_search_input(
 ) -> dict:
     """Build the keyword-search actor's run input.
 
-    location_uid is deliberately unused: location already travels inside the
-    query string ("plumber Manchester"), and adopting Facebook's internal geo
-    IDs would require seeding a location table for marginal gain.
+    `query` is passed through verbatim and is NOT geo-stuffed by this module.
+    Callers decide: group discovery sends "<niche> <location>" (matching a
+    group by place name is the point), while open-feed post search sends the
+    operator's own query, because intent phrasing ("need a plumber
+    recommendation") returns real consumer asks where "looking for a plumber
+    in Manchester" returned only adverts.
+
+    location_uid is deliberately unused: any location the operator wants
+    travels inside the query string, and adopting Facebook's internal geo IDs
+    would require seeding a location table for marginal gain.
     """
     run_input: dict = {
         'query': query,
