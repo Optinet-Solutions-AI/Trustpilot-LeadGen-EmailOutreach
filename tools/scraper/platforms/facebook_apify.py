@@ -11,6 +11,7 @@ ACTOR INPUT KEYS
 """
 from __future__ import annotations
 
+import datetime
 import os
 from typing import Optional
 from urllib.parse import urlparse
@@ -22,6 +23,75 @@ from tools.scraper.platforms._social_base import PostStub
 # The actor's schema documents maxPages: integer with default 1, but does NOT
 # document page size. The live smoke test should confirm the real rate.
 ASSUMED_POSTS_PER_GROUP_PAGE = 10
+
+
+def _to_iso8601_timestamp(value: Optional[str | int | float]) -> Optional[str]:
+    """Convert a timestamp to ISO-8601 UTC string.
+
+    Handles:
+    - int/float Unix epoch (e.g., 1785741360 -> 2026-08-03T07:16:00+00:00)
+    - numeric string epoch (e.g., "1785741360")
+    - existing ISO string (passes through untouched)
+    - None (returns None)
+    - invalid values (returns None instead of crashing)
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        # If it looks like an ISO string (has T or Z or +/-HH:MM), pass through
+        if 'T' in value or 'Z' in value:
+            return value
+        # Try to parse as numeric string
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat()
+        except (ValueError, OSError):
+            return None
+    return None
+
+
+def _extract_media_urls(item: dict) -> list[str]:
+    """Extract media URLs from multiple actor fields.
+
+    Priority: image.uri, then video fields, then fallback to attachments.
+    Handles both dict and string shapes for forward compatibility.
+    """
+    media = []
+
+    # Primary: image.uri (single image)
+    image = item.get('image')
+    if isinstance(image, dict):
+        uri = image.get('uri')
+        if uri:
+            media.append(uri)
+
+    # Secondary: video/video_files/video_thumbnail (videos)
+    for key in ('video_files', 'video', 'video_thumbnail'):
+        field = item.get(key)
+        if isinstance(field, list):
+            for entry in field:
+                url = entry.get('uri') if isinstance(entry, dict) else entry
+                if url:
+                    media.append(url)
+        elif isinstance(field, dict):
+            url = field.get('uri')
+            if url:
+                media.append(url)
+        elif isinstance(field, str):
+            media.append(field)
+
+    # Fallback: attachments (old/alternative actor formats)
+    for att in (item.get('attachments') or []):
+        url = (att or {}).get('url') if isinstance(att, dict) else att
+        if url and url not in media:
+            media.append(url)
+
+    return media
 
 
 def search_actor() -> str:
@@ -98,11 +168,12 @@ def post_to_stub(
     if not post_url or not profile_url:
         return None
 
-    media = []
-    for att in (item.get('attachments') or []):
-        url = (att or {}).get('url') if isinstance(att, dict) else att
-        if url:
-            media.append(url)
+    # Extract media from real actor shapes (image.uri, video fields, fallback to attachments)
+    media = _extract_media_urls(item)
+
+    # Convert epoch timestamp to ISO-8601 if needed
+    posted_at = item.get('timestamp') or item.get('published_at')
+    posted_at = _to_iso8601_timestamp(posted_at) if posted_at else None
 
     stub: PostStub = {
         'platform': 'facebook',
@@ -110,7 +181,7 @@ def post_to_stub(
         'author_profile_url': profile_url,
         'author_handle': str(user.get('id') or '').strip() or _handle_from_profile_url(profile_url),
         'content_excerpt': (item.get('message') or item.get('text') or '').strip(),
-        'posted_at': item.get('timestamp') or item.get('published_at'),
+        'posted_at': posted_at,
         'media_urls': media,
     }
     # display_name is not part of the PostStub contract but the stub-enrich
@@ -118,6 +189,18 @@ def post_to_stub(
     name = (user.get('name') or '').strip()
     if name:
         stub['display_name'] = name
+
+    # Extract group context from associated_group when not explicitly passed.
+    # Explicit arguments (from group-posts path) take precedence.
+    if not group_id:
+        associated_group = item.get('associated_group')
+        if isinstance(associated_group, dict):
+            group_id = associated_group.get('group_id')
+        if not group_id:
+            group_id = item.get('associated_group_id')
+    if not group_name and isinstance(item.get('associated_group'), dict):
+        group_name = item.get('associated_group', {}).get('name')
+
     if group_id:
         stub['group_id'] = group_id
     if group_name:
