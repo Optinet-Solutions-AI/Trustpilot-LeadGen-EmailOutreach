@@ -50,7 +50,7 @@ def _to_iso8601_timestamp(value: Optional[str | int | float]) -> Optional[str]:
     if isinstance(value, (int, float)):
         try:
             return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat()
-        except (ValueError, OSError):
+        except (ValueError, OSError, OverflowError, TypeError):
             return None
     return None
 
@@ -171,9 +171,10 @@ def post_to_stub(
     # Extract media from real actor shapes (image.uri, video fields, fallback to attachments)
     media = _extract_media_urls(item)
 
-    # Convert epoch timestamp to ISO-8601 if needed
-    posted_at = item.get('timestamp') or item.get('published_at')
-    posted_at = _to_iso8601_timestamp(posted_at) if posted_at else None
+    # Convert epoch timestamp to ISO-8601 if needed.
+    # Use explicit None check (not truthiness) to preserve epoch 0.
+    posted_at = item.get('timestamp') if item.get('timestamp') is not None else item.get('published_at')
+    posted_at = _to_iso8601_timestamp(posted_at) if posted_at is not None else None
 
     stub: PostStub = {
         'platform': 'facebook',

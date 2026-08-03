@@ -286,3 +286,25 @@ def test_post_to_stub_handles_none_timestamp():
         'timestamp': None,
     })
     assert stub['posted_at'] is None
+
+
+def test_post_to_stub_handles_epoch_zero():
+    """Epoch 0 converts to 1970-01-01T00:00:00+00:00, not dropped"""
+    stub = fa.post_to_stub({
+        'url': 'https://www.facebook.com/p/14',
+        'message': 'x',
+        'user': {'profile_url': 'https://www.facebook.com/user14'},
+        'timestamp': 0,
+    })
+    assert stub['posted_at'] == '1970-01-01T00:00:00+00:00'
+
+
+def test_post_to_stub_handles_overflow_timestamp():
+    """Absurdly large epoch raises OverflowError, returns None instead of crashing"""
+    stub = fa.post_to_stub({
+        'url': 'https://www.facebook.com/p/15',
+        'message': 'x',
+        'user': {'profile_url': 'https://www.facebook.com/user15'},
+        'timestamp': 99999999999999999999,
+    })
+    assert stub['posted_at'] is None
