@@ -1231,16 +1231,38 @@ def _apply_consumer_filter_chain(
     its all-or-nothing length-mismatch guard), dropping the heuristics too
     would make raw adverts and tradespeople advertising their own
     availability into cold-email targets. That has happened once already: a
-    beauty business was saved as an electrician lead during a Frankfurt run
-    when the classifier was skipped.
+    beauty business ("My My Lashes") was saved as an electrician lead during
+    a Frankfurt run when the classifier was skipped.
+
+    That same incident exposed a SECOND hole this docstring now documents:
+    _consumer_filter_defaults() deliberately returns (False, False) for
+    non-English markets — the substring heuristics are English-only, so the
+    design intends the multilingual Gemini classifier to be the SOLE gate
+    there. That meant a Gemini outage on a non-English market used to have
+    NOTHING left to fall back to, and the old `return stubs` at the end of
+    this function shipped every unfiltered post straight to upsert_leads.py.
+    Zero leads plus a clear explanation is strictly better for this operator
+    than a contaminated leads table feeding cold email, so the fix is to
+    FAIL CLOSED: when the classifier gave no verdicts AND no
+    language-appropriate substring filter is applicable, return an EMPTY
+    list and emit 'consumer_filter_unavailable' naming the cause. This is
+    deliberate data loss, not a bug — an empty, explained batch is
+    diagnosable; a silently unfiltered one is not.
 
     Semantics, exactly:
-      - classifier returns verdicts  -> those verdicts are the SOLE gate
-      - classifier returns None      -> substring filter (the old behaviour)
-      - use_llm_classifier=False     -> substring filter (unchanged)
+      - classifier returns verdicts             -> those verdicts are the
+                                                     SOLE gate
+      - classifier returns None, substring       -> substring filter (the
+        filter applicable (English-ish market)      old behaviour)
+      - classifier returns None, NO substring    -> FAIL CLOSED: return [],
+        filter applicable (non-English market)      emit
+                                                     'consumer_filter_unavailable'
+      - use_llm_classifier=False                 -> same two rows above,
+                                                     minus the classifier call
 
     Emits the same progress stages the inline copies did — 'llm_filtered',
-    'llm_skipped' and 'consumer_filtered', with the same detail keys. The SSE
+    'llm_skipped' and 'consumer_filtered', with the same detail keys, plus
+    the new 'consumer_filter_unavailable' for the fail-closed case. The SSE
     stream and job UI parse those names; do not rename them.
     """
     if not stubs:
@@ -1248,6 +1270,7 @@ def _apply_consumer_filter_chain(
 
     exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
     use_llm_classifier = filters.get('use_llm_classifier', True)
+    substring_filter_applicable = exclude_businesses or asking_only
 
     # ── Primary gate: Gemini semantic intent classification ──────────────
     if use_llm_classifier:
@@ -1263,11 +1286,18 @@ def _apply_consumer_filter_chain(
                       dropped=llm_dropped, kept=len(llm_kept),
                       reason='Gemini classifier flagged as non-consumer')
             return llm_kept
-        _emit(on_progress, 'llm_skipped',
-              reason='GEMINI_API_KEY missing or API error — substring filter only')
+        if substring_filter_applicable:
+            _emit(on_progress, 'llm_skipped',
+                  reason='GEMINI_API_KEY missing or API error — falling back '
+                         'to the substring filter')
+        else:
+            _emit(on_progress, 'llm_skipped',
+                  reason='GEMINI_API_KEY missing or API error — no '
+                         'language-appropriate substring filter available '
+                         'for this market')
 
     # ── Fallback gate: substring heuristics (recall ~50%, precision ~80%) ─
-    if exclude_businesses or asking_only:
+    if substring_filter_applicable:
         before = len(stubs)
         kept: list = []
         for s in stubs:
@@ -1284,7 +1314,19 @@ def _apply_consumer_filter_chain(
                   reason='non-asking posts (thanks/recommend/business) removed')
         return kept
 
-    return stubs
+    # ── No verdicts AND no applicable substring filter: FAIL CLOSED ───────
+    # Nothing gated this batch — the classifier is out and this market has
+    # no language-appropriate substring safety net (see docstring / Frankfurt
+    # incident above). Dropping the whole batch beats writing it unfiltered
+    # into a leads table that feeds cold email.
+    _emit(on_progress, 'consumer_filter_unavailable',
+          location=location, dropped=len(stubs), kept=0,
+          reason=(
+              'Gemini classifier unavailable and no language-appropriate '
+              'substring filter exists for this market — dropping the '
+              'batch instead of writing it to leads unfiltered'
+          ))
+    return []
 
 
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:

@@ -1058,3 +1058,172 @@ def test_scrape_listing_group_first_still_applies_the_chain(monkeypatch):
         {**_ENGLISH_FILTERS, 'groups_only': True}, max_results=10,
     ))
     assert _excerpts(out) == [_ASK_SHOWER]
+
+
+# ==========================================================================
+# Non-English fail-closed: no verdicts AND no applicable substring filter
+# ==========================================================================
+#
+# _consumer_filter_defaults returns (False, False) for non-English markets
+# (Frankfurt/Milan/Paris/...) BY DESIGN — the substring heuristics are
+# English-only, so the multilingual Gemini classifier is meant to be the
+# SOLE gate there. That meant a Gemini outage on a non-English market used
+# to fall all the way through `_apply_consumer_filter_chain` to `return
+# stubs`: nothing was left to filter, so every advert shipped to
+# upsert_leads.py unfiltered. That is exactly how a beauty business
+# ("My My Lashes") got saved as an electrician lead during a Frankfurt run
+# when the classifier was skipped. The fix: fail CLOSED (return []) and
+# emit a named, honest event instead of silently shipping junk leads into a
+# production CRM that feeds cold email.
+
+_FRANKFURT_FILTERS = {
+    'niche': 'Klempner',
+    'location': 'Frankfurt',
+    'groups_only': False,
+}
+
+# Three adverts probed live against the Frankfurt/no-classifier path.
+# Manchester's substring filter drops all three; Frankfurt's pre-fix
+# unfiltered exit kept all three.
+_ADVERT_TALBOT = 'For all your Plumbing needs, call Talbot Plumbing'
+_ADVERT_GERMAN_TRADESMAN = (
+    'Ich biete Klempnerarbeiten an, schnell und zuverlässig, jederzeit '
+    'erreichbar. Rufen Sie mich an!'
+)
+_ADVERT_EMERGENCY = 'PLUMBING EMERGENCY? DO NOT WAIT'
+
+# A genuine German consumer ask (no CONSUMER_PATTERNS entry is German, so
+# the — inapplicable, English-only — substring filter would never have kept
+# this even if it somehow ran). Only Gemini can recognise it.
+_ASK_GERMAN = 'Ich suche einen Klempner in Frankfurt, kann jemand einen empfehlen?'
+
+
+def test_non_english_no_verdicts_fails_closed(monkeypatch):
+    """THE HOLE. Frankfurt has no substring filter (exclude_businesses=
+    asking_only=False by design), so a Gemini outage must not fall through
+    to 'keep everything' — it must drop the whole batch."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    kept = fb._apply_consumer_filter_chain(
+        [
+            _stub(_ADVERT_TALBOT, 'talbot'),
+            _stub(_ADVERT_GERMAN_TRADESMAN, 'handwerker'),
+            _stub(_ADVERT_EMERGENCY, 'emergency'),
+        ],
+        niche='Klempner', location='Frankfurt', filters=_FRANKFURT_FILTERS,
+    )
+    assert kept == []
+
+
+def test_non_english_no_verdicts_emits_consumer_filter_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    events: list = []
+    fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_TALBOT, 'talbot')],
+        niche='Klempner', location='Frankfurt', filters=_FRANKFURT_FILTERS,
+        on_progress=events.append,
+    )
+    unavailable = [e for e in events if e.get('stage') == 'consumer_filter_unavailable']
+    assert len(unavailable) == 1
+    assert unavailable[0].get('reason')
+    assert unavailable[0].get('location') == 'Frankfurt'
+    # The substring path never ran — no consumer_filtered event either.
+    assert not any(e.get('stage') == 'consumer_filtered' for e in events)
+
+
+def test_english_no_verdicts_still_falls_back_to_substring_filter(monkeypatch):
+    """Control: the English path (a language-appropriate substring filter DOES
+    exist) must be byte-for-byte unchanged by the fail-closed fix."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [
+            _stub(_ADVERT_TALBOT, 'talbot'),
+            _stub(_ADVERT_EMERGENCY, 'emergency'),
+            _stub(_ASK_PLAIN, 'jane'),
+        ],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+        on_progress=events.append,
+    )
+    assert _excerpts(kept) == [_ASK_PLAIN]
+    assert not any(e.get('stage') == 'consumer_filter_unavailable' for e in events)
+    filtered = [e for e in events if e.get('stage') == 'consumer_filtered']
+    assert len(filtered) == 1
+
+
+def test_non_english_gemini_verdicts_still_sole_gate(monkeypatch):
+    """Fix must not regress the intended non-English design: when Gemini DOES
+    answer, its verdicts are the sole gate — a genuine German ask survives
+    even though no (English-only, inapplicable) substring filter would ever
+    have kept it, and the new fail-closed event must NOT fire."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _verdicts_from({_ASK_GERMAN}),
+    )
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ASK_GERMAN, 'hans'), _stub(_ADVERT_GERMAN_TRADESMAN, 'handwerker')],
+        niche='Klempner', location='Frankfurt', filters=_FRANKFURT_FILTERS,
+        on_progress=events.append,
+    )
+    assert _excerpts(kept) == [_ASK_GERMAN]
+    assert not any(e.get('stage') == 'consumer_filter_unavailable' for e in events)
+
+
+def test_non_english_use_llm_classifier_false_also_fails_closed(monkeypatch):
+    """Operator opt-out (use_llm_classifier=False) skips Gemini entirely, but
+    the outcome on a non-English market must be identical to a Gemini outage:
+    no classifier + no applicable substring filter -> drop the batch rather
+    than ship it unfiltered."""
+    def boom(*a, **k):
+        raise AssertionError('use_llm_classifier=False must not call Gemini')
+
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', boom)
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_TALBOT, 'talbot'), _stub(_ADVERT_GERMAN_TRADESMAN, 'handwerker')],
+        niche='Klempner', location='Frankfurt',
+        filters={**_FRANKFURT_FILTERS, 'use_llm_classifier': False},
+        on_progress=events.append,
+    )
+    assert kept == []
+    unavailable = [e for e in events if e.get('stage') == 'consumer_filter_unavailable']
+    assert len(unavailable) == 1
+
+
+def test_llm_skipped_reason_is_accurate_for_english_and_non_english(monkeypatch):
+    """The 'llm_skipped' event NAME is parsed downstream and must not change,
+    but its reason string must stop falsely claiming a substring filter ran
+    when none exists for the market."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+
+    english_events: list = []
+    fb._apply_consumer_filter_chain(
+        [_stub(_ASK_PLAIN, 'jane')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+        on_progress=english_events.append,
+    )
+    english_skipped = [e for e in english_events if e.get('stage') == 'llm_skipped']
+    assert len(english_skipped) == 1
+    english_reason = english_skipped[0]['reason']
+    assert 'substring filter' in english_reason
+    assert 'no language-appropriate' not in english_reason
+
+    non_english_events: list = []
+    fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_TALBOT, 'talbot')],
+        niche='Klempner', location='Frankfurt', filters=_FRANKFURT_FILTERS,
+        on_progress=non_english_events.append,
+    )
+    non_english_skipped = [e for e in non_english_events if e.get('stage') == 'llm_skipped']
+    assert len(non_english_skipped) == 1
+    non_english_reason = non_english_skipped[0]['reason']
+    assert 'no language-appropriate' in non_english_reason
+    assert non_english_reason != english_reason
