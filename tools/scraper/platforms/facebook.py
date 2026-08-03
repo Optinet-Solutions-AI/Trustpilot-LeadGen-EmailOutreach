@@ -1182,6 +1182,111 @@ def _consumer_filter_defaults(filters: dict, location: str | None) -> tuple[bool
     )
 
 
+def _apply_consumer_filter_chain(
+    stubs: list,
+    *,
+    niche: str,
+    location: str | None,
+    filters: dict,
+    on_progress: ProgressCallback = None,
+) -> list:
+    """Keep only post stubs that look like a real consumer ASKING for the niche.
+
+    THE GEMINI CLASSIFIER IS THE GATE. The substring heuristics
+    (_looks_like_business_post / _is_actively_asking) are a FALLBACK that
+    runs ONLY when the classifier produces no verdicts.
+
+    Measured 2026-08-03 on 20 REAL posts from a live Apify search for
+    "need a plumber recommendation", labelled blind by three reviewers
+    (19/20 unanimous; consensus = 8 genuine consumer leads):
+
+        substring filter only    precision  80%   recall 50%
+        Gemini classifier only   precision 100%   recall 88%
+        substring THEN Gemini    precision 100%   recall 50%
+
+    Running the substring filter FIRST (as this chain used to) cost HALF the
+    recall for ZERO precision benefit — both configurations score 100%
+    precision. Three genuine asks were destroyed before Gemini could see
+    them, because CONSUMER_PATTERNS has 'any recommendation' and 'need a
+    good' but not 'need a recommendation' / 'need recommendations' /
+    'looking for recommendations':
+
+        "Looking for recommendations for a plumber to come in for a shower
+         to be redone."
+        "I need a recommendation for a good local plumber around Devine."
+        "House trade recommendations. I've recently moved to the area and
+         need recommendations for a structural engineer..."
+
+    Meanwhile the substring filter KEPT an advert Gemini correctly rejected
+    ("...we highly recommend Chris with Watkins Plumbing, LLC" — matches
+    CONSUMER 'in need of', and POST_EXPERIENCE_PATTERNS has 'i highly
+    recommend' but not 'we highly recommend'). Expanding the pattern lists is
+    whack-a-mole against an unbounded phrase space; the lists are visibly
+    tuned for a dentist niche in the Philippines and do not generalise.
+    DO NOT re-add a substring pre-gate.
+
+    The fallback is NOT optional. This chain is the LAST gate before
+    tools/db/upsert_leads.py — there is no downstream intent filtering. When
+    the classifier returns None (GEMINI_API_KEY unset, HTTP 429, timeout, or
+    its all-or-nothing length-mismatch guard), dropping the heuristics too
+    would make raw adverts and tradespeople advertising their own
+    availability into cold-email targets. That has happened once already: a
+    beauty business was saved as an electrician lead during a Frankfurt run
+    when the classifier was skipped.
+
+    Semantics, exactly:
+      - classifier returns verdicts  -> those verdicts are the SOLE gate
+      - classifier returns None      -> substring filter (the old behaviour)
+      - use_llm_classifier=False     -> substring filter (unchanged)
+
+    Emits the same progress stages the inline copies did — 'llm_filtered',
+    'llm_skipped' and 'consumer_filtered', with the same detail keys. The SSE
+    stream and job UI parse those names; do not rename them.
+    """
+    if not stubs:
+        return stubs
+
+    exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
+    use_llm_classifier = filters.get('use_llm_classifier', True)
+
+    # ── Primary gate: Gemini semantic intent classification ──────────────
+    if use_llm_classifier:
+        excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
+        verdicts = _classify_consumer_posts_with_gemini(
+            excerpts, niche, location=location,
+        )
+        if verdicts is not None:
+            llm_kept = [s for s, v in zip(stubs, verdicts) if v]
+            llm_dropped = len(stubs) - len(llm_kept)
+            if llm_dropped > 0:
+                _emit(on_progress, 'llm_filtered',
+                      dropped=llm_dropped, kept=len(llm_kept),
+                      reason='Gemini classifier flagged as non-consumer')
+            return llm_kept
+        _emit(on_progress, 'llm_skipped',
+              reason='GEMINI_API_KEY missing or API error — substring filter only')
+
+    # ── Fallback gate: substring heuristics (recall ~50%, precision ~80%) ─
+    if exclude_businesses or asking_only:
+        before = len(stubs)
+        kept: list = []
+        for s in stubs:
+            excerpt = s.get('content_excerpt', '') or ''
+            handle = s.get('author_handle', '') or ''
+            if exclude_businesses and _looks_like_business_post(excerpt, handle):
+                continue
+            if asking_only and not _is_actively_asking(excerpt):
+                continue
+            kept.append(s)
+        dropped = before - len(kept)
+        if dropped > 0:
+            _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
+                  reason='non-asking posts (thanks/recommend/business) removed')
+        return kept
+
+    return stubs
+
+
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
@@ -2456,12 +2561,22 @@ class FacebookScraper(SocialPlatformScraper):
                 raise ValueError("Consumer-mode Facebook scrapes require 'niche' (and ideally 'location') filters")
 
             # Escape hatch: groups_only=false uses the old open-feed flow.
+            #
+            # `already_filtered` tracks whether the stubs have already been
+            # through _apply_consumer_filter_chain. search_posts runs the whole
+            # chain internally, so re-running it here would (a) pay for a
+            # SECOND Gemini call per job and (b) re-destroy every lead the
+            # classifier just recovered, by re-applying the substring
+            # heuristics as a de-facto pre-gate. The group-first branch below
+            # returns RAW stubs, so those still need the chain.
             if filters.get('groups_only') is False:
                 query = ' '.join(p for p in (niche, location) if p)
                 post_stubs = await self.search_posts(
                     query, filters, max_results=max_results, on_progress=on_progress,
                 )
+                already_filtered = True
             else:
+                already_filtered = False
                 # scrape_listing's group-first branch is browser-ONLY: it
                 # claims an account and drives undetected-chromedriver. When
                 # FB_DISCOVERY selects the browserless Apify path, running it
@@ -2483,55 +2598,16 @@ class FacebookScraper(SocialPlatformScraper):
                     self._sync_group_first_scrape, niche, location, on_progress,
                     _resolve_generic_cap(filters),
                 )
-            # Two-layer consumer-only filter:
-            #  1. Drop business/ad posts (clinic handles, ad copy).
-            #  2. Keep only posts that look like someone ACTIVELY ASKING
-            #     for the service. Post-experience thank-you posts
-            #     ('Salamat Doc...') and recommendations ('I recommend
-            #     Dr.X') get dropped — those people already have a
-            #     dentist, they're not leads.
-            # Either filter is operator-overridable via filters.
-            exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
-            use_llm_classifier = filters.get('use_llm_classifier', True)
-            if exclude_businesses or asking_only:
-                before = len(post_stubs)
-                kept: list = []
-                for s in post_stubs:
-                    excerpt = s.get('content_excerpt', '') or ''
-                    handle = s.get('author_handle', '') or ''
-                    if exclude_businesses and _looks_like_business_post(excerpt, handle):
-                        continue
-                    if asking_only and not _is_actively_asking(excerpt):
-                        continue
-                    kept.append(s)
-                dropped = before - len(kept)
-                if dropped > 0:
-                    _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
-                          reason='non-asking posts (thanks/recommend/business) removed')
-                post_stubs = kept
-
-            # LLM final-pass classifier. Substring patterns get us to
-            # ~30% precision; Gemini Flash 2.0 lifts it to ~80-90% by
-            # judging semantic intent (recruiter vs consumer, agency
-            # pitch vs ask). Costs ~$0.01 per scrape (1 batched call).
-            # Falls through silently when GEMINI_API_KEY isn't set or
-            # the API errors — substring filter results stay in place.
-            if use_llm_classifier and post_stubs:
-                excerpts = [s.get('content_excerpt', '') or '' for s in post_stubs]
-                verdicts = _classify_consumer_posts_with_gemini(
-                    excerpts, niche, location=location,
+            # Consumer-only filter chain — ONE shared implementation (see
+            # _apply_consumer_filter_chain). Gemini's verdicts are the gate;
+            # the substring heuristics are the fallback for when the
+            # classifier returns nothing. Skipped entirely when search_posts
+            # already ran it, so the open-feed path filters exactly once.
+            if not already_filtered:
+                post_stubs = _apply_consumer_filter_chain(
+                    post_stubs, niche=niche, location=location,
+                    filters=filters, on_progress=on_progress,
                 )
-                if verdicts is not None:
-                    llm_kept = [s for s, v in zip(post_stubs, verdicts) if v]
-                    llm_dropped = len(post_stubs) - len(llm_kept)
-                    if llm_dropped > 0:
-                        _emit(on_progress, 'llm_filtered',
-                              dropped=llm_dropped, kept=len(llm_kept),
-                              reason='Gemini classifier flagged as non-consumer')
-                    post_stubs = llm_kept
-                else:
-                    _emit(on_progress, 'llm_skipped',
-                          reason='GEMINI_API_KEY missing or API error — substring filter only')
 
             # Reshape PostStubs into profile-stub form so the list→enrich
             # orchestrator can drive them. Anonymous posts (group asks
@@ -2759,55 +2835,22 @@ class FacebookScraper(SocialPlatformScraper):
         # The "looking for plumber in Birmingham" runs happened to look clean
         # only because FB returned mostly-relevant posts for common niches.
         #
-        # Moving the chain HERE means every call path (scrape_listing AND the
-        # direct search-posts action) gets the filters. The duplicate filter
-        # block in scrape_listing becomes a no-op on already-clean stubs.
+        # Running the chain HERE means every call path (scrape_listing AND the
+        # direct search-posts action) gets the filters. scrape_listing's
+        # open-feed branch marks these stubs already-filtered and does NOT run
+        # the chain a second time — that double-run used to pay for two Gemini
+        # calls per job AND re-destroy the leads this call just recovered.
         # Operator can disable via filters.exclude_businesses / asking_only /
         # use_llm_classifier. exclude_businesses and asking_only default ON for
-        # English markets and OFF for non-English (multilingual Gemini classifier
-        # is the sole gate there); an explicit filter value always wins.
+        # English markets and OFF for non-English; they now gate the FALLBACK
+        # path only (see _apply_consumer_filter_chain) — an explicit filter
+        # value always wins.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
-            exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
-            use_llm_classifier = filters.get('use_llm_classifier', True)
-
-            if exclude_businesses or asking_only:
-                before = len(stubs)
-                kept: list = []
-                for s in stubs:
-                    excerpt = s.get('content_excerpt', '') or ''
-                    handle = s.get('author_handle', '') or ''
-                    if exclude_businesses and _looks_like_business_post(excerpt, handle):
-                        continue
-                    if asking_only and not _is_actively_asking(excerpt):
-                        continue
-                    kept.append(s)
-                dropped = before - len(kept)
-                if dropped > 0:
-                    _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
-                          reason='non-asking posts (thanks/recommend/business) removed')
-                stubs = kept
-
-            # LLM final-pass — substring patterns are ~30% precision; Gemini Flash
-            # lifts to ~80-90% by judging semantic intent. Falls through silently
-            # when GEMINI_API_KEY isn't set or the API errors.
-            if use_llm_classifier and stubs:
-                excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
-                niche_for_llm = niche or query
-                verdicts = _classify_consumer_posts_with_gemini(
-                    excerpts, niche_for_llm, location=location,
-                )
-                if verdicts is not None:
-                    llm_kept = [s for s, v in zip(stubs, verdicts) if v]
-                    llm_dropped = len(stubs) - len(llm_kept)
-                    if llm_dropped > 0:
-                        _emit(on_progress, 'llm_filtered',
-                              dropped=llm_dropped, kept=len(llm_kept),
-                              reason='Gemini classifier flagged as non-consumer')
-                    stubs = llm_kept
-                else:
-                    _emit(on_progress, 'llm_skipped',
-                          reason='GEMINI_API_KEY missing or API error — substring filter only')
+            stubs = _apply_consumer_filter_chain(
+                stubs, niche=niche or query, location=location,
+                filters=filters, on_progress=on_progress,
+            )
 
         return stubs
 

@@ -761,3 +761,300 @@ def test_enrich_authors_default_path_drops_business_named_authors(monkeypatch):
          'display_name': 'Jane Doe'},
     ]))
     assert [lead['display_name'] for lead in leads] == ['Jane Doe']
+
+
+# ==========================================================================
+# Gemini is the GATE; the substring heuristics are the FALLBACK
+# ==========================================================================
+#
+# Every excerpt below is a REAL post from the live Apify search for
+# "need a plumber recommendation" (2026-08-03, 20 posts, labelled blind by
+# three reviewers, 19/20 unanimous). Measured on that ground truth:
+#
+#   substring filter only   precision  80%   recall 50%
+#   Gemini classifier only  precision 100%   recall 88%
+#   substring THEN Gemini   precision 100%   recall 50%   <- as shipped
+#
+# The pre-gate cost half the recall for zero precision benefit. Do not
+# re-add it.
+
+# Genuine consumer asks the substring filter DESTROYS (no CONSUMER_PATTERN
+# covers 'looking for recommendations' / 'need a recommendation' /
+# 'need recommendations').
+_ASK_SHOWER = 'Looking for recommendations for a plumber to come in for a shower to be redone.'
+_ASK_DEVINE = 'I need a recommendation for a good local plumber around Devine.'
+_ASK_MOVED = (
+    "House trade recommendations. I've recently moved to the area and need "
+    'recommendations for a structural engineer and a plumber.'
+)
+
+# Advert the substring filter KEEPS (matches CONSUMER 'in need of';
+# POST_EXPERIENCE_PATTERNS has 'i highly recommend' but not 'we highly
+# recommend') and Gemini correctly rejects.
+_ADVERT_KEPT_BY_SUBSTRING = (
+    'If anyone is in need of a reliable & honest plumber, we highly recommend '
+    'Chris with Watkins Plumbing, LLC'
+)
+
+# Advert the substring filter DOES drop — the safety net that has to survive
+# a Gemini outage.
+_ADVERT_DROPPED_BY_SUBSTRING = (
+    'Need a plumber? Look no further! ABC Plumbing offers free quotes, '
+    '24/7 service and competitive prices.'
+)
+
+# Consumer ask both layers agree on.
+_ASK_PLAIN = 'Anyone know a plumber in Manchester who can look at a leaking radiator?'
+
+_ENGLISH_FILTERS = {
+    'niche': 'plumber',
+    'location': 'Manchester',
+    'groups_only': False,
+    'exclude_businesses': True,
+    'asking_only': True,
+}
+
+
+def _stub(text: str, handle: str = 'jane') -> dict:
+    return {
+        'platform': 'facebook',
+        'content_excerpt': text,
+        'author_handle': handle,
+        'author_profile_url': f'https://fb/{handle}',
+        'post_url': f'https://fb/p/{handle}',
+    }
+
+
+def _verdicts_from(accepted: set):
+    """Fake classifier: accepts exactly the excerpts in `accepted`."""
+    def fake(excerpts, niche, location=None, **kw):
+        return [e in accepted for e in excerpts]
+    return fake
+
+
+def _excerpts(stubs) -> list:
+    return [s['content_excerpt'] for s in stubs]
+
+
+def test_substring_filter_alone_rejects_the_three_recovered_asks():
+    """Ground truth for the tests below: these are genuine consumer asks that
+    the substring heuristics get WRONG. If a future pattern-list edit makes
+    them pass, this test tells you the recovered-recall tests below stopped
+    proving anything."""
+    for text in (_ASK_SHOWER, _ASK_DEVINE, _ASK_MOVED):
+        assert not fb._is_actively_asking(text), text
+    # ...and the advert the heuristics wrongly KEEP.
+    assert fb._is_actively_asking(_ADVERT_KEPT_BY_SUBSTRING)
+    assert not fb._looks_like_business_post(_ADVERT_KEPT_BY_SUBSTRING, '')
+
+
+def test_gemini_verdicts_are_the_sole_gate(monkeypatch):
+    """+75% recall: a post the substring filter would reject but Gemini
+    accepts must SURVIVE. Fails before the fix, because the substring
+    pre-gate destroys the post before Gemini ever sees it."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _verdicts_from({_ASK_SHOWER, _ASK_DEVINE, _ASK_MOVED, _ASK_PLAIN}),
+    )
+    stubs = [_stub(t, f'u{i}') for i, t in enumerate(
+        (_ASK_SHOWER, _ASK_DEVINE, _ASK_MOVED, _ASK_PLAIN))]
+
+    kept = fb._apply_consumer_filter_chain(
+        stubs, niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+    )
+    assert _excerpts(kept) == [_ASK_SHOWER, _ASK_DEVINE, _ASK_MOVED, _ASK_PLAIN]
+
+
+def test_gemini_rejection_drops_a_post_the_substring_filter_would_keep(monkeypatch):
+    """The 'we highly recommend Chris' advert. Gemini's verdict is the gate in
+    BOTH directions — it drops as well as keeps."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', _verdicts_from({_ASK_PLAIN}),
+    )
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_KEPT_BY_SUBSTRING, 'watkins'), _stub(_ASK_PLAIN, 'jane')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+    )
+    assert _excerpts(kept) == [_ASK_PLAIN]
+
+
+def test_no_verdicts_falls_back_to_the_substring_filter(monkeypatch):
+    """THE SAFETY TEST. This chain is the last gate before upsert_leads.py —
+    there is no downstream intent filtering. When Gemini returns None
+    (missing key, 429, timeout, length-mismatch guard) the fallback must be
+    today's substring behaviour, NOT 'keep everything'. A beauty business was
+    once saved as an electrician lead exactly because the classifier was
+    skipped."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    kept = fb._apply_consumer_filter_chain(
+        [
+            _stub(_ADVERT_DROPPED_BY_SUBSTRING, 'abcplumbing'),
+            _stub('Available for work - all plumbing work undertaken, fully '
+                  'insured and qualified, no job too small.', 'tradesman'),
+            _stub(_ASK_PLAIN, 'jane'),
+        ],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+    )
+    assert _excerpts(kept) == [_ASK_PLAIN], 'fallback must still drop adverts'
+
+
+def test_no_verdicts_fallback_is_exactly_todays_substring_behaviour(monkeypatch):
+    """Corollary of the test above: on the None path the recovered asks are
+    dropped again (recall ~50%). That is the documented cost of a Gemini
+    outage — losing leads beats emailing tradesmen."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ASK_SHOWER, 'a'), _stub(_ASK_PLAIN, 'b')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+    )
+    assert _excerpts(kept) == [_ASK_PLAIN]
+
+
+def test_llm_skipped_event_still_fires_on_the_none_path(monkeypatch):
+    """The SSE stream and job UI parse this stage name — it must not be
+    renamed or dropped."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    events: list = []
+    fb._apply_consumer_filter_chain(
+        [_stub(_ASK_PLAIN, 'jane')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+        on_progress=events.append,
+    )
+    skipped = [e for e in events if e.get('stage') == 'llm_skipped']
+    assert len(skipped) == 1
+    assert skipped[0].get('reason')
+
+
+def test_consumer_filtered_event_still_fires_on_the_fallback_path(monkeypatch):
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    events: list = []
+    fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_DROPPED_BY_SUBSTRING, 'abc'), _stub(_ASK_PLAIN, 'jane')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+        on_progress=events.append,
+    )
+    filtered = [e for e in events if e.get('stage') == 'consumer_filtered']
+    assert len(filtered) == 1
+    assert filtered[0]['dropped'] == 1
+    assert filtered[0]['kept'] == 1
+    assert filtered[0].get('reason')
+
+
+def test_llm_filtered_event_still_fires_with_the_same_detail_keys(monkeypatch):
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', _verdicts_from({_ASK_PLAIN}),
+    )
+    events: list = []
+    fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_KEPT_BY_SUBSTRING, 'watkins'), _stub(_ASK_PLAIN, 'jane')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+        on_progress=events.append,
+    )
+    filtered = [e for e in events if e.get('stage') == 'llm_filtered']
+    assert len(filtered) == 1
+    assert filtered[0]['dropped'] == 1
+    assert filtered[0]['kept'] == 1
+    assert filtered[0].get('reason')
+    # The substring filter must NOT have run, so no consumer_filtered event.
+    assert not any(e.get('stage') == 'consumer_filtered' for e in events)
+
+
+def test_use_llm_classifier_false_applies_the_substring_filter(monkeypatch):
+    """Operator opt-out is unchanged: no classifier call at all, substring
+    heuristics gate the output."""
+    def boom(*a, **k):
+        raise AssertionError('use_llm_classifier=False must not call Gemini')
+
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', boom)
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_DROPPED_BY_SUBSTRING, 'abc'),
+         _stub(_ASK_SHOWER, 'a'),
+         _stub(_ASK_PLAIN, 'jane')],
+        niche='plumber', location='Manchester',
+        filters={**_ENGLISH_FILTERS, 'use_llm_classifier': False},
+    )
+    assert _excerpts(kept) == [_ASK_PLAIN]
+
+
+def _apify_returning(texts):
+    def fake_run_actor(actor, run_input, **kw):
+        if run_input.get('search_type') == 'groups':
+            return []
+        return [
+            {'url': f'https://fb/p/{i}', 'message': t,
+             'user': {'name': f'U{i}', 'profile_url': f'https://fb/u{i}'}}
+            for i, t in enumerate(texts)
+        ]
+    return fake_run_actor
+
+
+def test_search_posts_lets_gemini_recover_the_substring_rejects(monkeypatch):
+    """End-to-end through the real entry point, not just the helper."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    monkeypatch.setattr(fb.apify, 'run_actor', _apify_returning(
+        [_ASK_SHOWER, _ADVERT_KEPT_BY_SUBSTRING]))
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', _verdicts_from({_ASK_SHOWER}),
+    )
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation', dict(_ENGLISH_FILTERS), max_results=10,
+    ))
+    assert _excerpts(stubs) == [_ASK_SHOWER]
+
+
+def test_scrape_listing_open_feed_classifies_once_not_twice(monkeypatch):
+    """scrape_listing(groups_only=False) delegates to search_posts, which has
+    ALREADY run the whole chain. The old code then re-ran the substring
+    pre-gate plus a SECOND Gemini call on the result — re-destroying every
+    recovered lead and paying twice per job."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    monkeypatch.setattr(fb.apify, 'run_actor', _apify_returning(
+        [_ASK_SHOWER, _ASK_DEVINE]))
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    calls = {'n': 0}
+    accept_all = _verdicts_from({_ASK_SHOWER, _ASK_DEVINE})
+
+    def counting(excerpts, niche, location=None, **kw):
+        calls['n'] += 1
+        return accept_all(excerpts, niche, location=location, **kw)
+
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', counting)
+
+    scraper = fb.FacebookScraper()
+    out = asyncio.run(scraper.scrape_listing(dict(_ENGLISH_FILTERS), max_results=10))
+    assert calls['n'] == 1, 'the classifier must be invoked exactly once per job'
+    assert _excerpts(out) == [_ASK_SHOWER, _ASK_DEVINE]
+
+
+def test_scrape_listing_group_first_still_applies_the_chain(monkeypatch):
+    """The group-first branch produces RAW stubs (it never goes through
+    search_posts), so the chain must still run there — otherwise adverts
+    reach upsert_leads unfiltered."""
+    monkeypatch.setenv('FB_DISCOVERY', 'browser')
+    monkeypatch.setattr(
+        fb.FacebookScraper, '_sync_group_first_scrape',
+        lambda self, niche, location, on_progress, cap: [
+            _stub(_ADVERT_KEPT_BY_SUBSTRING, 'watkins'),
+            _stub(_ASK_SHOWER, 'jane'),
+        ],
+    )
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', _verdicts_from({_ASK_SHOWER}),
+    )
+    scraper = fb.FacebookScraper()
+    out = asyncio.run(scraper.scrape_listing(
+        {**_ENGLISH_FILTERS, 'groups_only': True}, max_results=10,
+    ))
+    assert _excerpts(out) == [_ASK_SHOWER]
