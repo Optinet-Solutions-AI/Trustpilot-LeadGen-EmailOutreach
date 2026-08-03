@@ -1,6 +1,6 @@
 # Workflow: Scrape Facebook
 
-**Objective:** Discover consumer leads asking for a service ("looking for a plumber in Manchester") across public Facebook posts and groups, build author leads, and upsert via the multi-platform path — without opening a browser or risking a connected account.
+**Objective:** Discover consumer leads asking for a service ("need a plumber recommendation" — see the phrasing warning under Network strategy before choosing a query) across public Facebook posts, build author leads, and upsert via the multi-platform path — without opening a browser or risking a connected account.
 
 Facebook used to require a logged-in `undetected-chromedriver` session for every step, which capped throughput at the `social_accounts.daily_cap` (real ban risk, Windows-only, one scrape/day in practice). Since 2026-07-31 discovery and author enrichment default to **Apify** — a cookieless actor platform that returns public post/group data over plain HTTP. No account, no cap, no fingerprint, and it runs on Cloud Run and Linux workers (see `server/src/services/social-routing.ts` → `facebookJobUsesBrowser` / `shouldRefuseSocialOnLinux`). The browser path still exists and is still required for two things the Apify actors cannot see: **private groups** and **engagement** (opening a lead's post, commenting, DMs).
 
@@ -14,9 +14,9 @@ Facebook used to require a logged-in `undetected-chromedriver` session for every
 | `niche` | yes (group-first mode) | Service term, e.g. `plumber`. Auto-translated to the local language of `location` via Gemini before searching (English-primary countries skip translation). |
 | `location` | yes (group-first mode) | City name. Resolved to an ISO-2 country for account pinning, proxy routing, and result filtering. |
 | `lead_type` | no | `consumers` (default) runs the asking-vs-business filter chain; anything else skips it. |
-| `groups_only` | no | Default `true` — group-first discovery (the only path that reliably yields real asks; see Network strategy). Set `false` for the open-feed `/search` scrape. |
+| `groups_only` | no | **Two different defaults, on purpose — know which one applies.** The platform manifest / dashboard default is **`false`** (`server/src/routes/scrape.ts`), and `scrape-runner.ts` always sends the key explicitly, so **any job started from the UI defaults to open-feed**. The Python plugin's own default is **`true`**, which only takes effect on direct `run.py` CLI runs and direct-DB-insert jobs that omit the key. Either way it makes little practical difference today: group mode is non-functional (see Network strategy) and the code falls back to open-feed. |
 | `max_results` | no | Default 50. **Free Apify plan hard-caps this at 20 regardless of what you pass.** |
-| `start_date` / `end_date` | no | Passed straight through to the search actor. |
+| `start_date` / `end_date` | no | Recency window passed through to the search actor. **`start_date` is NOT reachable from the dashboard**: the manifest exposes `date_from` / `date_to`, nothing maps those onto `start_date`, so the Apify router never sees a UI-supplied window. Usable only from a direct CLI `--filters` payload or a direct-DB-insert job that spells the key `start_date`. |
 | `generic_group_cap` | no | Default 5 — caps how many non-obviously-relevant discovered groups get searched per run (tier-0 groups after relevance ranking). |
 | `exclude_businesses` / `asking_only` | no | Default ON for English markets, OFF for non-English (the multilingual Gemini classifier is the sole gate there). Explicit value always wins. |
 | `use_llm_classifier` | no | Default `true` — final Gemini consumer-vs-business pass after the substring filters. |
@@ -27,8 +27,8 @@ Facebook used to require a logged-in `undetected-chromedriver` session for every
 
 | Value | Behavior | When to use |
 |---|---|---|
-| `apify` (default) | Cookieless Apify actor call. No account, no cap, no browser — runs on Cloud Run / Linux workers. Can only see **public** groups and the open feed. | Everything except private-group monitoring. |
-| `browser` | Original logged-in `undetected-chromedriver` crawl via `_sync_group_first_scrape` / `_sync_search_posts`. Claims a `social_accounts` row, burns daily/hourly cap, Windows/residential-IP only. | Private groups the connected account has already joined. This is the **only** way in — Apify's actors are cookieless and structurally cannot see private-group content. |
+| `apify` (default) | Cookieless Apify actor call. No account, no cap, no browser — runs on Cloud Run / Linux workers. **Open-feed keyword search only in practice** — both community group actors are non-functional (see Network strategy), so group mode falls back to open feed. | Everything except group-scoped and private-group work. |
+| `browser` | Original logged-in `undetected-chromedriver` crawl via `_sync_group_first_scrape` / `_sync_search_posts`. Claims a `social_accounts` row, burns daily/hourly cap, Windows/residential-IP only. | **Any group-scoped work at all** — private groups the account has joined (Apify's actors are cookieless and structurally cannot see private content) *and*, as of 2026-08-03, public groups too, because both community group actors return 0 items. |
 
 Read via `_discovery_source()` in `tools/scraper/platforms/facebook.py`, `(os.environ.get('FB_DISCOVERY') or 'apify').strip().lower()`. The TypeScript routing helper (`facebookJobUsesBrowser` in `server/src/services/social-routing.ts`) mirrors the same `or` + `.trim().toLowerCase()` fallback so the two sides never disagree about whether a job needs a browser.
 
@@ -60,6 +60,10 @@ Read via `_discovery_source()` in `tools/scraper/platforms/facebook.py`, `(os.en
 
 ## Network strategy
 
+> ### ⚠️ Read this first — query phrasing is the biggest lever on cost per lead (2026-08-03 finding)
+>
+> Geo-stuffed, advertisement-shaped phrasings like **`"looking for a plumber in Manchester"`** returned **0 usable results out of 20** — every item was a business advert. Intent-shaped phrasings like **`"need a plumber recommendation"`** returned genuine consumer asks. Prefer short, natural "someone asking a friend" phrasing over keyword-stuffed geo+service strings when building `query` (or `niche`+`location`). On a paid plan this single choice is the difference between a viable and a worthless cost per lead — nothing else in this document moves the number as much.
+
 **Two backends, picked by `FB_DISCOVERY`:**
 
 | Path | Reaches | Cost |
@@ -77,13 +81,13 @@ If either actor is swapped via `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_A
 
 **Apify FREE plan: 20 results per run, 1 run per 24 hours.** This is a hard platform limit, not something the code can work around — `max_results` above 20 is silently truncated by Apify itself. A paid plan (~$39/mo) is required for real volume. Every `run_actor()` call is retried on transport errors and 5xx, and raises `ApifyCreditError` (402) or `ApifyError` (anything else 4xx/malformed) rather than ever returning an empty list for a billing/config fault — an empty list must always mean "genuinely no results."
 
-**Open-feed keyword search is ad-heavy.** With `groups_only=false`, the `/search` results are dominated by business posts phrased as consumer asks ("Looking for a plumber? We've got you covered!"). `groups_only=true` (the default) discovers relevant public groups first and searches inside them, which yields a much cleaner yield — but is still not clean on its own. The Gemini consumer classifier (`social_nlp.classify_consumer_posts_with_gemini`) is the real gate in both modes; **measure qualified yield (`returned` from Apify vs. final stub count after the classifier) before scaling spend**, especially on a paid plan where a bad ratio burns real money.
+**Open-feed keyword search is ad-heavy, and open-feed is all you get.** The `/search` results are dominated by business posts phrased as consumer asks ("Looking for a plumber? We've got you covered!"). Group-first discovery would in principle be cleaner, but **it does not work with the current actors** (see two paragraphs down) — setting `groups_only=true` does not buy you a cleaner feed, it just makes the run attempt group discovery, fail, and fall back to the same open-feed search. So the two real levers on precision are (1) **query phrasing** — see the phrasing note below, it is the single biggest one — and (2) the Gemini consumer classifier (`social_nlp.classify_consumer_posts_with_gemini`), which is the actual gate. **Measure qualified yield (`returned` from Apify vs. final stub count after the classifier) before scaling spend**, especially on a paid plan where a bad ratio burns real money.
 
 **Private groups remain invisible to the Apify actors** — they are cookieless by design and can only enumerate what's public. There is no workaround inside the Apify path; it is `FB_DISCOVERY=browser` with an account that has already joined the group, or nothing.
 
 **Both community group actors are non-functional (live-tested 2026-08-03).** `scrapeforge/facebook-search-posts` with `search_type=groups` returned **0 items** even for a deliberately broad one-word query (`"Manchester"`) — `groups` is a documented enum value in the actor's inputSchema, but the actor does not deliver on it. `data-slayer/facebook-group-posts` returned **0 items** even for its own documented default input (`groupId: "new york"`). `search_type=posts` (open-feed) works fine — it returned 20 real, well-formed consumer posts in the same test session. **Practical consequence: Apify discovery is open-feed only right now**, regardless of the `groups_only` filter — the code still attempts group discovery first (actor IDs are env-swappable via `APIFY_FB_SEARCH_ACTOR`/`APIFY_FB_GROUP_POSTS_ACTOR`, so the capability stays wired for whenever a working group actor turns up), but when discovery comes back empty it emits `apify_groups_unavailable` (actor id + reason) and falls back to `_search_posts_via_apify` automatically — the job still produces leads instead of silently returning zero. Any work that genuinely needs group-scoped or private-group coverage still requires `FB_DISCOVERY=browser` with an account that has joined the group.
 
-**Query phrasing is the biggest lever on cost per lead (2026-08-03 finding).** Geo-stuffed advertisement-shaped phrasings like `"looking for a plumber in Manchester"` returned 0 usable results out of 20 (all ads). Intent-shaped phrasings like `"need a plumber recommendation"` returned real consumer asks. Prefer short, natural "someone asking a friend" phrasing over keyword-stuffed geo+service strings when building the `query`/`niche`+`location` search term.
+(Query-phrasing guidance is at the top of this section — it is the first thing to get right.)
 
 ---
 
@@ -97,8 +101,8 @@ If either actor is swapped via `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_A
 | `author_profile_url` | `item.user.profile_url` or `item.user.url` |
 | `author_handle` | `item.user.id`, else derived from the profile URL path (`profile.php?id=123` → `123`) |
 | `content_excerpt` | `item.message` or `item.text` |
-| `posted_at` | `item.timestamp` or `item.published_at` |
-| `media_urls` | `item.attachments[].url` |
+| `posted_at` | `item.timestamp` or `item.published_at`. The live actor returns a **Unix epoch integer**, which `_to_iso8601_timestamp()` converts to an ISO-8601 UTC string; already-ISO strings pass through unchanged. |
+| `media_urls` | `item.image.uri` first, then the video fields (`item.video_files` / `item.video` / `item.video_thumbnail`). **There is no `attachments` key in the real actor payload** (verified against live output 2026-08-03) — `item.attachments[].url` is kept only as a last-resort fallback for older/alternative actor shapes, so do not rely on it. |
 | `display_name` (stub-enrich only, not part of the `PostStub` contract) | `item.user.name` |
 
 ---
@@ -147,7 +151,7 @@ If either actor is swapped via `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_A
 | `ApifyError: APIFY_API_TOKEN is not set` | Missing env var | Set `APIFY_API_TOKEN` in `.env` (or Cloud Run env) |
 | `ApifyCreditError` (HTTP 402) | Free-plan run limit hit (20 results / 1 run per 24h), or paid credit exhausted | Wait for the 24h window, or upgrade the Apify plan |
 | `ApifyError: ... rejected the request — HTTP 4xx` | Actor input shape changed, or a bad actor id in `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_ACTOR` | Re-probe with `apify.get_actor_input_schema()`; fix `facebook_apify.build_search_input()` / `build_group_posts_input()` |
-| Every post looks like a business ad | Ran in open-feed mode (`groups_only=false`) or the Gemini classifier is disabled | Use `groups_only=true` (default); confirm `GEMINI_API_KEY` is set so `use_llm_classifier` actually runs |
+| Every post looks like a business ad | Advertisement-shaped query phrasing, and/or the Gemini classifier is disabled | **Rephrase the query** to an intent-shaped ask (`"need a plumber recommendation"`, not `"looking for a plumber in Manchester"`) — this is the biggest fix by far; and confirm `GEMINI_API_KEY` is set so `use_llm_classifier` actually runs. **`groups_only=true` is NOT a fix** — both group actors are non-functional, so the run just falls back to the same open-feed search. Genuine group-scoped coverage needs `FB_DISCOVERY=browser` with an account that has joined the groups |
 | `RuntimeError: Cannot determine the scrape's target country` | Browser mode with no resolvable `country`/`location` in filters | Pass a `country`, or a `location` that maps via `_extract_country_from_excerpt` |
 | `RuntimeError: No active Facebook account pinned to country X` (browser mode only) | No `social_accounts` row active for that country | Connect/pin an account in Social Accounts |
 | Group posts return 0 for a real public group | `data-slayer/facebook-group-posts` skipped that group and emitted `group_skipped` | Non-fatal by design — check the `reason` in the progress event; other groups in the batch still run |
@@ -168,6 +172,7 @@ If either actor is swapped via `APIFY_FB_SEARCH_ACTOR` / `APIFY_FB_GROUP_POSTS_A
 | `GEMINI_API_KEY` (or `NEXT_PUBLIC_GEMINI_API_KEY`) | Recommended | Powers the consumer/business classifier and niche translation; falls back to substring-only filtering when unset |
 | `RESIDENTIAL_PROXY_*` | Only for `FB_DISCOVERY=browser` / engagement | Same shared residential proxy used by IG and Yelp's relay path |
 | `FB_PROFILE_DIR` | Only for `FB_DISCOVERY=browser` / engagement | Persistent logged-in Chrome profile |
+| `ADSPOWER_PROFILE_ID` | No — and **do not put it in `.env`** | One-shot **command-line** override naming a single AdsPower profile for the **Facebook** browser/engagement path. Normally the profile id comes from the claimed `social_accounts` row (`adspower_profile_id`); this env var is only the fallback for callers with no account row (interactive login, the browse worker). It is a **process-global naming exactly one profile**, so putting it in `.env` makes every Facebook session on the host share that one profile. Set it inline for the one command that needs it (`ADSPOWER_PROFILE_ID=<id> .venv/Scripts/python.exe ...`) and let it die with the process. It is scoped to Facebook only — Instagram (`IG_PROFILE_DIR`) ignores it. |
 
 `ADSPOWER_API_BASE` / `ADSPOWER_API_KEY` are consumed by the engagement path (`post_comment()` → `_open_driver()`), not discovery — see the AdsPower section of `CLAUDE.md`'s environment table for the documented-vs-real host gotcha.
 
@@ -179,13 +184,13 @@ Per the project's standing rule, no scraper change ships on fixture tests alone.
 
 ```bash
 .venv/Scripts/python.exe -m tools.scraper.run --platform facebook --action search-posts \
-  --filters '{"query":"looking for a plumber in Manchester","niche":"plumber","location":"Manchester","lead_type":"consumers","groups_only":false,"max_results":20}' \
+  --filters '{"query":"need a plumber recommendation","niche":"plumber","location":"Manchester","lead_type":"consumers","groups_only":false,"max_results":20}' \
   --output .tmp/fb_apify_smoke.json
 ```
 
 Confirm: `PROGRESS:apify_run` with a non-zero `returned`, then `PROGRESS:search_done`, and the output file contains stubs with populated `post_url`, `author_profile_url`, `content_excerpt`. **Record the yield** (`returned` vs. the final stub count after the Gemini filter) — that ratio is the number to watch before scaling Apify spend.
 
-**Respect the free-plan limit before running this** — 20 results per run, 1 run per 24 hours. Running it twice in a day burns the day's only shot at live validation.
+**Respect the free-plan limit before running this** — 20 results per run, 1 run per 24 hours. Running it twice in a day burns the day's only shot at live validation. With only one shot, **use an intent-shaped query** (as above) — a geo-stuffed advert-shaped query wastes the whole day's run on adverts.
 
 Full chain to the database (only after the discovery smoke above looks right):
 

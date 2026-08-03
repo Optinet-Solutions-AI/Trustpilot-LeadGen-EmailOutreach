@@ -251,6 +251,7 @@ trustpilot-leadgen/
 | `FB_ENRICH` | `stub` (build leads from the Apify search result, no browser — default) or `browser` (visit each author profile for bio/website/email, burns account quota) | `stub` |
 | `ADSPOWER_API_BASE` | Local API base URL for the AdsPower engagement browser (isolated per-account fingerprints — NOT a proxy). Requires the desktop client running on this host + a paid plan. AdsPower's own docs say `local.adspower.net`; verified live 2026-07-31 the real host was `local.adspower.com` — their docs are wrong (also wrong on the local config file path: real is `%APPDATA%\adspower_global\cwd_global\source\local_api`, not `%LOCALAPPDATA%`) | `http://local.adspower.com:50325` |
 | `ADSPOWER_API_KEY` | Only needed when AdsPower's "Security Verification" is enabled in the client; sent as `Authorization: Bearer <key>`. Generating a key requires a paid plan | unset |
+| `ADSPOWER_PROFILE_ID` | **One-shot command-line override only — do NOT add this to `.env`.** Names a single AdsPower profile for the **Facebook** browser/engagement path. The profile id normally comes from the claimed `social_accounts` row (`adspower_profile_id`); this var is only the fallback for callers with no account row (interactive login, browse worker). Because it is process-global and names exactly one profile, putting it in `.env` makes every Facebook session on the host share that profile. Set it inline on the single command that needs it. Scoped to Facebook — Instagram sessions ignore it. | unset (intentionally) |
 | `API_SECRET_KEY` | Internal API auth | set |
 | `PORT` | API port | `3001` |
 
@@ -459,10 +460,21 @@ See `docs/deployment.md` for complete reference.
   working group actor turns up), but an empty result now emits `apify_groups_unavailable`
   (actor id + reason) and falls back to the open-feed search automatically instead of
   silently returning 0 leads. Private/group-scoped work still needs `FB_DISCOVERY=browser`.
-  Query phrasing dominates yield: geo-stuffed phrasings like "looking for a plumber in
-  Manchester" returned 0 usable results out of 20 (all adverts), while intent phrasings
-  like "need a plumber recommendation" returned real consumer asks — the biggest lever on
-  cost per lead.
+  **Setting `groups_only=true` is not a remedy for an ad-heavy feed** — it just triggers the
+  failed group attempt and the same open-feed fallback.
+- **Query phrasing is the single biggest lever on cost per lead (2026-08-03).** Geo-stuffed,
+  advert-shaped phrasings like "looking for a plumber in Manchester" returned **0 usable
+  results out of 20** (all adverts); intent-shaped phrasings like "need a plumber
+  recommendation" returned genuine consumer asks. Prefer short, natural "asking a friend"
+  phrasing over keyword-stuffed geo+service strings.
+- **`groups_only` has two different defaults by design:** the platform manifest / dashboard
+  default is `false` (and `scrape-runner.ts` always sends the key explicitly), so UI jobs run
+  open-feed; the Python plugin's own default is `true`, which only applies to direct `run.py`
+  CLI runs and direct-DB-insert jobs that omit the key.
+- **The Apify recency window is unreachable from the dashboard.** The Apify router reads
+  `filters.start_date`, but the manifest exposes `date_from` / `date_to` and nothing maps
+  between them — a date window can currently only be set from a direct CLI `--filters`
+  payload or a direct-DB-insert job spelling the key `start_date`.
 - Engagement (opening a lead's post, commenting, DMs) still requires a logged-in
   account and stays on the browser path.
 - Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)
