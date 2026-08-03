@@ -40,6 +40,30 @@ const OUTREACH_COUNTRY_CODES = [
   'US',
 ];
 
+/**
+ * Default FB consumer-mode search phrase.
+ *
+ * Intent-shaped, NOT geo-stuffed. Measured 2026-08-03 on live Apify data
+ * (open-feed post search, 20 results): the old geo-stuffed phrasing
+ * "looking for a plumber in Manchester" returned 0 usable consumer asks out
+ * of 20 — every hit was an advert — while intent phrasing such as
+ * "need a plumber recommendation" returned genuine consumer asks. Query
+ * phrasing is the single biggest lever on cost per lead, so keep the shape
+ * intent-first and leave the geography to the `location` filter (which still
+ * drives group/country scoping and the Gemini location match).
+ *
+ * Mirror of `defaultFbConsumerQuery` in server/src/services/social-routing.ts
+ * (the server-side fallback used when a submitted job carries no query) — the
+ * frontend cannot import server code, so keep the two identical.
+ */
+export function defaultFbQuery(niche: string, location = ''): string {
+  const n = niche.trim().replace(/\s+/g, ' ');
+  if (n) return `need a ${n} recommendation`;
+  // No niche: fall back to the bare location rather than emitting
+  // "need a recommendation", which matches nothing useful.
+  return location.trim().replace(/\s+/g, ' ');
+}
+
 interface Props {
   onSubmit: (params: ScrapeParams) => void;
   loading?: boolean;
@@ -87,6 +111,10 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [fbLeadType, setFbLeadType] = useState<'consumers' | 'businesses'>('consumers');
   const [fbNiche, setFbNiche] = useState('');
   const [fbLocation, setFbLocation] = useState('London');
+  // Operator override for the generated search phrase. Blank = use the
+  // intent-shaped default from `defaultFbQuery` below; this is a default,
+  // not a lock, because phrasing is the biggest lever on cost per lead.
+  const [fbQueryOverride, setFbQueryOverride] = useState('');
   const [fbCategory, setFbCategory] = useState('dentist');
   const [fbCountry, setFbCountry] = useState('GB');
 
@@ -134,13 +162,14 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
     } else if (platform === 'facebook') {
       // Consumer mode needs a `query` string for facebook.com/search/posts/?q=
       // The operator-facing form asks for niche + location separately; we
-      // synthesize the query from them so the Python scraper gets a single
-      // search string. Phrasing mimics how consumers naturally post on FB
-      // ("looking for a dentist near brooklyn") to surface intent-signal
-      // posts rather than business listings.
+      // synthesize an intent-shaped query from the niche (see defaultFbQuery
+      // for the 2026-08-03 measurement: geo-stuffed "looking for a plumber in
+      // Manchester" = 0/20 usable, intent "need a plumber recommendation" =
+      // real consumer asks). The operator can override the phrase in the form;
+      // blank means "use the default".
       const fbQuery =
         fbLeadType === 'consumers'
-          ? `looking for ${fbNiche} ${fbLocation}`.trim().replace(/\s+/g, ' ')
+          ? (fbQueryOverride.trim().replace(/\s+/g, ' ') || defaultFbQuery(fbNiche, fbLocation))
           : undefined;
       params = {
         platform: 'facebook',
@@ -340,11 +369,27 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                     disabled={busy}
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-query">
+                    Search phrase <span className="text-on-surface-variant font-normal">(optional override)</span>
+                  </label>
+                  <input
+                    id="fb-query"
+                    type="text"
+                    placeholder={defaultFbQuery(fbNiche, fbLocation) || 'need a <niche> recommendation'}
+                    value={fbQueryOverride}
+                    onChange={(e) => setFbQueryOverride(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                </div>
                 <div className="sm:col-span-2 lg:col-span-3">
                   <ComboWarning niche={fbNiche} location={fbLocation} />
                   <p className="text-[11px] text-on-surface-variant">
-                    Searches public FB <strong>group</strong> posts for <strong>&quot;looking for {fbNiche || '<niche>'} {fbLocation || '<location>'}&quot;</strong> &mdash;
-                    community groups have far less ad noise than the open feed. Each post is filtered to keep only
+                    Searches public FB posts for <strong>&quot;{fbQueryOverride.trim() || defaultFbQuery(fbNiche, fbLocation) || 'need a <niche> recommendation'}&quot;</strong> &mdash;
+                    intent phrasing beats geo-stuffing by a wide margin (measured 2026-08-03: &quot;looking for a plumber in
+                    Manchester&quot; returned 0 usable asks out of 20, all adverts). Leave the phrase blank to use that
+                    default; {fbLocation || 'the location'} still scopes the results. Each post is filtered to keep only
                     real consumer asks (asking-only + Gemini niche+location match). Streams live; cancellable.
                   </p>
                 </div>

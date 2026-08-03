@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { createJob, getJob, getJobs, findActiveJobForParams, resolveDuplicateActiveJob, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
+import { defaultFbConsumerQuery } from '../services/social-routing.js';
 import { listCategories, listCountries, getMaxLastSeen } from '../db/taxonomy.js';
 import {
   startOrAttachDiscovery,
@@ -375,10 +376,20 @@ router.post('/', async (req: Request, res: Response) => {
             merged.lead_type === 'consumers' &&
             !(typeof merged.query === 'string' && merged.query.trim())
           ) {
-            const niche = typeof merged.niche === 'string' ? merged.niche.trim() : '';
-            const location = typeof merged.location === 'string' ? merged.location.trim() : '';
-            if (niche || location) {
-              merged.query = `looking for ${niche} ${location}`.replace(/\s+/g, ' ').trim();
+            // Intent-shaped, NOT geo-stuffed — `defaultFbConsumerQuery` is the
+            // single source of the phrasing (mirrored in the frontend's
+            // `defaultFbQuery`). Measured 2026-08-03 on live Apify data
+            // (open-feed post search, 20 results): the old geo-stuffed
+            // "looking for a plumber in Manchester" returned 0 usable consumer
+            // asks out of 20 (all adverts), while intent phrasing "need a
+            // plumber recommendation" returned genuine asks — phrasing is the
+            // biggest lever on cost per lead. This is only a fallback default;
+            // an operator-supplied `query` always wins (checked above).
+            const niche = typeof merged.niche === 'string' ? merged.niche : '';
+            const location = typeof merged.location === 'string' ? merged.location : '';
+            const fallbackQuery = defaultFbConsumerQuery(niche, location);
+            if (fallbackQuery) {
+              merged.query = fallbackQuery;
             }
           }
           return merged;
