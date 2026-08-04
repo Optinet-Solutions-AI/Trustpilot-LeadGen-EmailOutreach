@@ -1182,6 +1182,110 @@ def _consumer_filter_defaults(filters: dict, location: str | None) -> tuple[bool
     )
 
 
+def _resolve_target_country(location: str | None, filters: dict) -> Optional[str]:
+    """ISO-2 country the operator is actually targeting, or None.
+
+    Deliberately stricter than _target_country_from_filters: that helper
+    upper-cases `filters['country']` verbatim, which is right for
+    businesses-mode (it carries an ISO code) but turns a consumer-mode city
+    into a bogus pseudo-code ('MANCHESTER') that matches no resolved lead
+    country. Used as a geographic gate that would drop 100% of a batch, so
+    only accept a value we can actually believe: a 2-letter alpha code, or a
+    place name CITY_TO_COUNTRY knows. Anything else -> None, which callers
+    must treat as "no country constraint", never as "matches nothing".
+    """
+    for raw in (filters.get('country'), filters.get('location'), location):
+        raw = (raw or '').strip()
+        if not raw:
+            continue
+        if len(raw) == 2 and raw.isalpha():
+            return raw.upper()
+        resolved = _extract_country_from_excerpt(raw)
+        if resolved:
+            return resolved.upper()
+    return None
+
+
+def _stub_country_evidence(stub: dict) -> Optional[str]:
+    """ISO-2 country the POST ITSELF evidences, or None when it names nowhere.
+
+    Reuses _resolve_lead_country, but passes location=None ON PURPOSE. That
+    function's third signal is the operator's own location string, and it
+    falls back to returning that string when nothing else resolves — so
+    feeding it the target location would make every post "resolve" to the
+    target country and turn the geo filter below into a silent no-op. Only
+    the group name and the post body count as evidence here.
+    """
+    resolved = _resolve_lead_country(stub.get('group_name'), None,
+                                     stub.get('content_excerpt'))
+    return resolved.upper() if resolved else None
+
+
+def _apply_geo_country_filter(
+    stubs: list,
+    *,
+    location: str | None,
+    filters: dict,
+    geo_scoped: bool,
+    on_progress: ProgressCallback = None,
+) -> list:
+    """Drop posts that EVIDENCE a different country than the operator's target.
+
+    Runs only when the discovery search itself was NOT geo-scoped
+    (`geo_scoped=False` — today that means the Apify path). See
+    _apply_consumer_filter_chain's docstring for why geography has to be a
+    separate stage there.
+
+    Three rules, all deliberate:
+      - target country unresolvable -> keep everything, and SAY so. Guessing
+        a country here would reproduce the all-zero bug this stage exists to
+        fix.
+      - post evidences a DIFFERENT country -> drop.
+      - post evidences NO country -> KEEP. Absence of evidence is not
+        evidence of a mismatch, and most genuine consumer asks name no place
+        at all ("recently moved to the area and need a plumber"). Dropping
+        those would quietly discard the best leads in the batch.
+
+    Always emits exactly one 'geo_filtered' event when it runs, even at
+    dropped=0, so an operator reading the SSE stream sees intent and
+    geography as two separate numbers. The whole reason this stage is
+    explicit is that the previous failure mode was INVISIBLE: one
+    llm_filtered=20 line and a job that returned nothing.
+    """
+    if geo_scoped or not stubs:
+        return stubs
+
+    target = _resolve_target_country(location, filters)
+    if not target:
+        _emit(on_progress, 'geo_filtered', dropped=0, kept=len(stubs),
+              target_country=None,
+              reason=(
+                  'target country could not be resolved from the scrape '
+                  f'filters (location={location!r}) — keeping every post '
+                  'rather than guessing a country to filter against'
+              ))
+        return stubs
+
+    kept: list = []
+    dropped_countries: dict[str, int] = {}
+    for s in stubs:
+        evidenced = _stub_country_evidence(s)
+        if evidenced and evidenced != target:
+            dropped_countries[evidenced] = dropped_countries.get(evidenced, 0) + 1
+            continue
+        kept.append(s)
+
+    _emit(on_progress, 'geo_filtered',
+          dropped=len(stubs) - len(kept), kept=len(kept),
+          target_country=target, dropped_countries=dropped_countries,
+          reason=(
+              'discovery searched Facebook globally, so posts whose own text '
+              f'or group name places them outside {target} are dropped here; '
+              'posts naming no place are kept'
+          ))
+    return kept
+
+
 def _apply_consumer_filter_chain(
     stubs: list,
     *,
@@ -1189,6 +1293,7 @@ def _apply_consumer_filter_chain(
     location: str | None,
     filters: dict,
     on_progress: ProgressCallback = None,
+    geo_scoped: bool = True,
 ) -> list:
     """Keep only post stubs that look like a real consumer ASKING for the niche.
 
@@ -1260,10 +1365,50 @@ def _apply_consumer_filter_chain(
       - use_llm_classifier=False                 -> same two rows above,
                                                      minus the classifier call
 
+    INTENT VS GEOGRAPHY (`geo_scoped`)
+    ----------------------------------
+    `geo_scoped` says whether the DISCOVERY search that produced these stubs
+    was itself geographically scoped. It decides where geography is enforced,
+    and it must come from the discovery source — never be guessed.
+
+      geo_scoped=True  (browser discovery). The Facebook search was geo-scoped
+        already: group discovery uses a geo-stuffed term and
+        _is_consumer_facing_group drops wrong-country groups, so the surviving
+        candidates are local. The operator's `location` goes into the
+        classifier prompt exactly as before, and no separate geo stage runs.
+
+      geo_scoped=False (Apify discovery). The actor searches Facebook
+        GLOBALLY — we deliberately do not feed it `location_uid`, which would
+        need a seeded Facebook geo-ID table — so its results are
+        geographically scattered. Handing the classifier a target city then
+        makes it reject essentially everything, because its location clause is
+        strict at CITY level. Measured 2026-08-04 on 20 real posts, same
+        niche, only the location argument differing:
+
+            location=''            -> kept 7/20
+            location='Manchester'  -> kept 0/20
+
+        and a live end-to-end run produced "20 mapped, llm_filtered dropped=20
+        kept=0" — EVERY dashboard scrape on the Apify path returned zero
+        leads. Geography was being enforced at the wrong stage, against
+        candidates that were never geo-filtered in the first place. So on this
+        path the classifier judges INTENT ONLY (location omitted) and
+        _apply_geo_country_filter enforces geography afterwards, at COUNTRY
+        granularity, from the evidence in the post itself.
+
+    Honest trade-off: global search + post-hoc country filtering yields FEWER
+    target-country leads per run than a genuinely geo-scoped search would,
+    because most global results are somewhere else. This converts a guaranteed
+    zero into a smaller-but-real number and makes the loss visible. Geo-scoping
+    the SEARCH is the real fix — either an intent-shaped query that also names
+    the place ("need a plumber recommendation Manchester") or the actor's
+    `location_uid` with a seeded geo table.
+
     Emits the same progress stages the inline copies did — 'llm_filtered',
     'llm_skipped' and 'consumer_filtered', with the same detail keys, plus
-    the new 'consumer_filter_unavailable' for the fail-closed case. The SSE
-    stream and job UI parse those names; do not rename them.
+    'consumer_filter_unavailable' for the fail-closed case and 'geo_filtered'
+    for the geographic stage. The SSE stream and job UI parse those names; do
+    not rename them.
     """
     if not stubs:
         return stubs
@@ -1271,12 +1416,17 @@ def _apply_consumer_filter_chain(
     exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
     use_llm_classifier = filters.get('use_llm_classifier', True)
     substring_filter_applicable = exclude_businesses or asking_only
+    # `location` still drives LANGUAGE resolution above (_consumer_filter_defaults)
+    # and the geo stage below — it is only withheld from the classifier PROMPT,
+    # which is where enforcing it against globally-scattered candidates zeroed
+    # out every run.
+    classifier_location = location if geo_scoped else None
 
     # ── Primary gate: Gemini semantic intent classification ──────────────
     if use_llm_classifier:
         excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
         verdicts = _classify_consumer_posts_with_gemini(
-            excerpts, niche, location=location,
+            excerpts, niche, location=classifier_location,
         )
         if verdicts is not None:
             llm_kept = [s for s, v in zip(stubs, verdicts) if v]
@@ -1285,7 +1435,12 @@ def _apply_consumer_filter_chain(
                 _emit(on_progress, 'llm_filtered',
                       dropped=llm_dropped, kept=len(llm_kept),
                       reason='Gemini classifier flagged as non-consumer')
-            return llm_kept
+            # Geography second, as its own visible stage (no-op when the
+            # discovery search was already geo-scoped).
+            return _apply_geo_country_filter(
+                llm_kept, location=location, filters=filters,
+                geo_scoped=geo_scoped, on_progress=on_progress,
+            )
         if substring_filter_applicable:
             _emit(on_progress, 'llm_skipped',
                   reason='GEMINI_API_KEY missing or API error — falling back '
@@ -1312,7 +1467,12 @@ def _apply_consumer_filter_chain(
         if dropped > 0:
             _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
                   reason='non-asking posts (thanks/recommend/business) removed')
-        return kept
+        # Geography runs after WHICHEVER intent gate ran, including this
+        # fallback — a Gemini outage must not also turn the geo filter off.
+        return _apply_geo_country_filter(
+            kept, location=location, filters=filters,
+            geo_scoped=geo_scoped, on_progress=on_progress,
+        )
 
     # ── No verdicts AND no applicable substring filter: FAIL CLOSED ───────
     # Nothing gated this batch — the classifier is out and this market has
@@ -2645,10 +2805,16 @@ class FacebookScraper(SocialPlatformScraper):
             # the substring heuristics are the fallback for when the
             # classifier returns nothing. Skipped entirely when search_posts
             # already ran it, so the open-feed path filters exactly once.
+            #
+            # geo_scoped=True: the only way to reach this branch is the
+            # browser group-first crawl (the Apify case raised above), and that
+            # crawl's groups were geo-selected, so geography stays inside the
+            # classifier prompt and no post-hoc country stage runs.
             if not already_filtered:
                 post_stubs = _apply_consumer_filter_chain(
                     post_stubs, niche=niche, location=location,
                     filters=filters, on_progress=on_progress,
+                    geo_scoped=True,
                 )
 
             # Reshape PostStubs into profile-stub form so the list→enrich
@@ -2777,7 +2943,8 @@ class FacebookScraper(SocialPlatformScraper):
         # stubs get exactly the same treatment browser stubs do). Moving it
         # below the stamping would silently drop category/country on every
         # Apify lead.
-        if _discovery_source() == 'apify':
+        discovery = _discovery_source()
+        if discovery == 'apify':
             # `max_results or 50` would turn an explicit 0 into 50 and spend a
             # billable actor run (on the free plan, the day's only run).
             resolved_max = max_results if max_results is not None else 50
@@ -2887,11 +3054,20 @@ class FacebookScraper(SocialPlatformScraper):
         # English markets and OFF for non-English; they now gate the FALLBACK
         # path only (see _apply_consumer_filter_chain) — an explicit filter
         # value always wins.
+        #
+        # `geo_scoped` comes from the DISCOVERY SOURCE, not a guess: the
+        # browser search is geo-scoped (geo-stuffed group term + wrong-country
+        # group drop), the Apify actor searches globally because we do not feed
+        # it location_uid. On the Apify path the classifier therefore judges
+        # intent only and a separate country stage handles geography — passing
+        # the target city into a classifier judging globally-scattered
+        # candidates is what made every run return zero leads.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
             stubs = _apply_consumer_filter_chain(
                 stubs, niche=niche or query, location=location,
                 filters=filters, on_progress=on_progress,
+                geo_scoped=(discovery != 'apify'),
             )
 
         return stubs

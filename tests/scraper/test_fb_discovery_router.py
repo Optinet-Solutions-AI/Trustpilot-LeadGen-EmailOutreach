@@ -1227,3 +1227,287 @@ def test_llm_skipped_reason_is_accurate_for_english_and_non_english(monkeypatch)
     non_english_reason = non_english_skipped[0]['reason']
     assert 'no language-appropriate' in non_english_reason
     assert non_english_reason != english_reason
+
+
+# ==========================================================================
+# Intent vs GEOGRAPHY on the Apify path
+# ==========================================================================
+#
+# THE BUG (measured live 2026-08-04, 20 real posts, same niche, only the
+# location argument differing):
+#
+#   _classify_consumer_posts_with_gemini(excerpts, 'plumber', location='')
+#       -> kept 7/20
+#   _classify_consumer_posts_with_gemini(excerpts, 'plumber', location='Manchester')
+#       -> kept 0/20
+#
+# and a live end-to-end Apify run with location='Manchester' produced
+# "20 mapped, llm_filtered dropped=20 kept=0, search_done:0" â€” i.e. EVERY
+# dashboard scrape on the Apify path returned zero leads.
+#
+# Root cause is an architectural mismatch, not a prompt bug. The Apify actor
+# searches Facebook GLOBALLY (we deliberately do NOT feed it location_uid â€”
+# that would need a seeded Facebook geo-ID table), so its results are
+# geographically scattered: the 20-post sample contained Devine TX and
+# assorted other US/UK places. The classifier is then handed the operator's
+# target city and its location clause is strict at CITY level ("a different
+# city or region in the same country ... is FALSE"), so it correctly rejects
+# essentially everything. Geography was being enforced at the WRONG STAGE â€”
+# against candidates that were never geo-filtered in the first place.
+#
+# The BROWSER path never had this problem: its Facebook search is itself
+# geo-scoped (group discovery uses a geo-stuffed term and
+# _is_consumer_facing_group drops wrong-country groups), so passing location
+# to the classifier there is consistent. That path must not change.
+#
+# The fix separates the two judgements on the non-geo-scoped path:
+#   1. intent â€” classifier called WITHOUT location
+#   2. geography â€” an explicit post-hoc COUNTRY filter using the evidence in
+#      the post itself, keeping posts whose country cannot be resolved, and
+#      emitting its own 'geo_filtered' event so intent-vs-geography are two
+#      visible numbers instead of one mysterious zero.
+
+# A genuine consumer ask that resolves to a DIFFERENT country than a
+# Manchester (GB) search: 'austin' -> US in CITY_TO_COUNTRY. Phrased so the
+# substring filter also KEEPS it, which lets the same excerpt exercise the
+# geo stage on the Gemini path AND on the substring-fallback path.
+_ASK_AUSTIN_US = (
+    'Anyone know a plumber in Austin who can look at a leaking radiator?'
+)
+
+
+def _capturing_verdicts(accepted: set, captured: dict):
+    """Fake classifier that also records the kwargs it was called with."""
+    def fake(excerpts, niche, location=None, **kw):
+        captured['location'] = location
+        captured['niche'] = niche
+        captured['calls'] = captured.get('calls', 0) + 1
+        return [e in accepted for e in excerpts]
+    return fake
+
+
+def _run_apify_search(monkeypatch, texts, verdicts_fn, filters=None, events=None):
+    """Drive the real search_posts entry point over a faked Apify dataset."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    monkeypatch.setattr(fb.apify, 'run_actor', _apify_returning(texts))
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', verdicts_fn)
+    scraper = fb.FacebookScraper()
+    return asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        dict(filters or _ENGLISH_FILTERS),
+        max_results=10,
+        on_progress=(events.append if events is not None else None),
+    ))
+
+
+def test_apify_intent_judging_receives_no_location(monkeypatch):
+    """THE FIX. Apify results are globally scattered, so the classifier must
+    judge INTENT ONLY â€” handing it the target city is what produced kept=0/20
+    on every live run. A post that does resolve to the target country still
+    has to come out the other end."""
+    captured: dict = {}
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_PLAIN],
+        _capturing_verdicts({_ASK_PLAIN}, captured),
+    )
+    assert captured['calls'] == 1
+    assert not captured['location'], (
+        'intent judging must NOT be given the target location on the Apify '
+        'path (got {!r})'.format(captured['location'])
+    )
+    assert captured['niche'] == 'plumber', 'the niche is still passed'
+    assert _excerpts(stubs) == [_ASK_PLAIN]
+
+
+def test_apify_geo_stage_drops_a_different_country_and_emits_geo_filtered(monkeypatch):
+    """Geography still has to be enforced â€” just explicitly, after intent, and
+    visibly. Intent accepts both asks; the Austin (US) one resolves to a
+    different country than a Manchester (GB) search and is dropped."""
+    events: list = []
+    captured: dict = {}
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_AUSTIN_US, _ASK_PLAIN],
+        _capturing_verdicts({_ASK_AUSTIN_US, _ASK_PLAIN}, captured),
+        events=events,
+    )
+    assert _excerpts(stubs) == [_ASK_PLAIN]
+    geo = [e for e in events if e.get('stage') == 'geo_filtered']
+    assert len(geo) == 1, 'the geographic drop needs its own visible event'
+    assert geo[0]['dropped'] == 1
+    assert geo[0]['kept'] == 1
+    assert geo[0]['target_country'] == 'GB'
+    assert geo[0].get('reason')
+    # Intent and geography must be two SEPARATE numbers â€” a single
+    # llm_filtered=2 is exactly the mystery this fix removes.
+    assert not any(e.get('stage') == 'llm_filtered' for e in events)
+
+
+def test_apify_geo_stage_keeps_posts_whose_country_is_unresolved(monkeypatch):
+    """Absence of evidence is not evidence of a mismatch. Most real consumer
+    asks name no place at all ('recently moved to the area'); dropping those
+    would silently discard the best leads in the batch."""
+    events: list = []
+    captured: dict = {}
+    assert fb._extract_country_from_excerpt(_ASK_MOVED) is None, 'ground truth'
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_MOVED, _ASK_SHOWER],
+        _capturing_verdicts({_ASK_MOVED, _ASK_SHOWER}, captured),
+        events=events,
+    )
+    assert _excerpts(stubs) == [_ASK_MOVED, _ASK_SHOWER]
+    geo = [e for e in events if e.get('stage') == 'geo_filtered']
+    assert len(geo) == 1
+    assert geo[0]['dropped'] == 0
+    assert geo[0]['kept'] == 2
+
+
+def test_browser_discovery_still_passes_location_to_the_classifier(monkeypatch):
+    """The browser search is itself geo-scoped, so location stays in the
+    classifier call there and no post-hoc geo stage runs. The regime is decided
+    by the discovery source, never guessed."""
+    monkeypatch.setenv('FB_DISCOVERY', 'browser')
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb.FacebookScraper, '_sync_search_posts',
+        lambda self, query, groups_only, max_results, on_progress: [
+            _stub(_ASK_AUSTIN_US, 'austin'), _stub(_ASK_PLAIN, 'jane'),
+        ],
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _capturing_verdicts({_ASK_AUSTIN_US, _ASK_PLAIN}, captured),
+    )
+    events: list = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'plumber Manchester', dict(_ENGLISH_FILTERS), max_results=10,
+        on_progress=events.append,
+    ))
+    assert captured['location'] == 'Manchester', (
+        'the browser path must keep enforcing geography inside the classifier'
+    )
+    # No post-hoc country filter on this path: the classifier already had the
+    # location, so a second geographic opinion would be double-counting.
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
+    assert _excerpts(stubs) == [_ASK_AUSTIN_US, _ASK_PLAIN]
+
+
+def test_browser_group_first_chain_still_passes_location(monkeypatch):
+    """Same for the browser group-first branch reached via scrape_listing â€”
+    those groups were geo-selected, so location keeps going to the
+    classifier."""
+    monkeypatch.setenv('FB_DISCOVERY', 'browser')
+    monkeypatch.setattr(
+        fb.FacebookScraper, '_sync_group_first_scrape',
+        lambda self, niche, location, on_progress, cap: [_stub(_ASK_PLAIN, 'jane')],
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _capturing_verdicts({_ASK_PLAIN}, captured),
+    )
+    scraper = fb.FacebookScraper()
+    out = asyncio.run(scraper.scrape_listing(
+        {**_ENGLISH_FILTERS, 'groups_only': True}, max_results=10,
+    ))
+    assert captured['location'] == 'Manchester'
+    assert _excerpts(out) == [_ASK_PLAIN]
+
+
+def test_geo_stage_runs_after_the_substring_fallback(monkeypatch):
+    """The geo stage sits after WHICHEVER intent gate ran. On a Gemini outage
+    the substring fallback judges intent and the country filter still trims
+    geography â€” and both events fire, so the operator sees where each lead
+    went."""
+    events: list = []
+    stubs = _run_apify_search(
+        monkeypatch,
+        [_ADVERT_DROPPED_BY_SUBSTRING, _ASK_AUSTIN_US, _ASK_PLAIN],
+        lambda *a, **k: None,
+        events=events,
+    )
+    assert _excerpts(stubs) == [_ASK_PLAIN]
+    consumer = [e for e in events if e.get('stage') == 'consumer_filtered']
+    assert len(consumer) == 1 and consumer[0]['dropped'] == 1
+    geo = [e for e in events if e.get('stage') == 'geo_filtered']
+    assert len(geo) == 1 and geo[0]['dropped'] == 1 and geo[0]['kept'] == 1
+
+
+def test_geo_stage_is_a_noop_when_the_target_country_cannot_be_resolved(monkeypatch):
+    """An unmapped operator location ('Nairobi') gives no country to compare
+    against. Guessing would be worse than the bug being fixed, so keep
+    everything and SAY so â€” the event still fires with target_country None."""
+    assert fb._extract_country_from_excerpt('Nairobi') is None, 'ground truth'
+    events: list = []
+    captured: dict = {}
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_AUSTIN_US, _ASK_PLAIN],
+        _capturing_verdicts({_ASK_AUSTIN_US, _ASK_PLAIN}, captured),
+        filters={**_ENGLISH_FILTERS, 'location': 'Nairobi'},
+        events=events,
+    )
+    assert _excerpts(stubs) == [_ASK_AUSTIN_US, _ASK_PLAIN]
+    geo = [e for e in events if e.get('stage') == 'geo_filtered']
+    assert len(geo) == 1
+    assert geo[0]['dropped'] == 0
+    assert geo[0]['target_country'] is None
+    assert geo[0].get('reason')
+
+
+def test_geo_stage_reads_the_group_name_as_evidence(monkeypatch):
+    """Group-sourced Apify stubs carry group_name, which is often the only
+    geographic signal in the batch ('Sydney Tradies' + a placeless ask)."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _verdicts_from({_ASK_SHOWER, _ASK_MOVED}),
+    )
+    au = {**_stub(_ASK_SHOWER, 'bruce'), 'group_name': 'Sydney Tradies'}
+    unknown = {**_stub(_ASK_MOVED, 'jane'), 'group_name': 'Trade Recommendations'}
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [au, unknown], niche='plumber', location='Manchester',
+        filters=_ENGLISH_FILTERS, geo_scoped=False, on_progress=events.append,
+    )
+    assert _excerpts(kept) == [_ASK_MOVED]
+    geo = [e for e in events if e.get('stage') == 'geo_filtered']
+    assert len(geo) == 1 and geo[0]['dropped'] == 1
+
+
+def test_geo_stage_does_not_mask_the_non_english_fail_closed_case(monkeypatch):
+    """Fail-closed still wins: no intent gate at all means the batch is
+    dropped with 'consumer_filter_unavailable', and the geo stage never gets a
+    chance to reframe an ungated batch as a geographic result."""
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None,
+    )
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ADVERT_TALBOT, 'talbot'), _stub(_ASK_GERMAN, 'hans')],
+        niche='Klempner', location='Frankfurt', filters=_FRANKFURT_FILTERS,
+        geo_scoped=False, on_progress=events.append,
+    )
+    assert kept == []
+    assert len([e for e in events if e.get('stage') == 'consumer_filter_unavailable']) == 1
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
+
+
+def test_geo_scoped_default_keeps_the_legacy_behaviour(monkeypatch):
+    """Every pre-existing caller and test calls the chain without the new flag;
+    the default must be the geo-scoped (browser) regime â€” location goes to the
+    classifier, no country filter, exactly as before."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _capturing_verdicts({_ASK_AUSTIN_US}, captured),
+    )
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_ASK_AUSTIN_US, 'austin')],
+        niche='plumber', location='Manchester', filters=_ENGLISH_FILTERS,
+        on_progress=events.append,
+    )
+    assert captured['location'] == 'Manchester'
+    assert _excerpts(kept) == [_ASK_AUSTIN_US]
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
