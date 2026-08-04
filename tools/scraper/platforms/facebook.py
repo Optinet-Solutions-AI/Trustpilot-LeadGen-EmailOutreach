@@ -657,11 +657,191 @@ def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
     return False
 
 
+# City/region names that double as ordinary English words. `\b` word-
+# boundary anchoring (below) fixes every "fragment inside a longer word"
+# false positive ('nice' inside 'niceties', 'bern' inside 'Bernie' or
+# 'Berne') but CANNOT fix a name that is ALSO a complete, standalone English
+# word — verified live, "That was nice of them" resolved to FR under the old
+# substring matcher, and word boundaries alone don't help because "nice" is
+# genuinely a whole word there too. Requiring the matched text to be
+# capitalised (English prose conventionally capitalises proper nouns) turns
+# that ordinary-word reading into a non-match while "I live in Nice, France"
+# still matches. It is not a complete fix — a sentence-initial "Nice weather
+# today!" still slips through — but it removes the far more common
+# lowercase, mid-sentence false positive, which is the one actually observed
+# live. Kept as a short, explicit allowlist rather than applied to the whole
+# map: the other ~150 entries are not dictionary words and gain nothing from
+# the extra restriction. 'reading' (Berkshire, England) is a second example
+# of the same collision, added to CITY_TO_COUNTRY below specifically to
+# exercise this — it did not resolve at all before this fix.
+_CASE_SENSITIVE_CITY_NAMES = frozenset({'nice', 'reading'})
+
+
+def _compile_place_patterns(pairs):
+    """Compile (needle, country) pairs into (regex, country, needs_capital).
+
+    Every needle is escaped — several contain regex metacharacters
+    ('lapu-lapu', 'cluj-napoca') — and anchored with `\\b` word/phrase
+    boundaries so a city name only counts as a STANDALONE word or phrase,
+    never a fragment inside a longer one. The compiled regex is always
+    case-insensitive; `needs_capital` (see _CASE_SENSITIVE_CITY_NAMES) is
+    re-checked by the caller against the actual matched text, not baked into
+    the pattern, so this only compiles — it doesn't decide the match.
+    """
+    compiled = []
+    for needle, country in pairs:
+        pattern = re.compile(r'\b' + re.escape(needle) + r'\b', re.IGNORECASE)
+        compiled.append((pattern, country, needle in _CASE_SENSITIVE_CITY_NAMES))
+    return compiled
+
+
+# Province/state tokens that disambiguate a city name shared across
+# countries (e.g. "London, Ontario" must resolve CA, not GB). Checked
+# BEFORE the bare-city scan so the province wins. Small + data-driven —
+# only provinces actually seen in live group names.
+PROVINCE_TO_COUNTRY = [
+    ('ontario', 'CA'), ('quebec', 'CA'), ('québec', 'CA'),
+    ('alberta', 'CA'), ('manitoba', 'CA'), ('saskatchewan', 'CA'),
+    ('british columbia', 'CA'), ('nova scotia', 'CA'),
+]
+_PROVINCE_PATTERNS = _compile_place_patterns(PROVINCE_TO_COUNTRY)
+
+# Order matters: most specific multi-word cities first so 'lapu-lapu city'
+# matches before a generic 'cebu' substring would, 'cluj-napoca' before
+# 'cluj', and 'new york' before the word 'york' shows up in any other
+# context.
+CITY_TO_COUNTRY = [
+    # ─── United Kingdom ─────────────────────────────────────
+    ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
+    ('leeds', 'GB'), ('liverpool', 'GB'), ('bristol', 'GB'),
+    ('edinburgh', 'GB'), ('glasgow', 'GB'),
+    ('belfast', 'GB'), ('cardiff', 'GB'),
+    # 'reading' is ALSO the ordinary English word/gerund "reading" — see
+    # _CASE_SENSITIVE_CITY_NAMES; only the capitalised "Reading" counts.
+    ('reading', 'GB'),
+    # ─── Ireland ────────────────────────────────────────────
+    ('dublin', 'IE'), ('cork', 'IE'), ('galway', 'IE'),
+    # ─── Germany ────────────────────────────────────────────
+    ('berlin', 'DE'), ('munich', 'DE'), ('hamburg', 'DE'),
+    ('frankfurt', 'DE'), ('cologne', 'DE'), ('stuttgart', 'DE'),
+    ('düsseldorf', 'DE'), ('dusseldorf', 'DE'), ('leipzig', 'DE'),
+    # ─── France ─────────────────────────────────────────────
+    ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'),
+    ('toulouse', 'FR'),
+    # 'nice' is ALSO the ordinary English adjective "nice" — see
+    # _CASE_SENSITIVE_CITY_NAMES; only the capitalised "Nice" counts.
+    ('nice', 'FR'), ('bordeaux', 'FR'),
+    ('nantes', 'FR'),
+    # ─── Spain ──────────────────────────────────────────────
+    ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'),
+    ('seville', 'ES'), ('bilbao', 'ES'), ('málaga', 'ES'),
+    ('malaga', 'ES'),
+    # ─── Italy ──────────────────────────────────────────────
+    ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'),
+    ('florence', 'IT'), ('turin', 'IT'), ('bologna', 'IT'),
+    ('venice', 'IT'),
+    # ─── Netherlands ────────────────────────────────────────
+    ('amsterdam', 'NL'), ('rotterdam', 'NL'), ('the hague', 'NL'),
+    ('utrecht', 'NL'), ('eindhoven', 'NL'),
+    # ─── Belgium ────────────────────────────────────────────
+    ('brussels', 'BE'), ('antwerp', 'BE'), ('ghent', 'BE'),
+    # ─── Luxembourg ─────────────────────────────────────────
+    ('luxembourg city', 'LU'), ('luxembourg', 'LU'),
+    # ─── Portugal ───────────────────────────────────────────
+    ('lisbon', 'PT'), ('porto', 'PT'), ('braga', 'PT'),
+    # ─── Switzerland ────────────────────────────────────────
+    ('zurich', 'CH'), ('zürich', 'CH'), ('geneva', 'CH'),
+    ('basel', 'CH'), ('bern', 'CH'),
+    # ─── Austria ────────────────────────────────────────────
+    ('vienna', 'AT'), ('salzburg', 'AT'), ('graz', 'AT'),
+    # ─── Czech Republic ─────────────────────────────────────
+    ('prague', 'CZ'), ('brno', 'CZ'),
+    # ─── Slovakia ───────────────────────────────────────────
+    ('bratislava', 'SK'),
+    # ─── Poland ─────────────────────────────────────────────
+    ('warsaw', 'PL'), ('krakow', 'PL'), ('kraków', 'PL'),
+    ('wrocław', 'PL'), ('wroclaw', 'PL'), ('gdańsk', 'PL'), ('gdansk', 'PL'),
+    # ─── Hungary ────────────────────────────────────────────
+    ('budapest', 'HU'),
+    # ─── Romania ────────────────────────────────────────────
+    ('cluj-napoca', 'RO'), ('bucharest', 'RO'),
+    # ─── Bulgaria ───────────────────────────────────────────
+    ('sofia', 'BG'), ('plovdiv', 'BG'),
+    # ─── Sweden ─────────────────────────────────────────────
+    ('stockholm', 'SE'), ('gothenburg', 'SE'), ('malmö', 'SE'),
+    ('malmo', 'SE'),
+    # ─── Denmark ────────────────────────────────────────────
+    ('copenhagen', 'DK'), ('aarhus', 'DK'),
+    # ─── Norway ─────────────────────────────────────────────
+    ('oslo', 'NO'), ('bergen', 'NO'),
+    # ─── Finland ────────────────────────────────────────────
+    ('helsinki', 'FI'), ('tampere', 'FI'),
+    # ─── Iceland ────────────────────────────────────────────
+    ('reykjavik', 'IS'),
+    # ─── Greece ─────────────────────────────────────────────
+    ('athens', 'GR'), ('thessaloniki', 'GR'),
+    # ─── Balkans ────────────────────────────────────────────
+    ('zagreb', 'HR'), ('split', 'HR'),
+    ('ljubljana', 'SI'),
+    ('belgrade', 'RS'),
+    ('sarajevo', 'BA'),
+    ('tirana', 'AL'),
+    ('skopje', 'MK'),
+    ('podgorica', 'ME'),
+    # ─── Baltics + Moldova + Ukraine ────────────────────────
+    ('vilnius', 'LT'),
+    ('riga', 'LV'),
+    ('tallinn', 'EE'),
+    ('chișinău', 'MD'), ('chisinau', 'MD'),
+    ('kyiv', 'UA'), ('kiev', 'UA'), ('lviv', 'UA'),
+    # ─── Mediterranean ──────────────────────────────────────
+    ('valletta', 'MT'),
+    ('nicosia', 'CY'), ('limassol', 'CY'),
+    # ─── Türkiye ────────────────────────────────────────────
+    ('istanbul', 'TR'), ('ankara', 'TR'), ('izmir', 'TR'),
+    # ─── United States ──────────────────────────────────────
+    ('new york', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
+    ('queens', 'US'), ('bronx', 'US'),
+    ('los angeles', 'US'), ('san diego', 'US'), ('san francisco', 'US'),
+    ('san jose', 'US'), ('sacramento', 'US'),
+    ('chicago', 'US'), ('houston', 'US'), ('dallas', 'US'),
+    ('austin', 'US'), ('san antonio', 'US'),
+    ('phoenix', 'US'), ('las vegas', 'US'), ('denver', 'US'),
+    ('seattle', 'US'), ('portland', 'US'),
+    ('philadelphia', 'US'), ('boston', 'US'), ('washington', 'US'),
+    ('baltimore', 'US'), ('atlanta', 'US'),
+    ('miami', 'US'), ('orlando', 'US'), ('tampa', 'US'),
+    ('charlotte', 'US'), ('nashville', 'US'),
+    ('detroit', 'US'), ('minneapolis', 'US'),
+    ('columbus', 'US'), ('indianapolis', 'US'),
+    ('cleveland', 'US'), ('pittsburgh', 'US'),
+
+    # Legacy non-Europe/US entries kept so manual scrapes against
+    # these cities still benefit from the country-mismatch filter.
+    ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
+    ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
+    ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
+    ('quezon city', 'PH'), ('davao', 'PH'),
+    ('singapore', 'SG'),
+    ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
+]
+_CITY_PATTERNS = _compile_place_patterns(CITY_TO_COUNTRY)
+
+
 def _extract_country_from_excerpt(text: str) -> Optional[str]:
     """Best-effort: scan a post excerpt for a city/region name and map to a
     country ISO code. Returns None when no known city is found. The map is
     intentionally narrow — only places we've actually seen leads in. Expand
     as new regions surface in real scrapes.
+
+    Matching is `\\b`-word-boundary anchored and case-insensitive (see
+    _compile_place_patterns), NOT plain substring matching. Plain substring
+    matching used to fabricate a country out of an ordinary sentence —
+    verified live: "nice" inside "a nice day" -> FR, "bern" inside "Bernie"
+    or "Berne" -> CH. The handful of entries that are ALSO complete English
+    dictionary words when standalone ('nice', 'reading') additionally
+    require the matched text to be capitalised — see
+    _CASE_SENSITIVE_CITY_NAMES for the reasoning and its known limits.
 
     For the dental-services-in-Cebu test data the cities Liloan, Mandaue,
     Mactan, Lapu-Lapu, Cebu all signal PH; the same pattern works for any
@@ -669,154 +849,67 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    lowered = text.lower()
-    # Province/state tokens that disambiguate a city name shared across
-    # countries (e.g. "London, Ontario" must resolve CA, not GB). Checked
-    # BEFORE the bare-city scan so the province wins. Small + data-driven —
-    # only provinces actually seen in live group names.
-    PROVINCE_TO_COUNTRY = [
-        ('ontario', 'CA'), ('quebec', 'CA'), ('québec', 'CA'),
-        ('alberta', 'CA'), ('manitoba', 'CA'), ('saskatchewan', 'CA'),
-        ('british columbia', 'CA'), ('nova scotia', 'CA'),
-    ]
-    for needle, country in PROVINCE_TO_COUNTRY:
-        if needle in lowered:
+    for pattern, country, _needs_capital in _PROVINCE_PATTERNS:
+        if pattern.search(text):
             return country
-    # Order: most specific multi-word cities first so 'lapu-lapu city' matches
-    # before a generic 'cebu' substring would.
-    CITY_TO_COUNTRY = [
-        # Order matters: multi-word cities first so 'cluj-napoca' matches
-        # before a generic 'cluj' substring would, and 'new york' before
-        # the word 'york' shows up in any other context.
-
-        # ─── United Kingdom ─────────────────────────────────────
-        ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
-        ('leeds', 'GB'), ('liverpool', 'GB'), ('bristol', 'GB'),
-        ('edinburgh', 'GB'), ('glasgow', 'GB'),
-        ('belfast', 'GB'), ('cardiff', 'GB'),
-        # ─── Ireland ────────────────────────────────────────────
-        ('dublin', 'IE'), ('cork', 'IE'), ('galway', 'IE'),
-        # ─── Germany ────────────────────────────────────────────
-        ('berlin', 'DE'), ('munich', 'DE'), ('hamburg', 'DE'),
-        ('frankfurt', 'DE'), ('cologne', 'DE'), ('stuttgart', 'DE'),
-        ('düsseldorf', 'DE'), ('dusseldorf', 'DE'), ('leipzig', 'DE'),
-        # ─── France ─────────────────────────────────────────────
-        ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'),
-        ('toulouse', 'FR'), ('nice', 'FR'), ('bordeaux', 'FR'),
-        ('nantes', 'FR'),
-        # ─── Spain ──────────────────────────────────────────────
-        ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'),
-        ('seville', 'ES'), ('bilbao', 'ES'), ('málaga', 'ES'),
-        ('malaga', 'ES'),
-        # ─── Italy ──────────────────────────────────────────────
-        ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'),
-        ('florence', 'IT'), ('turin', 'IT'), ('bologna', 'IT'),
-        ('venice', 'IT'),
-        # ─── Netherlands ────────────────────────────────────────
-        ('amsterdam', 'NL'), ('rotterdam', 'NL'), ('the hague', 'NL'),
-        ('utrecht', 'NL'), ('eindhoven', 'NL'),
-        # ─── Belgium ────────────────────────────────────────────
-        ('brussels', 'BE'), ('antwerp', 'BE'), ('ghent', 'BE'),
-        # ─── Luxembourg ─────────────────────────────────────────
-        ('luxembourg city', 'LU'), ('luxembourg', 'LU'),
-        # ─── Portugal ───────────────────────────────────────────
-        ('lisbon', 'PT'), ('porto', 'PT'), ('braga', 'PT'),
-        # ─── Switzerland ────────────────────────────────────────
-        ('zurich', 'CH'), ('zürich', 'CH'), ('geneva', 'CH'),
-        ('basel', 'CH'), ('bern', 'CH'),
-        # ─── Austria ────────────────────────────────────────────
-        ('vienna', 'AT'), ('salzburg', 'AT'), ('graz', 'AT'),
-        # ─── Czech Republic ─────────────────────────────────────
-        ('prague', 'CZ'), ('brno', 'CZ'),
-        # ─── Slovakia ───────────────────────────────────────────
-        ('bratislava', 'SK'),
-        # ─── Poland ─────────────────────────────────────────────
-        ('warsaw', 'PL'), ('krakow', 'PL'), ('kraków', 'PL'),
-        ('wrocław', 'PL'), ('wroclaw', 'PL'), ('gdańsk', 'PL'), ('gdansk', 'PL'),
-        # ─── Hungary ────────────────────────────────────────────
-        ('budapest', 'HU'),
-        # ─── Romania ────────────────────────────────────────────
-        ('cluj-napoca', 'RO'), ('bucharest', 'RO'),
-        # ─── Bulgaria ───────────────────────────────────────────
-        ('sofia', 'BG'), ('plovdiv', 'BG'),
-        # ─── Sweden ─────────────────────────────────────────────
-        ('stockholm', 'SE'), ('gothenburg', 'SE'), ('malmö', 'SE'),
-        ('malmo', 'SE'),
-        # ─── Denmark ────────────────────────────────────────────
-        ('copenhagen', 'DK'), ('aarhus', 'DK'),
-        # ─── Norway ─────────────────────────────────────────────
-        ('oslo', 'NO'), ('bergen', 'NO'),
-        # ─── Finland ────────────────────────────────────────────
-        ('helsinki', 'FI'), ('tampere', 'FI'),
-        # ─── Iceland ────────────────────────────────────────────
-        ('reykjavik', 'IS'),
-        # ─── Greece ─────────────────────────────────────────────
-        ('athens', 'GR'), ('thessaloniki', 'GR'),
-        # ─── Balkans ────────────────────────────────────────────
-        ('zagreb', 'HR'), ('split', 'HR'),
-        ('ljubljana', 'SI'),
-        ('belgrade', 'RS'),
-        ('sarajevo', 'BA'),
-        ('tirana', 'AL'),
-        ('skopje', 'MK'),
-        ('podgorica', 'ME'),
-        # ─── Baltics + Moldova + Ukraine ────────────────────────
-        ('vilnius', 'LT'),
-        ('riga', 'LV'),
-        ('tallinn', 'EE'),
-        ('chișinău', 'MD'), ('chisinau', 'MD'),
-        ('kyiv', 'UA'), ('kiev', 'UA'), ('lviv', 'UA'),
-        # ─── Mediterranean ──────────────────────────────────────
-        ('valletta', 'MT'),
-        ('nicosia', 'CY'), ('limassol', 'CY'),
-        # ─── Türkiye ────────────────────────────────────────────
-        ('istanbul', 'TR'), ('ankara', 'TR'), ('izmir', 'TR'),
-        # ─── United States ──────────────────────────────────────
-        ('new york', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
-        ('queens', 'US'), ('bronx', 'US'),
-        ('los angeles', 'US'), ('san diego', 'US'), ('san francisco', 'US'),
-        ('san jose', 'US'), ('sacramento', 'US'),
-        ('chicago', 'US'), ('houston', 'US'), ('dallas', 'US'),
-        ('austin', 'US'), ('san antonio', 'US'),
-        ('phoenix', 'US'), ('las vegas', 'US'), ('denver', 'US'),
-        ('seattle', 'US'), ('portland', 'US'),
-        ('philadelphia', 'US'), ('boston', 'US'), ('washington', 'US'),
-        ('baltimore', 'US'), ('atlanta', 'US'),
-        ('miami', 'US'), ('orlando', 'US'), ('tampa', 'US'),
-        ('charlotte', 'US'), ('nashville', 'US'),
-        ('detroit', 'US'), ('minneapolis', 'US'),
-        ('columbus', 'US'), ('indianapolis', 'US'),
-        ('cleveland', 'US'), ('pittsburgh', 'US'),
-
-        # Legacy non-Europe/US entries kept so manual scrapes against
-        # these cities still benefit from the country-mismatch filter.
-        ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
-        ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
-        ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
-        ('quezon city', 'PH'), ('davao', 'PH'),
-        ('singapore', 'SG'),
-        ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
-    ]
-    for needle, country in CITY_TO_COUNTRY:
-        if needle in lowered:
+    for pattern, country, needs_capital in _CITY_PATTERNS:
+        m = pattern.search(text)
+        if m and (not needs_capital or m.group(0)[:1].isupper()):
             return country
     return None
 
 
-def _resolve_lead_country(group_name: Optional[str], location: Optional[str],
-                          excerpt: Optional[str]) -> Optional[str]:
+def _resolve_lead_country(
+    group_name: Optional[str],
+    location: Optional[str],
+    excerpt: Optional[str],
+    *,
+    geo_scoped: bool = True,
+) -> Optional[str]:
     """Resolve a consumer lead's country from the richest available signal.
 
-    Combines the group name (which often carries a province/region token like
-    'Ontario' that disambiguates a shared city name), the operator's location,
-    and the post excerpt, then runs _extract_country_from_excerpt over the lot
-    (its PROVINCE_TO_COUNTRY check runs first, so 'London, Ontario' -> 'CA'
-    while bare 'London' -> 'GB'). Falls back to the raw operator location when
-    nothing resolves, so unknown places (e.g. 'Nairobi') are preserved rather
-    than dropped — matching the prior behaviour.
+    `country` is the column the CRM filters cold-email eligibility on, so
+    this must NEVER return anything except a real ISO-2 code or None —
+    never a town name, never arbitrary operator-typed text.
+
+    Two signals, in priority order:
+
+    1. EVIDENCE IN THE POST ITSELF — the group name it was found in (which
+       often carries a disambiguating province/region token like 'Ontario',
+       via _extract_country_from_excerpt's PROVINCE_TO_COUNTRY check) and
+       the post excerpt. Combined and run through
+       _extract_country_from_excerpt. This wins whenever it resolves,
+       regardless of `geo_scoped` — a post that names its own place is
+       trustworthy evidence no matter how the search was run.
+
+    2. THE OPERATOR'S OWN SEARCH LOCATION — trusted ONLY when `geo_scoped`
+       is True, i.e. the search that produced this post is already known to
+       be geographically confined there (see `_query_is_place_anchored` and
+       the `geo_scoped` parameter threaded through
+       `_apply_consumer_filter_chain`). A GLOBAL search must not stamp its
+       target location onto a post that says nothing about where its author
+       actually is — verified live, a 20-post global search for "Manchester"
+       stamped all 20 leads GB when roughly 15 were American. Even when
+       trusted, `location` still has to resolve to a real ISO-2 country
+       through the same city map: an unmapped town ('Nairobi') or arbitrary
+       operator-typed text ('Wigan', 'Nowheresville') is NEVER written into
+       `country` — it previously was, verbatim, which is exactly the
+       town-name-in-a-country-column bug this function now refuses to
+       reproduce.
+
+    Returns None when neither signal resolves. Callers that want to retain
+    the operator's raw, unmapped location for their own reference should
+    look at `location_confidence` (`_derive_location_confidence`) — there is
+    no separate city column on the leads table, so `country` is not an
+    acceptable place to stash it.
     """
-    haystack = ' '.join(p for p in (group_name, location, excerpt) if p)
-    return _extract_country_from_excerpt(haystack) or (location or None)
+    post_evidence = ' '.join(p for p in (group_name, excerpt) if p)
+    resolved = _extract_country_from_excerpt(post_evidence)
+    if resolved:
+        return resolved
+    if geo_scoped and location:
+        return _extract_country_from_excerpt(location)
+    return None
 
 
 def _target_country_from_filters(filters: dict) -> Optional[str]:
@@ -1233,15 +1326,17 @@ def _query_is_place_anchored(query: str, location: str | None) -> bool:
 def _stub_country_evidence(stub: dict) -> Optional[str]:
     """ISO-2 country the POST ITSELF evidences, or None when it names nowhere.
 
-    Reuses _resolve_lead_country, but passes location=None ON PURPOSE. That
-    function's third signal is the operator's own location string, and it
-    falls back to returning that string when nothing else resolves — so
-    feeding it the target location would make every post "resolve" to the
+    Reuses _resolve_lead_country, but passes location=None AND
+    geo_scoped=False ON PURPOSE. That function's second signal is the
+    operator's own target location, trusted only when geo_scoped — feeding
+    it the target location here would make every post "resolve" to the
     target country and turn the geo filter below into a silent no-op. Only
     the group name and the post body count as evidence here.
     """
-    resolved = _resolve_lead_country(stub.get('group_name'), None,
-                                     stub.get('content_excerpt'))
+    resolved = _resolve_lead_country(
+        stub.get('group_name'), None, stub.get('content_excerpt'),
+        geo_scoped=False,
+    )
     return resolved.upper() if resolved else None
 
 
@@ -2884,11 +2979,20 @@ class FacebookScraper(SocialPlatformScraper):
                     'rating': None,
                     # Category = the niche the operator searched for.
                     'category': niche or legacy_query,
-                    # Country: resolve from group name first (it often
-                    # carries a disambiguating province token like "Ontario"),
-                    # then fall back to the raw operator location string so
-                    # unmapped places (e.g. "Nairobi") are preserved as-is.
-                    'country': _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt')),
+                    # Country: resolves from the post's own evidence (group
+                    # name + excerpt) first. Falls back to the operator's
+                    # search location with geo_scoped=True because the ONLY
+                    # way to reach this branch is the browser group-first
+                    # crawl (see the geo_scoped=True note two lines above at
+                    # the filter-chain call) — but even then only when that
+                    # location itself maps to a real ISO-2 country. Unmapped
+                    # places (e.g. "Nairobi") or arbitrary operator text
+                    # (e.g. "Wigan") are NEVER written into `country` — they
+                    # surface honestly instead via `location_confidence`.
+                    'country': _resolve_lead_country(
+                        s.get('group_name'), location, s.get('content_excerpt'),
+                        geo_scoped=True,
+                    ),
                     'location_confidence': _derive_location_confidence(
                         s.get('group_name'), s.get('content_excerpt'), location,
                     ),
@@ -3056,6 +3160,15 @@ class FacebookScraper(SocialPlatformScraper):
             stubs = await asyncio.to_thread(
                 self._sync_search_posts, query, False, max_results or 50, on_progress,
             )
+        # `geo_scoped` says whether THIS search's results are already known to
+        # be from `location` (see _apply_consumer_filter_chain's docstring).
+        # Computed ONCE here and reused for both the country stamping below
+        # AND the filter chain's geography stage further down, so the two
+        # never drift apart: a global (non-place-anchored) Apify search must
+        # not stamp its target country onto a post that names no place of its
+        # own, and the geo-mismatch filter has to agree on the same premise.
+        geo_scoped = (discovery != 'apify') or _query_is_place_anchored(query, location)
+
         # Stamp country/category from the operator's filters onto every stub.
         # Uses ORIGINAL (un-translated) niche so the dashboard's "category=electrician"
         # filter finds leads scraped from German "Elektriker" groups. Without this,
@@ -3066,7 +3179,10 @@ class FacebookScraper(SocialPlatformScraper):
             if stamp_niche and not s.get('category'):
                 s['category'] = stamp_niche
             if not s.get('country'):
-                resolved = _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt'))
+                resolved = _resolve_lead_country(
+                    s.get('group_name'), location, s.get('content_excerpt'),
+                    geo_scoped=geo_scoped,
+                )
                 if resolved:
                     s['country'] = resolved
             if not s.get('location_confidence'):
@@ -3110,13 +3226,15 @@ class FacebookScraper(SocialPlatformScraper):
         # drop genuine local posts that don't spell out their own city, for
         # zero geographic benefit. Detected from the actual query text
         # (_query_is_place_anchored), never from the discovery source: an
-        # operator can submit any query on either path.
+        # operator can submit any query on either path. Computed once, above,
+        # as `geo_scoped` — reused here so the country-stamping loop and this
+        # filter stage never disagree about whether the search was scoped.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
             stubs = _apply_consumer_filter_chain(
                 stubs, niche=niche or query, location=location,
                 filters=filters, on_progress=on_progress,
-                geo_scoped=(discovery != 'apify') or _query_is_place_anchored(query, location),
+                geo_scoped=geo_scoped,
             )
 
         return stubs
