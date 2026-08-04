@@ -29,7 +29,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 from urllib.parse import quote_plus
 
 from tools.scraper.platforms._social_base import (
@@ -1323,6 +1323,79 @@ def _query_is_place_anchored(query: str, location: str | None) -> bool:
     return loc.lower() in (query or '').lower()
 
 
+class GeoRegime(NamedTuple):
+    """How a batch of stubs relates to the operator's target location.
+
+    Two INDEPENDENT decisions that used to be one boolean (`geo_scoped`):
+
+      search_is_geo_scoped
+          The search that produced these stubs is already confined to the
+          target place. Drives (a) skipping the post-hoc
+          `_apply_geo_country_filter` and (b) trusting `location` as a
+          fallback country signal in `_resolve_lead_country`.
+
+      location_in_classifier_prompt
+          The operator's town is handed to the Gemini intent classifier,
+          whose location clause then requires a place signal IN THE POST
+          BODY.
+
+    They were the same flag until group-sourced runs needed them to differ:
+    a supplied group fixes the geography beyond doubt (so both (a) and (b)
+    are right) while its members never name their own town (so the prompt
+    clause rejects everything). Measured live on three real group asks
+    (2026-08-04): location=None -> [True, True, False];
+    location='Manchester' -> [False, False, False]. Collapsing the two back
+    into one flag re-creates a guaranteed zero-lead run.
+    """
+
+    search_is_geo_scoped: bool
+    location_in_classifier_prompt: bool
+
+
+def _geo_regime(
+    *,
+    discovery: str,
+    supplied_groups: list,
+    query: str,
+    location: str | None,
+) -> GeoRegime:
+    """Decide the geographic regime for ONE search, in ONE place.
+
+    Every consumer of the decision (country stamping, the post-hoc country
+    filter, the classifier prompt) reads the result of this function, so they
+    cannot drift apart — the previous drift was invisible and cost 100% of the
+    yield on the group path.
+
+    Four regimes, in precedence order:
+
+      1. BROWSER discovery -> (scoped, prompted). The Facebook search itself is
+         geo-scoped (geo-stuffed group term + `_is_consumer_facing_group` drops
+         wrong-country groups), so the classifier is consistent with it.
+         Checked FIRST because `group_urls` only drives the Apify path — the
+         browser path never reads it.
+      2. OPERATOR-SUPPLIED GROUPS -> (scoped, NOT prompted). The group supplies
+         the geography (a post in "Dane Bank Community Page" is in Manchester,
+         full stop) and the town in the prompt zeroes the yield. Wins over
+         rule 3 on purpose: a group run whose query happens to name the town is
+         still a group run, and must not get the town back through anchoring.
+      3. PLACE-ANCHORED QUERY -> (scoped, prompted). The query itself names the
+         place, so Facebook already scoped the results, exactly like the
+         browser path. Read from the actual query TEXT, never inferred from the
+         discovery source.
+      4. GLOBAL APIFY SEARCH -> (not scoped, not prompted). Results are
+         geographically scattered, so the classifier judges intent only and
+         `_apply_geo_country_filter` enforces geography afterwards from the
+         evidence in each post.
+    """
+    if discovery != 'apify':
+        return GeoRegime(search_is_geo_scoped=True, location_in_classifier_prompt=True)
+    if supplied_groups:
+        return GeoRegime(search_is_geo_scoped=True, location_in_classifier_prompt=False)
+    if _query_is_place_anchored(query, location):
+        return GeoRegime(search_is_geo_scoped=True, location_in_classifier_prompt=True)
+    return GeoRegime(search_is_geo_scoped=False, location_in_classifier_prompt=False)
+
+
 def _stub_country_evidence(stub: dict) -> Optional[str]:
     """ISO-2 country the POST ITSELF evidences, or None when it names nowhere.
 
@@ -1413,6 +1486,7 @@ def _apply_consumer_filter_chain(
     filters: dict,
     on_progress: ProgressCallback = None,
     geo_scoped: bool = True,
+    classifier_sees_location: Optional[bool] = None,
 ) -> list:
     """Keep only post stubs that look like a real consumer ASKING for the niche.
 
@@ -1484,11 +1558,22 @@ def _apply_consumer_filter_chain(
       - use_llm_classifier=False                 -> same two rows above,
                                                      minus the classifier call
 
-    INTENT VS GEOGRAPHY (`geo_scoped`)
-    ----------------------------------
+    INTENT VS GEOGRAPHY (`geo_scoped`, `classifier_sees_location`)
+    -------------------------------------------------------------
     `geo_scoped` says whether the search that produced these stubs was itself
-    geographically scoped. It decides where geography is enforced. Callers
-    derive it two ways, both legitimate, never guessed:
+    geographically scoped, and therefore whether the post-hoc
+    `_apply_geo_country_filter` stage runs.
+
+    `classifier_sees_location` says, separately, whether the operator's town
+    goes into the Gemini prompt. `None` (the default) means "follow
+    `geo_scoped`", which is what every caller wanted while the two decisions
+    were one flag. Pass it explicitly to break the coupling — group-sourced
+    runs need `geo_scoped=True, classifier_sees_location=False`, because the
+    group fixes the geography while its members never name their own town (see
+    `GeoRegime` for the measurement). Callers should get both values from
+    `_geo_regime` rather than deciding locally.
+
+    Callers derive `geo_scoped` two ways, both legitimate, never guessed:
       (a) from the DISCOVERY SOURCE (below), and
       (b) from the QUERY TEXT itself naming the target place — see the
           PLACE-ANCHORED QUERIES override after the two regimes below.
@@ -1554,9 +1639,13 @@ def _apply_consumer_filter_chain(
     substring_filter_applicable = exclude_businesses or asking_only
     # `location` still drives LANGUAGE resolution above (_consumer_filter_defaults)
     # and the geo stage below — it is only withheld from the classifier PROMPT,
-    # which is where enforcing it against globally-scattered candidates zeroed
-    # out every run.
-    classifier_location = location if geo_scoped else None
+    # which is where enforcing it against candidates the search never geo-scoped
+    # (global Apify search) or that never name their own town (group members)
+    # zeroed out every run.
+    prompt_location = (
+        geo_scoped if classifier_sees_location is None else classifier_sees_location
+    )
+    classifier_location = location if prompt_location else None
 
     # ── Primary gate: Gemini semantic intent classification ──────────────
     if use_llm_classifier:
@@ -3138,25 +3227,33 @@ class FacebookScraper(SocialPlatformScraper):
                            '(Apify group search returns 0 items for any query)',
                 )
                 if location:
-                    # MEASURED TRAP, not a hypothetical. Supplied groups are
-                    # geo_scoped (see below), and geo_scoped=True is also what
-                    # hands the operator's city to the Gemini prompt, whose
-                    # location clause demands a city signal IN THE POST BODY.
-                    # Group members never name their own town. Live Gemini call
-                    # on three real group asks, 2026-08-04:
+                    # MEASURED TRAP, not a hypothetical — and now DEFUSED by
+                    # _geo_regime, which withholds the town from the classifier
+                    # prompt on this path while still trusting the group's
+                    # geography. The Gemini location clause demands a city
+                    # signal IN THE POST BODY and group members never name
+                    # their own town. Live Gemini call on three real group asks,
+                    # 2026-08-04:
                     #     location=None         -> [True, True, False]
                     #     location='Manchester' -> [False, False, False]
-                    # The group already guarantees geography, so the city adds
-                    # nothing and costs everything. Warn loudly rather than
-                    # silently discarding the operator's own filter value.
+                    # Still emitted loudly: the operator's own filter value is
+                    # being partially ignored, and silent divergence between
+                    # what was typed and what ran is exactly what made the
+                    # original zero-yield run undiagnosable. This reports a
+                    # decision already taken — it is NOT a chore for the
+                    # operator, because the Scrape page can carry a location
+                    # over from a previous search and clearing it by hand was
+                    # never a safeguard.
                     _emit(
                         on_progress, 'apify_groups_location_warning',
-                        location=location,
-                        reason='group_urls already fixes the geography, but a '
-                               'location also goes into the intent classifier, '
-                               'which then requires each post to NAME that city '
-                               '— measured 0 kept of 3 genuine asks. Omit '
-                               "'location'/'country' when you supply group_urls.",
+                        location=location, ignored_for_intent=True,
+                        reason=f'{location!r} was IGNORED for intent matching: '
+                               'group_urls already fixes the geography, and '
+                               'feeding a town to the intent classifier makes it '
+                               'require each post to NAME that town — measured 0 '
+                               'kept of 3 genuine asks. The location is still '
+                               "used to tag each lead's country and to pick the "
+                               'sending account.',
                     )
                 pairs = [
                     (facebook_apify.group_id_from_url(url) or url, '')
@@ -3229,27 +3326,28 @@ class FacebookScraper(SocialPlatformScraper):
             stubs = await asyncio.to_thread(
                 self._sync_search_posts, query, False, max_results or 50, on_progress,
             )
-        # `geo_scoped` says whether THIS search's results are already known to
-        # be from `location` (see _apply_consumer_filter_chain's docstring).
-        # Computed ONCE here and reused for both the country stamping below
-        # AND the filter chain's geography stage further down, so the two
-        # never drift apart: a global (non-place-anchored) Apify search must
-        # not stamp its target country onto a post that names no place of its
-        # own, and the geo-mismatch filter has to agree on the same premise.
+        # The geographic regime for THIS search, decided ONCE (see _geo_regime)
+        # and reused by the country stamping below, the filter chain's geography
+        # stage, and the classifier prompt further down — so those three can
+        # never drift apart. A global (non-place-anchored) Apify search must not
+        # stamp its target country onto a post that names no place of its own,
+        # and the geo-mismatch filter has to agree on the same premise.
         #
-        # OPERATOR-SUPPLIED GROUPS are geo_scoped too, and for the strongest
-        # reason available: the GROUP supplies the geography. A post in "Dane
-        # Bank Community Page" is in Manchester, full stop. Measured three ways
-        # on real data — local groups 35% intent with CERTAIN location (~35%
+        # OPERATOR-SUPPLIED GROUPS are geo-scoped for the strongest reason
+        # available: the GROUP supplies the geography. A post in "Dane Bank
+        # Community Page" is in Manchester, full stop. Measured three ways on
+        # real data — local groups 35% intent with CERTAIN location (~35%
         # in-target), a global query 35% intent with GUESSED location (~3.5%
         # in-target). Running the post-hoc country filter over group-sourced
         # posts would only discard genuine local asks that never name their own
-        # town, which is most of them.
-        geo_scoped = (
-            (discovery != 'apify')
-            or bool(supplied_groups)
-            or _query_is_place_anchored(query, location)
+        # town, which is most of them. Those same posts are ALSO why the town
+        # must stay out of the classifier prompt on this path — the second half
+        # of the regime.
+        regime = _geo_regime(
+            discovery=discovery, supplied_groups=supplied_groups,
+            query=query, location=location,
         )
+        geo_scoped = regime.search_is_geo_scoped
 
         # Stamp country/category from the operator's filters onto every stub.
         # Uses ORIGINAL (un-translated) niche so the dashboard's "category=electrician"
@@ -3308,15 +3406,18 @@ class FacebookScraper(SocialPlatformScraper):
         # drop genuine local posts that don't spell out their own city, for
         # zero geographic benefit. Detected from the actual query text
         # (_query_is_place_anchored), never from the discovery source: an
-        # operator can submit any query on either path. Computed once, above,
-        # as `geo_scoped` — reused here so the country-stamping loop and this
-        # filter stage never disagree about whether the search was scoped.
+        # operator can submit any query on either path.
+        #
+        # Both halves come from the `regime` computed once above, so the
+        # country-stamping loop, this stage's geography opinion and the
+        # classifier prompt cannot disagree.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
             stubs = _apply_consumer_filter_chain(
                 stubs, niche=niche or query, location=location,
                 filters=filters, on_progress=on_progress,
-                geo_scoped=geo_scoped,
+                geo_scoped=regime.search_is_geo_scoped,
+                classifier_sees_location=regime.location_in_classifier_prompt,
             )
 
         return stubs

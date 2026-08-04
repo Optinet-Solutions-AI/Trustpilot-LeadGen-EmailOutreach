@@ -73,6 +73,45 @@ export function defaultFbQuery(niche: string, location = ''): string {
   return loc;
 }
 
+/**
+ * Facebook params plus the two operator-named-group fields.
+ *
+ * They are not on `FacebookScrapeParams` yet (frontend/src/types/scrape.ts);
+ * declared here so this form stays type-checked, and so the extra keys travel
+ * verbatim in the POST body — ScrapeContext sends the Facebook params object
+ * through untouched, and the API merges every non-control body field into the
+ * job's `filters`.
+ */
+type FacebookGroupScrapeParams = FacebookScrapeParams & {
+  /** JSON array, one entry per group. Never a raw pasted string. */
+  group_urls?: string[];
+  /** Keyword the actor filters on BEFORE billing — the real cost control. */
+  group_keyword?: string;
+};
+
+/**
+ * Split a pasted block of group URLs into the array the API expects.
+ *
+ * Trims each line, drops blanks and duplicates, and drops obvious junk: an
+ * entry has to be a Facebook URL or a bare numeric group id. The Python side
+ * normalises bare ids into full URLs (facebook_apify.normalise_group_url), so
+ * both shapes are legitimate input — a stray note or half-typed word is not,
+ * and every rejected line is one fewer billable actor run on nothing.
+ */
+export function parseGroupUrls(pasted: string): string[] {
+  const seen = new Set<string>();
+  return pasted
+    .split(/[\n,]/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => /facebook\.com\//i.test(line) || /^\d{5,}$/.test(line))
+    .filter((line) => {
+      if (seen.has(line)) return false;
+      seen.add(line);
+      return true;
+    });
+}
+
 interface Props {
   onSubmit: (params: ScrapeParams) => void;
   loading?: boolean;
@@ -126,6 +165,14 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [fbQueryOverride, setFbQueryOverride] = useState('');
   const [fbCategory, setFbCategory] = useState('dentist');
   const [fbCountry, setFbCountry] = useState('GB');
+  // Operator-named groups. Filling these in switches the run from
+  // "search Facebook" to "read these groups": Apify group DISCOVERY returns 0
+  // items for any query, so the operator supplies the groups and discovery is
+  // skipped. Empty = today's search-based flow, untouched.
+  const [fbGroupUrls, setFbGroupUrls] = useState('');
+  const [fbGroupKeyword, setFbGroupKeyword] = useState('recommend');
+  const fbParsedGroups = parseGroupUrls(fbGroupUrls);
+  const fbIsGroupScrape = fbParsedGroups.length > 0;
 
   // Shared flags
   const [enrich, setEnrich] = useState(false);
@@ -144,7 +191,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
     e.preventDefault();
     if (submittingRef.current || loading) return;
 
-    let params: ScrapeParams;
+    let params: ScrapeParams | FacebookGroupScrapeParams;
     if (platform === 'tripadvisor') {
       params = {
         platform: 'tripadvisor',
@@ -185,10 +232,19 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         ...(fbLeadType === 'consumers'
           ? { niche: fbNiche, location: fbLocation, query: fbQuery }
           : { category: fbCategory, country: fbCountry }),
+        // Group fields go out as a real ARRAY (parsed, trimmed, deduped) and
+        // only when the operator actually named groups — an empty textarea
+        // must not switch the search-based flow into group mode.
+        ...(fbLeadType === 'consumers' && fbIsGroupScrape
+          ? {
+              group_urls: fbParsedGroups,
+              group_keyword: fbGroupKeyword.trim() || undefined,
+            }
+          : {}),
         enrich,
         verify,
         forceRescrape,
-      } satisfies FacebookScrapeParams;
+      } satisfies FacebookGroupScrapeParams;
     } else {
       params = {
         country,
@@ -391,15 +447,73 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                     className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
                 </div>
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <ComboWarning niche={fbNiche} location={fbLocation} />
-                  <p className="text-[11px] text-on-surface-variant">
-                    Searches public FB posts for <strong>&quot;{fbQueryOverride.trim() || defaultFbQuery(fbNiche, fbLocation) || 'need a <niche> recommendation <location>'}&quot;</strong> &mdash;
-                    intent phrasing keeps results on-topic and the place name keeps them local (measured: dropping
-                    either half of that phrase tanks intent or geography). Leave the phrase blank to use that default.
-                    Each post is filtered to keep only real consumer asks (asking-only + Gemini intent match). Streams
-                    live; cancellable.
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-group-urls">
+                    Facebook group URLs{' '}
+                    <span className="text-on-surface-variant font-normal">(optional &mdash; one per line)</span>
+                  </label>
+                  <textarea
+                    id="fb-group-urls"
+                    rows={4}
+                    placeholder={'https://www.facebook.com/groups/1572344082987398\nhttps://www.facebook.com/groups/435424147376112'}
+                    value={fbGroupUrls}
+                    onChange={(e) => setFbGroupUrls(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface font-mono focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                  <p className="mt-1 text-[11px] text-on-surface-variant">
+                    Full URLs or bare group ids. Leave empty to search Facebook instead.
+                    {fbGroupUrls.trim() ? (
+                      <>
+                        {' '}Recognised: <strong>{fbParsedGroups.length}</strong> group
+                        {fbParsedGroups.length === 1 ? '' : 's'}.
+                      </>
+                    ) : null}
                   </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-group-keyword">
+                    Group keyword filter
+                  </label>
+                  <input
+                    id="fb-group-keyword"
+                    type="text"
+                    placeholder="recommend"
+                    value={fbGroupKeyword}
+                    onChange={(e) => setFbGroupKeyword(e.target.value)}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                  />
+                  <p className="mt-1 text-[11px] text-on-surface-variant">
+                    Filters posts <strong>before</strong> they are billed &mdash; the main cost
+                    control on a group scrape. One word beats a phrase.
+                  </p>
+                </div>
+                <div className="sm:col-span-2 lg:col-span-3">
+                  {fbIsGroupScrape ? (
+                    <p className="text-[11px] rounded-lg bg-surface-variant/60 px-3 py-2 text-on-surface-variant">
+                      <strong>Group scrape.</strong> Reads the {fbParsedGroups.length} group
+                      {fbParsedGroups.length === 1 ? '' : 's'} above directly, keeping posts that
+                      match <strong>&quot;{fbGroupKeyword.trim() || 'recommend'}&quot;</strong>.
+                      Facebook search and group discovery are skipped, so the search phrase above
+                      is not used. <strong>The location is not used to match posts</strong> &mdash;
+                      the group already fixes the geography, and requiring the town inside the post
+                      text finds nothing, because members never name their own town. It is still
+                      used to tag each lead&apos;s country. Every post still goes through the
+                      consumer-intent filter.
+                    </p>
+                  ) : (
+                    <>
+                      <ComboWarning niche={fbNiche} location={fbLocation} />
+                      <p className="text-[11px] text-on-surface-variant">
+                        Searches public FB posts for <strong>&quot;{fbQueryOverride.trim() || defaultFbQuery(fbNiche, fbLocation) || 'need a <niche> recommendation <location>'}&quot;</strong> &mdash;
+                        intent phrasing keeps results on-topic and the place name keeps them local (measured: dropping
+                        either half of that phrase tanks intent or geography). Leave the phrase blank to use that default.
+                        Each post is filtered to keep only real consumer asks (asking-only + Gemini intent match). Streams
+                        live; cancellable.
+                      </p>
+                    </>
+                  )}
                 </div>
               </>
             )}

@@ -1910,13 +1910,15 @@ def test_group_posts_via_apify_maps_the_real_actor_shape(monkeypatch):
     assert stubs[0]['posted_at'] == '2026-08-03T20:52:40.000Z'
 
 
-def test_supplied_groups_warn_when_a_location_is_also_set(monkeypatch):
-    """geo_scoped=True is ALSO what feeds the city into the Gemini prompt,
-    whose location clause demands a city signal in the post body — group
-    members never name their own town. Live Gemini call on three real group
-    asks (2026-08-04): location=None -> [True, True, False];
-    location='Manchester' -> [False, False, False]. The group already fixes the
-    geography, so warn instead of silently returning zero leads."""
+def test_supplied_groups_announce_that_the_location_was_ignored(monkeypatch):
+    """The town is DROPPED from the classifier prompt on the group path, and the
+    operator is told so — loudly, in the same event that used to tell them to go
+    and remove the filter themselves.
+
+    Why: the Gemini location clause demands a city signal in the post body and
+    group members never name their own town. Live Gemini call on three real
+    group asks (2026-08-04): location=None -> [True, True, False];
+    location='Manchester' -> [False, False, False]."""
     monkeypatch.setenv('FB_DISCOVERY', 'apify')
     _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
     monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
@@ -1932,9 +1934,15 @@ def test_supplied_groups_warn_when_a_location_is_also_set(monkeypatch):
         max_results=10, on_progress=events.append,
     ))
     warn = [e for e in events if e.get('stage') == 'apify_groups_location_warning']
-    assert len(warn) == 1
+    assert len(warn) == 1, 'the event stays LOUD — operators read this stream'
     assert warn[0]['location'] == 'Manchester'
     assert warn[0].get('reason')
+    # It reports a decision the scraper already took, not a chore for the
+    # operator. The old copy said "Omit 'location'/'country' when you supply
+    # group_urls" — a UI field can be pre-filled from a previous search, so
+    # relying on the operator to clear it is not a safeguard.
+    assert warn[0].get('ignored_for_intent') is True
+    assert 'ignor' in warn[0]['reason'].lower()
 
 
 def test_supplied_groups_do_not_warn_without_a_location(monkeypatch):
@@ -1978,3 +1986,260 @@ def test_supplied_groups_without_a_location_judge_intent_only(monkeypatch):
     # behaviour under test, not the exact '' vs None spelling.
     assert len(seen_locations) == 1
     assert not seen_locations[0]
+
+
+# ==========================================================================
+# GROUP RUNS: GEOGRAPHY IS TRUSTED, THE TOWN IS NOT PROMPTED (the UI trap)
+# ==========================================================================
+#
+# Exposing group_urls + group_keyword on the Scrape page means a location is
+# very often ALREADY filled in — the field carries over from the previous
+# search-based scrape, and the operator has no reason to think it matters.
+# Under the old single `geo_scoped` flag that combination was fatal:
+#
+#     geo_scoped=True  ->  (a) skip the post-hoc country filter   [correct]
+#                          (b) trust `location` when stamping country [correct]
+#                          (c) put the town in the Gemini prompt   [ZERO YIELD]
+#
+# Measured live on three real group asks (2026-08-04):
+#     location=None         -> [True, True, False]  (2 asks kept, advert dropped)
+#     location='Manchester' -> [False, False, False]
+#
+# The group already fixes the geography, so (c) buys nothing and costs
+# everything. The three behaviours are now decided together, once, by
+# `_geo_regime`, which returns geography-enforcement and prompt-location as two
+# INDEPENDENT booleans.
+
+# Genuine ask with NO town anywhere in the text — exactly the shape group
+# members actually post, and the shape the location clause destroys.
+_GROUP_ASK_NO_TOWN = (
+    'Can anyone recommend a decent plumber? Boiler has started leaking again.'
+)
+
+
+def _location_clause_trap_classifier(captured: dict):
+    """Fake classifier that reproduces the MEASURED Gemini behaviour: given a
+    location, its location clause demands a town in the post body, so a genuine
+    ask that names no town comes back False."""
+    def fake(excerpts, niche, location=None, **kw):
+        captured['location'] = location
+        captured['niche'] = niche
+        captured['calls'] = captured.get('calls', 0) + 1
+        if location:
+            return [False] * len(excerpts)
+        return [True] * len(excerpts)
+    return fake
+
+
+def test_group_urls_with_a_location_still_yield_leads(monkeypatch):
+    """THE TEST THAT WOULD HAVE CAUGHT THE ZERO-YIELD TRAP. group_urls plus a
+    leftover location: the classifier must be handed NO location, and a genuine
+    ask with no town in its text must SURVIVE."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning([_GROUP_ASK_NO_TOWN], monkeypatch)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _location_clause_trap_classifier(captured),
+    )
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]]},
+        max_results=10,
+    ))
+    assert captured['calls'] == 1
+    assert not captured['location'], (
+        'the operator location must NOT reach the classifier prompt on a '
+        'group-sourced run (got {!r})'.format(captured['location'])
+    )
+    assert captured['niche'] == 'plumber', 'the niche still goes to the prompt'
+    assert _excerpts(stubs) == [_GROUP_ASK_NO_TOWN], (
+        'a genuine ask that names no town is exactly what the location clause '
+        'was destroying — it has to come out the other end'
+    )
+
+
+def test_group_urls_with_a_location_are_still_geographically_trusted(monkeypatch):
+    """The other half of the split: withholding the town from the PROMPT must
+    not turn the post-hoc country filter back on. A group post that happens to
+    mention another city survives, and country is still stamped from the
+    operator's location."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(
+        ['Can anyone recommend a plumber? The last one moved to Dublin.',
+         _GROUP_ASK_NO_TOWN],
+        monkeypatch,
+    )
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    events: list = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]]},
+        max_results=10, on_progress=events.append,
+    ))
+    assert len(stubs) == 2, 'the post-hoc country filter must stay OFF'
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
+    # The town still resolves the country for a post that evidences none of
+    # its own — that is the half of geo_scoped the group path KEEPS.
+    assert stubs[1]['country'] == 'GB'
+    # ...while a post that names its own place is still believed over the
+    # operator's filter, exactly as on every other path.
+    assert stubs[0]['country'] == 'IE'
+
+
+def test_group_urls_still_fail_closed_when_the_classifier_is_out(monkeypatch):
+    """Dropping the town from the prompt must not weaken the gate. Non-English
+    market + no verdicts = empty batch, exactly as everywhere else."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['Kann jemand einen Klempner empfehlen?'], monkeypatch)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+
+    events: list = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'Klempner',
+        {'niche': 'Klempner', 'location': 'Frankfurt',
+         'group_urls': [_UK_GROUPS[0]], 'group_keyword': 'empfehlen'},
+        max_results=10, on_progress=events.append,
+    ))
+    assert stubs == []
+    assert any(e.get('stage') == 'consumer_filter_unavailable' for e in events)
+
+
+def test_no_group_urls_still_sends_the_location_to_the_classifier(monkeypatch):
+    """Control for the ordinary search path: a place-anchored search is
+    geo-scoped by Facebook itself, so `location` reaches the classifier exactly
+    as it does today. Nothing about the group work may change this."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    captured: dict = {}
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_PLAIN],
+        _capturing_verdicts({_ASK_PLAIN}, captured),
+        query='need a plumber recommendation Manchester',
+    )
+    assert captured['location'] == 'Manchester'
+    assert _excerpts(stubs) == [_ASK_PLAIN]
+
+
+def test_browser_group_urls_are_ignored_and_location_still_prompted(monkeypatch):
+    """group_urls only drives the APIFY path. On the browser path the URLs are
+    not used at all, so the regime must stay browser-shaped: location in the
+    prompt, no post-hoc geo stage."""
+    monkeypatch.setenv('FB_DISCOVERY', 'browser')
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb.FacebookScraper, '_sync_search_posts',
+        lambda self, query, groups_only, max_results, on_progress: [_stub(_ASK_PLAIN)],
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _capturing_verdicts({_ASK_PLAIN}, captured),
+    )
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'plumber Manchester', {**_GROUP_FILTERS, 'groups_only': False},
+        max_results=10,
+    ))
+    assert captured['location'] == 'Manchester'
+    assert _excerpts(stubs) == [_ASK_PLAIN]
+
+
+# ── the seam itself, unit-level ────────────────────────────────────────────
+#
+# One function decides the whole geographic regime, so the country-stamping
+# loop, the post-hoc filter and the classifier prompt can never drift apart.
+
+
+def test_geo_regime_group_sourced_trusts_geography_but_not_the_prompt():
+    regime = fb._geo_regime(
+        discovery='apify', supplied_groups=['1572344082987398'],
+        query='need a plumber recommendation', location='Manchester',
+    )
+    assert regime.search_is_geo_scoped is True
+    assert regime.location_in_classifier_prompt is False
+
+
+def test_geo_regime_group_sourced_wins_over_a_place_anchored_query():
+    """A group run whose query happens to name the town is still a group run —
+    the prompt must not get the town back through the anchoring override."""
+    regime = fb._geo_regime(
+        discovery='apify', supplied_groups=['1572344082987398'],
+        query='need a plumber recommendation Manchester', location='Manchester',
+    )
+    assert regime.location_in_classifier_prompt is False
+
+
+def test_geo_regime_browser_is_scoped_and_prompted():
+    regime = fb._geo_regime(
+        discovery='browser', supplied_groups=[], query='plumber Manchester',
+        location='Manchester',
+    )
+    assert regime == fb.GeoRegime(True, True)
+
+
+def test_geo_regime_global_apify_search_is_neither():
+    regime = fb._geo_regime(
+        discovery='apify', supplied_groups=[],
+        query='need a plumber recommendation', location='Manchester',
+    )
+    assert regime == fb.GeoRegime(False, False)
+
+
+def test_geo_regime_place_anchored_apify_search_is_both():
+    regime = fb._geo_regime(
+        discovery='apify', supplied_groups=[],
+        query='need a plumber recommendation Manchester', location='Manchester',
+    )
+    assert regime == fb.GeoRegime(True, True)
+
+
+def test_filter_chain_prompt_location_defaults_to_the_geography_flag(monkeypatch):
+    """Back-compat: every pre-existing caller passes geo_scoped alone, and for
+    them the two decisions stay coupled exactly as before."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _capturing_verdicts({_ASK_PLAIN}, captured),
+    )
+    fb._apply_consumer_filter_chain(
+        [_stub(_ASK_PLAIN)], niche='plumber', location='Manchester',
+        filters=_ENGLISH_FILTERS, geo_scoped=True,
+    )
+    assert captured['location'] == 'Manchester'
+
+    captured.clear()
+    fb._apply_consumer_filter_chain(
+        [_stub(_ASK_PLAIN)], niche='plumber', location='Manchester',
+        filters=_ENGLISH_FILTERS, geo_scoped=False,
+    )
+    assert not captured['location']
+
+
+def test_filter_chain_can_trust_geography_while_withholding_the_prompt(monkeypatch):
+    """The group regime, expressed directly on the chain: no geo stage AND no
+    location in the prompt. Neither was previously expressible."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        _location_clause_trap_classifier(captured),
+    )
+    events: list = []
+    kept = fb._apply_consumer_filter_chain(
+        [_stub(_GROUP_ASK_NO_TOWN)], niche='plumber', location='Manchester',
+        filters=_ENGLISH_FILTERS, geo_scoped=True,
+        classifier_sees_location=False, on_progress=events.append,
+    )
+    assert not captured['location']
+    assert _excerpts(kept) == [_GROUP_ASK_NO_TOWN]
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
