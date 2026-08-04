@@ -1936,11 +1936,22 @@ def _group_posts_via_apify(
     groups: list[tuple[str, str]],
     max_results: int,
     on_progress: ProgressCallback,
+    keyword: Optional[str] = None,
 ) -> list[PostStub]:
     """Pull posts from each public group. A group that fails is skipped, not fatal.
 
     Private groups are invisible to this actor by design (it is cookieless).
     Those remain the browser path's job, with an account that has joined them.
+
+    ONE RUN PER GROUP even though the actor's `startUrls` accepts an array.
+    Billing is per RESULT ($1.50/1000), not per run, so batching saves nothing
+    — while a single batched run turns one private/renamed group into a total
+    loss instead of one skipped group, and per-group runs keep group
+    attribution certain rather than inferred from each item.
+
+    `keyword` becomes the actor's `search`, which it applies BEFORE billing —
+    so a keyword makes the run both cheaper and more on-target. Omitted when
+    blank (an empty filter matches nothing).
     """
     actor = facebook_apify.group_posts_actor()
     per_group = max(1, max_results // max(1, len(groups)))
@@ -1948,13 +1959,22 @@ def _group_posts_via_apify(
     for gid, gname in groups:
         try:
             items = apify.run_actor(
-                actor, facebook_apify.build_group_posts_input(gid, max_results=per_group),
+                actor,
+                facebook_apify.build_group_posts_input(
+                    gid, max_items=per_group, keyword=keyword,
+                ),
             )
         except apify.ApifyError as exc:
             _emit(on_progress, 'group_skipped', group_id=gid, reason=str(exc)[:120])
             continue
         for item in items:
-            stub = facebook_apify.post_to_stub(item, group_id=gid, group_name=gname)
+            # gname is '' for operator-supplied groups (we know the id from the
+            # URL but not the title) — passing None lets post_to_stub fill it
+            # from the actor's own `groupTitle`, which _resolve_lead_country
+            # then reads as location evidence.
+            stub = facebook_apify.post_to_stub(
+                item, group_id=gid, group_name=gname or None,
+            )
             if stub:
                 stubs.append(stub)
     _emit(on_progress, 'apify_groups_done', groups=len(groups), posts=len(stubs))
@@ -3089,6 +3109,13 @@ class FacebookScraper(SocialPlatformScraper):
         # below the stamping would silently drop category/country on every
         # Apify lead.
         discovery = _discovery_source()
+        # Operator-named groups. Apify group DISCOVERY is broken (our search
+        # actor's search_type='groups' returns 0 items even for a one-word
+        # query, and the old data-slayer group-post actor returns 0 for its own
+        # documented default input), so when the operator supplies the groups
+        # themselves discovery is SKIPPED OUTRIGHT — not attempted then fallen
+        # back from, because a doomed discovery call is still a billable run.
+        supplied_groups = facebook_apify.parse_group_urls(filters.get('group_urls'))
         if discovery == 'apify':
             # `max_results or 50` would turn an explicit 0 into 50 and spend a
             # billable actor run (on the free plan, the day's only run).
@@ -3097,7 +3124,49 @@ class FacebookScraper(SocialPlatformScraper):
             # place name is exactly the point ("plumber Manchester" finds
             # "Manchester Tradespeople").
             group_search_term = f'{niche} {location}'.strip() if niche and location else query
-            if groups_only:
+            if supplied_groups:
+                # `group_keyword` (NOT `query`) drives the actor's `search`:
+                # that field is a keyword filter, and feeding it a whole intent
+                # phrase ("need a plumber recommendation") matches nothing.
+                # niche/location are NOT required here — they only ever existed
+                # to build the (broken) discovery term.
+                group_keyword = (filters.get('group_keyword') or '').strip() or None
+                _emit(
+                    on_progress, 'apify_groups_supplied',
+                    groups=len(supplied_groups), keyword=group_keyword,
+                    reason='operator supplied group URLs — group discovery skipped '
+                           '(Apify group search returns 0 items for any query)',
+                )
+                if location:
+                    # MEASURED TRAP, not a hypothetical. Supplied groups are
+                    # geo_scoped (see below), and geo_scoped=True is also what
+                    # hands the operator's city to the Gemini prompt, whose
+                    # location clause demands a city signal IN THE POST BODY.
+                    # Group members never name their own town. Live Gemini call
+                    # on three real group asks, 2026-08-04:
+                    #     location=None         -> [True, True, False]
+                    #     location='Manchester' -> [False, False, False]
+                    # The group already guarantees geography, so the city adds
+                    # nothing and costs everything. Warn loudly rather than
+                    # silently discarding the operator's own filter value.
+                    _emit(
+                        on_progress, 'apify_groups_location_warning',
+                        location=location,
+                        reason='group_urls already fixes the geography, but a '
+                               'location also goes into the intent classifier, '
+                               'which then requires each post to NAME that city '
+                               '— measured 0 kept of 3 genuine asks. Omit '
+                               "'location'/'country' when you supply group_urls.",
+                    )
+                pairs = [
+                    (facebook_apify.group_id_from_url(url) or url, '')
+                    for url in supplied_groups
+                ]
+                stubs = await asyncio.to_thread(
+                    _group_posts_via_apify, pairs, resolved_max, on_progress,
+                    group_keyword,
+                )
+            elif groups_only:
                 if not niche or not location:
                     raise ValueError(
                         "Group-first search requires both 'niche' and 'location' in filters. "
@@ -3167,7 +3236,20 @@ class FacebookScraper(SocialPlatformScraper):
         # never drift apart: a global (non-place-anchored) Apify search must
         # not stamp its target country onto a post that names no place of its
         # own, and the geo-mismatch filter has to agree on the same premise.
-        geo_scoped = (discovery != 'apify') or _query_is_place_anchored(query, location)
+        #
+        # OPERATOR-SUPPLIED GROUPS are geo_scoped too, and for the strongest
+        # reason available: the GROUP supplies the geography. A post in "Dane
+        # Bank Community Page" is in Manchester, full stop. Measured three ways
+        # on real data — local groups 35% intent with CERTAIN location (~35%
+        # in-target), a global query 35% intent with GUESSED location (~3.5%
+        # in-target). Running the post-hoc country filter over group-sourced
+        # posts would only discard genuine local asks that never name their own
+        # town, which is most of them.
+        geo_scoped = (
+            (discovery != 'apify')
+            or bool(supplied_groups)
+            or _query_is_place_anchored(query, location)
+        )
 
         # Stamp country/category from the operator's filters onto every stub.
         # Uses ORIGINAL (un-translated) niche so the dashboard's "category=electrician"

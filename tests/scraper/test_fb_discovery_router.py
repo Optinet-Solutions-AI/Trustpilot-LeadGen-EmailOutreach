@@ -1600,3 +1600,381 @@ def test_non_place_anchored_apify_query_still_filters_exactly_as_before(monkeypa
     assert len(geo) == 1
     assert geo[0]['dropped'] == 1
     assert geo[0]['kept'] == 1
+
+
+# ==========================================================================
+# OPERATOR-SUPPLIED GROUPS (filters.group_urls)
+# ==========================================================================
+#
+# Apify group DISCOVERY does not work: our search actor's search_type='groups'
+# returns 0 items even for a one-word query, and the old data-slayer group-post
+# actor returns 0 for its own documented default input. So the operator names
+# the groups directly and discovery is SKIPPED entirely — not attempted and
+# then fallen back from, because a doomed discovery call is a billable run for
+# a known-zero result.
+#
+# Group-sourced posts are LOCATION-CERTAIN (a post in "Dane Bank Community
+# Page" is in Manchester, full stop) — measured 35% intent / geography certain
+# vs 3.5% in-target for a global query — so they are treated as geo_scoped.
+
+_UK_GROUPS = [
+    'https://www.facebook.com/groups/1572344082987398',
+    'https://www.facebook.com/groups/435424147376112',
+    'https://www.facebook.com/groups/1772363682936388',
+]
+
+_GROUP_FILTERS = {
+    'niche': 'plumber',
+    'location': 'Manchester',
+    'group_urls': _UK_GROUPS,
+    'group_keyword': 'recommend',
+}
+
+
+def _memo23_post(idx, text, *, group_id, group_title):
+    """One item in the working group actor's REAL output shape."""
+    return {
+        'url': f'https://www.facebook.com/groups/{group_id}/permalink/{idx}/',
+        'text': text,
+        'time': '2026-08-03T20:52:40.000Z',
+        'user': {'id': f'210260142727094{idx}', 'name': f'User{idx}'},
+        'groupTitle': group_title,
+        'facebookId': int(group_id),
+        'attachments': [],
+    }
+
+
+def _group_actor_returning(texts, monkeypatch):
+    """Patch run_actor to serve the group actor and BLOW UP on any discovery
+    call, so 'discovery is skipped' is proven, not assumed."""
+    seen = []
+
+    def fake_run_actor(actor, run_input, **kw):
+        if run_input.get('search_type'):
+            raise AssertionError(
+                'group discovery must be SKIPPED when group_urls is supplied '
+                f'(actor={actor} input={run_input})'
+            )
+        seen.append(run_input)
+        gid = run_input['startUrls'][0].rstrip('/').split('/')[-1]
+        return [
+            _memo23_post(i, t, group_id=gid, group_title=f'Group {gid}')
+            for i, t in enumerate(texts)
+        ]
+
+    monkeypatch.setattr(fb.apify, 'run_actor', fake_run_actor)
+    return seen
+
+
+def test_supplied_group_urls_skip_discovery_entirely(monkeypatch):
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    seen = _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation', dict(_GROUP_FILTERS), max_results=30,
+    ))
+    assert len(seen) == 3, 'one run per supplied group'
+    assert [s['startUrls'] for s in seen] == [[u] for u in _UK_GROUPS]
+    assert len(stubs) == 3
+
+
+def test_supplied_groups_pass_the_keyword_and_cap_to_the_actor(monkeypatch):
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    seen = _group_actor_returning(['recommend a plumber'], monkeypatch)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    scraper = fb.FacebookScraper()
+    asyncio.run(scraper.search_posts(
+        'need a plumber recommendation', dict(_GROUP_FILTERS), max_results=30,
+    ))
+    assert all(s['search'] == 'recommend' for s in seen)
+    assert all(s['maxItems'] == 10 for s in seen), '30 requested / 3 groups'
+    assert all(s['viewOption'] == 'CHRONOLOGICAL' for s in seen)
+
+
+def test_supplied_groups_accept_bare_numeric_ids(monkeypatch):
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    seen = _group_actor_returning(['recommend a plumber'], monkeypatch)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    scraper = fb.FacebookScraper()
+    asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': ['1572344082987398', _UK_GROUPS[1]]},
+        max_results=20,
+    ))
+    assert [s['startUrls'] for s in seen] == [
+        ['https://www.facebook.com/groups/1572344082987398'],
+        [_UK_GROUPS[1]],
+    ]
+
+
+def test_supplied_groups_emit_a_named_count_event(monkeypatch):
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['recommend a plumber'], monkeypatch)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+
+    events = []
+    scraper = fb.FacebookScraper()
+    asyncio.run(scraper.search_posts(
+        'need a plumber recommendation', dict(_GROUP_FILTERS), max_results=30,
+        on_progress=events.append,
+    ))
+    supplied = [e for e in events if e.get('stage') == 'apify_groups_supplied']
+    assert len(supplied) == 1
+    assert supplied[0]['groups'] == 3
+    assert supplied[0].get('keyword') == 'recommend'
+    # ...and the broken-discovery diagnostic must NOT fire — nothing was tried.
+    assert not any(e.get('stage') == 'apify_groups_unavailable' for e in events)
+
+
+def test_supplied_groups_never_require_niche_or_location(monkeypatch):
+    """groups_only defaults True and normally demands niche+location for the
+    (broken) discovery term. Named groups need neither."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'recommend', {'group_urls': [_UK_GROUPS[0]], 'group_keyword': 'recommend'},
+        max_results=10,
+    ))
+    assert len(stubs) == 1
+
+
+def test_group_sourced_posts_are_geo_scoped_so_the_country_filter_never_fires(monkeypatch):
+    """A supplied group IS the geography. Running the post-hoc country filter
+    on top would throw away good leads — here, a Manchester-group post that
+    happens to mention Dublin."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(
+        ['Anyone recommend a plumber? Last one I used had moved to Dublin.'],
+        monkeypatch,
+    )
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    events = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]]},
+        max_results=10, on_progress=events.append,
+    ))
+    assert len(stubs) == 1, 'the geo filter must not have dropped it'
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
+
+
+def test_open_feed_apify_search_is_still_NOT_geo_scoped(monkeypatch):
+    """Control: without group_urls the global search keeps its post-hoc country
+    stage — the 3.5% in-target measurement is what that stage exists for."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    monkeypatch.setattr(fb.apify, 'run_actor', lambda actor, run_input, **kw: [
+        {'url': 'https://fb/p/1',
+         'message': 'Anyone recommend a plumber? I am over in Dublin.',
+         'user': {'name': 'Jane', 'profile_url': 'https://fb/jane'}},
+    ])
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    events = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {'niche': 'plumber', 'location': 'Manchester', 'groups_only': False},
+        max_results=10, on_progress=events.append,
+    ))
+    assert any(e.get('stage') == 'geo_filtered' for e in events)
+    assert stubs == [], 'a Dublin post is out-of-target for a Manchester scrape'
+
+
+def test_group_sourced_stubs_still_get_country_and_category_stamped(monkeypatch):
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]]}, max_results=10,
+    ))
+    assert stubs[0]['category'] == 'plumber'
+    assert stubs[0]['country'] == 'GB'
+
+
+def test_group_sourced_country_is_not_fabricated_from_an_unmapped_location(monkeypatch):
+    """`country` must never be the operator's typed text. 'Nowheresville' maps
+    to no ISO-2 code, so the column stays unset even though geo_scoped=True."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini', lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'recommend',
+        {'niche': 'plumber', 'location': 'Nowheresville',
+         'group_urls': [_UK_GROUPS[0]], 'group_keyword': 'recommend'},
+        max_results=10,
+    ))
+    assert stubs[0].get('country') is None
+
+
+def test_group_sourced_posts_still_go_through_the_intent_classifier(monkeypatch):
+    """The Gemini gate is not bypassed just because geography is certain — a
+    tradesman advert inside a local group is still an advert."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(
+        ['Need a plumber? Call ABC Plumbing, free quotes!',
+         'Can anyone recommend a plumber for a dripping tap?'],
+        monkeypatch,
+    )
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        lambda excerpts, *a, **k: ['recommend a plumber for' in e for e in excerpts],
+    )
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]]}, max_results=10,
+    ))
+    assert [s['content_excerpt'] for s in stubs] == \
+        ['Can anyone recommend a plumber for a dripping tap?']
+
+
+def test_group_sourced_posts_fall_back_to_the_substring_filter(monkeypatch):
+    """Gemini outage on the group path: the English substring heuristics must
+    still drop the advert, exactly as on every other path."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(
+        ['Need a plumber? Look no further! ABC Plumbing offers free quotes.',
+         'Anyone know a plumber in Manchester who can look at a leaking radiator?'],
+        monkeypatch,
+    )
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', lambda *a, **k: None)
+
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'need a plumber recommendation',
+        {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]], 'exclude_businesses': True,
+         'asking_only': True},
+        max_results=10,
+    ))
+    assert [s['content_excerpt'] for s in stubs] == \
+        ['Anyone know a plumber in Manchester who can look at a leaking radiator?']
+
+
+def test_group_posts_via_apify_maps_the_real_actor_shape(monkeypatch):
+    """Unit-level: the helper feeds startUrls and maps memo23 output."""
+    seen = []
+
+    def fake_run_actor(actor, run_input, **kw):
+        seen.append((actor, run_input))
+        return [_memo23_post(1, 'recommend a plumber',
+                             group_id='1772363682936388',
+                             group_title='Spotted littlehampton')]
+
+    monkeypatch.setattr(fb.apify, 'run_actor', fake_run_actor)
+    stubs = fb._group_posts_via_apify(
+        [('1772363682936388', '')], 10, None, keyword='recommend',
+    )
+    assert seen[0][0] == fb.facebook_apify.group_posts_actor()
+    assert seen[0][1]['startUrls'] == ['https://www.facebook.com/groups/1772363682936388']
+    assert stubs[0]['group_name'] == 'Spotted littlehampton', 'groupTitle fills the blank name'
+    assert stubs[0]['author_profile_url'] == 'https://www.facebook.com/2102601427270941'
+    assert stubs[0]['posted_at'] == '2026-08-03T20:52:40.000Z'
+
+
+def test_supplied_groups_warn_when_a_location_is_also_set(monkeypatch):
+    """geo_scoped=True is ALSO what feeds the city into the Gemini prompt,
+    whose location clause demands a city signal in the post body — group
+    members never name their own town. Live Gemini call on three real group
+    asks (2026-08-04): location=None -> [True, True, False];
+    location='Manchester' -> [False, False, False]. The group already fixes the
+    geography, so warn instead of silently returning zero leads."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    monkeypatch.setattr(fb, '_translate_niche_to_local', lambda niche, loc: niche)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    events = []
+    scraper = fb.FacebookScraper()
+    asyncio.run(scraper.search_posts(
+        'recommend', {**_GROUP_FILTERS, 'group_urls': [_UK_GROUPS[0]]},
+        max_results=10, on_progress=events.append,
+    ))
+    warn = [e for e in events if e.get('stage') == 'apify_groups_location_warning']
+    assert len(warn) == 1
+    assert warn[0]['location'] == 'Manchester'
+    assert warn[0].get('reason')
+
+
+def test_supplied_groups_do_not_warn_without_a_location(monkeypatch):
+    """The recommended shape: groups + keyword, no location. Silent."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    monkeypatch.setattr(
+        fb, '_classify_consumer_posts_with_gemini',
+        lambda excerpts, *a, **k: [True] * len(excerpts),
+    )
+
+    events = []
+    scraper = fb.FacebookScraper()
+    stubs = asyncio.run(scraper.search_posts(
+        'plumber', {'group_urls': [_UK_GROUPS[0]], 'group_keyword': 'recommend'},
+        max_results=10, on_progress=events.append,
+    ))
+    assert not any(e.get('stage') == 'apify_groups_location_warning' for e in events)
+    assert len(stubs) == 1
+
+
+def test_supplied_groups_without_a_location_judge_intent_only(monkeypatch):
+    """Corollary of the warning: with no location the classifier is handed
+    location=None, so it judges intent alone — the regime that measured
+    [True, True, False] on real group asks."""
+    monkeypatch.setenv('FB_DISCOVERY', 'apify')
+    _group_actor_returning(['anyone recommend a plumber?'], monkeypatch)
+    seen_locations = []
+
+    def spy(excerpts, niche, location=None, **kw):
+        seen_locations.append(location)
+        return [True] * len(excerpts)
+
+    monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', spy)
+    scraper = fb.FacebookScraper()
+    asyncio.run(scraper.search_posts(
+        'plumber', {'group_urls': [_UK_GROUPS[0]], 'group_keyword': 'recommend'},
+        max_results=10,
+    ))
+    # Falsy, so social_nlp builds no location_clause at all — that is the
+    # behaviour under test, not the exact '' vs None spelling.
+    assert len(seen_locations) == 1
+    assert not seen_locations[0]

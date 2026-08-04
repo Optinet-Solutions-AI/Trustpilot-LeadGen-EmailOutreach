@@ -8,9 +8,17 @@ def test_actor_ids_come_from_env_not_literals(monkeypatch):
     monkeypatch.setenv('APIFY_FB_SEARCH_ACTOR', 'scraper_one/facebook-posts-search')
     assert fa.search_actor() == 'scraper_one/facebook-posts-search'
     monkeypatch.delenv('APIFY_FB_GROUP_POSTS_ACTOR', raising=False)
-    assert fa.group_posts_actor() == 'data-slayer/facebook-group-posts'
+    assert fa.group_posts_actor() == 'memo23/facebook-public-group-posts-scraper'
     monkeypatch.setenv('APIFY_FB_GROUP_POSTS_ACTOR', 'someone/other-group-actor')
     assert fa.group_posts_actor() == 'someone/other-group-actor'
+
+
+def test_group_posts_actor_default_is_not_the_dead_actor(monkeypatch):
+    """data-slayer/facebook-group-posts returns 0 items even for its own
+    documented default input (verified live 2026-08-03). Defaulting to it made
+    every group poll silently empty."""
+    monkeypatch.delenv('APIFY_FB_GROUP_POSTS_ACTOR', raising=False)
+    assert 'data-slayer' not in fa.group_posts_actor()
 
 
 def test_build_search_input_sets_keyword_and_caps():
@@ -32,19 +40,139 @@ def test_build_search_input_omits_absent_date():
     assert got['start_date'] == '2026-07-01'
 
 
-def test_build_group_posts_input_sets_group_id():
-    got = fa.build_group_posts_input('123', max_results=50)
-    assert got['groupId'] == '123'
+# ==========================================================================
+# memo23/facebook-public-group-posts-scraper — input builder
+# ==========================================================================
+#
+# Schema read verbatim off build 0.0.63 (2026-08-04):
+#   startUrls array REQUIRED / search string / maxItems integer /
+#   onlyPostsNewerThanHours integer / viewOption string / includeComments bool
+# Its keys share NOTHING with the dead data-slayer actor's {groupId, maxPages},
+# so the old builder was deleted rather than kept alongside this one.
+
+_G1 = 'https://www.facebook.com/groups/1572344082987398'
+_G2 = 'https://www.facebook.com/groups/435424147376112'
 
 
-def test_build_group_posts_input_enforces_min_page_count():
-    got = fa.build_group_posts_input('456', max_results=5)
-    assert got['maxPages'] >= 1
+def test_build_group_posts_input_uses_start_urls_not_group_id():
+    got = fa.build_group_posts_input([_G1, _G2], max_items=25)
+    assert got['startUrls'] == [_G1, _G2]
+    assert 'groupId' not in got
+    assert 'maxPages' not in got
 
 
-def test_build_group_posts_input_scales_pages():
-    got = fa.build_group_posts_input('789', max_results=100)
-    assert got['maxPages'] > fa.build_group_posts_input('789', max_results=10)['maxPages']
+def test_build_group_posts_input_sets_per_group_item_cap():
+    assert fa.build_group_posts_input([_G1], max_items=40)['maxItems'] == 40
+
+
+def test_build_group_posts_input_enforces_min_item_cap():
+    """maxItems=0 would bill a run that can return nothing."""
+    assert fa.build_group_posts_input([_G1], max_items=0)['maxItems'] >= 1
+
+
+def test_build_group_posts_input_defaults_to_chronological_view():
+    assert fa.build_group_posts_input([_G1], max_items=10)['viewOption'] == 'CHRONOLOGICAL'
+
+
+def test_build_group_posts_input_includes_keyword_when_supplied():
+    got = fa.build_group_posts_input([_G1], max_items=10, keyword='recommend')
+    assert got['search'] == 'recommend'
+
+
+def test_build_group_posts_input_omits_empty_keyword():
+    """The actor filters on `search` BEFORE billing, so a keyword saves money —
+    but an EMPTY string is a filter that matches nothing, which would return 0
+    posts and look like a dead group."""
+    for empty in (None, '', '   '):
+        assert 'search' not in fa.build_group_posts_input([_G1], max_items=10, keyword=empty)
+
+
+def test_build_group_posts_input_omits_freshness_window_by_default():
+    assert 'onlyPostsNewerThanHours' not in fa.build_group_posts_input([_G1], max_items=10)
+
+
+def test_build_group_posts_input_exposes_freshness_window():
+    got = fa.build_group_posts_input([_G1], max_items=10, newer_than_hours=48)
+    assert got['onlyPostsNewerThanHours'] == 48
+
+
+def test_build_group_posts_input_normalises_bare_numeric_ids():
+    got = fa.build_group_posts_input(['1572344082987398'], max_items=10)
+    assert got['startUrls'] == ['https://www.facebook.com/groups/1572344082987398']
+
+
+def test_build_group_posts_input_accepts_a_single_string():
+    assert fa.build_group_posts_input(_G1, max_items=10)['startUrls'] == [_G1]
+
+
+def test_build_group_posts_input_rejects_an_empty_group_list():
+    """startUrls is REQUIRED — an empty array would launch a billable run that
+    cannot return anything."""
+    import pytest
+    with pytest.raises(ValueError):
+        fa.build_group_posts_input([], max_items=10)
+
+
+# -- group URL normalisation ------------------------------------------------
+
+
+def test_normalise_group_url_passes_full_urls_through():
+    assert fa.normalise_group_url(_G1) == _G1
+
+
+def test_normalise_group_url_wraps_bare_numeric_ids():
+    assert fa.normalise_group_url('435424147376112') == \
+        'https://www.facebook.com/groups/435424147376112'
+
+
+def test_normalise_group_url_accepts_integer_ids():
+    assert fa.normalise_group_url(435424147376112) == \
+        'https://www.facebook.com/groups/435424147376112'
+
+
+def test_normalise_group_url_wraps_bare_slugs():
+    assert fa.normalise_group_url('manchestertradespeople') == \
+        'https://www.facebook.com/groups/manchestertradespeople'
+
+
+def test_normalise_group_url_upgrades_scheme_relative_and_bare_hosts():
+    assert fa.normalise_group_url('facebook.com/groups/123').startswith('https://')
+    assert fa.normalise_group_url('www.facebook.com/groups/123').startswith('https://')
+
+
+def test_normalise_group_url_returns_none_for_blanks():
+    for blank in (None, '', '   '):
+        assert fa.normalise_group_url(blank) is None
+
+
+def test_parse_group_urls_normalises_and_drops_blanks():
+    assert fa.parse_group_urls([_G1, '', '435424147376112', None]) == [
+        _G1, 'https://www.facebook.com/groups/435424147376112',
+    ]
+
+
+def test_parse_group_urls_accepts_a_comma_separated_string():
+    """Operators paste lists; the CLI --filters JSON may carry one string."""
+    assert fa.parse_group_urls(f'{_G1}, 435424147376112') == [
+        _G1, 'https://www.facebook.com/groups/435424147376112',
+    ]
+
+
+def test_parse_group_urls_dedupes():
+    assert fa.parse_group_urls([_G1, _G1]) == [_G1]
+
+
+def test_parse_group_urls_of_nothing_is_empty():
+    assert fa.parse_group_urls(None) == []
+    assert fa.parse_group_urls([]) == []
+
+
+def test_group_id_from_url_extracts_the_id():
+    assert fa.group_id_from_url(_G1) == '1572344082987398'
+    assert fa.group_id_from_url(
+        'https://www.facebook.com/groups/1772363682936388/permalink/336/'
+    ) == '1772363682936388'
+    assert fa.group_id_from_url('https://www.facebook.com/nope') is None
 
 
 def test_post_to_stub_maps_every_field():
@@ -308,3 +436,159 @@ def test_post_to_stub_handles_overflow_timestamp():
         'timestamp': 99999999999999999999,
     })
     assert stub['posted_at'] is None
+
+
+# ==========================================================================
+# memo23/facebook-public-group-posts-scraper — output mapping
+# ==========================================================================
+#
+# This fixture is a VERBATIM item from a real 23-post run across three UK
+# groups (2026-08-04). Every field name below is the actor's own: `text` not
+# `message`, `time` (already ISO-8601, NOT an epoch int), `groupTitle`,
+# `facebookId`, and a `user` object carrying NO profile URL at all.
+
+_MEMO23_ITEM = {
+    'url': 'https://www.facebook.com/groups/1772363682936388/permalink/3362762127229861/',
+    'text': 'Can anyone recommend a decent plumber please? Kitchen tap is dripping.',
+    'time': '2026-08-03T20:52:40.000Z',
+    'user': {'id': '2102601427270949', 'name': 'booboogizmo'},
+    'groupTitle': 'Spotted littlehampton',
+    'facebookId': 1772363682936388,
+    'attachments': [],
+    'commentsCount': 4,
+    'likesCount': 2,
+    'sharesCount': 0,
+    'photoCount': 0,
+    'inputUrl': 'https://www.facebook.com/groups/1772363682936388',
+    'id': '3362762127229861',
+    'legacyId': '3362762127229861',
+    'feedbackId': 'ZmVlZGJhY2s6MzM2Mjc2MjEyNzIyOTg2MQ==',
+}
+
+
+def test_memo23_item_maps_every_required_field():
+    stub = fa.post_to_stub(dict(_MEMO23_ITEM))
+    assert stub is not None
+    assert stub['platform'] == 'facebook'
+    assert stub['post_url'] == \
+        'https://www.facebook.com/groups/1772363682936388/permalink/3362762127229861/'
+    assert stub['content_excerpt'] == \
+        'Can anyone recommend a decent plumber please? Kitchen tap is dripping.'
+    assert stub['posted_at'] == '2026-08-03T20:52:40.000Z'
+    assert stub['author_handle'] == '2102601427270949'
+    assert stub['display_name'] == 'booboogizmo'
+    assert stub['author_profile_url'] == 'https://www.facebook.com/2102601427270949'
+    assert stub['group_id'] == '1772363682936388'
+    assert stub['group_name'] == 'Spotted littlehampton'
+    assert stub['media_urls'] == []
+
+
+def test_memo23_iso_time_passes_through_byte_for_byte():
+    """`time` is ALREADY ISO-8601. Re-parsing it as an epoch would either crash
+    or produce 1970 — the string must survive untouched."""
+    stub = fa.post_to_stub({**_MEMO23_ITEM})
+    assert stub['posted_at'] == _MEMO23_ITEM['time']
+
+
+def test_memo23_author_profile_url_is_synthesised_from_user_id():
+    """The actor returns NO author profile URL. Without synthesis post_to_stub
+    drops the item and the post can never become a lead."""
+    stub = fa.post_to_stub({
+        'url': 'https://www.facebook.com/groups/1/permalink/2/',
+        'text': 'need a roofer',
+        'user': {'id': '61550123456789', 'name': 'Dave'},
+    })
+    assert stub['author_profile_url'] == 'https://www.facebook.com/61550123456789'
+    assert stub['author_handle'] == '61550123456789'
+
+
+def test_synthesis_handles_pfbid_style_ids():
+    """The search actor's own author.url was https://www.facebook.com/pfbid0do86...
+    so the same /<id> form is a real, working profile URL for pfbid ids too."""
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'text': 'x',
+        'user': {'id': 'pfbid0do86AbCdEf', 'name': 'Sam'},
+    })
+    assert stub['author_profile_url'] == 'https://www.facebook.com/pfbid0do86AbCdEf'
+
+
+def test_synthesis_coerces_an_integer_user_id():
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'text': 'x', 'user': {'id': 2102601427270949},
+    })
+    assert stub['author_profile_url'] == 'https://www.facebook.com/2102601427270949'
+
+
+def test_a_real_profile_url_always_beats_synthesis():
+    """The search actor DOES supply a URL — its value must win, never be
+    replaced by a /<id> guess."""
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'message': 'x',
+        'user': {'id': '999', 'profile_url': 'https://www.facebook.com/jane.doe.5'},
+    })
+    assert stub['author_profile_url'] == 'https://www.facebook.com/jane.doe.5'
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'message': 'x',
+        'author': {'id': '999', 'url': 'https://www.facebook.com/pfbid0do86'},
+    })
+    assert stub['author_profile_url'] == 'https://www.facebook.com/pfbid0do86'
+
+
+def test_no_url_and_no_id_is_still_dropped():
+    """Synthesis must not rescue an item with no author identity at all."""
+    assert fa.post_to_stub({'url': 'https://fb/p/1', 'text': 'x', 'user': {'name': 'Anon'}}) is None
+
+
+def test_memo23_group_context_comes_from_facebook_id_and_group_title():
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'text': 'x', 'user': {'id': '5'},
+        'facebookId': 435424147376112, 'groupTitle': 'Dane Bank Community Page',
+    })
+    assert stub['group_id'] == '435424147376112'
+    assert stub['group_name'] == 'Dane Bank Community Page'
+
+
+def test_explicit_group_args_still_beat_memo23_payload_fields():
+    stub = fa.post_to_stub(
+        {**_MEMO23_ITEM}, group_id='explicit', group_name='Explicit Name',
+    )
+    assert stub['group_id'] == 'explicit'
+    assert stub['group_name'] == 'Explicit Name'
+
+
+def test_memo23_attachments_become_media_urls():
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'text': 'x', 'user': {'id': '5'},
+        'attachments': [{'url': 'https://scontent.example/a.jpg'},
+                        'https://scontent.example/b.jpg'],
+    })
+    assert stub['media_urls'] == ['https://scontent.example/a.jpg',
+                                  'https://scontent.example/b.jpg']
+
+
+def test_search_actor_shape_is_unchanged_by_the_memo23_support():
+    """Regression guard: extending the or-chains must not shift the search
+    actor's own mapping."""
+    stub = fa.post_to_stub({
+        'url': 'https://www.facebook.com/groups/123/posts/456/',
+        'message': 'Anyone know a good plumber in Manchester?',
+        'timestamp': 1785741360,
+        'user': {'name': 'Jane Doe', 'profile_url': 'https://www.facebook.com/jane.doe.5',
+                 'id': 'jane.doe.5'},
+        'associated_group': {'group_id': '123', 'name': 'Manc Trades'},
+    })
+    assert stub['content_excerpt'] == 'Anyone know a good plumber in Manchester?'
+    assert stub['posted_at'] == '2026-08-03T07:16:00+00:00'
+    assert stub['author_profile_url'] == 'https://www.facebook.com/jane.doe.5'
+    assert stub['group_id'] == '123'
+    assert stub['group_name'] == 'Manc Trades'
+
+
+def test_timestamp_wins_over_time_when_both_present():
+    """Belt-and-braces: if some future actor sends both, the epoch field the
+    search actor owns is read first and still converted."""
+    stub = fa.post_to_stub({
+        'url': 'https://fb/p/1', 'text': 'x', 'user': {'id': '5'},
+        'timestamp': 1785741360, 'time': '1999-01-01T00:00:00.000Z',
+    })
+    assert stub['posted_at'] == '2026-08-03T07:16:00+00:00'
