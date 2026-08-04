@@ -1286,7 +1286,8 @@ def _capturing_verdicts(accepted: set, captured: dict):
     return fake
 
 
-def _run_apify_search(monkeypatch, texts, verdicts_fn, filters=None, events=None):
+def _run_apify_search(monkeypatch, texts, verdicts_fn, filters=None, events=None,
+                       query='need a plumber recommendation'):
     """Drive the real search_posts entry point over a faked Apify dataset."""
     monkeypatch.setenv('FB_DISCOVERY', 'apify')
     monkeypatch.setattr(fb.apify, 'run_actor', _apify_returning(texts))
@@ -1294,7 +1295,7 @@ def _run_apify_search(monkeypatch, texts, verdicts_fn, filters=None, events=None
     monkeypatch.setattr(fb, '_classify_consumer_posts_with_gemini', verdicts_fn)
     scraper = fb.FacebookScraper()
     return asyncio.run(scraper.search_posts(
-        'need a plumber recommendation',
+        query,
         dict(filters or _ENGLISH_FILTERS),
         max_results=10,
         on_progress=(events.append if events is not None else None),
@@ -1511,3 +1512,91 @@ def test_geo_scoped_default_keeps_the_legacy_behaviour(monkeypatch):
     assert captured['location'] == 'Manchester'
     assert _excerpts(kept) == [_ASK_AUSTIN_US]
     assert not any(e.get('stage') == 'geo_filtered' for e in events)
+
+
+# ==========================================================================
+# PLACE-ANCHORED QUERIES override the post-hoc geo filter
+# ==========================================================================
+#
+# When the search query itself names the operator's location ("need a
+# plumber recommendation Manchester"), Facebook has already scoped the
+# results to that place — re-running _apply_geo_country_filter on top would
+# only discard genuine local posts that don't spell out their own city (the
+# poster already knows where they are), for zero geographic benefit.
+# Detected from the actual QUERY TEXT (_query_is_place_anchored), never from
+# the discovery source — an operator can submit any query on either path.
+
+
+def test_query_is_place_anchored_true_when_query_contains_the_location():
+    assert fb._query_is_place_anchored(
+        'need a plumber recommendation Manchester', 'Manchester',
+    )
+
+
+def test_query_is_place_anchored_is_case_insensitive():
+    """Lowercase place name in the query, capitalised location filter — still
+    counts as place-anchored."""
+    assert fb._query_is_place_anchored(
+        'need a plumber recommendation manchester', 'Manchester',
+    )
+    assert fb._query_is_place_anchored(
+        'need a plumber recommendation MANCHESTER', 'manchester',
+    )
+
+
+def test_query_is_place_anchored_false_when_query_omits_the_place():
+    """An operator can type any query — omitting the place must NOT be
+    treated as place-anchored."""
+    assert not fb._query_is_place_anchored('need a plumber recommendation', 'Manchester')
+
+
+def test_query_is_place_anchored_false_with_no_location():
+    assert not fb._query_is_place_anchored('need a plumber recommendation', '')
+    assert not fb._query_is_place_anchored('need a plumber recommendation', None)
+
+
+def test_place_anchored_apify_query_skips_the_geo_filter(monkeypatch):
+    """THE OVERRIDE. The query names Manchester, so Facebook already scoped
+    the results: a different-country post (Austin, US) AND an unresolved
+    post BOTH survive, and the geo_filtered event never fires."""
+    events: list = []
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_AUSTIN_US, _ASK_MOVED],
+        _verdicts_from({_ASK_AUSTIN_US, _ASK_MOVED}),
+        events=events,
+        query='need a plumber recommendation Manchester',
+    )
+    assert _excerpts(stubs) == [_ASK_AUSTIN_US, _ASK_MOVED]
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
+
+
+def test_place_anchored_query_case_insensitive_still_skips_the_geo_filter(monkeypatch):
+    """Same override, but the query's place name is lowercase while the
+    location filter is capitalised — must still be detected as place-anchored."""
+    events: list = []
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_AUSTIN_US],
+        _verdicts_from({_ASK_AUSTIN_US}),
+        events=events,
+        query='need a plumber recommendation manchester',
+    )
+    assert _excerpts(stubs) == [_ASK_AUSTIN_US]
+    assert not any(e.get('stage') == 'geo_filtered' for e in events)
+
+
+def test_non_place_anchored_apify_query_still_filters_exactly_as_before(monkeypatch):
+    """Control: a query that does NOT name the place must keep today's
+    behaviour unchanged — the foreign-country post is dropped, the unresolved
+    post is kept, and the geo_filtered event still fires."""
+    events: list = []
+    stubs = _run_apify_search(
+        monkeypatch, [_ASK_AUSTIN_US, _ASK_MOVED],
+        _verdicts_from({_ASK_AUSTIN_US, _ASK_MOVED}),
+        events=events,
+        query='need a plumber recommendation',
+    )
+    assert _excerpts(stubs) == [_ASK_MOVED]
+    geo = [e for e in events if e.get('stage') == 'geo_filtered']
+    assert len(geo) == 1
+    assert geo[0]['dropped'] == 1
+    assert geo[0]['kept'] == 1

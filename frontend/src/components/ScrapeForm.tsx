@@ -43,25 +43,34 @@ const OUTREACH_COUNTRY_CODES = [
 /**
  * Default FB consumer-mode search phrase.
  *
- * Intent-shaped, NOT geo-stuffed. Measured 2026-08-03 on live Apify data
- * (open-feed post search, 20 results): the old geo-stuffed phrasing
- * "looking for a plumber in Manchester" returned 0 usable consumer asks out
- * of 20 — every hit was an advert — while intent phrasing such as
- * "need a plumber recommendation" returned genuine consumer asks. Query
- * phrasing is the single biggest lever on cost per lead, so keep the shape
- * intent-first and leave the geography to the `location` filter (which still
- * drives group/country scoping and the Gemini location match).
+ * Intent-shaped AND place-anchored. Three runs of 20 real posts each,
+ * through the same actor, only the query differing:
  *
- * Mirror of `defaultFbConsumerQuery` in server/src/services/social-routing.ts
- * (the server-side fallback used when a submitted job carries no query) — the
+ *   query                                        geography            intent-qualified
+ *   "looking for a plumber in Manchester"         Manchester           0 / 20
+ *   "need a plumber recommendation"               GLOBAL, scattered    7 / 20
+ *   "need a plumber recommendation Manchester"     Manchester, all 20  1 / 20
+ *
+ * "looking for" reads as ad copy; the place name is what makes results
+ * local. On in-target leads per pound the place-anchored form wins outright
+ * (5% intent x ~100% geography beats 35% intent x ~10% geography) because a
+ * lead outside the target town is worth far less than one inside it. A prior
+ * change stripped the location back out based on the first row alone — that
+ * conflated "looking for" phrasing with the place name. DO NOT remove the
+ * location from this query again; keep the intent phrasing AND the place.
+ *
+ * Mirror of the fallback query builder in server/src/routes/scrape.ts (the
+ * server-side fallback used when a submitted job carries no query) — the
  * frontend cannot import server code, so keep the two identical.
  */
 export function defaultFbQuery(niche: string, location = ''): string {
   const n = niche.trim().replace(/\s+/g, ' ');
+  const loc = location.trim().replace(/\s+/g, ' ');
+  if (n && loc) return `need a ${n} recommendation ${loc}`;
   if (n) return `need a ${n} recommendation`;
-  // No niche: fall back to the bare location rather than emitting
-  // "need a recommendation", which matches nothing useful.
-  return location.trim().replace(/\s+/g, ' ');
+  // No niche: fall back to the bare location rather than emitting a
+  // dangling "need a recommendation", which matches nothing useful.
+  return loc;
 }
 
 interface Props {
@@ -162,11 +171,10 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
     } else if (platform === 'facebook') {
       // Consumer mode needs a `query` string for facebook.com/search/posts/?q=
       // The operator-facing form asks for niche + location separately; we
-      // synthesize an intent-shaped query from the niche (see defaultFbQuery
-      // for the 2026-08-03 measurement: geo-stuffed "looking for a plumber in
-      // Manchester" = 0/20 usable, intent "need a plumber recommendation" =
-      // real consumer asks). The operator can override the phrase in the form;
-      // blank means "use the default".
+      // synthesize an intent-shaped, place-anchored query from both (see
+      // defaultFbQuery's docstring for the measurement table backing the
+      // "need a <niche> recommendation <location>" shape). The operator can
+      // override the phrase in the form; blank means "use the default".
       const fbQuery =
         fbLeadType === 'consumers'
           ? (fbQueryOverride.trim().replace(/\s+/g, ' ') || defaultFbQuery(fbNiche, fbLocation))
@@ -386,11 +394,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 <div className="sm:col-span-2 lg:col-span-3">
                   <ComboWarning niche={fbNiche} location={fbLocation} />
                   <p className="text-[11px] text-on-surface-variant">
-                    Searches public FB posts for <strong>&quot;{fbQueryOverride.trim() || defaultFbQuery(fbNiche, fbLocation) || 'need a <niche> recommendation'}&quot;</strong> &mdash;
-                    intent phrasing beats geo-stuffing by a wide margin (measured 2026-08-03: &quot;looking for a plumber in
-                    Manchester&quot; returned 0 usable asks out of 20, all adverts). Leave the phrase blank to use that
-                    default; {fbLocation || 'the location'} still scopes the results. Each post is filtered to keep only
-                    real consumer asks (asking-only + Gemini niche+location match). Streams live; cancellable.
+                    Searches public FB posts for <strong>&quot;{fbQueryOverride.trim() || defaultFbQuery(fbNiche, fbLocation) || 'need a <niche> recommendation <location>'}&quot;</strong> &mdash;
+                    intent phrasing keeps results on-topic and the place name keeps them local (measured: dropping
+                    either half of that phrase tanks intent or geography). Leave the phrase blank to use that default.
+                    Each post is filtered to keep only real consumer asks (asking-only + Gemini intent match). Streams
+                    live; cancellable.
                   </p>
                 </div>
               </>

@@ -1206,6 +1206,30 @@ def _resolve_target_country(location: str | None, filters: dict) -> Optional[str
     return None
 
 
+def _query_is_place_anchored(query: str, location: str | None) -> bool:
+    """Does THIS search query already name the operator's target location?
+
+    A plain case-insensitive substring check against the actual query text —
+    honest about what it knows, nothing inferred. When the query itself
+    contains the place ("need a plumber recommendation Manchester"),
+    Facebook's own search has already scoped the results to that place (see
+    the measurement table in _apply_consumer_filter_chain's INTENT VS
+    GEOGRAPHY docstring), so the post-hoc _apply_geo_country_filter stage
+    would only discard genuine local posts that don't spell out their own
+    city — the poster already knows where they are — for zero geographic
+    benefit.
+
+    Deliberately checks the QUERY TEXT, never the discovery source: an
+    operator can submit any query on either the browser or the Apify path,
+    so "was this particular search geo-anchored" has to be answered from
+    what was actually searched for, not from which backend ran it.
+    """
+    loc = (location or '').strip()
+    if not loc:
+        return False
+    return loc.lower() in (query or '').lower()
+
+
 def _stub_country_evidence(stub: dict) -> Optional[str]:
     """ISO-2 country the POST ITSELF evidences, or None when it names nowhere.
 
@@ -1367,9 +1391,12 @@ def _apply_consumer_filter_chain(
 
     INTENT VS GEOGRAPHY (`geo_scoped`)
     ----------------------------------
-    `geo_scoped` says whether the DISCOVERY search that produced these stubs
-    was itself geographically scoped. It decides where geography is enforced,
-    and it must come from the discovery source — never be guessed.
+    `geo_scoped` says whether the search that produced these stubs was itself
+    geographically scoped. It decides where geography is enforced. Callers
+    derive it two ways, both legitimate, never guessed:
+      (a) from the DISCOVERY SOURCE (below), and
+      (b) from the QUERY TEXT itself naming the target place — see the
+          PLACE-ANCHORED QUERIES override after the two regimes below.
 
       geo_scoped=True  (browser discovery). The Facebook search was geo-scoped
         already: group discovery uses a geo-stuffed term and
@@ -1403,6 +1430,20 @@ def _apply_consumer_filter_chain(
     the SEARCH is the real fix — either an intent-shaped query that also names
     the place ("need a plumber recommendation Manchester") or the actor's
     `location_uid` with a seeded geo table.
+
+    PLACE-ANCHORED QUERIES (the override). When the query DOES already name
+    the place — checked by `_query_is_place_anchored`, a case-insensitive
+    substring match of `location` against the actual query text, never a
+    guess from the discovery source — Facebook's own search has already
+    geo-scoped the results, exactly like the browser path. Re-running
+    _apply_geo_country_filter on top would only discard genuine local posts
+    that don't spell out their own city (the poster already knows where they
+    are), for zero geographic benefit. `search_posts` therefore ORs this
+    detection into `geo_scoped` before calling this chain, so a place-anchored
+    Apify query gets the geo_scoped=True treatment (no post-hoc filter) even
+    though the discovery source is Apify. A query that does NOT name the
+    place — an operator can type anything — still gets the full Apify
+    treatment above, unchanged.
 
     Emits the same progress stages the inline copies did — 'llm_filtered',
     'llm_skipped' and 'consumer_filtered', with the same detail keys, plus
@@ -3055,19 +3096,27 @@ class FacebookScraper(SocialPlatformScraper):
         # path only (see _apply_consumer_filter_chain) — an explicit filter
         # value always wins.
         #
-        # `geo_scoped` comes from the DISCOVERY SOURCE, not a guess: the
-        # browser search is geo-scoped (geo-stuffed group term + wrong-country
-        # group drop), the Apify actor searches globally because we do not feed
-        # it location_uid. On the Apify path the classifier therefore judges
+        # `geo_scoped` starts from the DISCOVERY SOURCE: the browser search is
+        # geo-scoped (geo-stuffed group term + wrong-country group drop), the
+        # Apify actor searches globally because we do not feed it
+        # location_uid. On the Apify path the classifier therefore judges
         # intent only and a separate country stage handles geography — passing
         # the target city into a classifier judging globally-scattered
         # candidates is what made every run return zero leads.
+        #
+        # OVERRIDE: if THIS query already names the target place ("need a
+        # plumber recommendation Manchester"), Facebook has already scoped the
+        # results — running the post-hoc country filter on top would only
+        # drop genuine local posts that don't spell out their own city, for
+        # zero geographic benefit. Detected from the actual query text
+        # (_query_is_place_anchored), never from the discovery source: an
+        # operator can submit any query on either path.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
         if is_consumer_mode and stubs:
             stubs = _apply_consumer_filter_chain(
                 stubs, niche=niche or query, location=location,
                 filters=filters, on_progress=on_progress,
-                geo_scoped=(discovery != 'apify'),
+                geo_scoped=(discovery != 'apify') or _query_is_place_anchored(query, location),
             )
 
         return stubs

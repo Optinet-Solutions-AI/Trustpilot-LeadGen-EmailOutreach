@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import { createJob, getJob, getJobs, findActiveJobForParams, resolveDuplicateActiveJob, deleteJob, deleteEmptyJobs } from '../db/scrape-jobs.js';
 import { getFailuresByJob, getUnresolvedFailures, markResolved } from '../db/scrape-failures.js';
 import { runScrapeJob, cancelScrapeJob, scrapeEvents } from '../services/scrape-runner.js';
-import { defaultFbConsumerQuery } from '../services/social-routing.js';
 import { listCategories, listCountries, getMaxLastSeen } from '../db/taxonomy.js';
 import {
   startOrAttachDiscovery,
@@ -14,6 +13,42 @@ import { getSupabase } from '../lib/supabase.js';
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
+
+/**
+ * Default FB consumer-mode search phrase — server-side fallback for when a
+ * submitted job carries no query (tools/scraper/run.py requires a non-empty
+ * `query` for --action search-posts).
+ *
+ * Intent-shaped AND place-anchored. Three runs of 20 real posts each,
+ * through the same actor, only the query differing:
+ *
+ *   query                                        geography            intent-qualified
+ *   "looking for a plumber in Manchester"         Manchester           0 / 20
+ *   "need a plumber recommendation"               GLOBAL, scattered    7 / 20
+ *   "need a plumber recommendation Manchester"     Manchester, all 20  1 / 20
+ *
+ * "looking for" reads as ad copy; the place name is what makes results
+ * local. On in-target leads per pound the place-anchored form wins outright
+ * (5% intent x ~100% geography beats 35% intent x ~10% geography) because a
+ * lead outside the target town is worth far less than one inside it. A prior
+ * change stripped the location back out based on the first row alone — that
+ * conflated "looking for" phrasing with the place name. DO NOT remove the
+ * location from this query again; keep the intent phrasing AND the place.
+ *
+ * Mirror of `defaultFbQuery` in frontend/src/components/ScrapeForm.tsx — the
+ * frontend cannot import server code, so keep the two identical by hand.
+ * This is only a fallback default; an operator-supplied `query` always wins
+ * (checked at the call site below).
+ */
+function defaultFbQuery(niche: string, location = ''): string {
+  const n = niche.trim().replace(/\s+/g, ' ');
+  const loc = location.trim().replace(/\s+/g, ' ');
+  if (n && loc) return `need a ${n} recommendation ${loc}`;
+  if (n) return `need a ${n} recommendation`;
+  // No niche: fall back to the bare location rather than emitting a
+  // dangling "need a recommendation", which matches nothing useful.
+  return loc;
+}
 
 // Source-of-truth registry of supported platforms. Mirrors
 // tools/scraper/platforms/__init__.py — if you add a Python plugin,
@@ -376,18 +411,12 @@ router.post('/', async (req: Request, res: Response) => {
             merged.lead_type === 'consumers' &&
             !(typeof merged.query === 'string' && merged.query.trim())
           ) {
-            // Intent-shaped, NOT geo-stuffed — `defaultFbConsumerQuery` is the
-            // single source of the phrasing (mirrored in the frontend's
-            // `defaultFbQuery`). Measured 2026-08-03 on live Apify data
-            // (open-feed post search, 20 results): the old geo-stuffed
-            // "looking for a plumber in Manchester" returned 0 usable consumer
-            // asks out of 20 (all adverts), while intent phrasing "need a
-            // plumber recommendation" returned genuine asks — phrasing is the
-            // biggest lever on cost per lead. This is only a fallback default;
-            // an operator-supplied `query` always wins (checked above).
+            // See defaultFbQuery's docstring above for the measurement table
+            // backing the intent-shaped, place-anchored "need a <niche>
+            // recommendation <location>" default.
             const niche = typeof merged.niche === 'string' ? merged.niche : '';
             const location = typeof merged.location === 'string' ? merged.location : '';
-            const fallbackQuery = defaultFbConsumerQuery(niche, location);
+            const fallbackQuery = defaultFbQuery(niche, location);
             if (fallbackQuery) {
               merged.query = fallbackQuery;
             }
