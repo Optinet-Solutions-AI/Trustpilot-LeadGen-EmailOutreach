@@ -1,4 +1,5 @@
 import { getSupabase } from '../lib/supabase.js';
+import { categoryOrFilter } from '../services/lead-categories.js';
 
 // The legacy leads.screenshot_path is only populated for Trustpilot. Every
 // other platform stores its canonical screenshot on lead_platform_presences.
@@ -66,13 +67,20 @@ export async function getLeads(filters: LeadFilters = {}) {
         .select('*, lead_platform_presences(platform, screenshot_path)', { count: 'exact' });
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
-  // country + category use ILIKE substring match so operator typos and
-  // partial typing still surface the right leads. Examples:
-  //   "dentis"   matches "dentist" and "dental services"
-  //   "plumb"    matches "plumber" and "plumbing"
-  //   "new york" matches "New York, USA"
+  // country uses ILIKE substring match so operator typos and partial typing
+  // still surface the right leads ("new york" matches "New York, USA").
   if (filters.country) query = query.ilike('country', `%${filters.country}%`);
-  if (filters.category) query = query.ilike('category', `%${filters.category}%`);
+  // category is FAMILY-aware: each scraping platform writes its own taxonomy
+  // string, so one trade ends up stored under several labels (plumber /
+  // plumbers / plumbing). A plain substring match found only some of them.
+  // categoryOrFilter expands the requested value to every label in its family
+  // — source of truth is tools/db/category_canonical.py. Partial typing still
+  // works, because the expansion is a set of ILIKE substring needles rather
+  // than equality ("plumb" -> %plumb%).
+  if (filters.category) {
+    const categoryOr = categoryOrFilter(filters.category);
+    if (categoryOr) query = query.or(categoryOr);
+  }
   if (filters.minRating) query = query.gte('star_rating', filters.minRating);
   if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
   if (filters.search) {
@@ -150,13 +158,20 @@ export async function getLeadIds(
     : supabase.from('leads').select('id, primary_email');
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
-  // country + category use ILIKE substring match so operator typos and
-  // partial typing still surface the right leads. Examples:
-  //   "dentis"   matches "dentist" and "dental services"
-  //   "plumb"    matches "plumber" and "plumbing"
-  //   "new york" matches "New York, USA"
+  // country uses ILIKE substring match so operator typos and partial typing
+  // still surface the right leads ("new york" matches "New York, USA").
   if (filters.country) query = query.ilike('country', `%${filters.country}%`);
-  if (filters.category) query = query.ilike('category', `%${filters.category}%`);
+  // category is FAMILY-aware: each scraping platform writes its own taxonomy
+  // string, so one trade ends up stored under several labels (plumber /
+  // plumbers / plumbing). A plain substring match found only some of them.
+  // categoryOrFilter expands the requested value to every label in its family
+  // — source of truth is tools/db/category_canonical.py. Partial typing still
+  // works, because the expansion is a set of ILIKE substring needles rather
+  // than equality ("plumb" -> %plumb%).
+  if (filters.category) {
+    const categoryOr = categoryOrFilter(filters.category);
+    if (categoryOr) query = query.or(categoryOr);
+  }
   if (filters.minRating) query = query.gte('star_rating', filters.minRating);
   if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
   if (filters.search) {

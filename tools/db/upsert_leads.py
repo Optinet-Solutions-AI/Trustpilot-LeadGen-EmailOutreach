@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 # Allow running from project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from tools.db.category_canonical import canonicalize_category
 from tools.db.supabase_client import table
 from tools.db.url_validator import sanitize_trustpilot_url, validate_trustpilot_url
 
@@ -212,7 +213,11 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
         'country': lead.get('country'),
         'location_confidence': lead.get('location_confidence'),
-        'category': lead.get('category'),
+        # Canonicalised so a Facebook scrape typed as "plumber" and a Yelp
+        # scrape slugged as "plumbers" land on the SAME label. The operator's
+        # original wording is not lost: scrape_jobs.filters already stores it
+        # verbatim (`{"niche": "plumber"}` / `{"category": "plumbers"}`).
+        'category': canonicalize_category(lead.get('category')),
         'website_url': lead.get('website_url'),
         'phone': lead.get('phone'),
         'primary_email': lead.get('primary_email') or lead.get('website_email'),
@@ -393,7 +398,9 @@ def upsert_leads(leads: list[dict]) -> int:
             'primary_email': resolve_primary_email(lead),
             'phone': lead.get('phone'),
             'country': lead.get('country'),
-            'category': lead.get('category'),
+            # Same canonicalisation as the multi-platform path above — see
+            # tools/db/category_canonical.py.
+            'category': canonicalize_category(lead.get('category')),
             'star_rating': lead.get('star_rating') or lead.get('rating'),
             'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
             'profile_claimed': lead.get('profile_claimed'),
