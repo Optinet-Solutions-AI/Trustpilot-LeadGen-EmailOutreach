@@ -82,7 +82,7 @@ export function defaultFbQuery(niche: string, location = ''): string {
  * through untouched, and the API merges every non-control body field into the
  * job's `filters`.
  */
-type FacebookGroupScrapeParams = FacebookScrapeParams & {
+export type FacebookGroupScrapeParams = FacebookScrapeParams & {
   /** JSON array, one entry per group. Never a raw pasted string. */
   group_urls?: string[];
   /** Keyword the actor filters on BEFORE billing — the real cost control. */

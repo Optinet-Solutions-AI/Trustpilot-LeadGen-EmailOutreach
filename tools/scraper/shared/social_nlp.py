@@ -162,6 +162,150 @@ Posts:
 
 
 # ---------------------------------------------------------------------------
+# Discovered Groups — batch group labelling (audience + location)
+# ---------------------------------------------------------------------------
+
+def label_groups_with_gemini(
+    groups: list[dict],
+    *,
+    timeout_s: int = 30,
+) -> Optional[list[dict]]:
+    """Batch-label Facebook GROUPS (not posts) from their name alone.
+
+    `groups` is a list of {'name': str} (extra keys are ignored — id/join
+    logic is the caller's problem). Returns a list aligned 1:1 with `groups`:
+
+        [{'audience': 'customers' | 'trades' | 'unclear',
+          'country_code': 'GB' | None,   # ISO 3166-1 alpha-2, uppercase
+          'city': 'Bristol' | None}, ...]
+
+    Returns None when the API key isn't configured, the request fails, or
+    the response can't be parsed — callers should leave those rows
+    unlabelled (audience stays NULL) rather than write a guess.
+
+    One call per batch, NOT one call per group — callers should chunk large
+    backlogs (mirrors classify_consumer_posts_with_gemini's cost-aware
+    batching above).
+    """
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')
+    if not api_key or not groups:
+        return None
+
+    numbered = '\n'.join(
+        f'[{i}] {(g.get("name") or "(no name)")[:200]}'
+        for i, g in enumerate(groups)
+    )
+
+    prompt = f"""You are labelling Facebook GROUPS (not posts) for a lead-gen tool that
+finds tradespeople's customers. You get ONLY the group's name — judge everything
+from that text alone.
+
+For each numbered group, return THREE fields:
+
+1. "audience" — who actually posts in this group:
+   - "customers" — private individuals asking to HIRE someone (e.g. "Find a
+     Tradesman Bristol and surrounding", "HANDYMAN SERVICES NEEDED", "Looking
+     for an electrician"). These are valuable — real people with a job to fill.
+   - "trades" — tradespeople/practitioners talking to EACH OTHER: job boards,
+     "free advertising" pages for the trade itself, professional networking,
+     supplier/wholesaler pages (e.g. "London Builders And Other Tradesman Free
+     Advertising", "Offres d'emploi pour Electricien", "les artisans
+     electriciens"). Worthless as customer leads — everyone posting is
+     already in the trade.
+   - "unclear" — can't tell from the name alone (generic city/community
+     pages, ambiguous marketplace names).
+
+2. "country_code" — the ISO 3166-1 alpha-2 code (e.g. "GB", "US", "CA", "FR",
+   "DE") of where the group is based, or null if you can't tell.
+
+3. "city" — the city/town named in the group, or null if none is named.
+
+CRITICAL — do not default a famous city name to its most famous country.
+Read the WHOLE name for a qualifier that overrides the obvious guess:
+  - "HANDYMAN SERVICES LONDON, Ontario" -> city "London", country_code "CA".
+    Ontario is a Canadian province, not a London neighbourhood — the explicit
+    qualifier wins over the reflex "London = UK" guess.
+  - "ATLANTA HANDYMAN SERVICES" -> city "Atlanta", country_code "US" (no
+    other well-known Atlanta).
+  - "Find a Tradesman Bristol and surrounding" -> city "Bristol",
+    country_code "GB" (nothing in the name contradicts the obvious UK city).
+  - A French, German, Dutch, Vietnamese, etc. group name is still a strong
+    signal on its own (e.g. "je cherche un electricien" implies France;
+    "Netzwerk Frankfurt" implies Germany) even without an explicit country
+    word — read the language together with any place name.
+
+Return ONLY a JSON object, no preamble or markdown:
+{{"labels": [{{"audience": "customers", "country_code": "GB", "city": "Bristol"}}, ...]}}
+
+The "labels" array MUST have exactly {len(groups)} entries, in the same order
+as the input.
+
+Groups:
+{numbered}
+"""
+
+    url = (
+        'https://generativelanguage.googleapis.com/v1beta/models/'
+        f'gemini-2.5-flash:generateContent?key={api_key}'
+    )
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'temperature': 0.1,
+            'maxOutputTokens': 8192,
+            'responseMimeType': 'application/json',
+        },
+    }
+
+    try:
+        import requests as _requests  # noqa: WPS433 — lazy
+        resp = _requests.post(url, json=payload, timeout=timeout_s)
+        resp.raise_for_status()
+        body = resp.json()
+        text = (
+            body.get('candidates', [{}])[0]
+                .get('content', {})
+                .get('parts', [{}])[0]
+                .get('text', '')
+        ).strip()
+        if not text:
+            print(
+                f'[group-labeller] empty response from Gemini; body summary: {str(body)[:500]}',
+                file=sys.stderr,
+            )
+            return None
+        parsed = json.loads(text)
+        labels = parsed.get('labels')
+        if not isinstance(labels, list) or len(labels) != len(groups):
+            print(
+                f'[group-labeller] label count mismatch '
+                f'(expected {len(groups)}, got {len(labels) if isinstance(labels, list) else "non-list"})',
+                file=sys.stderr,
+            )
+            return None
+        cleaned: list[dict] = []
+        for entry in labels:
+            if not isinstance(entry, dict):
+                cleaned.append({'audience': 'unclear', 'country_code': None, 'city': None})
+                continue
+            audience = entry.get('audience')
+            if audience not in ('customers', 'trades', 'unclear'):
+                audience = 'unclear'
+            country_code = entry.get('country_code')
+            if isinstance(country_code, str) and len(country_code.strip()) == 2 and country_code.strip().isalpha():
+                country_code = country_code.strip().upper()
+            else:
+                country_code = None
+            city = entry.get('city')
+            city = city.strip() if isinstance(city, str) and city.strip() else None
+            cleaned.append({'audience': audience, 'country_code': country_code, 'city': city})
+        return cleaned
+    except Exception as exc:  # noqa: BLE001
+        print(f'[group-labeller] failed: {exc}', file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Low-level Gemini helper — plain-text response (no JSON mode)
 # ---------------------------------------------------------------------------
 
