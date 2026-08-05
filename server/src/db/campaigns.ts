@@ -1,6 +1,6 @@
 import { getSupabase } from '../lib/supabase.js';
 import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
-import { categoryOrFilter } from '../services/lead-categories.js';
+import { categoryFamily } from '../services/lead-categories.js';
 
 /** Apply the recipient category filter, FAMILY-aware.
  *
@@ -13,15 +13,24 @@ import { categoryOrFilter } from '../services/lead-categories.js';
  *  Shared by addLeadsByFilter and previewRecipientCount so the number the
  *  operator is SHOWN can never diverge from the audience actually emailed.
  *  Source of truth for the families is tools/db/category_canonical.py, which
- *  the TS mirror is drift-guarded against. A value with no known family
- *  (e.g. 'casino', deliberately unmerged) matches only itself, as before.
+ *  the TS mirror is drift-guarded against.
+ *
+ *  DELIBERATELY EXACT, not substring. The Lead Matrix uses categoryOrFilter,
+ *  which builds `ilike.%needle%` — fine for browsing, where partial typing is
+ *  wanted. On THIS path substring matching silently widens the audience: it
+ *  made `casino` also select `online_casino_or_bookmaker`, adding ~98 people
+ *  to a cold-email send who were previously excluded. Growing a send list is
+ *  not something a de-fragmentation fix should do as a side effect, so we
+ *  match the family members exactly. `casino`, deliberately unmerged, has a
+ *  family of just itself and so still selects only itself.
  */
 function applyRecipientFilters<T>(query: T, filters: { country?: string; category?: string }): T {
   let q = query as any;
   if (filters.country) q = q.eq('country', filters.country);
   if (filters.category) {
-    const categoryOr = categoryOrFilter(filters.category);
-    if (categoryOr) q = q.or(categoryOr);
+    const family = categoryFamily(filters.category);
+    if (family.length > 1) q = q.in('category', family);
+    else q = q.eq('category', family[0] ?? filters.category);
   }
   return q as T;
 }
