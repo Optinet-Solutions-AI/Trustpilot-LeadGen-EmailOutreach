@@ -1,5 +1,30 @@
 import { getSupabase } from '../lib/supabase.js';
 import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
+import { categoryOrFilter } from '../services/lead-categories.js';
+
+/** Apply the recipient category filter, FAMILY-aware.
+ *
+ *  Each scraping platform writes its own taxonomy for the same trade —
+ *  Facebook stores the operator's typed niche ("plumber"), Yelp its slug
+ *  ("plumbers"), others "plumbing". Exact equality here silently halved
+ *  campaign audiences: a campaign for "electrician" matched 80 leads and
+ *  dropped the 78 spelled "electricians".
+ *
+ *  Shared by addLeadsByFilter and previewRecipientCount so the number the
+ *  operator is SHOWN can never diverge from the audience actually emailed.
+ *  Source of truth for the families is tools/db/category_canonical.py, which
+ *  the TS mirror is drift-guarded against. A value with no known family
+ *  (e.g. 'casino', deliberately unmerged) matches only itself, as before.
+ */
+function applyRecipientFilters<T>(query: T, filters: { country?: string; category?: string }): T {
+  let q = query as any;
+  if (filters.country) q = q.eq('country', filters.country);
+  if (filters.category) {
+    const categoryOr = categoryOrFilter(filters.category);
+    if (categoryOr) q = q.or(categoryOr);
+  }
+  return q as T;
+}
 
 export async function getCampaigns() {
   const supabase = getSupabase();
@@ -224,8 +249,7 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
     .eq('blocked', false) // skip Trustpilot-flagged leads (migration 048)
     .eq('do_not_contact', false); // skip opted-out leads (migration 050)
 
-  if (filters.country) query = query.eq('country', filters.country);
-  if (filters.category) query = query.eq('category', filters.category);
+  query = applyRecipientFilters(query, filters);
 
   const { data: leads, error: leadsError } = await query;
   if (leadsError) throw new Error(leadsError.message);
@@ -324,8 +348,7 @@ export async function previewRecipientCount(filters: { country?: string; categor
     .eq('blocked', false) // preview must match the recipients we'd actually send to (migration 048)
     .eq('do_not_contact', false); // exclude opted-out leads (migration 050)
 
-  if (filters.country) query = query.eq('country', filters.country);
-  if (filters.category) query = query.eq('category', filters.category);
+  query = applyRecipientFilters(query, filters);
 
   const { data, count, error } = await query.limit(10);
   if (error) throw new Error(error.message);
