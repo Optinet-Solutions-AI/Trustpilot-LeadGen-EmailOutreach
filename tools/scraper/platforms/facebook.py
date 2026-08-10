@@ -155,6 +155,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _effective_join_cap(configured_cap: int, warmup_started_at: Optional[str], now: datetime) -> int:
+    """Warmup ramp for a pooled account's daily GROUP-JOIN budget, mirroring the
+    TS effectiveCommentCap: week1 -> 1, week2 -> 2, week3 -> 3, day21+ -> full cap.
+    warmup_started_at is null -> full cap (pre-warmup accounts). Never exceeds cap.
+    `now` is injected so the calculation stays pure/testable.
+    """
+    if not warmup_started_at:
+        return configured_cap
+    started = datetime.fromisoformat(warmup_started_at)
+    days = (now - started).days
+    if days >= 21:
+        return configured_cap
+    ramp = 1 if days < 7 else 2 if days < 14 else 3
+    return min(configured_cap, ramp)
+
+
 def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
     """Emit a canonical PROGRESS:<stage>:<detail> line + callback."""
     payload = {'stage': stage, **detail}
