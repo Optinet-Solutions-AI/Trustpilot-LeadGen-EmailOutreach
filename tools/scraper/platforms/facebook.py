@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from typing import NamedTuple, Optional
 from urllib.parse import quote_plus
 
+from selenium.webdriver.common.by import By
+
 from tools.scraper.platforms._social_base import (
     AuthorLead,
     GroupStub,
@@ -226,6 +228,72 @@ def _classify_join_outcome(signals: dict) -> str:
     if signals.get('request_pending'):
         return 'requested'
     return 'failed'
+
+
+_JOIN_MEMBER_MARKERS = ('joined', 'leave group', "you're a member", 'you are a member')
+_JOIN_PENDING_MARKERS = ('cancel request', 'requested', 'request sent', 'pending')
+_JOIN_QUESTION_MARKERS = ('answer', 'membership question', 'to join this group, answer')
+
+
+def _read_join_signals(driver) -> dict:
+    """Distil the group page into booleans for _classify_join_outcome. Best-effort
+    and case-insensitive; FB drifts this DOM, so keep it here (one place to fix)."""
+    body = (driver.find_element(By.TAG_NAME, 'body').text or '').lower()
+    return {
+        'is_member': any(m in body for m in _JOIN_MEMBER_MARKERS),
+        'request_pending': any(m in body for m in _JOIN_PENDING_MARKERS),
+        'questions_shown': any(m in body for m in _JOIN_QUESTION_MARKERS),
+    }
+
+
+def _find_join_button(driver):
+    """Return a clickable primary Join control or None. Matches role=button with
+    visible text starting 'Join' (aria-label or inner text)."""
+    for el in driver.find_elements(By.XPATH, "//*[@role='button' or self::button or self::a]"):
+        try:
+            label = (el.get_attribute('aria-label') or el.text or '').strip().lower()
+        except Exception:  # noqa: BLE001 — stale element during FB re-render
+            continue
+        if label.startswith('join') and el.is_displayed():
+            return el
+    return None
+
+
+def _join_one_group(driver, group_id: str, on_progress) -> str:
+    """Navigate to a group and attempt to join. Returns an outcome from
+    _classify_join_outcome. Never raises for an expected FB state."""
+    driver.get(f"{FB_BASE}/groups/{group_id}")
+    _human_pause(4.0, extra=3.0)
+
+    pre = _read_join_signals(driver)
+    if pre['is_member']:
+        return _classify_join_outcome({**pre, 'join_clicked': False})
+
+    btn = _find_join_button(driver)
+    if btn is None:
+        return _classify_join_outcome({'is_member': pre['is_member'], 'request_pending': pre['request_pending'],
+                                       'questions_shown': False, 'join_clicked': False})
+    try:
+        btn.click()
+    except Exception as exc:  # noqa: BLE001
+        _emit(on_progress, 'join_failed', group_id=group_id, reason=f'click_error:{exc}'[:120])
+        return 'failed'
+    _human_pause(3.0, extra=3.0)
+
+    post = _read_join_signals(driver)
+    return _classify_join_outcome({**post, 'join_clicked': True})
+
+
+def _bump_group_join_counter(account_id: str) -> None:
+    """Increment group_join_used_today for an account (read-modify-write, mirrors
+    _bump_comment_counter)."""
+    row = table('social_accounts').select('group_join_used_today').eq('id', account_id).execute().data
+    if not row:
+        return
+    new_count = (row[0].get('group_join_used_today') or 0) + 1
+    (table('social_accounts')
+     .update({'group_join_used_today': new_count, 'updated_at': _now_iso()})
+     .eq('id', account_id).execute())
 
 
 def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
