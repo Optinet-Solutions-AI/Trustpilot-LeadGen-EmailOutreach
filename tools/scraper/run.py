@@ -219,6 +219,19 @@ async def _run_post_comment(args: argparse.Namespace) -> None:
     print(json.dumps(result))
 
 
+async def _run_join_groups(args: argparse.Namespace) -> None:
+    """Auto-join customer-facing FB group candidates for one country (owner-local)."""
+    if args.platform and args.platform != 'facebook':
+        raise SystemExit("join-groups is only supported for --platform facebook")
+    from tools.scraper.platforms.facebook import FacebookScraper
+    filters = _parse_filters(args.filters)
+    if not filters.get('country'):
+        raise SystemExit("--filters must include 'country' for --action join-groups.")
+    scraper = FacebookScraper()
+    result = await asyncio.to_thread(scraper.join_groups, filters)
+    print(json.dumps(result))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='tools.scraper.run',
@@ -234,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             'list', 'enrich', 'discover-taxonomy', 'manifests',
             'search-posts', 'enrich-authors',
-            'draft-comment', 'post-comment',
+            'draft-comment', 'post-comment', 'join-groups',
         ],
         help='Pipeline step to execute.',
     )
@@ -300,6 +313,10 @@ def _dispatch_action(args: argparse.Namespace) -> None:
         if not args.platform:
             raise SystemExit("--platform is required for --action post-comment.")
         asyncio.run(_run_post_comment(args))
+    elif args.action == 'join-groups':
+        if not args.platform:
+            raise SystemExit("--platform facebook is required for --action join-groups.")
+        asyncio.run(_run_join_groups(args))
 
 
 def main() -> None:
