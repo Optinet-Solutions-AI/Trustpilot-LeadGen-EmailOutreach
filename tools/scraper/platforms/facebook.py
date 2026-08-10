@@ -171,6 +171,45 @@ def _effective_join_cap(configured_cap: int, warmup_started_at: Optional[str], n
     return min(configured_cap, ramp)
 
 
+def _candidate_matches_country(location: Optional[str], cc: str) -> bool:
+    """A candidate's location is '<City>, <ISO2>' or a bare ISO2. Match the
+    country TOKEN (last comma-separated piece), case-insensitive — never a
+    loose substring (so 'Gbagada, NG' does not match 'GB')."""
+    if not location:
+        return False
+    token = location.split(',')[-1].strip().upper()
+    return token == cc.strip().upper()
+
+
+def _parse_member_count(text: Optional[str]) -> int:
+    """'12K members' -> 12000, '1.2K' -> 1200, '850 members' -> 850. Best-effort;
+    unknown -> 0 (sorts last)."""
+    if not text:
+        return 0
+    m = re.search(r'([\d.,]+)\s*([KkMm]?)', text)
+    if not m:
+        return 0
+    num = float(m.group(1).replace(',', ''))
+    mult = {'k': 1_000, 'm': 1_000_000}.get(m.group(2).lower(), 1)
+    return int(num * mult)
+
+
+def _rank_join_candidates(rows: list[dict], cc: str, limit: int) -> list[dict]:
+    """Filter to eligible join candidates and order by relevance then size."""
+    eligible = [
+        r for r in rows
+        if r.get('status') == 'candidate'
+        and r.get('audience') == 'customers'
+        and (r.get('relevance_tier') or 0) >= 1
+        and _candidate_matches_country(r.get('location'), cc)
+    ]
+    eligible.sort(
+        key=lambda r: (r.get('relevance_tier') or 0, _parse_member_count(r.get('member_count_text'))),
+        reverse=True,
+    )
+    return eligible[:max(0, limit)]
+
+
 def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
     """Emit a canonical PROGRESS:<stage>:<detail> line + callback."""
     payload = {'stage': stage, **detail}
