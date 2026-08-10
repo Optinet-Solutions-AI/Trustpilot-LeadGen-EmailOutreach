@@ -3636,25 +3636,38 @@ class FacebookScraper(SocialPlatformScraper):
                 gid = cand['group_id']
                 _emit(None, 'join_attempt', group_id=gid, name=cand.get('name'))
                 counts['attempted'] += 1
-                outcome = _join_one_group(driver, gid, None)
-                _emit(None, 'join_result', group_id=gid, outcome=outcome)
+                try:
+                    outcome = _join_one_group(driver, gid, None)
+                    _emit(None, 'join_result', group_id=gid, outcome=outcome)
 
-                if outcome == 'joined':
-                    (table('fb_group_candidates').update({'status': 'joined', 'joined_detected_at': _now_iso()})
-                     .eq('platform', 'facebook').eq('group_id', gid).execute())
-                    counts['joined'] += 1
-                    _bump_group_join_counter(acct_id)
-                elif outcome == 'requested':
-                    (table('fb_group_candidates').update({'status': 'requested'})
-                     .eq('platform', 'facebook').eq('group_id', gid).execute())
-                    counts['requested'] += 1
-                    _bump_group_join_counter(acct_id)
-                elif outcome == 'questions':
-                    counts['skipped_questions'] += 1
-                    _emit(None, 'join_skipped_questions', group_id=gid)
-                else:
+                    if outcome == 'joined':
+                        (table('fb_group_candidates').update({'status': 'joined', 'joined_detected_at': _now_iso()})
+                         .eq('platform', 'facebook').eq('group_id', gid).execute())
+                        counts['joined'] += 1
+                        _bump_group_join_counter(acct_id)
+                    elif outcome == 'requested':
+                        (table('fb_group_candidates').update({'status': 'requested'})
+                         .eq('platform', 'facebook').eq('group_id', gid).execute())
+                        counts['requested'] += 1
+                        _bump_group_join_counter(acct_id)
+                    elif outcome == 'questions':
+                        counts['skipped_questions'] += 1
+                        _emit(None, 'join_skipped_questions', group_id=gid)
+                    else:
+                        counts['failed'] += 1
+                        _emit(None, 'join_failed', group_id=gid, reason='no_progress')
+                except Exception as exc:  # noqa: BLE001 — a dead session/timeout on one
+                    # group must not abort the whole run; count it and keep going.
                     counts['failed'] += 1
-                    _emit(None, 'join_failed', group_id=gid, reason='no_progress')
+                    _emit(None, 'join_failed', group_id=gid, reason=str(exc)[:120])
+
+                # Checkpoint check after every group (success or exception) — stop
+                # hammering a checkpointed account instead of burning through the
+                # rest of the budget against a captcha/security-check wall.
+                if _is_checkpoint(driver):
+                    _flag_checkpoint(acct_id, 'join-run-hit-checkpoint')
+                    _emit(None, 'join_checkpoint', account=acct_id)
+                    break
 
                 if i < len(targets) - 1:
                     _human_pause(180.0, extra=300.0)   # ~3-8 min jitter between joins
