@@ -75,3 +75,27 @@ def test_parse_member_count_variants():
     assert fb._parse_member_count('3.5M members') == 3500000
     assert fb._parse_member_count(None) == 0
     assert fb._parse_member_count('no digits here') == 0
+
+
+def test_outcome_already_member():
+    assert fb._classify_join_outcome({'is_member': True, 'request_pending': False, 'questions_shown': False, 'join_clicked': False}) == 'joined'
+
+
+def test_outcome_pending_request():
+    assert fb._classify_join_outcome({'is_member': False, 'request_pending': True, 'questions_shown': False, 'join_clicked': True}) == 'requested'
+
+
+def test_outcome_questions_shown_is_skipped():
+    assert fb._classify_join_outcome({'is_member': False, 'request_pending': False, 'questions_shown': True, 'join_clicked': True}) == 'questions'
+
+
+def test_outcome_joined_after_click():
+    assert fb._classify_join_outcome({'is_member': True, 'request_pending': False, 'questions_shown': False, 'join_clicked': True}) == 'joined'
+
+
+def test_outcome_failed_when_nothing_changed():
+    assert fb._classify_join_outcome({'is_member': False, 'request_pending': False, 'questions_shown': False, 'join_clicked': True}) == 'failed'
+
+
+def test_outcome_failed_when_no_join_button():
+    assert fb._classify_join_outcome({'is_member': False, 'request_pending': False, 'questions_shown': False, 'join_clicked': False}) == 'failed'

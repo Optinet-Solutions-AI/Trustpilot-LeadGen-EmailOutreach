@@ -214,6 +214,20 @@ def _rank_join_candidates(rows: list[dict], cc: str, limit: int) -> list[dict]:
     return eligible[:max(0, limit)]
 
 
+def _classify_join_outcome(signals: dict) -> str:
+    """Decide the DB-facing outcome from four page booleans. Order matters:
+    membership wins over everything; a surfaced questions form is a skip (we
+    never auto-answer); a pending marker is a request; anything else is a
+    failure to make progress."""
+    if signals.get('is_member'):
+        return 'joined'
+    if signals.get('questions_shown'):
+        return 'questions'
+    if signals.get('request_pending'):
+        return 'requested'
+    return 'failed'
+
+
 def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
     """Emit a canonical PROGRESS:<stage>:<detail> line + callback."""
     payload = {'stage': stage, **detail}
