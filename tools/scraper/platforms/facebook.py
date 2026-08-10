@@ -3594,6 +3594,79 @@ class FacebookScraper(SocialPlatformScraper):
             return leads
         return await asyncio.to_thread(self._sync_enrich_authors, post_stubs, on_progress)
 
+    def join_groups(self, filters: dict) -> dict:
+        """Join customer-facing group candidates for one country, capped + jittered.
+        Owner-local (AdsPower). Synchronous; the CLI wraps it in asyncio.to_thread."""
+        country = (filters.get('country') or '').strip().upper()
+        if not country:
+            raise SystemExit("--filters must include 'country' for --action join-groups.")
+
+        account = self._claim_or_raise(country)          # fail-closed on no bound account
+        acct_id = account['id']
+
+        # Self-resetting daily budget.
+        today = _now_iso()[:10]
+        used_today = account.get('group_join_used_today') or 0
+        if account.get('group_join_used_date') != today:
+            used_today = 0
+            (table('social_accounts')
+             .update({'group_join_used_today': 0, 'group_join_used_date': today})
+             .eq('id', acct_id).execute())
+        cap = _effective_join_cap(account.get('group_join_daily_cap') or 3,
+                                  account.get('warmup_started_at'),
+                                  datetime.now(timezone.utc))
+        budget = max(0, cap - used_today)
+
+        rows = (table('fb_group_candidates')
+                .select('group_id,name,status,audience,relevance_tier,location,member_count_text')
+                .eq('platform', 'facebook').eq('status', 'candidate').eq('audience', 'customers')
+                .execute().data or [])
+        targets = _rank_join_candidates(rows, country, budget)
+
+        counts = {'joined': 0, 'requested': 0, 'skipped_questions': 0, 'failed': 0, 'attempted': 0}
+        _emit(None, 'join_started', country=country, account=acct_id, cap=cap,
+              used_today=used_today, budget=budget, candidates=len(targets))
+        if not targets:
+            _emit(None, 'join_done', **counts)
+            return counts
+
+        driver = self._open_session(account)
+        try:
+            for i, cand in enumerate(targets):
+                gid = cand['group_id']
+                _emit(None, 'join_attempt', group_id=gid, name=cand.get('name'))
+                counts['attempted'] += 1
+                outcome = _join_one_group(driver, gid, None)
+                _emit(None, 'join_result', group_id=gid, outcome=outcome)
+
+                if outcome == 'joined':
+                    (table('fb_group_candidates').update({'status': 'joined', 'joined_detected_at': _now_iso()})
+                     .eq('platform', 'facebook').eq('group_id', gid).execute())
+                    counts['joined'] += 1
+                    _bump_group_join_counter(acct_id)
+                elif outcome == 'requested':
+                    (table('fb_group_candidates').update({'status': 'requested'})
+                     .eq('platform', 'facebook').eq('group_id', gid).execute())
+                    counts['requested'] += 1
+                    _bump_group_join_counter(acct_id)
+                elif outcome == 'questions':
+                    counts['skipped_questions'] += 1
+                    _emit(None, 'join_skipped_questions', group_id=gid)
+                else:
+                    counts['failed'] += 1
+                    _emit(None, 'join_failed', group_id=gid, reason='no_progress')
+
+                if i < len(targets) - 1:
+                    _human_pause(180.0, extra=300.0)   # ~3-8 min jitter between joins
+        finally:
+            try:
+                driver.quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+        _emit(None, 'join_done', **counts)
+        return counts
+
     # ── Sync internals ───────────────────────────────────────────────
     def _claim_or_raise(self, country: Optional[str] = None) -> dict:
         country = country or _TARGET_COUNTRY or _target_country_from_env()
