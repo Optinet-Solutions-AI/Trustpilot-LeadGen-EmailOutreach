@@ -99,3 +99,17 @@ def test_outcome_failed_when_nothing_changed():
 
 def test_outcome_failed_when_no_join_button():
     assert fb._classify_join_outcome({'is_member': False, 'request_pending': False, 'questions_shown': False, 'join_clicked': False}) == 'failed'
+
+
+def test_outcome_priority_membership_wins_over_all():
+    # is_member must win even when questions AND pending are also true
+    assert fb._classify_join_outcome(
+        {'is_member': True, 'request_pending': True, 'questions_shown': True, 'join_clicked': True}
+    ) == 'joined'
+
+
+def test_outcome_priority_questions_checked_before_pending():
+    # when both questions and pending are true (not a member), questions wins (skip)
+    assert fb._classify_join_outcome(
+        {'is_member': False, 'request_pending': True, 'questions_shown': True, 'join_clicked': True}
+    ) == 'questions'
