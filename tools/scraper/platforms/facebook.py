@@ -183,14 +183,18 @@ def _candidate_matches_country(location: Optional[str], cc: str) -> bool:
 
 def _parse_member_count(text: Optional[str]) -> int:
     """'12K members' -> 12000, '1.2K' -> 1200, '850 members' -> 850. Best-effort;
-    unknown -> 0 (sorts last)."""
+    the K/M suffix must be adjacent to the digits so the 'm' in 'members' is not
+    read as mega. Unknown / unparseable -> 0 (sorts last)."""
     if not text:
         return 0
-    m = re.search(r'([\d.,]+)\s*([KkMm]?)', text)
+    m = re.search(r'([\d.,]+)([KkMm])?', text)
     if not m:
         return 0
-    num = float(m.group(1).replace(',', ''))
-    mult = {'k': 1_000, 'm': 1_000_000}.get(m.group(2).lower(), 1)
+    try:
+        num = float(m.group(1).replace(',', ''))
+    except ValueError:
+        return 0
+    mult = {'k': 1_000, 'm': 1_000_000}.get((m.group(2) or '').lower(), 1)
     return int(num * mult)
 
 

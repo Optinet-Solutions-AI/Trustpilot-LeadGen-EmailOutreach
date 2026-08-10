@@ -65,3 +65,13 @@ def test_rank_orders_by_tier_then_member_count_and_caps():
     out = fb._rank_join_candidates(rows, 'GB', 2)
     # tier 2 before tier 1; within tier 2, 8K before 1.2K; capped to 2
     assert [r['group_id'] for r in out] == ['c', 'b']
+
+
+def test_parse_member_count_variants():
+    assert fb._parse_member_count('850 members') == 850
+    assert fb._parse_member_count('1,200 members') == 1200
+    assert fb._parse_member_count('12K members') == 12000
+    assert fb._parse_member_count('1.2K') == 1200
+    assert fb._parse_member_count('3.5M members') == 3500000
+    assert fb._parse_member_count(None) == 0
+    assert fb._parse_member_count('no digits here') == 0
