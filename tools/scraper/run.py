@@ -327,8 +327,8 @@ def main() -> None:
         return
 
     # draft-comment defaults to facebook and doesn't need --platform.
-    # post-comment requires --platform but the per-action check handles it.
-    if not args.platform and args.action not in ('draft-comment', 'post-comment'):
+    # post-comment/join-groups require --platform but the per-action check handles it.
+    if not args.platform and args.action not in ('draft-comment', 'post-comment', 'join-groups'):
         raise SystemExit("--platform is required for this action.")
 
     try:
