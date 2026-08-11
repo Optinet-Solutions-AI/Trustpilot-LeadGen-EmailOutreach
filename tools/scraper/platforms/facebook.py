@@ -3651,6 +3651,8 @@ class FacebookScraper(SocialPlatformScraper):
                         counts['requested'] += 1
                         _bump_group_join_counter(acct_id)
                     elif outcome == 'questions':
+                        (table('fb_group_candidates').update({'status': 'questions'})
+                         .eq('platform', 'facebook').eq('group_id', gid).execute())
                         counts['skipped_questions'] += 1
                         _emit(None, 'join_skipped_questions', group_id=gid)
                     else:
