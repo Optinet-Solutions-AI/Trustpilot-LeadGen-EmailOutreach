@@ -215,6 +215,25 @@ For each numbered group, return THREE fields:
    - "unclear" — can't tell from the name alone (generic city/community
      pages, ambiguous marketplace names).
 
+   PATTERN RULE (apply this before keyword-guessing — the SHAPE of the name
+   matters more than the trade word simply appearing in it):
+     - An ASK shape means "customers": "Find a [Trade]", "Looking for a
+       [Trade]", "[Trade] Recommendations", "Recommended Tradespeople",
+       "[Area] Community/Recommendations", "... NEEDED", "Can anyone
+       recommend ...". These names frame someone WANTING to hire — a
+       homeowner asking, not a worker advertising.
+     - A DIRECTORY/PEER shape means "trades" (or "unclear" if truly
+       ambiguous — NEVER "customers"): a bare "[TRADE] [City]" or "[City]
+       [Trade(s)]" with no ask-verb and no recommendations/community/needed
+       wrapper — e.g. "PLUMBER LONDON", "LONDON PLUMBERS", "Manchester
+       Plumber", "Electricians Leeds". Tradespeople title their OWN
+       advertising/networking pages exactly this way, so everyone posting in
+       them is already in the trade — worthless as customer leads even
+       though the trade word is right there in the name.
+     - Examples: "PLUMBER LONDON" -> trades. "Manchester Plumber" -> trades.
+       "Find a Plumber East Midlands" -> customers. "Leeds Home Improvement
+       Recommendations" -> customers.
+
 2. "country_code" — the ISO 3166-1 alpha-2 code (e.g. "GB", "US", "CA", "FR",
    "DE") of where the group is based, or null if you can't tell.
 
