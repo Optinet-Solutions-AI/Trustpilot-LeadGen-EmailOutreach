@@ -7,7 +7,7 @@ const TABS: GroupCandidate['status'][] = ['candidate', 'joined', 'ignored'];
 
 export default function GroupQueue() {
   const [tab, setTab] = useState<GroupCandidate['status']>('candidate');
-  const { rows, loading, error, setStatus } = useGroupQueue(tab);
+  const { rows, loading, error, setStatus, triggerAutoJoin, joining } = useGroupQueue(tab);
 
   return (
     <div className="p-6 max-w-6xl mx-auto" style={{ fontFamily: 'Manrope, sans-serif' }}>
@@ -17,18 +17,28 @@ export default function GroupQueue() {
         your logged-in session, and the next scrape will search it automatically.
       </p>
 
-      <div className="flex gap-2 mb-4">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-bold capitalize transition-colors ${
-              tab === t ? 'bg-[#b0004a] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            {t}
-          </button>
-        ))}
+      <div className="flex gap-2 mb-4 items-center justify-between">
+        <div className="flex gap-2">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-bold capitalize transition-colors ${
+                tab === t ? 'bg-[#b0004a] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        <button
+          // TODO: derive from active social_accounts — GB is the only account today
+          onClick={() => void triggerAutoJoin('GB')}
+          disabled={joining}
+          className="px-3 py-1.5 rounded-md bg-[#006630] text-white text-sm font-bold hover:bg-[#005225] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {joining ? 'Joining…' : 'Auto-join eligible groups'}
+        </button>
       </div>
 
       {loading && <p className="text-slate-500 text-sm">Loading…</p>}

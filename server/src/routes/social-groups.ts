@@ -14,6 +14,8 @@
  *   /label        — on-demand trigger for the Gemini batch labeller
  *                    (tools/scraper/label_fb_groups.py), so the operator
  *                    can label newly-captured groups without a terminal.
+ *   /join         — fire-and-forget trigger for run.py's join-groups
+ *                    action (owner-local only; see the handler below).
  *
  * The scraper (via upsert_leads.py) populates/refreshes rows; this route
  * only reads and does status/label writes.
@@ -192,6 +194,65 @@ router.post('/label', async (_req: Request, res: Response) => {
       },
     );
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
+  }
+});
+
+// ── POST /api/social-groups/join ──────────────────────────────────────
+//
+// Fire-and-forget trigger for `run.py --platform facebook --action
+// join-groups`, which drives the AdsPower-launched Facebook browser
+// through the fb_group_candidates queue for the given country, joining
+// public groups and flipping their status to 'joined' as it goes (see
+// /queue above). Unlike /label, a join run can take several minutes
+// (page loads + human-like pacing per group), so this responds
+// immediately with 202 once the child process is spawned rather than
+// waiting for it to exit — the frontend re-polls /queue afterwards to
+// pick up the status flips.
+//
+// OWNER-LOCAL ONLY: AdsPower's local API is loopback-bound
+// (ADSPOWER_API_BASE=http://local.adspower.com:50325), so this only
+// works when spawned from the operator's own machine, same as every
+// other AdsPower-driven Facebook path in this codebase. When the API
+// moves off localhost onto Cloud Run, this handler must stop spawning
+// the CLI in-process and instead enqueue a job for the EC2/Windows
+// worker to claim, the same way other social scrapes already do.
+router.post('/join', (req: Request, res: Response) => {
+  const { country } = req.body as { country?: string };
+  if (!country || typeof country !== 'string') {
+    res.status(400).json({ success: false, error: 'country is required' });
+    return;
+  }
+
+  const PYTHON_RAW = config.pythonPath || 'python';
+  const PYTHON = path.isAbsolute(PYTHON_RAW) ? PYTHON_RAW : path.resolve(config.projectRoot, PYTHON_RAW);
+  const script = path.resolve(config.projectRoot, 'tools/scraper/run.py');
+  const args = ['-u', script, '--platform', 'facebook', '--action', 'join-groups', '--filters', JSON.stringify({ country })];
+
+  try {
+    const child = spawn(PYTHON, args, {
+      cwd: config.projectRoot,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    child.on('error', (err) => {
+      console.error(`[join-groups] spawn error: ${err.message}`);
+    });
+    child.stdout.on('data', (chunk: Buffer) => {
+      console.log(`[join-groups] ${chunk.toString('utf8').trim()}`);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      console.error(`[join-groups] ${chunk.toString('utf8').trim()}`);
+    });
+    child.on('exit', (code) => {
+      console.log(`[join-groups] exited with code ${code} (country=${country})`);
+    });
+
+    res.status(202).json({ success: true, data: { started: true, country } });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
