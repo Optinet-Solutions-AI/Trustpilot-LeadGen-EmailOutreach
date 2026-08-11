@@ -1057,6 +1057,19 @@ def _resolve_lead_country(
     return None
 
 
+def _group_country_from_location(location: Optional[str]) -> Optional[str]:
+    """Extract an ISO-2 country from a fb_group_candidates.location value.
+
+    The audience labeller stores either a resolved code ('GB'), 'City, GB',
+    or a bare city with no country. Return the trailing comma-token when it is
+    exactly a 2-letter alpha code (uppercased); else None.
+    """
+    if not location:
+        return None
+    token = location.split(',')[-1].strip().upper()
+    return token if len(token) == 2 and token.isalpha() else None
+
+
 def _target_country_from_filters(filters: dict) -> Optional[str]:
     """Resolve the scrape's target country to an uppercased ISO-2 code.
 
@@ -3500,16 +3513,38 @@ class FacebookScraper(SocialPlatformScraper):
         # AuthorLead lands with category=null and the Lead Matrix loses the row.
         stamp_niche = original_niche or (filters.get('category') or '').strip() or None
         stamp_location = location or None
+
+        # Group scrapes: the group's country is already resolved in
+        # fb_group_candidates.location — trust it over re-parsing free text.
+        group_country: dict = {}
+        gids = sorted({s.get('group_id') for s in stubs if s.get('group_id')})
+        if gids:
+            try:
+                rows = (table('fb_group_candidates')
+                        .select('group_id,location')
+                        .eq('platform', 'facebook').in_('group_id', gids)
+                        .execute().data or [])
+                for r in rows:
+                    cc = _group_country_from_location(r.get('location'))
+                    if cc:
+                        group_country[r['group_id']] = cc
+            except Exception:  # noqa: BLE001 — country stamping is best-effort
+                pass
+
         for s in stubs:
             if stamp_niche and not s.get('category'):
                 s['category'] = stamp_niche
             if not s.get('country'):
-                resolved = _resolve_lead_country(
-                    s.get('group_name'), location, s.get('content_excerpt'),
-                    geo_scoped=geo_scoped,
-                )
-                if resolved:
-                    s['country'] = resolved
+                gc = group_country.get(s.get('group_id'))
+                if gc:
+                    s['country'] = gc
+                else:
+                    resolved = _resolve_lead_country(
+                        s.get('group_name'), location, s.get('content_excerpt'),
+                        geo_scoped=geo_scoped,
+                    )
+                    if resolved:
+                        s['country'] = resolved
             if not s.get('location_confidence'):
                 s['location_confidence'] = _derive_location_confidence(
                     s.get('group_name'), s.get('content_excerpt'),
