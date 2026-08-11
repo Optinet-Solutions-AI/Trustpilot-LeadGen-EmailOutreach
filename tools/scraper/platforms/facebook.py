@@ -3712,8 +3712,12 @@ class FacebookScraper(SocialPlatformScraper):
         budget = max(0, cap - used_today)
 
         rows = (table('fb_group_candidates')
-                .select('group_id,name,status,audience,relevance_tier,location,member_count_text,'
-                        'scrape_count,total_leads')
+                # select('*') — NOT an explicit column list. scrape_count/total_leads
+                # come from migration 060; naming them 400s on any database where 060
+                # has not been applied yet, killing join_groups before it opens the
+                # browser. '*' works either way — downstream ranking reads what it
+                # needs via .get() and defaults missing fields to 0.
+                .select('*')
                 .eq('platform', 'facebook').eq('status', 'candidate').eq('audience', 'customers')
                 .execute().data or [])
         targets = _rank_join_candidates(rows, country, budget)

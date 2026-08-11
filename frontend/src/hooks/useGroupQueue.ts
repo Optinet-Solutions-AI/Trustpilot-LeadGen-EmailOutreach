@@ -10,13 +10,13 @@ export interface GroupCandidate {
   relevance_tier: number | null;
   niche: string | null;
   location: string | null;
-  status: 'candidate' | 'joined' | 'ignored';
+  status: 'candidate' | 'joined' | 'ignored' | 'requested' | 'questions';
   first_seen_at: string;
   last_seen_at: string;
   joined_detected_at: string | null;
 }
 
-export function useGroupQueue(status: 'candidate' | 'joined' | 'ignored' = 'candidate') {
+export function useGroupQueue(status: GroupCandidate['status'] = 'candidate') {
   const [rows, setRows] = useState<GroupCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

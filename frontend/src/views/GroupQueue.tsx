@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useGroupQueue, GroupCandidate } from '../hooks/useGroupQueue';
 
-const TABS: GroupCandidate['status'][] = ['candidate', 'joined', 'ignored'];
+const TABS: GroupCandidate['status'][] = ['candidate', 'requested', 'questions', 'joined', 'ignored'];
 
 export default function GroupQueue() {
   const [tab, setTab] = useState<GroupCandidate['status']>('candidate');
