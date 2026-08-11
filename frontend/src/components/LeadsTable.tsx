@@ -794,7 +794,7 @@ export default function LeadsTable({
         if (!p?.author_handle) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
         return (
           <td key={col} className="px-4 py-3 text-xs">
-            <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">@{p.author_handle}</code>
+            <code title={`@${p.author_handle}`} className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 inline-block max-w-[140px] truncate align-middle">@{p.author_handle}</code>
             {p.is_business_profile && (
               <div className="mt-1 inline-block text-[10px] uppercase font-bold tracking-wider text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
                 Business
