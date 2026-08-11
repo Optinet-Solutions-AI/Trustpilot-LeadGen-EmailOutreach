@@ -200,17 +200,41 @@ def _parse_member_count(text: Optional[str]) -> int:
     return int(num * mult)
 
 
+_FARM_MIN_SCRAPES = 2
+
+
+def _is_yield_farm(row: dict) -> bool:
+    """A group scraped >= _FARM_MIN_SCRAPES times that has NEVER produced a
+    consumer lead — an ad/spam/recruitment farm; skip it."""
+    return (row.get('scrape_count') or 0) >= _FARM_MIN_SCRAPES and (row.get('total_leads') or 0) == 0
+
+
+def _yield_score(row: dict) -> float:
+    """Leads per scrape — higher = a better group to prioritise. 0 if never scraped."""
+    sc = row.get('scrape_count') or 0
+    return (row.get('total_leads') or 0) / sc if sc else 0.0
+
+
 def _rank_join_candidates(rows: list[dict], cc: str, limit: int) -> list[dict]:
-    """Filter to eligible join candidates and order by relevance then size."""
+    """Filter to eligible join candidates and order by relevance then size.
+    Proven ad/spam/recruitment "farm" groups (scraped repeatedly, never a
+    lead) are excluded outright; among the rest, past yield is a lower-
+    priority tiebreak after relevance tier and member count so a
+    higher-yield group edges out an equally-ranked but unproven one."""
     eligible = [
         r for r in rows
         if r.get('status') == 'candidate'
         and r.get('audience') == 'customers'
         and (r.get('relevance_tier') or 0) >= 1
         and _candidate_matches_country(r.get('location'), cc)
+        and not _is_yield_farm(r)
     ]
     eligible.sort(
-        key=lambda r: (r.get('relevance_tier') or 0, _parse_member_count(r.get('member_count_text'))),
+        key=lambda r: (
+            r.get('relevance_tier') or 0,
+            _parse_member_count(r.get('member_count_text')),
+            _yield_score(r),
+        ),
         reverse=True,
     )
     return eligible[:max(0, limit)]
@@ -294,6 +318,31 @@ def _bump_group_join_counter(account_id: str) -> None:
     (table('social_accounts')
      .update({'group_join_used_today': new_count, 'updated_at': _now_iso()})
      .eq('id', account_id).execute())
+
+
+def _record_group_yield(scraped_group_ids: list[str], leads: list[dict]) -> None:
+    """After a group scrape, bump each scraped group's scrape_count + total_leads
+    (leads attributed by group_id) + last_scraped_at. Best-effort; never fatal."""
+    if not scraped_group_ids:
+        return
+    from collections import Counter
+    per_group = Counter((lead.get('group_id') or '') for lead in leads)
+    now = _now_iso()
+    for gid in scraped_group_ids:
+        try:
+            existing = (table('fb_group_candidates')
+                        .select('scrape_count,total_leads')
+                        .eq('platform', 'facebook').eq('group_id', gid).execute().data)
+            if not existing:
+                continue
+            cur = existing[0]
+            (table('fb_group_candidates').update({
+                'scrape_count': (cur.get('scrape_count') or 0) + 1,
+                'total_leads': (cur.get('total_leads') or 0) + per_group.get(gid, 0),
+                'last_scraped_at': now,
+            }).eq('platform', 'facebook').eq('group_id', gid).execute())
+        except Exception:  # noqa: BLE001 — yield tracking is best-effort
+            pass
 
 
 def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
@@ -3600,6 +3649,12 @@ class FacebookScraper(SocialPlatformScraper):
                 classifier_sees_location=regime.location_in_classifier_prompt,
             )
 
+        # Per-group yield tracking — record AFTER the consumer filter chain so
+        # total_leads reflects real leads, not raw noise posts. `gids` is the
+        # set of groups this call actually scraped (empty for open-feed, so
+        # this is a no-op there). Best-effort; never blocks the return.
+        _record_group_yield(gids, stubs)
+
         return stubs
 
     async def search_groups(
@@ -3657,7 +3712,8 @@ class FacebookScraper(SocialPlatformScraper):
         budget = max(0, cap - used_today)
 
         rows = (table('fb_group_candidates')
-                .select('group_id,name,status,audience,relevance_tier,location,member_count_text')
+                .select('group_id,name,status,audience,relevance_tier,location,member_count_text,'
+                        'scrape_count,total_leads')
                 .eq('platform', 'facebook').eq('status', 'candidate').eq('audience', 'customers')
                 .execute().data or [])
         targets = _rank_join_candidates(rows, country, budget)
