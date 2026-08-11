@@ -28,7 +28,7 @@ import { config } from '../config.js';
 
 const router = Router();
 
-const STATUSES = ['candidate', 'joined', 'ignored'] as const;
+const STATUSES = ['candidate', 'requested', 'questions', 'joined', 'ignored'] as const;
 type GroupStatus = (typeof STATUSES)[number];
 
 // ── GET /api/social-groups/queue?status=candidate ────────────────────
