@@ -362,7 +362,11 @@ def _claim_account(platform: str = 'facebook', country: Optional[str] = None) ->
             continue
         if row['used_this_hour'] >= row['hourly_cap']:
             continue
-        if not row.get('encrypted_cookies'):
+        # AdsPower-bound accounts keep their session inside the AdsPower profile
+        # (persistent login), so encrypted_cookies is legitimately empty for them.
+        # Only the legacy cookie-injection path needs DB cookies; requiring them
+        # here would make every AdsPower account permanently unclaimable.
+        if not row.get('encrypted_cookies') and not row.get('adspower_profile_id'):
             continue
         return row
     return None
