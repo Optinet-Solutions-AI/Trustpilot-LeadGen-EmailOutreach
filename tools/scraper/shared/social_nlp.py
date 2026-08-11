@@ -9,32 +9,42 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from typing import Optional
 
+import requests
 
-def classify_consumer_posts_with_gemini(
+# gemini-2.5-flash's maxOutputTokens budget (8192) INCLUDES thinking tokens.
+# A single call classifying 40+ posts at once regularly burns the whole
+# budget on reasoning before it emits any visible JSON, so the response
+# comes back empty and the classifier used to return None for the entire
+# batch — silently dropping the caller to the weak substring-heuristic
+# fallback on otherwise-good groups. Splitting into fixed-size batches
+# keeps each call's prompt small enough that the model reliably finishes.
+_CLASSIFIER_BATCH_SIZE = 20
+
+# Per-batch retry budget. A batch can come back empty (thinking-budget
+# exhausted / safety filter) or with a mismatched verdict count on a given
+# attempt without the underlying niche/location actually being unclassifiable
+# — a short retry recovers most of these transient misses.
+_CLASSIFIER_MAX_ATTEMPTS = 2
+_CLASSIFIER_RETRY_BACKOFF_S = 1
+
+
+def _classify_batch(
     post_excerpts: list[str],
     niche: str,
-    *,
-    location: Optional[str] = None,
-    timeout_s: int = 30,
+    location: Optional[str],
+    timeout_s: int,
+    api_key: str,
 ) -> Optional[list[bool]]:
-    """Send a batch of post excerpts to Gemini Flash and return per-post
-    consumer-or-not verdicts.
+    """Classify ONE batch (<= _CLASSIFIER_BATCH_SIZE posts) via Gemini.
 
-    Returns a list[bool] aligned 1:1 with post_excerpts (True = real
-    consumer ask, False = drop). Returns None when the API key isn't
-    configured, the request fails, or the response can't be parsed —
-    callers should treat None as "skip the LLM stage, keep substring
-    filter verdicts".
-
-    Cost-aware: batches up to 50 excerpts per call (well under
-    Gemini's input limit). One call per scrape, not per post.
+    Retries up to _CLASSIFIER_MAX_ATTEMPTS times (tiny backoff between
+    attempts) when the response is empty, the verdict count doesn't match,
+    or the request itself raises. Returns a list[bool] aligned 1:1 with
+    post_excerpts on success, None if every attempt fails.
     """
-    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')
-    if not api_key or not post_excerpts:
-        return None
-
     # Build a numbered list so the model can return verdicts indexed
     # by position. JSON-structured output avoids parse drift.
     numbered = '\n'.join(
@@ -125,40 +135,96 @@ Posts:
         },
     }
 
-    try:
-        import requests as _requests  # noqa: WPS433 — lazy
-        resp = _requests.post(url, json=payload, timeout=timeout_s)
-        resp.raise_for_status()
-        body = resp.json()
-        text = (
-            body.get('candidates', [{}])[0]
-                .get('content', {})
-                .get('parts', [{}])[0]
-                .get('text', '')
-        ).strip()
-        if not text:
-            # Defensive: empty response (thinking-budget exhausted OR safety
-            # filter blocked it). Surface the full response body so the
-            # caller can see in stderr/DB what Gemini actually returned.
+    for attempt in range(1, _CLASSIFIER_MAX_ATTEMPTS + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout_s)
+            resp.raise_for_status()
+            body = resp.json()
+            text = (
+                body.get('candidates', [{}])[0]
+                    .get('content', {})
+                    .get('parts', [{}])[0]
+                    .get('text', '')
+            ).strip()
+            if not text:
+                # Defensive: empty response (thinking-budget exhausted OR
+                # safety filter blocked it). Surface the full response body
+                # so the caller can see in stderr/DB what Gemini returned.
+                print(
+                    f'[gemini-classifier] empty response from Gemini (likely '
+                    f'thinking-budget exhausted) on attempt {attempt}/'
+                    f'{_CLASSIFIER_MAX_ATTEMPTS}; body summary: {str(body)[:500]}',
+                    file=sys.stderr,
+                )
+                if attempt < _CLASSIFIER_MAX_ATTEMPTS:
+                    time.sleep(_CLASSIFIER_RETRY_BACKOFF_S)
+                    continue
+                return None
+            parsed = json.loads(text)
+            verdicts = parsed.get('verdicts')
+            if not isinstance(verdicts, list) or len(verdicts) != len(post_excerpts):
+                print(
+                    f'[gemini-classifier] verdict count mismatch on attempt '
+                    f'{attempt}/{_CLASSIFIER_MAX_ATTEMPTS} '
+                    f'(expected {len(post_excerpts)}, got {len(verdicts) if isinstance(verdicts, list) else "non-list"})',
+                    file=sys.stderr,
+                )
+                if attempt < _CLASSIFIER_MAX_ATTEMPTS:
+                    time.sleep(_CLASSIFIER_RETRY_BACKOFF_S)
+                    continue
+                return None
+            return [bool(v) for v in verdicts]
+        except Exception as exc:  # noqa: BLE001
             print(
-                f'[gemini-classifier] empty response from Gemini (likely '
-                f'thinking-budget exhausted); body summary: {str(body)[:500]}',
+                f'[gemini-classifier] request failed on attempt '
+                f'{attempt}/{_CLASSIFIER_MAX_ATTEMPTS}: {exc}',
                 file=sys.stderr,
             )
+            if attempt < _CLASSIFIER_MAX_ATTEMPTS:
+                time.sleep(_CLASSIFIER_RETRY_BACKOFF_S)
+                continue
             return None
-        parsed = json.loads(text)
-        verdicts = parsed.get('verdicts')
-        if not isinstance(verdicts, list) or len(verdicts) != len(post_excerpts):
-            print(
-                f'[gemini-classifier] verdict count mismatch '
-                f'(expected {len(post_excerpts)}, got {len(verdicts) if isinstance(verdicts, list) else "non-list"})',
-                file=sys.stderr,
-            )
-            return None
-        return [bool(v) for v in verdicts]
-    except Exception as exc:  # noqa: BLE001
-        print(f'[gemini-classifier] failed, falling back to substring filter only: {exc}', file=sys.stderr)
+    return None  # unreachable, but keeps type-checkers happy
+
+
+def classify_consumer_posts_with_gemini(
+    post_excerpts: list[str],
+    niche: str,
+    *,
+    location: Optional[str] = None,
+    timeout_s: int = 30,
+) -> Optional[list[bool]]:
+    """Send post excerpts to Gemini Flash and return per-post
+    consumer-or-not verdicts.
+
+    Returns a list[bool] aligned 1:1 with post_excerpts (True = real
+    consumer ask, False = drop). Returns None when the API key isn't
+    configured or any batch fails after retries — callers should treat
+    None as "skip the LLM stage, keep substring filter verdicts". Returns
+    [] (not None) for empty input — there's nothing to fail at.
+
+    Cost-aware and reliability-aware: splits post_excerpts into batches of
+    _CLASSIFIER_BATCH_SIZE and classifies each with its own retry budget
+    (see _classify_batch), instead of sending everything in one call. A
+    single oversized call regularly exhausted gemini-2.5-flash's thinking
+    budget on 40+ post batches and came back empty, silently degrading the
+    whole run to the substring fallback.
+    """
+    if not post_excerpts:
+        return []
+
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('NEXT_PUBLIC_GEMINI_API_KEY')
+    if not api_key:
         return None
+
+    all_verdicts: list[bool] = []
+    for start in range(0, len(post_excerpts), _CLASSIFIER_BATCH_SIZE):
+        batch = post_excerpts[start:start + _CLASSIFIER_BATCH_SIZE]
+        batch_verdicts = _classify_batch(batch, niche, location, timeout_s, api_key)
+        if batch_verdicts is None:
+            return None
+        all_verdicts.extend(batch_verdicts)
+    return all_verdicts
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +343,7 @@ Groups:
     }
 
     try:
-        import requests as _requests  # noqa: WPS433 — lazy
-        resp = _requests.post(url, json=payload, timeout=timeout_s)
+        resp = requests.post(url, json=payload, timeout=timeout_s)
         resp.raise_for_status()
         body = resp.json()
         text = (
@@ -353,8 +418,7 @@ def _gemini_text_call(prompt: str, *, timeout_s: int = 20) -> str:
             # No responseMimeType — we want natural prose output
         },
     }
-    import requests as _requests  # noqa: WPS433 — lazy
-    resp = _requests.post(url, json=payload, timeout=timeout_s)
+    resp = requests.post(url, json=payload, timeout=timeout_s)
     resp.raise_for_status()
     body = resp.json()
     return (

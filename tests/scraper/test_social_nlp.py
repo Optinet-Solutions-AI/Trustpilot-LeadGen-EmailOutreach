@@ -12,9 +12,12 @@ def test_returns_none_without_api_key(monkeypatch):
     assert classify_consumer_posts_with_gemini(['anyone know a plumber?'], 'plumber') is None
 
 
-def test_returns_none_on_empty_input(monkeypatch):
+def test_returns_empty_list_on_empty_input(monkeypatch):
+    # Empty input short-circuits to [] (a real, no-op verdict list) rather
+    # than None — None is reserved for "the LLM call failed/unavailable",
+    # which callers use to trigger the substring-heuristic fallback.
     monkeypatch.setenv('GEMINI_API_KEY', 'fake')
-    assert classify_consumer_posts_with_gemini([], 'plumber') is None
+    assert classify_consumer_posts_with_gemini([], 'plumber') == []
 
 
 # ── label_groups_with_gemini ────────────────────────────────────────────────
