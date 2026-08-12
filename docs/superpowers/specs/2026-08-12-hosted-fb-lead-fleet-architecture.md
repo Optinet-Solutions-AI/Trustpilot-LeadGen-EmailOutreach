@@ -91,10 +91,17 @@ FLEET PLANE (EC2 — only the secured browsers)
   Local API (loopback `local.adspower.com:50325`) → gets its CDP address, and
   registers it so the control plane can stream it. Reuses the AdsPower branch of
   `tools/scraper/shared/uc_driver.py`.
-- **CDP relay:** the AdsPower CDP port is loopback on the EC2. The fleet worker
-  opens an **outbound** websocket to the Cloud Run API that proxies the profile's
-  CDP to the VA's browser — **no inbound ports** on the EC2, works from anywhere
-  the VA is. Generalizes the existing `/leads/:id/browse` CDP path.
+- **CDP relay (ALREADY BUILT — reused, not rebuilt; corrected 2026-08-12):** the
+  existing `server/src/worker/browse-stream-bridge.ts` (CDP screencast → canvas +
+  VA input → CDP Input) plus a per-session **cloudflared quick tunnel** already
+  stream a live browser to the VA and surface the public URL via
+  `social_accounts.connect_tunnel_url` — see `scripts/ec2-windows-spawn-cdp.ps1`,
+  `server/src/worker/social-connect-worker.ts`, and
+  `frontend/src/hooks/useBrowseSession.ts`. The spec originally assumed an
+  outbound-WS-to-Cloud-Run relay; that would rebuild working infra. Phase 2 only
+  points this existing stream at the **AdsPower** profile's CDP port (from Phase
+  1's `fleet_session`) instead of native Brave. Caveat: cloudflare *quick*
+  tunnels are ephemeral/rate-limited — a named tunnel is sturdier at scale.
 - **Concurrency:** ~3–5 live profiles per box (RAM-bound); the queue caps it,
   boxes add capacity.
 
@@ -162,8 +169,10 @@ FLEET PLANE (EC2 — only the secured browsers)
 
 1. **Fleet foundation** *(keystone, net-new)* — AdsPower-on-EC2 + persistent-desktop
    rig + fleet worker opens a profile on a claimed job.
-2. **CDP relay** *(net-new)* — stream a profile to the web app; VA remote-controls
-   it. Generalize `/leads/:id/browse`.
+2. **CDP relay** *(mostly EXISTS — wire AdsPower in, not a build)* — reuse
+   `browse-stream-bridge` + the cloudflared tunnel + `useBrowseSession`; add an
+   AdsPower spawner that opens the profile via `fleet_session` and points the
+   existing bridge/tunnel at its CDP port. Details in the Phase 2 plan.
 3. **Enqueue conversion** *(small)* — `/join` + engagement become fleet jobs.
 4. **Discovery hybrid** *(≈done)* — public (cookieless) + private (browser) reads
    feed the group/lead queues.
@@ -182,10 +191,10 @@ phase gets its own implementation plan.
 | Cookieless Apify public discovery | ✅ exists |
 | `fb_group_candidates` (audience label, yield tracking), join status states | ✅ exists |
 | Consumer classifier, lead/post capture tables | ✅ exists |
-| `/leads/:id/browse` CDP browse (~80%) | 🟡 partial → generalize |
+| CDP relay = browse-stream-bridge + cloudflared tunnel + useBrowseSession | 🟢 EXISTS (reuse) → 🟡 wire AdsPower spawn (Phase 2) |
 | `social_accounts` onboarding + warmup/caps | 🟡 partial |
 | Persistent-desktop rig on Windows EC2 | ❌ net-new |
-| CDP relay (fleet → Cloud Run → VA browser) | ❌ net-new |
+| Point the existing CDP stream at the AdsPower profile (native Brave → AdsPower) | ❌ net-new (Phase 2, small) |
 | `/join` (and engagement) enqueue conversion | ❌ net-new (prescribed by existing code comment) |
 | Workflow UI (niche→groups→asks→work-account) | 🟡 partial → assemble |
 | Lead package + deliver/export | ❌ net-new (small) |
