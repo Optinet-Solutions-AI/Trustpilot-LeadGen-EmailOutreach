@@ -401,6 +401,9 @@ class _FakeSelectQuery:
     def eq(self, *a, **kw):
         return self
 
+    def in_(self, *a, **kw):
+        return self
+
     def order(self, *a, **kw):
         return self
 
@@ -1832,6 +1835,10 @@ def test_group_sourced_country_is_not_fabricated_from_an_unmapped_location(monke
         fb, '_classify_consumer_posts_with_gemini', lambda excerpts, *a, **k: [True] * len(excerpts),
     )
 
+    # Hermetic: force the group-country DB lookup empty so the stamp comes from
+    # the _resolve_lead_country fallback ('Nowheresville' maps to no ISO-2),
+    # not from a live fb_group_candidates row this session may have added.
+    _patch_table(monkeypatch, [])
     scraper = fb.FacebookScraper()
     stubs = asyncio.run(scraper.search_posts(
         'recommend',
@@ -2079,6 +2086,11 @@ def test_group_urls_with_a_location_are_still_geographically_trusted(monkeypatch
         lambda excerpts, *a, **k: [True] * len(excerpts),
     )
 
+    # Hermetic: force the group-country DB lookup empty so stamps come from the
+    # _resolve_lead_country fallback — the Dublin-mentioning post resolves to IE,
+    # the town-less post to GB (operator location) — instead of both being
+    # overridden by a live fb_group_candidates GB row.
+    _patch_table(monkeypatch, [])
     events: list = []
     scraper = fb.FacebookScraper()
     stubs = asyncio.run(scraper.search_posts(
