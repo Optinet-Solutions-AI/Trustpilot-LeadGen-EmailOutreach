@@ -64,18 +64,54 @@ def open_account_session(*, account_id: Optional[str] = None, profile_id: Option
     }
 
 
+def port_from_cdp_address(cdp_address: str) -> int:
+    """Extract the integer TCP port from a CDP debugger address, e.g.
+    '127.0.0.1:9222' -> 9222. Raises FleetSessionError on a malformed value."""
+    addr = (cdp_address or '').strip()
+    if ':' not in addr:
+        raise FleetSessionError(f'CDP address {cdp_address!r} has no :port')
+    port_str = addr.rsplit(':', 1)[1]
+    try:
+        return int(port_str)
+    except ValueError as exc:
+        raise FleetSessionError(f'CDP address {cdp_address!r} has a non-integer port') from exc
+
+
+def close_account_session(*, account_id: Optional[str] = None, profile_id: Optional[str] = None) -> None:
+    """Stop the AdsPower profile for an account (or a raw profile id). Resolves
+    the profile from social_accounts when given an account_id. Stopping an
+    already-stopped profile is not an error (adspower.stop_profile handles it)."""
+    if not account_id and not profile_id:
+        raise FleetSessionError('Pass account_id or profile_id')
+    if account_id and profile_id:
+        raise FleetSessionError('Pass account_id OR profile_id, not both')
+    if account_id:
+        profile_id, _country = _resolve_profile_id(account_id)
+    adspower.stop_profile(profile_id)
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description='Open a secured AdsPower profile and print its CDP address.')
+    ap = argparse.ArgumentParser(description='Open/stop a secured AdsPower profile for the fleet.')
     grp = ap.add_mutually_exclusive_group(required=True)
-    grp.add_argument('--account', help='social_accounts.id to open')
-    grp.add_argument('--profile', help='raw AdsPower profile id to open')
+    grp.add_argument('--account', help='social_accounts.id')
+    grp.add_argument('--profile', help='raw AdsPower profile id')
+    ap.add_argument('--print-port', action='store_true',
+                    help='Open the session and print ONLY the CDP port (for the spawner).')
+    ap.add_argument('--stop', action='store_true',
+                    help='Stop the profile instead of opening it.')
     args = ap.parse_args()
     try:
+        if args.stop:
+            close_account_session(account_id=args.account, profile_id=args.profile)
+            return 0
         out = open_account_session(account_id=args.account, profile_id=args.profile)
     except FleetSessionError as exc:
         print(f'FLEET SESSION FAILED: {exc}', file=sys.stderr, flush=True)
         return 1
-    print(json.dumps(out))
+    if args.print_port:
+        print(port_from_cdp_address(out['cdp_address']))
+    else:
+        print(json.dumps(out))
     return 0
 
 
