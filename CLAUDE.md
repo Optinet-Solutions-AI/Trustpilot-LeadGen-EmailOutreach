@@ -244,6 +244,15 @@ trustpilot-leadgen/
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
+| `APIFY_API_TOKEN` | Cookieless Apify actor runs for FB post/group discovery — no account, no daily cap, runs on Cloud Run/Linux. Free plan caps 20 results/run + 1 run/24h; paid (~$39/mo) needed for real volume. Sign up at https://apify.com | unset |
+| `APIFY_FB_SEARCH_ACTOR` | Keyword post/group search actor. Required input key is `query` (NOT `search_query`, verified live 2026-07-31). $2.59/1,000 results | `scrapeforge/facebook-search-posts` (build 1.0.19) |
+| `APIFY_FB_GROUP_POSTS_ACTOR` | Public-group post actor (`groupId`, `maxPages`). $5.00/1,000 results | `data-slayer/facebook-group-posts` (build 1.0.5) |
+| `FB_DISCOVERY` | `apify` (cookieless, no browser, runs on Cloud Run/Linux — default) or `browser` (legacy logged-in crawl, required only for PRIVATE groups an account has joined) | `apify` |
+| `FB_ENRICH` | `stub` (build leads from the Apify search result, no browser — default) or `browser` (visit each author profile for bio/website/email, burns account quota) | `stub` |
+| `ADSPOWER_API_BASE` | Local API base URL for the AdsPower engagement browser (isolated per-account fingerprints — NOT a proxy). Requires the desktop client running on this host + a paid plan. AdsPower's own docs say `local.adspower.net`; verified live 2026-07-31 the real host was `local.adspower.com` — their docs are wrong (also wrong on the local config file path: real is `%APPDATA%\adspower_global\cwd_global\source\local_api`, not `%LOCALAPPDATA%`) | `http://local.adspower.com:50325` |
+| `ADSPOWER_API_KEY` | Only needed when AdsPower's "Security Verification" is enabled in the client; sent as `Authorization: Bearer <key>`. Generating a key requires a paid plan | unset |
+| `ADSPOWER_PROFILE_ID` | **One-shot command-line override only — do NOT add this to `.env`.** Names a single AdsPower profile for the **Facebook** browser/engagement path. The profile id normally comes from the claimed `social_accounts` row (`adspower_profile_id`); this var is only the fallback for callers with no account row (interactive login, browse worker). Because it is process-global and names exactly one profile, putting it in `.env` makes every Facebook session on the host share that profile. Set it inline on the single command that needs it. Scoped to Facebook — Instagram sessions ignore it. | unset (intentionally) |
+| `GEMINI_API_KEY` | Google Gemini key. Powers the **consumer-intent classifier** that GATES every Facebook/Instagram post lead (`tools/scraper/shared/social_nlp.py`), plus niche translation and AI template generation. Read as `GEMINI_API_KEY` **or** `NEXT_PUBLIC_GEMINI_API_KEY` (fallback) — `.env` currently supplies only the `NEXT_PUBLIC_` name, so either works, but both must be set on any new deployment (Cloud Run, EC2 workers). **Without it the consumer filter silently degrades to the substring heuristics: recall drops from ~88% to ~50%** (measured 2026-08-03 on 20 live posts) and precision falls to ~80%, so adverts reach the CRM. Watch for the `llm_skipped` progress event — that is the degradation signal. | set (as `NEXT_PUBLIC_GEMINI_API_KEY`) |
 | `API_SECRET_KEY` | Internal API auth | set |
 | `PORT` | API port | `3001` |
 
@@ -433,6 +442,42 @@ See `docs/deployment.md` for complete reference.
 - Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
 
 ### Social platforms (planned — Facebook, Instagram, FB Groups)
+- **Discovery is cookieless via Apify** (`FB_DISCOVERY=apify`, the default) — no account,
+  no daily cap, and it runs on Cloud Run and Linux workers because it opens no browser.
+  Public groups and open keyword search only; PRIVATE groups still need
+  `FB_DISCOVERY=browser` with an account that has joined them.
+- **Author enrichment defaults to `FB_ENRICH=stub`** — leads are built from the search
+  result, no profile visits. Set `FB_ENRICH=browser` only when a campaign needs
+  bio/website/email, and expect it to consume account quota.
+- **Open-feed keyword search is ad-heavy.** The Gemini consumer classifier is the gate;
+  measure qualified yield before scaling Apify spend.
+- **Both community group actors are non-functional (live-tested 2026-08-03).**
+  `scrapeforge/facebook-search-posts` `search_type=groups` returns 0 items even for a
+  deliberately broad one-word query; `data-slayer/facebook-group-posts` returns 0 items
+  even for its own documented default input. `search_type=posts` (open-feed) works fine —
+  20 real posts in the same test. **Apify discovery is therefore open-feed in practice**,
+  regardless of `groups_only`: the code still attempts group discovery first (actor IDs
+  stay env-swappable via `APIFY_FB_SEARCH_ACTOR`/`APIFY_FB_GROUP_POSTS_ACTOR` for if a
+  working group actor turns up), but an empty result now emits `apify_groups_unavailable`
+  (actor id + reason) and falls back to the open-feed search automatically instead of
+  silently returning 0 leads. Private/group-scoped work still needs `FB_DISCOVERY=browser`.
+  **Setting `groups_only=true` is not a remedy for an ad-heavy feed** — it just triggers the
+  failed group attempt and the same open-feed fallback.
+- **Query phrasing is the single biggest lever on cost per lead (2026-08-03).** Geo-stuffed,
+  advert-shaped phrasings like "looking for a plumber in Manchester" returned **0 usable
+  results out of 20** (all adverts); intent-shaped phrasings like "need a plumber
+  recommendation" returned genuine consumer asks. Prefer short, natural "asking a friend"
+  phrasing over keyword-stuffed geo+service strings.
+- **`groups_only` has two different defaults by design:** the platform manifest / dashboard
+  default is `false` (and `scrape-runner.ts` always sends the key explicitly), so UI jobs run
+  open-feed; the Python plugin's own default is `true`, which only applies to direct `run.py`
+  CLI runs and direct-DB-insert jobs that omit the key.
+- **The Apify recency window is unreachable from the dashboard.** The Apify router reads
+  `filters.start_date`, but the manifest exposes `date_from` / `date_to` and nothing maps
+  between them — a date window can currently only be set from a direct CLI `--filters`
+  payload or a direct-DB-insert job spelling the key `start_date`.
+- Engagement (opening a lead's post, commenting, DMs) still requires a logged-in
+  account and stays on the browser path.
 - Login required — each connected account stored in `social_accounts` (planned) with encrypted cookies + status (`active` / `checkpoint` / `banned`)
 - Per-account daily caps + residential proxies + undetected-chromium to avoid bans
 - Captcha checkpoints are routine; the in-app social-account recovery UI (planned) is how operators resolve them

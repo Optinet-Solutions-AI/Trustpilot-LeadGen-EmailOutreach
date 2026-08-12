@@ -187,6 +187,93 @@ def _detect_chrome_major_version() -> Optional[int]:
         return None
 
 
+def _open_adspower_driver(profile_id: str):
+    """Attach Selenium to a running AdsPower profile.
+
+    AdsPower launches its own Chromium with the profile's fingerprint and
+    proxy already applied, then hands back a CDP debugger address. We attach
+    to it rather than launching Chrome ourselves — undetected-chromedriver's
+    patches are unnecessary and would fight AdsPower's own stealth build.
+
+    Because AdsPower — not us — owns the browser process, quitting the driver
+    only DETACHES from it; the browser keeps running. The profile id is stamped
+    onto the returned driver as ``_adspower_profile_id`` so ``close_driver()``
+    can shut the browser down for real when the caller is finished.
+    """
+    from selenium import webdriver  # noqa: WPS433 — lazy
+    from selenium.webdriver.chrome.service import Service  # noqa: WPS433
+
+    from tools.scraper.shared import adspower  # noqa: WPS433
+
+    session = adspower.start_profile(profile_id)
+    # Past this point the AdsPower browser IS running. Anything that goes
+    # wrong before we hand a driver back has to stop it again, or the profile
+    # is left open with nothing attached to it and nothing that will ever
+    # close it — a leaked browser per failed scrape.
+    try:
+        options = webdriver.ChromeOptions()
+        options.add_experimental_option('debuggerAddress', session['debugger_address'])
+        service = Service(executable_path=session['webdriver_path']) if session.get('webdriver_path') else Service()
+        driver = webdriver.Chrome(service=service, options=options)
+    except BaseException:
+        try:
+            adspower.stop_profile(profile_id)
+        except Exception as stop_exc:  # noqa: BLE001
+            # Never mask the attach failure — that is the diagnostic the
+            # operator needs; a failed stop is a footnote.
+            print(
+                f'WARN: could not stop AdsPower profile {profile_id} after a failed attach: {stop_exc}',
+                file=sys.stderr,
+            )
+        raise
+    driver._adspower_profile_id = profile_id
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    try:
+        driver.execute_cdp_cmd(
+            'Browser.grantPermissions',
+            {
+                'origin': 'https://www.facebook.com',
+                'permissions': ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f'WARN: clipboard CDP grant failed on AdsPower profile: {exc}', file=sys.stderr)
+    return driver
+
+
+def close_driver(driver) -> None:
+    """Tear a driver down completely. Use this instead of ``driver.quit()``.
+
+    For a normally-launched undetected-chromedriver this is just quit(). For
+    an AdsPower-attached driver quit() merely closes the CDP connection —
+    AdsPower owns the browser process, so it keeps running (and keeps its
+    profile locked, and keeps eating disk) until the Local API is told to stop
+    it. This helper does both, keyed off the ``_adspower_profile_id`` attribute
+    that ``_open_adspower_driver`` stamps on the driver.
+
+    Teardown never raises: a scrape that finished successfully must not be
+    reported as failed because the browser was already gone.
+    """
+    if driver is None:
+        return
+    profile_id = getattr(driver, '_adspower_profile_id', None)
+    try:
+        driver.quit()
+    except Exception as exc:  # noqa: BLE001
+        print(f'WARN: driver.quit() failed: {exc}', file=sys.stderr)
+    if not profile_id:
+        return
+    from tools.scraper.shared import adspower  # noqa: WPS433 — lazy
+
+    try:
+        adspower.stop_profile(profile_id)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f'WARN: AdsPower profile {profile_id} may still be running — stop failed: {exc}',
+            file=sys.stderr,
+        )
+
+
 def open_uc_driver(
     profile_dir_env: str,
     *,
@@ -194,6 +281,7 @@ def open_uc_driver(
     window_size: tuple[int, int] = (1280, 900),
     headless: Optional[bool] = None,
     proxy_location: Optional[str] = None,
+    adspower_profile_id: Optional[str] = None,
 ):
     """Open an undetected-chromedriver, headless if PLAYWRIGHT_HEADLESS=true.
 
@@ -213,6 +301,26 @@ def open_uc_driver(
       • ``proxy_location`` — city/location string the proxy country-code
         resolver maps to a country (FB passes its module global).
     """
+    # AdsPower branch. When the account being used is bound to an AdsPower
+    # profile, that profile IS the browser — it carries its own fingerprint,
+    # its own persistent cookies and its own proxy, so none of the flags,
+    # profile-dir handling or selenium-wire proxy wiring below applies.
+    # Everything below this branch is the original undetected-chromedriver
+    # path, unchanged, and is what runs for any account without a profile id.
+    #
+    # ADSPOWER_PROFILE_ID is a single process-global naming ONE profile, and
+    # that profile is the Facebook one — it is the operator's manual override
+    # for the FB path. So the env fallback is scoped to the FB caller only.
+    # Without that scoping, setting the var in .env silently reroutes every
+    # Instagram session and both interactive login flows into the Facebook
+    # profile. An explicitly-passed adspower_profile_id still wins for ANY
+    # caller (that is how a per-account binding arrives). Both sides are
+    # stripped so a whitespace-only value counts as unset on either path.
+    env_fallback = os.environ.get('ADSPOWER_PROFILE_ID') if profile_dir_env == 'FB_PROFILE_DIR' else None
+    adspower_id = (adspower_profile_id or env_fallback or '').strip()
+    if adspower_id:
+        return _open_adspower_driver(adspower_id)
+
     import undetected_chromedriver as uc  # noqa: WPS433 — lazy
 
     if headless is None:

@@ -29,8 +29,10 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 from urllib.parse import quote_plus
+
+from selenium.webdriver.common.by import By
 
 from tools.scraper.platforms._social_base import (
     AuthorLead,
@@ -155,6 +157,203 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _effective_join_cap(configured_cap: int, warmup_started_at: Optional[str], now: datetime) -> int:
+    """Warmup ramp for a pooled account's daily GROUP-JOIN budget, mirroring the
+    TS effectiveCommentCap: week1 -> 1, week2 -> 2, week3 -> 3, day21+ -> full cap.
+    warmup_started_at is null -> full cap (pre-warmup accounts). Never exceeds cap.
+    `now` is injected so the calculation stays pure/testable.
+    """
+    if not warmup_started_at:
+        return configured_cap
+    started = datetime.fromisoformat(warmup_started_at)
+    days = (now - started).days
+    if days >= 21:
+        return configured_cap
+    ramp = 1 if days < 7 else 2 if days < 14 else 3
+    return min(configured_cap, ramp)
+
+
+def _candidate_matches_country(location: Optional[str], cc: str) -> bool:
+    """A candidate's location is '<City>, <ISO2>' or a bare ISO2. Match the
+    country TOKEN (last comma-separated piece), case-insensitive — never a
+    loose substring (so 'Gbagada, NG' does not match 'GB')."""
+    if not location:
+        return False
+    token = location.split(',')[-1].strip().upper()
+    return token == cc.strip().upper()
+
+
+def _parse_member_count(text: Optional[str]) -> int:
+    """'12K members' -> 12000, '1.2K' -> 1200, '850 members' -> 850. Best-effort;
+    the K/M suffix must be adjacent to the digits so the 'm' in 'members' is not
+    read as mega. Unknown / unparseable -> 0 (sorts last)."""
+    if not text:
+        return 0
+    m = re.search(r'([\d.,]+)([KkMm])?', text)
+    if not m:
+        return 0
+    try:
+        num = float(m.group(1).replace(',', ''))
+    except ValueError:
+        return 0
+    mult = {'k': 1_000, 'm': 1_000_000}.get((m.group(2) or '').lower(), 1)
+    return int(num * mult)
+
+
+_FARM_MIN_SCRAPES = 2
+
+
+def _is_yield_farm(row: dict) -> bool:
+    """A group scraped >= _FARM_MIN_SCRAPES times that has NEVER produced a
+    consumer lead — an ad/spam/recruitment farm; skip it."""
+    return (row.get('scrape_count') or 0) >= _FARM_MIN_SCRAPES and (row.get('total_leads') or 0) == 0
+
+
+def _yield_score(row: dict) -> float:
+    """Leads per scrape — higher = a better group to prioritise. 0 if never scraped."""
+    sc = row.get('scrape_count') or 0
+    return (row.get('total_leads') or 0) / sc if sc else 0.0
+
+
+def _rank_join_candidates(rows: list[dict], cc: str, limit: int) -> list[dict]:
+    """Filter to eligible join candidates and order by relevance then size.
+    Proven ad/spam/recruitment "farm" groups (scraped repeatedly, never a
+    lead) are excluded outright; among the rest, past yield is a lower-
+    priority tiebreak after relevance tier and member count so a
+    higher-yield group edges out an equally-ranked but unproven one."""
+    eligible = [
+        r for r in rows
+        if r.get('status') == 'candidate'
+        and r.get('audience') == 'customers'
+        and (r.get('relevance_tier') or 0) >= 1
+        and _candidate_matches_country(r.get('location'), cc)
+        and not _is_yield_farm(r)
+    ]
+    eligible.sort(
+        key=lambda r: (
+            r.get('relevance_tier') or 0,
+            _parse_member_count(r.get('member_count_text')),
+            _yield_score(r),
+        ),
+        reverse=True,
+    )
+    return eligible[:max(0, limit)]
+
+
+def _classify_join_outcome(signals: dict) -> str:
+    """Decide the DB-facing outcome from four page booleans. Order matters:
+    membership wins over everything; a surfaced questions form is a skip (we
+    never auto-answer); a pending marker is a request; anything else is a
+    failure to make progress."""
+    if signals.get('is_member'):
+        return 'joined'
+    if signals.get('questions_shown'):
+        return 'questions'
+    if signals.get('request_pending'):
+        return 'requested'
+    return 'failed'
+
+
+_JOIN_MEMBER_MARKERS = ('joined', 'leave group', "you're a member", 'you are a member')
+_JOIN_PENDING_MARKERS = ('cancel request', 'requested', 'request sent', 'pending')
+_JOIN_QUESTION_MARKERS = ('answer', 'membership question', 'to join this group, answer')
+
+
+def _read_join_signals(driver) -> dict:
+    """Distil the group page into booleans for _classify_join_outcome. Best-effort
+    and case-insensitive; FB drifts this DOM, so keep it here (one place to fix)."""
+    body = (driver.find_element(By.TAG_NAME, 'body').text or '').lower()
+    return {
+        'is_member': any(m in body for m in _JOIN_MEMBER_MARKERS),
+        'request_pending': any(m in body for m in _JOIN_PENDING_MARKERS),
+        'questions_shown': any(m in body for m in _JOIN_QUESTION_MARKERS),
+    }
+
+
+def _find_join_button(driver):
+    """Return a clickable primary Join control or None. Matches role=button with
+    visible text starting 'Join' (aria-label or inner text)."""
+    for el in driver.find_elements(By.XPATH, "//*[@role='button' or self::button or self::a]"):
+        try:
+            label = (el.get_attribute('aria-label') or el.text or '').strip().lower()
+        except Exception:  # noqa: BLE001 — stale element during FB re-render
+            continue
+        if label.startswith('join') and el.is_displayed():
+            return el
+    return None
+
+
+def _join_one_group(driver, group_id: str, on_progress) -> str:
+    """Navigate to a group and attempt to join. Returns an outcome from
+    _classify_join_outcome. Never raises for an expected FB state."""
+    driver.get(f"{FB_BASE}/groups/{group_id}")
+    _human_pause(4.0, extra=3.0)
+
+    pre = _read_join_signals(driver)
+    if pre['is_member']:
+        return _classify_join_outcome({**pre, 'join_clicked': False})
+
+    btn = _find_join_button(driver)
+    if btn is None:
+        return _classify_join_outcome({'is_member': pre['is_member'], 'request_pending': pre['request_pending'],
+                                       'questions_shown': False, 'join_clicked': False})
+    try:
+        btn.click()
+    except Exception as exc:  # noqa: BLE001
+        _emit(on_progress, 'join_failed', group_id=group_id, reason=f'click_error:{exc}'[:120])
+        return 'failed'
+    _human_pause(3.0, extra=3.0)
+
+    post = _read_join_signals(driver)
+    return _classify_join_outcome({**post, 'join_clicked': True})
+
+
+def _bump_group_join_counter(account_id: str) -> None:
+    """Increment group_join_used_today for an account (read-modify-write, mirrors
+    _bump_comment_counter)."""
+    row = table('social_accounts').select('group_join_used_today').eq('id', account_id).execute().data
+    if not row:
+        return
+    new_count = (row[0].get('group_join_used_today') or 0) + 1
+    (table('social_accounts')
+     .update({'group_join_used_today': new_count, 'updated_at': _now_iso()})
+     .eq('id', account_id).execute())
+
+
+def _record_group_yield(scraped_group_ids: list[str], leads: list[dict],
+                        *, trustworthy: bool = True) -> None:
+    """After a group scrape, bump each scraped group's scrape_count + total_leads
+    (leads attributed by group_id) + last_scraped_at. Best-effort; never fatal.
+
+    ``trustworthy=False`` skips recording ENTIRELY. Pass it when the consumer
+    filter FAILED CLOSED — i.e. the Gemini classifier was unavailable and there
+    was no language-appropriate substring fallback, so the chain dropped the
+    whole batch (its 'consumer_filter_unavailable' exit). That empty result
+    means "we could not judge these posts", NOT "this group is unproductive";
+    counting it as a zero-yield scrape would wrongly push a genuinely good group
+    toward the two-scrapes-no-leads farm-skip threshold in _is_yield_farm."""
+    if not scraped_group_ids or not trustworthy:
+        return
+    from collections import Counter
+    per_group = Counter((lead.get('group_id') or '') for lead in leads)
+    now = _now_iso()
+    for gid in scraped_group_ids:
+        try:
+            existing = (table('fb_group_candidates')
+                        .select('scrape_count,total_leads')
+                        .eq('platform', 'facebook').eq('group_id', gid).execute().data)
+            if not existing:
+                continue
+            cur = existing[0]
+            (table('fb_group_candidates').update({
+                'scrape_count': (cur.get('scrape_count') or 0) + 1,
+                'total_leads': (cur.get('total_leads') or 0) + per_group.get(gid, 0),
+                'last_scraped_at': now,
+            }).eq('platform', 'facebook').eq('group_id', gid).execute())
+        except Exception:  # noqa: BLE001 — yield tracking is best-effort
+            pass
+
+
 def _emit(on_progress: ProgressCallback, stage: str, **detail) -> None:
     """Emit a canonical PROGRESS:<stage>:<detail> line + callback."""
     payload = {'stage': stage, **detail}
@@ -182,7 +381,13 @@ def _claim_account(platform: str = 'facebook', country: Optional[str] = None) ->
     from datetime import datetime, timezone, timedelta
     q = (
         table('social_accounts')
-        .select('id,platform,handle,daily_cap,hourly_cap,used_today,used_this_hour,encrypted_cookies,last_used_at,country,proxy_location')
+        # select('*') — NOT an explicit column list. An explicit projection
+        # silently DROPPED adspower_profile_id (added by migration 057), so
+        # _open_driver never activated AdsPower. Naming the column instead
+        # would 400 on any database where 057 has not been applied yet, which
+        # would break every Facebook scrape; '*' is correct either way and
+        # makes future columns available without touching this call.
+        .select('*')
         .eq('platform', platform)
         .eq('status', 'active')
     )
@@ -215,7 +420,11 @@ def _claim_account(platform: str = 'facebook', country: Optional[str] = None) ->
             continue
         if row['used_this_hour'] >= row['hourly_cap']:
             continue
-        if not row.get('encrypted_cookies'):
+        # AdsPower-bound accounts keep their session inside the AdsPower profile
+        # (persistent login), so encrypted_cookies is legitimately empty for them.
+        # Only the legacy cookie-injection path needs DB cookies; requiring them
+        # here would make every AdsPower account permanently unclaimable.
+        if not row.get('encrypted_cookies') and not row.get('adspower_profile_id'):
             continue
         return row
     return None
@@ -263,11 +472,11 @@ def _load_account_by_id(account_id: str) -> dict:
     """
     rows = (
         table('social_accounts')
-        .select(
-            'id,platform,handle,status,country,proxy_location,'
-            'daily_cap,hourly_cap,comment_daily_cap,comment_used_today,'
-            'used_today,used_this_hour,encrypted_cookies,last_used_at'
-        )
+        # select('*') for the same reason as _claim_account: an explicit
+        # projection dropped adspower_profile_id on the comment path — the
+        # engagement path AdsPower exists for — and naming the column would
+        # 400 wherever migration 057 has not been applied.
+        .select('*')
         .eq('id', account_id)
         .execute()
         .data
@@ -651,11 +860,191 @@ def _looks_like_business_post(excerpt: str, author_handle: str = '') -> bool:
     return False
 
 
+# City/region names that double as ordinary English words. `\b` word-
+# boundary anchoring (below) fixes every "fragment inside a longer word"
+# false positive ('nice' inside 'niceties', 'bern' inside 'Bernie' or
+# 'Berne') but CANNOT fix a name that is ALSO a complete, standalone English
+# word — verified live, "That was nice of them" resolved to FR under the old
+# substring matcher, and word boundaries alone don't help because "nice" is
+# genuinely a whole word there too. Requiring the matched text to be
+# capitalised (English prose conventionally capitalises proper nouns) turns
+# that ordinary-word reading into a non-match while "I live in Nice, France"
+# still matches. It is not a complete fix — a sentence-initial "Nice weather
+# today!" still slips through — but it removes the far more common
+# lowercase, mid-sentence false positive, which is the one actually observed
+# live. Kept as a short, explicit allowlist rather than applied to the whole
+# map: the other ~150 entries are not dictionary words and gain nothing from
+# the extra restriction. 'reading' (Berkshire, England) is a second example
+# of the same collision, added to CITY_TO_COUNTRY below specifically to
+# exercise this — it did not resolve at all before this fix.
+_CASE_SENSITIVE_CITY_NAMES = frozenset({'nice', 'reading'})
+
+
+def _compile_place_patterns(pairs):
+    """Compile (needle, country) pairs into (regex, country, needs_capital).
+
+    Every needle is escaped — several contain regex metacharacters
+    ('lapu-lapu', 'cluj-napoca') — and anchored with `\\b` word/phrase
+    boundaries so a city name only counts as a STANDALONE word or phrase,
+    never a fragment inside a longer one. The compiled regex is always
+    case-insensitive; `needs_capital` (see _CASE_SENSITIVE_CITY_NAMES) is
+    re-checked by the caller against the actual matched text, not baked into
+    the pattern, so this only compiles — it doesn't decide the match.
+    """
+    compiled = []
+    for needle, country in pairs:
+        pattern = re.compile(r'\b' + re.escape(needle) + r'\b', re.IGNORECASE)
+        compiled.append((pattern, country, needle in _CASE_SENSITIVE_CITY_NAMES))
+    return compiled
+
+
+# Province/state tokens that disambiguate a city name shared across
+# countries (e.g. "London, Ontario" must resolve CA, not GB). Checked
+# BEFORE the bare-city scan so the province wins. Small + data-driven —
+# only provinces actually seen in live group names.
+PROVINCE_TO_COUNTRY = [
+    ('ontario', 'CA'), ('quebec', 'CA'), ('québec', 'CA'),
+    ('alberta', 'CA'), ('manitoba', 'CA'), ('saskatchewan', 'CA'),
+    ('british columbia', 'CA'), ('nova scotia', 'CA'),
+]
+_PROVINCE_PATTERNS = _compile_place_patterns(PROVINCE_TO_COUNTRY)
+
+# Order matters: most specific multi-word cities first so 'lapu-lapu city'
+# matches before a generic 'cebu' substring would, 'cluj-napoca' before
+# 'cluj', and 'new york' before the word 'york' shows up in any other
+# context.
+CITY_TO_COUNTRY = [
+    # ─── United Kingdom ─────────────────────────────────────
+    ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
+    ('leeds', 'GB'), ('liverpool', 'GB'), ('bristol', 'GB'),
+    ('edinburgh', 'GB'), ('glasgow', 'GB'),
+    ('belfast', 'GB'), ('cardiff', 'GB'),
+    # 'reading' is ALSO the ordinary English word/gerund "reading" — see
+    # _CASE_SENSITIVE_CITY_NAMES; only the capitalised "Reading" counts.
+    ('reading', 'GB'),
+    # ─── Ireland ────────────────────────────────────────────
+    ('dublin', 'IE'), ('cork', 'IE'), ('galway', 'IE'),
+    # ─── Germany ────────────────────────────────────────────
+    ('berlin', 'DE'), ('munich', 'DE'), ('hamburg', 'DE'),
+    ('frankfurt', 'DE'), ('cologne', 'DE'), ('stuttgart', 'DE'),
+    ('düsseldorf', 'DE'), ('dusseldorf', 'DE'), ('leipzig', 'DE'),
+    # ─── France ─────────────────────────────────────────────
+    ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'),
+    ('toulouse', 'FR'),
+    # 'nice' is ALSO the ordinary English adjective "nice" — see
+    # _CASE_SENSITIVE_CITY_NAMES; only the capitalised "Nice" counts.
+    ('nice', 'FR'), ('bordeaux', 'FR'),
+    ('nantes', 'FR'),
+    # ─── Spain ──────────────────────────────────────────────
+    ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'),
+    ('seville', 'ES'), ('bilbao', 'ES'), ('málaga', 'ES'),
+    ('malaga', 'ES'),
+    # ─── Italy ──────────────────────────────────────────────
+    ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'),
+    ('florence', 'IT'), ('turin', 'IT'), ('bologna', 'IT'),
+    ('venice', 'IT'),
+    # ─── Netherlands ────────────────────────────────────────
+    ('amsterdam', 'NL'), ('rotterdam', 'NL'), ('the hague', 'NL'),
+    ('utrecht', 'NL'), ('eindhoven', 'NL'),
+    # ─── Belgium ────────────────────────────────────────────
+    ('brussels', 'BE'), ('antwerp', 'BE'), ('ghent', 'BE'),
+    # ─── Luxembourg ─────────────────────────────────────────
+    ('luxembourg city', 'LU'), ('luxembourg', 'LU'),
+    # ─── Portugal ───────────────────────────────────────────
+    ('lisbon', 'PT'), ('porto', 'PT'), ('braga', 'PT'),
+    # ─── Switzerland ────────────────────────────────────────
+    ('zurich', 'CH'), ('zürich', 'CH'), ('geneva', 'CH'),
+    ('basel', 'CH'), ('bern', 'CH'),
+    # ─── Austria ────────────────────────────────────────────
+    ('vienna', 'AT'), ('salzburg', 'AT'), ('graz', 'AT'),
+    # ─── Czech Republic ─────────────────────────────────────
+    ('prague', 'CZ'), ('brno', 'CZ'),
+    # ─── Slovakia ───────────────────────────────────────────
+    ('bratislava', 'SK'),
+    # ─── Poland ─────────────────────────────────────────────
+    ('warsaw', 'PL'), ('krakow', 'PL'), ('kraków', 'PL'),
+    ('wrocław', 'PL'), ('wroclaw', 'PL'), ('gdańsk', 'PL'), ('gdansk', 'PL'),
+    # ─── Hungary ────────────────────────────────────────────
+    ('budapest', 'HU'),
+    # ─── Romania ────────────────────────────────────────────
+    ('cluj-napoca', 'RO'), ('bucharest', 'RO'),
+    # ─── Bulgaria ───────────────────────────────────────────
+    ('sofia', 'BG'), ('plovdiv', 'BG'),
+    # ─── Sweden ─────────────────────────────────────────────
+    ('stockholm', 'SE'), ('gothenburg', 'SE'), ('malmö', 'SE'),
+    ('malmo', 'SE'),
+    # ─── Denmark ────────────────────────────────────────────
+    ('copenhagen', 'DK'), ('aarhus', 'DK'),
+    # ─── Norway ─────────────────────────────────────────────
+    ('oslo', 'NO'), ('bergen', 'NO'),
+    # ─── Finland ────────────────────────────────────────────
+    ('helsinki', 'FI'), ('tampere', 'FI'),
+    # ─── Iceland ────────────────────────────────────────────
+    ('reykjavik', 'IS'),
+    # ─── Greece ─────────────────────────────────────────────
+    ('athens', 'GR'), ('thessaloniki', 'GR'),
+    # ─── Balkans ────────────────────────────────────────────
+    ('zagreb', 'HR'), ('split', 'HR'),
+    ('ljubljana', 'SI'),
+    ('belgrade', 'RS'),
+    ('sarajevo', 'BA'),
+    ('tirana', 'AL'),
+    ('skopje', 'MK'),
+    ('podgorica', 'ME'),
+    # ─── Baltics + Moldova + Ukraine ────────────────────────
+    ('vilnius', 'LT'),
+    ('riga', 'LV'),
+    ('tallinn', 'EE'),
+    ('chișinău', 'MD'), ('chisinau', 'MD'),
+    ('kyiv', 'UA'), ('kiev', 'UA'), ('lviv', 'UA'),
+    # ─── Mediterranean ──────────────────────────────────────
+    ('valletta', 'MT'),
+    ('nicosia', 'CY'), ('limassol', 'CY'),
+    # ─── Türkiye ────────────────────────────────────────────
+    ('istanbul', 'TR'), ('ankara', 'TR'), ('izmir', 'TR'),
+    # ─── United States ──────────────────────────────────────
+    ('new york', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
+    ('queens', 'US'), ('bronx', 'US'),
+    ('los angeles', 'US'), ('san diego', 'US'), ('san francisco', 'US'),
+    ('san jose', 'US'), ('sacramento', 'US'),
+    ('chicago', 'US'), ('houston', 'US'), ('dallas', 'US'),
+    ('austin', 'US'), ('san antonio', 'US'),
+    ('phoenix', 'US'), ('las vegas', 'US'), ('denver', 'US'),
+    ('seattle', 'US'), ('portland', 'US'),
+    ('philadelphia', 'US'), ('boston', 'US'), ('washington', 'US'),
+    ('baltimore', 'US'), ('atlanta', 'US'),
+    ('miami', 'US'), ('orlando', 'US'), ('tampa', 'US'),
+    ('charlotte', 'US'), ('nashville', 'US'),
+    ('detroit', 'US'), ('minneapolis', 'US'),
+    ('columbus', 'US'), ('indianapolis', 'US'),
+    ('cleveland', 'US'), ('pittsburgh', 'US'),
+
+    # Legacy non-Europe/US entries kept so manual scrapes against
+    # these cities still benefit from the country-mismatch filter.
+    ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
+    ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
+    ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
+    ('quezon city', 'PH'), ('davao', 'PH'),
+    ('singapore', 'SG'),
+    ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
+]
+_CITY_PATTERNS = _compile_place_patterns(CITY_TO_COUNTRY)
+
+
 def _extract_country_from_excerpt(text: str) -> Optional[str]:
     """Best-effort: scan a post excerpt for a city/region name and map to a
     country ISO code. Returns None when no known city is found. The map is
     intentionally narrow — only places we've actually seen leads in. Expand
     as new regions surface in real scrapes.
+
+    Matching is `\\b`-word-boundary anchored and case-insensitive (see
+    _compile_place_patterns), NOT plain substring matching. Plain substring
+    matching used to fabricate a country out of an ordinary sentence —
+    verified live: "nice" inside "a nice day" -> FR, "bern" inside "Bernie"
+    or "Berne" -> CH. The handful of entries that are ALSO complete English
+    dictionary words when standalone ('nice', 'reading') additionally
+    require the matched text to be capitalised — see
+    _CASE_SENSITIVE_CITY_NAMES for the reasoning and its known limits.
 
     For the dental-services-in-Cebu test data the cities Liloan, Mandaue,
     Mactan, Lapu-Lapu, Cebu all signal PH; the same pattern works for any
@@ -663,154 +1052,80 @@ def _extract_country_from_excerpt(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    lowered = text.lower()
-    # Province/state tokens that disambiguate a city name shared across
-    # countries (e.g. "London, Ontario" must resolve CA, not GB). Checked
-    # BEFORE the bare-city scan so the province wins. Small + data-driven —
-    # only provinces actually seen in live group names.
-    PROVINCE_TO_COUNTRY = [
-        ('ontario', 'CA'), ('quebec', 'CA'), ('québec', 'CA'),
-        ('alberta', 'CA'), ('manitoba', 'CA'), ('saskatchewan', 'CA'),
-        ('british columbia', 'CA'), ('nova scotia', 'CA'),
-    ]
-    for needle, country in PROVINCE_TO_COUNTRY:
-        if needle in lowered:
+    for pattern, country, _needs_capital in _PROVINCE_PATTERNS:
+        if pattern.search(text):
             return country
-    # Order: most specific multi-word cities first so 'lapu-lapu city' matches
-    # before a generic 'cebu' substring would.
-    CITY_TO_COUNTRY = [
-        # Order matters: multi-word cities first so 'cluj-napoca' matches
-        # before a generic 'cluj' substring would, and 'new york' before
-        # the word 'york' shows up in any other context.
-
-        # ─── United Kingdom ─────────────────────────────────────
-        ('london', 'GB'), ('manchester', 'GB'), ('birmingham', 'GB'),
-        ('leeds', 'GB'), ('liverpool', 'GB'), ('bristol', 'GB'),
-        ('edinburgh', 'GB'), ('glasgow', 'GB'),
-        ('belfast', 'GB'), ('cardiff', 'GB'),
-        # ─── Ireland ────────────────────────────────────────────
-        ('dublin', 'IE'), ('cork', 'IE'), ('galway', 'IE'),
-        # ─── Germany ────────────────────────────────────────────
-        ('berlin', 'DE'), ('munich', 'DE'), ('hamburg', 'DE'),
-        ('frankfurt', 'DE'), ('cologne', 'DE'), ('stuttgart', 'DE'),
-        ('düsseldorf', 'DE'), ('dusseldorf', 'DE'), ('leipzig', 'DE'),
-        # ─── France ─────────────────────────────────────────────
-        ('paris', 'FR'), ('marseille', 'FR'), ('lyon', 'FR'),
-        ('toulouse', 'FR'), ('nice', 'FR'), ('bordeaux', 'FR'),
-        ('nantes', 'FR'),
-        # ─── Spain ──────────────────────────────────────────────
-        ('madrid', 'ES'), ('barcelona', 'ES'), ('valencia', 'ES'),
-        ('seville', 'ES'), ('bilbao', 'ES'), ('málaga', 'ES'),
-        ('malaga', 'ES'),
-        # ─── Italy ──────────────────────────────────────────────
-        ('rome', 'IT'), ('milan', 'IT'), ('naples', 'IT'),
-        ('florence', 'IT'), ('turin', 'IT'), ('bologna', 'IT'),
-        ('venice', 'IT'),
-        # ─── Netherlands ────────────────────────────────────────
-        ('amsterdam', 'NL'), ('rotterdam', 'NL'), ('the hague', 'NL'),
-        ('utrecht', 'NL'), ('eindhoven', 'NL'),
-        # ─── Belgium ────────────────────────────────────────────
-        ('brussels', 'BE'), ('antwerp', 'BE'), ('ghent', 'BE'),
-        # ─── Luxembourg ─────────────────────────────────────────
-        ('luxembourg city', 'LU'), ('luxembourg', 'LU'),
-        # ─── Portugal ───────────────────────────────────────────
-        ('lisbon', 'PT'), ('porto', 'PT'), ('braga', 'PT'),
-        # ─── Switzerland ────────────────────────────────────────
-        ('zurich', 'CH'), ('zürich', 'CH'), ('geneva', 'CH'),
-        ('basel', 'CH'), ('bern', 'CH'),
-        # ─── Austria ────────────────────────────────────────────
-        ('vienna', 'AT'), ('salzburg', 'AT'), ('graz', 'AT'),
-        # ─── Czech Republic ─────────────────────────────────────
-        ('prague', 'CZ'), ('brno', 'CZ'),
-        # ─── Slovakia ───────────────────────────────────────────
-        ('bratislava', 'SK'),
-        # ─── Poland ─────────────────────────────────────────────
-        ('warsaw', 'PL'), ('krakow', 'PL'), ('kraków', 'PL'),
-        ('wrocław', 'PL'), ('wroclaw', 'PL'), ('gdańsk', 'PL'), ('gdansk', 'PL'),
-        # ─── Hungary ────────────────────────────────────────────
-        ('budapest', 'HU'),
-        # ─── Romania ────────────────────────────────────────────
-        ('cluj-napoca', 'RO'), ('bucharest', 'RO'),
-        # ─── Bulgaria ───────────────────────────────────────────
-        ('sofia', 'BG'), ('plovdiv', 'BG'),
-        # ─── Sweden ─────────────────────────────────────────────
-        ('stockholm', 'SE'), ('gothenburg', 'SE'), ('malmö', 'SE'),
-        ('malmo', 'SE'),
-        # ─── Denmark ────────────────────────────────────────────
-        ('copenhagen', 'DK'), ('aarhus', 'DK'),
-        # ─── Norway ─────────────────────────────────────────────
-        ('oslo', 'NO'), ('bergen', 'NO'),
-        # ─── Finland ────────────────────────────────────────────
-        ('helsinki', 'FI'), ('tampere', 'FI'),
-        # ─── Iceland ────────────────────────────────────────────
-        ('reykjavik', 'IS'),
-        # ─── Greece ─────────────────────────────────────────────
-        ('athens', 'GR'), ('thessaloniki', 'GR'),
-        # ─── Balkans ────────────────────────────────────────────
-        ('zagreb', 'HR'), ('split', 'HR'),
-        ('ljubljana', 'SI'),
-        ('belgrade', 'RS'),
-        ('sarajevo', 'BA'),
-        ('tirana', 'AL'),
-        ('skopje', 'MK'),
-        ('podgorica', 'ME'),
-        # ─── Baltics + Moldova + Ukraine ────────────────────────
-        ('vilnius', 'LT'),
-        ('riga', 'LV'),
-        ('tallinn', 'EE'),
-        ('chișinău', 'MD'), ('chisinau', 'MD'),
-        ('kyiv', 'UA'), ('kiev', 'UA'), ('lviv', 'UA'),
-        # ─── Mediterranean ──────────────────────────────────────
-        ('valletta', 'MT'),
-        ('nicosia', 'CY'), ('limassol', 'CY'),
-        # ─── Türkiye ────────────────────────────────────────────
-        ('istanbul', 'TR'), ('ankara', 'TR'), ('izmir', 'TR'),
-        # ─── United States ──────────────────────────────────────
-        ('new york', 'US'), ('brooklyn', 'US'), ('manhattan', 'US'),
-        ('queens', 'US'), ('bronx', 'US'),
-        ('los angeles', 'US'), ('san diego', 'US'), ('san francisco', 'US'),
-        ('san jose', 'US'), ('sacramento', 'US'),
-        ('chicago', 'US'), ('houston', 'US'), ('dallas', 'US'),
-        ('austin', 'US'), ('san antonio', 'US'),
-        ('phoenix', 'US'), ('las vegas', 'US'), ('denver', 'US'),
-        ('seattle', 'US'), ('portland', 'US'),
-        ('philadelphia', 'US'), ('boston', 'US'), ('washington', 'US'),
-        ('baltimore', 'US'), ('atlanta', 'US'),
-        ('miami', 'US'), ('orlando', 'US'), ('tampa', 'US'),
-        ('charlotte', 'US'), ('nashville', 'US'),
-        ('detroit', 'US'), ('minneapolis', 'US'),
-        ('columbus', 'US'), ('indianapolis', 'US'),
-        ('cleveland', 'US'), ('pittsburgh', 'US'),
-
-        # Legacy non-Europe/US entries kept so manual scrapes against
-        # these cities still benefit from the country-mismatch filter.
-        ('lapu-lapu city', 'PH'), ('mandaue city', 'PH'), ('cebu city', 'PH'),
-        ('liloan', 'PH'), ('mandaue', 'PH'), ('mactan', 'PH'),
-        ('lapu-lapu', 'PH'), ('cebu', 'PH'), ('manila', 'PH'), ('makati', 'PH'),
-        ('quezon city', 'PH'), ('davao', 'PH'),
-        ('singapore', 'SG'),
-        ('sydney', 'AU'), ('melbourne', 'AU'), ('brisbane', 'AU'),
-    ]
-    for needle, country in CITY_TO_COUNTRY:
-        if needle in lowered:
+    for pattern, country, needs_capital in _CITY_PATTERNS:
+        m = pattern.search(text)
+        if m and (not needs_capital or m.group(0)[:1].isupper()):
             return country
     return None
 
 
-def _resolve_lead_country(group_name: Optional[str], location: Optional[str],
-                          excerpt: Optional[str]) -> Optional[str]:
+def _resolve_lead_country(
+    group_name: Optional[str],
+    location: Optional[str],
+    excerpt: Optional[str],
+    *,
+    geo_scoped: bool = True,
+) -> Optional[str]:
     """Resolve a consumer lead's country from the richest available signal.
 
-    Combines the group name (which often carries a province/region token like
-    'Ontario' that disambiguates a shared city name), the operator's location,
-    and the post excerpt, then runs _extract_country_from_excerpt over the lot
-    (its PROVINCE_TO_COUNTRY check runs first, so 'London, Ontario' -> 'CA'
-    while bare 'London' -> 'GB'). Falls back to the raw operator location when
-    nothing resolves, so unknown places (e.g. 'Nairobi') are preserved rather
-    than dropped — matching the prior behaviour.
+    `country` is the column the CRM filters cold-email eligibility on, so
+    this must NEVER return anything except a real ISO-2 code or None —
+    never a town name, never arbitrary operator-typed text.
+
+    Two signals, in priority order:
+
+    1. EVIDENCE IN THE POST ITSELF — the group name it was found in (which
+       often carries a disambiguating province/region token like 'Ontario',
+       via _extract_country_from_excerpt's PROVINCE_TO_COUNTRY check) and
+       the post excerpt. Combined and run through
+       _extract_country_from_excerpt. This wins whenever it resolves,
+       regardless of `geo_scoped` — a post that names its own place is
+       trustworthy evidence no matter how the search was run.
+
+    2. THE OPERATOR'S OWN SEARCH LOCATION — trusted ONLY when `geo_scoped`
+       is True, i.e. the search that produced this post is already known to
+       be geographically confined there (see `_query_is_place_anchored` and
+       the `geo_scoped` parameter threaded through
+       `_apply_consumer_filter_chain`). A GLOBAL search must not stamp its
+       target location onto a post that says nothing about where its author
+       actually is — verified live, a 20-post global search for "Manchester"
+       stamped all 20 leads GB when roughly 15 were American. Even when
+       trusted, `location` still has to resolve to a real ISO-2 country
+       through the same city map: an unmapped town ('Nairobi') or arbitrary
+       operator-typed text ('Wigan', 'Nowheresville') is NEVER written into
+       `country` — it previously was, verbatim, which is exactly the
+       town-name-in-a-country-column bug this function now refuses to
+       reproduce.
+
+    Returns None when neither signal resolves. Callers that want to retain
+    the operator's raw, unmapped location for their own reference should
+    look at `location_confidence` (`_derive_location_confidence`) — there is
+    no separate city column on the leads table, so `country` is not an
+    acceptable place to stash it.
     """
-    haystack = ' '.join(p for p in (group_name, location, excerpt) if p)
-    return _extract_country_from_excerpt(haystack) or (location or None)
+    post_evidence = ' '.join(p for p in (group_name, excerpt) if p)
+    resolved = _extract_country_from_excerpt(post_evidence)
+    if resolved:
+        return resolved
+    if geo_scoped and location:
+        return _extract_country_from_excerpt(location)
+    return None
+
+
+def _group_country_from_location(location: Optional[str]) -> Optional[str]:
+    """Extract an ISO-2 country from a fb_group_candidates.location value.
+
+    The audience labeller stores either a resolved code ('GB'), 'City, GB',
+    or a bare city with no country. Return the trailing comma-token when it is
+    exactly a 2-letter alpha code (uppercased); else None.
+    """
+    if not location:
+        return None
+    token = location.split(',')[-1].strip().upper()
+    return token if len(token) == 2 and token.isalpha() else None
 
 
 def _target_country_from_filters(filters: dict) -> Optional[str]:
@@ -1176,6 +1491,445 @@ def _consumer_filter_defaults(filters: dict, location: str | None) -> tuple[bool
     )
 
 
+def _resolve_target_country(location: str | None, filters: dict) -> Optional[str]:
+    """ISO-2 country the operator is actually targeting, or None.
+
+    Deliberately stricter than _target_country_from_filters: that helper
+    upper-cases `filters['country']` verbatim, which is right for
+    businesses-mode (it carries an ISO code) but turns a consumer-mode city
+    into a bogus pseudo-code ('MANCHESTER') that matches no resolved lead
+    country. Used as a geographic gate that would drop 100% of a batch, so
+    only accept a value we can actually believe: a 2-letter alpha code, or a
+    place name CITY_TO_COUNTRY knows. Anything else -> None, which callers
+    must treat as "no country constraint", never as "matches nothing".
+    """
+    for raw in (filters.get('country'), filters.get('location'), location):
+        raw = (raw or '').strip()
+        if not raw:
+            continue
+        if len(raw) == 2 and raw.isalpha():
+            return raw.upper()
+        resolved = _extract_country_from_excerpt(raw)
+        if resolved:
+            return resolved.upper()
+    return None
+
+
+def _query_is_place_anchored(query: str, location: str | None) -> bool:
+    """Does THIS search query already name the operator's target location?
+
+    A plain case-insensitive substring check against the actual query text —
+    honest about what it knows, nothing inferred. When the query itself
+    contains the place ("need a plumber recommendation Manchester"),
+    Facebook's own search has already scoped the results to that place (see
+    the measurement table in _apply_consumer_filter_chain's INTENT VS
+    GEOGRAPHY docstring), so the post-hoc _apply_geo_country_filter stage
+    would only discard genuine local posts that don't spell out their own
+    city — the poster already knows where they are — for zero geographic
+    benefit.
+
+    Deliberately checks the QUERY TEXT, never the discovery source: an
+    operator can submit any query on either the browser or the Apify path,
+    so "was this particular search geo-anchored" has to be answered from
+    what was actually searched for, not from which backend ran it.
+    """
+    loc = (location or '').strip()
+    if not loc:
+        return False
+    return loc.lower() in (query or '').lower()
+
+
+class GeoRegime(NamedTuple):
+    """How a batch of stubs relates to the operator's target location.
+
+    Two INDEPENDENT decisions that used to be one boolean (`geo_scoped`):
+
+      search_is_geo_scoped
+          The search that produced these stubs is already confined to the
+          target place. Drives (a) skipping the post-hoc
+          `_apply_geo_country_filter` and (b) trusting `location` as a
+          fallback country signal in `_resolve_lead_country`.
+
+      location_in_classifier_prompt
+          The operator's town is handed to the Gemini intent classifier,
+          whose location clause then requires a place signal IN THE POST
+          BODY.
+
+    They were the same flag until group-sourced runs needed them to differ:
+    a supplied group fixes the geography beyond doubt (so both (a) and (b)
+    are right) while its members never name their own town (so the prompt
+    clause rejects everything). Measured live on three real group asks
+    (2026-08-04): location=None -> [True, True, False];
+    location='Manchester' -> [False, False, False]. Collapsing the two back
+    into one flag re-creates a guaranteed zero-lead run.
+    """
+
+    search_is_geo_scoped: bool
+    location_in_classifier_prompt: bool
+
+
+def _geo_regime(
+    *,
+    discovery: str,
+    supplied_groups: list,
+    query: str,
+    location: str | None,
+) -> GeoRegime:
+    """Decide the geographic regime for ONE search, in ONE place.
+
+    Every consumer of the decision (country stamping, the post-hoc country
+    filter, the classifier prompt) reads the result of this function, so they
+    cannot drift apart — the previous drift was invisible and cost 100% of the
+    yield on the group path.
+
+    Four regimes, in precedence order:
+
+      1. BROWSER discovery -> (scoped, prompted). The Facebook search itself is
+         geo-scoped (geo-stuffed group term + `_is_consumer_facing_group` drops
+         wrong-country groups), so the classifier is consistent with it.
+         Checked FIRST because `group_urls` only drives the Apify path — the
+         browser path never reads it.
+      2. OPERATOR-SUPPLIED GROUPS -> (scoped, NOT prompted). The group supplies
+         the geography (a post in "Dane Bank Community Page" is in Manchester,
+         full stop) and the town in the prompt zeroes the yield. Wins over
+         rule 3 on purpose: a group run whose query happens to name the town is
+         still a group run, and must not get the town back through anchoring.
+      3. PLACE-ANCHORED QUERY -> (scoped, prompted). The query itself names the
+         place, so Facebook already scoped the results, exactly like the
+         browser path. Read from the actual query TEXT, never inferred from the
+         discovery source.
+      4. GLOBAL APIFY SEARCH -> (not scoped, not prompted). Results are
+         geographically scattered, so the classifier judges intent only and
+         `_apply_geo_country_filter` enforces geography afterwards from the
+         evidence in each post.
+    """
+    if discovery != 'apify':
+        return GeoRegime(search_is_geo_scoped=True, location_in_classifier_prompt=True)
+    if supplied_groups:
+        return GeoRegime(search_is_geo_scoped=True, location_in_classifier_prompt=False)
+    if _query_is_place_anchored(query, location):
+        return GeoRegime(search_is_geo_scoped=True, location_in_classifier_prompt=True)
+    return GeoRegime(search_is_geo_scoped=False, location_in_classifier_prompt=False)
+
+
+def _stub_country_evidence(stub: dict) -> Optional[str]:
+    """ISO-2 country the POST ITSELF evidences, or None when it names nowhere.
+
+    Reuses _resolve_lead_country, but passes location=None AND
+    geo_scoped=False ON PURPOSE. That function's second signal is the
+    operator's own target location, trusted only when geo_scoped — feeding
+    it the target location here would make every post "resolve" to the
+    target country and turn the geo filter below into a silent no-op. Only
+    the group name and the post body count as evidence here.
+    """
+    resolved = _resolve_lead_country(
+        stub.get('group_name'), None, stub.get('content_excerpt'),
+        geo_scoped=False,
+    )
+    return resolved.upper() if resolved else None
+
+
+def _apply_geo_country_filter(
+    stubs: list,
+    *,
+    location: str | None,
+    filters: dict,
+    geo_scoped: bool,
+    on_progress: ProgressCallback = None,
+) -> list:
+    """Drop posts that EVIDENCE a different country than the operator's target.
+
+    Runs only when the discovery search itself was NOT geo-scoped
+    (`geo_scoped=False` — today that means the Apify path). See
+    _apply_consumer_filter_chain's docstring for why geography has to be a
+    separate stage there.
+
+    Three rules, all deliberate:
+      - target country unresolvable -> keep everything, and SAY so. Guessing
+        a country here would reproduce the all-zero bug this stage exists to
+        fix.
+      - post evidences a DIFFERENT country -> drop.
+      - post evidences NO country -> KEEP. Absence of evidence is not
+        evidence of a mismatch, and most genuine consumer asks name no place
+        at all ("recently moved to the area and need a plumber"). Dropping
+        those would quietly discard the best leads in the batch.
+
+    Always emits exactly one 'geo_filtered' event when it runs, even at
+    dropped=0, so an operator reading the SSE stream sees intent and
+    geography as two separate numbers. The whole reason this stage is
+    explicit is that the previous failure mode was INVISIBLE: one
+    llm_filtered=20 line and a job that returned nothing.
+    """
+    if geo_scoped or not stubs:
+        return stubs
+
+    target = _resolve_target_country(location, filters)
+    if not target:
+        _emit(on_progress, 'geo_filtered', dropped=0, kept=len(stubs),
+              target_country=None,
+              reason=(
+                  'target country could not be resolved from the scrape '
+                  f'filters (location={location!r}) — keeping every post '
+                  'rather than guessing a country to filter against'
+              ))
+        return stubs
+
+    kept: list = []
+    dropped_countries: dict[str, int] = {}
+    for s in stubs:
+        evidenced = _stub_country_evidence(s)
+        if evidenced and evidenced != target:
+            dropped_countries[evidenced] = dropped_countries.get(evidenced, 0) + 1
+            continue
+        kept.append(s)
+
+    _emit(on_progress, 'geo_filtered',
+          dropped=len(stubs) - len(kept), kept=len(kept),
+          target_country=target, dropped_countries=dropped_countries,
+          reason=(
+              'discovery searched Facebook globally, so posts whose own text '
+              f'or group name places them outside {target} are dropped here; '
+              'posts naming no place are kept'
+          ))
+    return kept
+
+
+def _apply_consumer_filter_chain(
+    stubs: list,
+    *,
+    niche: str,
+    location: str | None,
+    filters: dict,
+    on_progress: ProgressCallback = None,
+    geo_scoped: bool = True,
+    classifier_sees_location: Optional[bool] = None,
+) -> list:
+    """Keep only post stubs that look like a real consumer ASKING for the niche.
+
+    THE GEMINI CLASSIFIER IS THE GATE. The substring heuristics
+    (_looks_like_business_post / _is_actively_asking) are a FALLBACK that
+    runs ONLY when the classifier produces no verdicts.
+
+    Measured 2026-08-03 on 20 REAL posts from a live Apify search for
+    "need a plumber recommendation", labelled blind by three reviewers
+    (19/20 unanimous; consensus = 8 genuine consumer leads):
+
+        substring filter only    precision  80%   recall 50%
+        Gemini classifier only   precision 100%   recall 88%
+        substring THEN Gemini    precision 100%   recall 50%
+
+    Running the substring filter FIRST (as this chain used to) cost HALF the
+    recall for ZERO precision benefit — both configurations score 100%
+    precision. Three genuine asks were destroyed before Gemini could see
+    them, because CONSUMER_PATTERNS has 'any recommendation' and 'need a
+    good' but not 'need a recommendation' / 'need recommendations' /
+    'looking for recommendations':
+
+        "Looking for recommendations for a plumber to come in for a shower
+         to be redone."
+        "I need a recommendation for a good local plumber around Devine."
+        "House trade recommendations. I've recently moved to the area and
+         need recommendations for a structural engineer..."
+
+    Meanwhile the substring filter KEPT an advert Gemini correctly rejected
+    ("...we highly recommend Chris with Watkins Plumbing, LLC" — matches
+    CONSUMER 'in need of', and POST_EXPERIENCE_PATTERNS has 'i highly
+    recommend' but not 'we highly recommend'). Expanding the pattern lists is
+    whack-a-mole against an unbounded phrase space; the lists are visibly
+    tuned for a dentist niche in the Philippines and do not generalise.
+    DO NOT re-add a substring pre-gate.
+
+    The fallback is NOT optional. This chain is the LAST gate before
+    tools/db/upsert_leads.py — there is no downstream intent filtering. When
+    the classifier returns None (GEMINI_API_KEY unset, HTTP 429, timeout, or
+    its all-or-nothing length-mismatch guard), dropping the heuristics too
+    would make raw adverts and tradespeople advertising their own
+    availability into cold-email targets. That has happened once already: a
+    beauty business ("My My Lashes") was saved as an electrician lead during
+    a Frankfurt run when the classifier was skipped.
+
+    That same incident exposed a SECOND hole this docstring now documents:
+    _consumer_filter_defaults() deliberately returns (False, False) for
+    non-English markets — the substring heuristics are English-only, so the
+    design intends the multilingual Gemini classifier to be the SOLE gate
+    there. That meant a Gemini outage on a non-English market used to have
+    NOTHING left to fall back to, and the old `return stubs` at the end of
+    this function shipped every unfiltered post straight to upsert_leads.py.
+    Zero leads plus a clear explanation is strictly better for this operator
+    than a contaminated leads table feeding cold email, so the fix is to
+    FAIL CLOSED: when the classifier gave no verdicts AND no
+    language-appropriate substring filter is applicable, return an EMPTY
+    list and emit 'consumer_filter_unavailable' naming the cause. This is
+    deliberate data loss, not a bug — an empty, explained batch is
+    diagnosable; a silently unfiltered one is not.
+
+    Semantics, exactly:
+      - classifier returns verdicts             -> those verdicts are the
+                                                     SOLE gate
+      - classifier returns None, substring       -> substring filter (the
+        filter applicable (English-ish market)      old behaviour)
+      - classifier returns None, NO substring    -> FAIL CLOSED: return [],
+        filter applicable (non-English market)      emit
+                                                     'consumer_filter_unavailable'
+      - use_llm_classifier=False                 -> same two rows above,
+                                                     minus the classifier call
+
+    INTENT VS GEOGRAPHY (`geo_scoped`, `classifier_sees_location`)
+    -------------------------------------------------------------
+    `geo_scoped` says whether the search that produced these stubs was itself
+    geographically scoped, and therefore whether the post-hoc
+    `_apply_geo_country_filter` stage runs.
+
+    `classifier_sees_location` says, separately, whether the operator's town
+    goes into the Gemini prompt. `None` (the default) means "follow
+    `geo_scoped`", which is what every caller wanted while the two decisions
+    were one flag. Pass it explicitly to break the coupling — group-sourced
+    runs need `geo_scoped=True, classifier_sees_location=False`, because the
+    group fixes the geography while its members never name their own town (see
+    `GeoRegime` for the measurement). Callers should get both values from
+    `_geo_regime` rather than deciding locally.
+
+    Callers derive `geo_scoped` two ways, both legitimate, never guessed:
+      (a) from the DISCOVERY SOURCE (below), and
+      (b) from the QUERY TEXT itself naming the target place — see the
+          PLACE-ANCHORED QUERIES override after the two regimes below.
+
+      geo_scoped=True  (browser discovery). The Facebook search was geo-scoped
+        already: group discovery uses a geo-stuffed term and
+        _is_consumer_facing_group drops wrong-country groups, so the surviving
+        candidates are local. The operator's `location` goes into the
+        classifier prompt exactly as before, and no separate geo stage runs.
+
+      geo_scoped=False (Apify discovery). The actor searches Facebook
+        GLOBALLY — we deliberately do not feed it `location_uid`, which would
+        need a seeded Facebook geo-ID table — so its results are
+        geographically scattered. Handing the classifier a target city then
+        makes it reject essentially everything, because its location clause is
+        strict at CITY level. Measured 2026-08-04 on 20 real posts, same
+        niche, only the location argument differing:
+
+            location=''            -> kept 7/20
+            location='Manchester'  -> kept 0/20
+
+        and a live end-to-end run produced "20 mapped, llm_filtered dropped=20
+        kept=0" — EVERY dashboard scrape on the Apify path returned zero
+        leads. Geography was being enforced at the wrong stage, against
+        candidates that were never geo-filtered in the first place. So on this
+        path the classifier judges INTENT ONLY (location omitted) and
+        _apply_geo_country_filter enforces geography afterwards, at COUNTRY
+        granularity, from the evidence in the post itself.
+
+    Honest trade-off: global search + post-hoc country filtering yields FEWER
+    target-country leads per run than a genuinely geo-scoped search would,
+    because most global results are somewhere else. This converts a guaranteed
+    zero into a smaller-but-real number and makes the loss visible. Geo-scoping
+    the SEARCH is the real fix — either an intent-shaped query that also names
+    the place ("need a plumber recommendation Manchester") or the actor's
+    `location_uid` with a seeded geo table.
+
+    PLACE-ANCHORED QUERIES (the override). When the query DOES already name
+    the place — checked by `_query_is_place_anchored`, a case-insensitive
+    substring match of `location` against the actual query text, never a
+    guess from the discovery source — Facebook's own search has already
+    geo-scoped the results, exactly like the browser path. Re-running
+    _apply_geo_country_filter on top would only discard genuine local posts
+    that don't spell out their own city (the poster already knows where they
+    are), for zero geographic benefit. `search_posts` therefore ORs this
+    detection into `geo_scoped` before calling this chain, so a place-anchored
+    Apify query gets the geo_scoped=True treatment (no post-hoc filter) even
+    though the discovery source is Apify. A query that does NOT name the
+    place — an operator can type anything — still gets the full Apify
+    treatment above, unchanged.
+
+    Emits the same progress stages the inline copies did — 'llm_filtered',
+    'llm_skipped' and 'consumer_filtered', with the same detail keys, plus
+    'consumer_filter_unavailable' for the fail-closed case and 'geo_filtered'
+    for the geographic stage. The SSE stream and job UI parse those names; do
+    not rename them.
+    """
+    if not stubs:
+        return stubs
+
+    exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
+    use_llm_classifier = filters.get('use_llm_classifier', True)
+    substring_filter_applicable = exclude_businesses or asking_only
+    # `location` still drives LANGUAGE resolution above (_consumer_filter_defaults)
+    # and the geo stage below — it is only withheld from the classifier PROMPT,
+    # which is where enforcing it against candidates the search never geo-scoped
+    # (global Apify search) or that never name their own town (group members)
+    # zeroed out every run.
+    prompt_location = (
+        geo_scoped if classifier_sees_location is None else classifier_sees_location
+    )
+    classifier_location = location if prompt_location else None
+
+    # ── Primary gate: Gemini semantic intent classification ──────────────
+    if use_llm_classifier:
+        excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
+        verdicts = _classify_consumer_posts_with_gemini(
+            excerpts, niche, location=classifier_location,
+        )
+        if verdicts is not None:
+            llm_kept = [s for s, v in zip(stubs, verdicts) if v]
+            llm_dropped = len(stubs) - len(llm_kept)
+            if llm_dropped > 0:
+                _emit(on_progress, 'llm_filtered',
+                      dropped=llm_dropped, kept=len(llm_kept),
+                      reason='Gemini classifier flagged as non-consumer')
+            # Geography second, as its own visible stage (no-op when the
+            # discovery search was already geo-scoped).
+            return _apply_geo_country_filter(
+                llm_kept, location=location, filters=filters,
+                geo_scoped=geo_scoped, on_progress=on_progress,
+            )
+        if substring_filter_applicable:
+            _emit(on_progress, 'llm_skipped',
+                  reason='GEMINI_API_KEY missing or API error — falling back '
+                         'to the substring filter')
+        else:
+            _emit(on_progress, 'llm_skipped',
+                  reason='GEMINI_API_KEY missing or API error — no '
+                         'language-appropriate substring filter available '
+                         'for this market')
+
+    # ── Fallback gate: substring heuristics (recall ~50%, precision ~80%) ─
+    if substring_filter_applicable:
+        before = len(stubs)
+        kept: list = []
+        for s in stubs:
+            excerpt = s.get('content_excerpt', '') or ''
+            handle = s.get('author_handle', '') or ''
+            if exclude_businesses and _looks_like_business_post(excerpt, handle):
+                continue
+            if asking_only and not _is_actively_asking(excerpt):
+                continue
+            kept.append(s)
+        dropped = before - len(kept)
+        if dropped > 0:
+            _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
+                  reason='non-asking posts (thanks/recommend/business) removed')
+        # Geography runs after WHICHEVER intent gate ran, including this
+        # fallback — a Gemini outage must not also turn the geo filter off.
+        return _apply_geo_country_filter(
+            kept, location=location, filters=filters,
+            geo_scoped=geo_scoped, on_progress=on_progress,
+        )
+
+    # ── No verdicts AND no applicable substring filter: FAIL CLOSED ───────
+    # Nothing gated this batch — the classifier is out and this market has
+    # no language-appropriate substring safety net (see docstring / Frankfurt
+    # incident above). Dropping the whole batch beats writing it unfiltered
+    # into a leads table that feeds cold email.
+    _emit(on_progress, 'consumer_filter_unavailable',
+          location=location, dropped=len(stubs), kept=0,
+          reason=(
+              'Gemini classifier unavailable and no language-appropriate '
+              'substring filter exists for this market — dropping the '
+              'batch instead of writing it to leads unfiltered'
+          ))
+    return []
+
+
 def _is_consumer_facing_group(group_name: str, operator_location: str | None = None) -> bool:
     """Decide whether a discovered FB group is consumer-facing.
 
@@ -1279,16 +2033,266 @@ _CURRENT_LOCATION: Optional[str] = None
 # when called deep in the sync helpers (which have no access to filters).
 _TARGET_COUNTRY: Optional[str] = None
 
+from tools.scraper.shared import apify
+from tools.scraper.platforms import facebook_apify
 
-def _open_driver():
-    """Open Facebook's proxy-aware undetected-chromedriver.
 
-    Thin wrapper over the shared opener (extracted to
-    tools.scraper.shared.uc_driver so Instagram can reuse the same
-    residential-proxy + persistent-profile stack). Behavior is
-    unchanged: FB reads its persistent profile from FB_PROFILE_DIR,
-    passes no custom user-agent, uses a 1280x900 window, and hands the
-    current scrape location to the proxy country-code resolver.
+_DISCOVERY_SOURCES = {'apify', 'browser'}
+
+
+def _discovery_source() -> str:
+    """Which discovery backend search_posts uses.
+
+    'apify'   — cookieless Apify actor. No account, no daily cap, runs on any
+                host including Cloud Run. The default since 2026-07-31.
+    'browser' — the original logged-in undetected-chromedriver crawl. Kept for
+                private-group search (Apify can only see public groups) and as
+                the rollback path. Behaviour is unchanged from before Apify.
+
+    An unrecognised value fails SAFE to 'browser' (the pre-Apify behaviour)
+    but WARNS loudly first: a typo like FB_DISCOVERY=apfiy would otherwise
+    silently open a browser and burn a Facebook account's daily cap.
+    """
+    raw = (os.environ.get('FB_DISCOVERY') or 'apify').strip().lower()
+    if raw not in _DISCOVERY_SOURCES:
+        print(
+            f'WARN: unrecognised FB_DISCOVERY={raw!r} — expected one of '
+            f'{sorted(_DISCOVERY_SOURCES)}; falling back to the browser path '
+            f'(this claims a Facebook account and spends its daily cap)',
+            file=sys.stderr, flush=True,
+        )
+        return 'browser'
+    return raw
+
+
+def _enrich_mode() -> str:
+    """Whether author enrichment opens a browser.
+
+    'stub'    — build AuthorLead from the PostStub the discovery step already
+                returned. Zero account usage. The default since 2026-07-31.
+    'browser' — visit each author's profile with a logged-in account to pull
+                bio/website/email. Rare payoff, high account cost; opt in only
+                when a campaign genuinely needs those fields.
+    """
+    return (os.environ.get('FB_ENRICH') or 'stub').strip().lower()
+
+
+# Tab titles Brave/Chrome produce on a profile page that are NOT a person's
+# name. The browser path historically wrote these into leads.company_name.
+_NON_NAME_TITLES = {'facebook', '', 'log in to facebook', 'log into facebook', 'meta'}
+
+
+def _is_non_name(value: str) -> bool:
+    s = (value or '').strip().lower()
+    if s in _NON_NAME_TITLES:
+        return True
+    return re.sub(r'^\(\d+\)\s*', '', s).strip() == 'facebook'
+
+
+# Display-name markers that identify a COMPANY rather than a consumer.
+# Module-level (not inline in the browser enrich loop) because BOTH the
+# browser path (_sync_enrich_authors) and the browserless default path
+# (_stub_enrich_authors) gate on them — a second inline copy would drift.
+#
+# Generic biz suffixes (ltd/inc/llc/corp/...) catch profiles that are
+# clearly companies, not individuals. Medical-niche tokens stay because
+# plumber/handyman searches commonly surface medical-clinic ads that
+# happen to mention the niche.
+_BIZ_NAME_SUFFIXES = (
+    # Company-form markers
+    ' ltd', ' ltd.', ' limited', ' inc', ' inc.', ' llc',
+    ' corp', ' corp.', ' corporation', ' co.', ' co ',
+    ' plc', ' gmbh', ' s.r.l', ' pty', ' ag',
+    # Common business-tail descriptors
+    ' agency', ' agencies', ' services', ' solutions',
+    ' consultancy', ' consulting', ' group',
+    ' studios', ' studio',
+)
+_BIZ_NAME_NICHE_TOKENS = (
+    'clinic', 'dental', 'dentist', 'dds', 'orthodontic',
+    'spa', 'salon', 'medspa', 'wellness',
+    'pharmacy', 'medical', 'pediatric',
+)
+
+
+def _display_name_looks_like_business(display_name: str) -> bool:
+    """True when a recovered display name reads as a company, not a person.
+
+    Pure string logic, so the browserless enrichment path can apply the same
+    gate the browser path applies — Apify supplies display_name directly.
+    """
+    name_lower = (display_name or '').strip().lower()
+    if not name_lower:
+        return False
+    name_lower_padded = ' ' + name_lower + ' '
+    return (
+        any(suffix in name_lower_padded for suffix in _BIZ_NAME_SUFFIXES)
+        or any(tok in name_lower for tok in _BIZ_NAME_NICHE_TOKENS)
+    )
+
+
+def _stub_enrich_authors(
+    post_stubs: list[PostStub],
+    on_progress: ProgressCallback = None,
+) -> list[AuthorLead]:
+    """Build AuthorLeads straight from PostStubs — no browser, no account.
+
+    Apify already returns the two fields that key a lead row (display name and
+    profile URL). The fields a profile visit would add (website_url, email,
+    bio_excerpt) are rare on personal FB profiles and cost one account-quota
+    visit each, which is what previously locked the account out for 24h.
+    """
+    # Dedup by author_profile_url FIRST, but — unlike a plain dedup — keep
+    # EVERY stub for that author as a `posts` entry. upsert_leads.py:279-304
+    # writes each into lead_platform_posts (content_excerpt/group_name),
+    # which is what powers "we saw your post about X" outreach
+    # personalization. Mirrors the browser path's `unique_authors` grouping
+    # (facebook.py around :2900) — same idea, just without opening a browser.
+    unique_authors: dict[str, list[PostStub]] = {}
+    for stub in post_stubs:
+        profile_url = (stub.get('author_profile_url') or '').strip()
+        if not profile_url:
+            continue
+        unique_authors.setdefault(profile_url, []).append(stub)
+
+    leads: list[AuthorLead] = []
+    for profile_url, posts in unique_authors.items():
+        first = posts[0]
+        handle = (first.get('author_handle') or '').strip()
+        name = (first.get('display_name') or '').strip()
+        if not name or _is_non_name(name):
+            name = handle
+        # Same display-name business gate the browser path applies
+        # (_sync_enrich_authors), using the shared marker lists. Without it
+        # 'RCA Dental Clinic' — a post that survives the excerpt filters —
+        # lands in the CRM as a consumer lead. Pure string logic, so no
+        # browser is needed; Apify already gave us the display name.
+        if _display_name_looks_like_business(name):
+            _emit(on_progress, 'enrich_skipped_business', name=name, url=profile_url)
+            continue
+        lead: AuthorLead = {
+            'platform': 'facebook',
+            'profile_url': profile_url,
+            'author_handle': handle,
+            'display_name': name,
+            'company_name': name,  # mapped to leads.company_name by upsert
+            'website_url': None,
+            'email': None,
+            'location': None,
+            'is_business_profile': False,
+            'follower_count': None,
+            'bio_excerpt': None,
+            # Attach every observed post — upsert_leads.py writes them into
+            # lead_platform_posts keyed on (platform, post_url).
+            'posts': posts,
+        }
+        # country/category/location_confidence come from the FIRST stub for
+        # this author — matches the browser path's posts[0] precedent
+        # (facebook.py :3028-3029); later stubs never override them.
+        for passthrough in ('country', 'category', 'location_confidence'):
+            if first.get(passthrough):
+                lead[passthrough] = first[passthrough]
+        leads.append(lead)
+    return leads
+
+
+def _search_posts_via_apify(
+    query: str,
+    filters: dict,
+    max_results: int,
+    on_progress: ProgressCallback,
+) -> list[PostStub]:
+    """Keyword post discovery through Apify. Opens no browser, claims no account."""
+    actor = facebook_apify.search_actor()
+    _emit(on_progress, 'search_started', query=query, source='apify', actor=actor)
+    run_input = facebook_apify.build_search_input(
+        query,
+        max_results=max_results,
+        start_date=filters.get('start_date') or None,
+    )
+    items = apify.run_actor(actor, run_input)
+    stubs: list[PostStub] = []
+    for item in items:
+        stub = facebook_apify.post_to_stub(item)
+        if stub:
+            stubs.append(stub)
+    _emit(on_progress, 'apify_run', actor=actor, requested=max_results,
+          returned=len(items), mapped=len(stubs))
+    return stubs
+
+
+def _discover_group_ids_via_apify(query: str, limit: int) -> list[tuple[str, str]]:
+    """Find public groups matching a keyword. Returns (group_id, group_name)."""
+    actor = facebook_apify.search_actor()
+    items = apify.run_actor(
+        actor,
+        facebook_apify.build_search_input(query, max_results=limit, search_type='groups'),
+    )
+    pairs: list[tuple[str, str]] = []
+    for item in items:
+        gid = str(item.get('id') or item.get('group_id') or '').strip()
+        if not gid:
+            continue
+        pairs.append((gid, (item.get('name') or item.get('title') or '').strip()))
+    return pairs
+
+
+def _group_posts_via_apify(
+    groups: list[tuple[str, str]],
+    max_results: int,
+    on_progress: ProgressCallback,
+    keyword: Optional[str] = None,
+) -> list[PostStub]:
+    """Pull posts from each public group. A group that fails is skipped, not fatal.
+
+    Private groups are invisible to this actor by design (it is cookieless).
+    Those remain the browser path's job, with an account that has joined them.
+
+    ONE RUN PER GROUP even though the actor's `startUrls` accepts an array.
+    Billing is per RESULT ($1.50/1000), not per run, so batching saves nothing
+    — while a single batched run turns one private/renamed group into a total
+    loss instead of one skipped group, and per-group runs keep group
+    attribution certain rather than inferred from each item.
+
+    `keyword` becomes the actor's `search`, which it applies BEFORE billing —
+    so a keyword makes the run both cheaper and more on-target. Omitted when
+    blank (an empty filter matches nothing).
+    """
+    actor = facebook_apify.group_posts_actor()
+    per_group = max(1, max_results // max(1, len(groups)))
+    stubs: list[PostStub] = []
+    for gid, gname in groups:
+        try:
+            items = apify.run_actor(
+                actor,
+                facebook_apify.build_group_posts_input(
+                    gid, max_items=per_group, keyword=keyword,
+                ),
+            )
+        except apify.ApifyError as exc:
+            _emit(on_progress, 'group_skipped', group_id=gid, reason=str(exc)[:120])
+            continue
+        for item in items:
+            # gname is '' for operator-supplied groups (we know the id from the
+            # URL but not the title) — passing None lets post_to_stub fill it
+            # from the actor's own `groupTitle`, which _resolve_lead_country
+            # then reads as location evidence.
+            stub = facebook_apify.post_to_stub(
+                item, group_id=gid, group_name=gname or None,
+            )
+            if stub:
+                stubs.append(stub)
+    _emit(on_progress, 'apify_groups_done', groups=len(groups), posts=len(stubs))
+    return stubs
+
+
+def _open_driver(account: Optional[dict] = None):
+    """Open Facebook's browser session.
+
+    When the claimed social_accounts row carries an adspower_profile_id, the
+    session opens through AdsPower (isolated fingerprint + the profile's own
+    proxy). Otherwise this is unchanged: the shared undetected-chromedriver
+    opener with FB_PROFILE_DIR and the residential-proxy wiring.
     """
     from tools.scraper.shared.uc_driver import open_uc_driver  # noqa: WPS433 — lazy
     return open_uc_driver(
@@ -1296,6 +2300,7 @@ def _open_driver():
         user_agent=None,
         window_size=(1280, 900),
         proxy_location=_CURRENT_LOCATION,
+        adspower_profile_id=(account or {}).get('adspower_profile_id') or None,
     )
 
 
@@ -2219,65 +3224,59 @@ class FacebookScraper(SocialPlatformScraper):
                 raise ValueError("Consumer-mode Facebook scrapes require 'niche' (and ideally 'location') filters")
 
             # Escape hatch: groups_only=false uses the old open-feed flow.
+            #
+            # `already_filtered` tracks whether the stubs have already been
+            # through _apply_consumer_filter_chain. search_posts runs the whole
+            # chain internally, so re-running it here would (a) pay for a
+            # SECOND Gemini call per job and (b) re-destroy every lead the
+            # classifier just recovered, by re-applying the substring
+            # heuristics as a de-facto pre-gate. The group-first branch below
+            # returns RAW stubs, so those still need the chain.
             if filters.get('groups_only') is False:
                 query = ' '.join(p for p in (niche, location) if p)
                 post_stubs = await self.search_posts(
                     query, filters, max_results=max_results, on_progress=on_progress,
                 )
+                already_filtered = True
             else:
+                already_filtered = False
+                # scrape_listing's group-first branch is browser-ONLY: it
+                # claims an account and drives undetected-chromedriver. When
+                # FB_DISCOVERY selects the browserless Apify path, running it
+                # anyway would silently contradict the operator's config and
+                # spend a Facebook account's daily cap. Fail loudly instead of
+                # rerouting — `list` and `search-posts` are different entry
+                # points with different contracts (list returns reshaped
+                # profile stubs), so quietly swapping one for the other would
+                # be a second surprise on top of the first.
+                if _discovery_source() == 'apify':
+                    raise RuntimeError(
+                        "FB_DISCOVERY=apify selects the browserless Apify discovery path, "
+                        "but --action list (scrape_listing) with groups_only implements only "
+                        "the browser crawl. Use --action search-posts (then --action "
+                        "enrich-authors) for Apify discovery, or set FB_DISCOVERY=browser "
+                        "to run --action list on the logged-in browser path."
+                    )
                 post_stubs = await asyncio.to_thread(
                     self._sync_group_first_scrape, niche, location, on_progress,
                     _resolve_generic_cap(filters),
                 )
-            # Two-layer consumer-only filter:
-            #  1. Drop business/ad posts (clinic handles, ad copy).
-            #  2. Keep only posts that look like someone ACTIVELY ASKING
-            #     for the service. Post-experience thank-you posts
-            #     ('Salamat Doc...') and recommendations ('I recommend
-            #     Dr.X') get dropped — those people already have a
-            #     dentist, they're not leads.
-            # Either filter is operator-overridable via filters.
-            exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
-            use_llm_classifier = filters.get('use_llm_classifier', True)
-            if exclude_businesses or asking_only:
-                before = len(post_stubs)
-                kept: list = []
-                for s in post_stubs:
-                    excerpt = s.get('content_excerpt', '') or ''
-                    handle = s.get('author_handle', '') or ''
-                    if exclude_businesses and _looks_like_business_post(excerpt, handle):
-                        continue
-                    if asking_only and not _is_actively_asking(excerpt):
-                        continue
-                    kept.append(s)
-                dropped = before - len(kept)
-                if dropped > 0:
-                    _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
-                          reason='non-asking posts (thanks/recommend/business) removed')
-                post_stubs = kept
-
-            # LLM final-pass classifier. Substring patterns get us to
-            # ~30% precision; Gemini Flash 2.0 lifts it to ~80-90% by
-            # judging semantic intent (recruiter vs consumer, agency
-            # pitch vs ask). Costs ~$0.01 per scrape (1 batched call).
-            # Falls through silently when GEMINI_API_KEY isn't set or
-            # the API errors — substring filter results stay in place.
-            if use_llm_classifier and post_stubs:
-                excerpts = [s.get('content_excerpt', '') or '' for s in post_stubs]
-                verdicts = _classify_consumer_posts_with_gemini(
-                    excerpts, niche, location=location,
+            # Consumer-only filter chain — ONE shared implementation (see
+            # _apply_consumer_filter_chain). Gemini's verdicts are the gate;
+            # the substring heuristics are the fallback for when the
+            # classifier returns nothing. Skipped entirely when search_posts
+            # already ran it, so the open-feed path filters exactly once.
+            #
+            # geo_scoped=True: the only way to reach this branch is the
+            # browser group-first crawl (the Apify case raised above), and that
+            # crawl's groups were geo-selected, so geography stays inside the
+            # classifier prompt and no post-hoc country stage runs.
+            if not already_filtered:
+                post_stubs = _apply_consumer_filter_chain(
+                    post_stubs, niche=niche, location=location,
+                    filters=filters, on_progress=on_progress,
+                    geo_scoped=True,
                 )
-                if verdicts is not None:
-                    llm_kept = [s for s, v in zip(post_stubs, verdicts) if v]
-                    llm_dropped = len(post_stubs) - len(llm_kept)
-                    if llm_dropped > 0:
-                        _emit(on_progress, 'llm_filtered',
-                              dropped=llm_dropped, kept=len(llm_kept),
-                              reason='Gemini classifier flagged as non-consumer')
-                    post_stubs = llm_kept
-                else:
-                    _emit(on_progress, 'llm_skipped',
-                          reason='GEMINI_API_KEY missing or API error — substring filter only')
 
             # Reshape PostStubs into profile-stub form so the list→enrich
             # orchestrator can drive them. Anonymous posts (group asks
@@ -2305,11 +3304,20 @@ class FacebookScraper(SocialPlatformScraper):
                     'rating': None,
                     # Category = the niche the operator searched for.
                     'category': niche or legacy_query,
-                    # Country: resolve from group name first (it often
-                    # carries a disambiguating province token like "Ontario"),
-                    # then fall back to the raw operator location string so
-                    # unmapped places (e.g. "Nairobi") are preserved as-is.
-                    'country': _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt')),
+                    # Country: resolves from the post's own evidence (group
+                    # name + excerpt) first. Falls back to the operator's
+                    # search location with geo_scoped=True because the ONLY
+                    # way to reach this branch is the browser group-first
+                    # crawl (see the geo_scoped=True note two lines above at
+                    # the filter-chain call) — but even then only when that
+                    # location itself maps to a real ISO-2 country. Unmapped
+                    # places (e.g. "Nairobi") or arbitrary operator text
+                    # (e.g. "Wigan") are NEVER written into `country` — they
+                    # surface honestly instead via `location_confidence`.
+                    'country': _resolve_lead_country(
+                        s.get('group_name'), location, s.get('content_excerpt'),
+                        geo_scoped=True,
+                    ),
                     'location_confidence': _derive_location_confidence(
                         s.get('group_name'), s.get('content_excerpt'), location,
                     ),
@@ -2340,6 +3348,20 @@ class FacebookScraper(SocialPlatformScraper):
             return []
         # Detect consumer-mode reshape: PostStubs carry a 'post_url'.
         if any('post_url' in s for s in profile_stubs):
+            # This pivot is browser-ONLY (_sync_enrich_authors visits each
+            # profile with a logged-in account). FB_ENRICH=stub asks for the
+            # browserless path, which lives on --action enrich-authors. Fail
+            # loudly rather than rerouting: enrich_profiles' contract is
+            # profile stubs in / enriched profile dicts out, while
+            # enrich_authors returns AuthorLeads.
+            if _enrich_mode() == 'stub':
+                raise RuntimeError(
+                    "FB_ENRICH=stub selects the browserless stub-enrichment path, but "
+                    "--action enrich (enrich_profiles) implements only the browser "
+                    "profile-visit crawl. Use --action enrich-authors for stub "
+                    "enrichment, or set FB_ENRICH=browser to run --action enrich on "
+                    "the logged-in browser path."
+                )
             return await asyncio.to_thread(self._sync_enrich_authors, profile_stubs, on_progress)
         return await asyncio.to_thread(self._sync_enrich_pages, profile_stubs, screenshots_dir, on_progress)
 
@@ -2385,7 +3407,128 @@ class FacebookScraper(SocialPlatformScraper):
                 )
                 niche = translated
 
-        if groups_only:
+        # Discovery source. The Apify branch sits HERE — after niche
+        # translation (so it searches the local-language term) and before the
+        # country/category stamping and consumer filter chain below (so Apify
+        # stubs get exactly the same treatment browser stubs do). Moving it
+        # below the stamping would silently drop category/country on every
+        # Apify lead.
+        discovery = _discovery_source()
+        # Operator-named groups. Apify group DISCOVERY is broken (our search
+        # actor's search_type='groups' returns 0 items even for a one-word
+        # query, and the old data-slayer group-post actor returns 0 for its own
+        # documented default input), so when the operator supplies the groups
+        # themselves discovery is SKIPPED OUTRIGHT — not attempted then fallen
+        # back from, because a doomed discovery call is still a billable run.
+        supplied_groups = facebook_apify.parse_group_urls(filters.get('group_urls'))
+        if discovery == 'apify':
+            # `max_results or 50` would turn an explicit 0 into 50 and spend a
+            # billable actor run (on the free plan, the day's only run).
+            resolved_max = max_results if max_results is not None else 50
+            # GROUP DISCOVERY wants a geo-stuffed term — matching a group by
+            # place name is exactly the point ("plumber Manchester" finds
+            # "Manchester Tradespeople").
+            group_search_term = f'{niche} {location}'.strip() if niche and location else query
+            if supplied_groups:
+                # `group_keyword` (NOT `query`) drives the actor's `search`:
+                # that field is a keyword filter, and feeding it a whole intent
+                # phrase ("need a plumber recommendation") matches nothing.
+                # niche/location are NOT required here — they only ever existed
+                # to build the (broken) discovery term.
+                group_keyword = (filters.get('group_keyword') or '').strip() or None
+                _emit(
+                    on_progress, 'apify_groups_supplied',
+                    groups=len(supplied_groups), keyword=group_keyword,
+                    reason='operator supplied group URLs — group discovery skipped '
+                           '(Apify group search returns 0 items for any query)',
+                )
+                if location:
+                    # MEASURED TRAP, not a hypothetical — and now DEFUSED by
+                    # _geo_regime, which withholds the town from the classifier
+                    # prompt on this path while still trusting the group's
+                    # geography. The Gemini location clause demands a city
+                    # signal IN THE POST BODY and group members never name
+                    # their own town. Live Gemini call on three real group asks,
+                    # 2026-08-04:
+                    #     location=None         -> [True, True, False]
+                    #     location='Manchester' -> [False, False, False]
+                    # Still emitted loudly: the operator's own filter value is
+                    # being partially ignored, and silent divergence between
+                    # what was typed and what ran is exactly what made the
+                    # original zero-yield run undiagnosable. This reports a
+                    # decision already taken — it is NOT a chore for the
+                    # operator, because the Scrape page can carry a location
+                    # over from a previous search and clearing it by hand was
+                    # never a safeguard.
+                    _emit(
+                        on_progress, 'apify_groups_location_warning',
+                        location=location, ignored_for_intent=True,
+                        reason=f'{location!r} was IGNORED for intent matching: '
+                               'group_urls already fixes the geography, and '
+                               'feeding a town to the intent classifier makes it '
+                               'require each post to NAME that town — measured 0 '
+                               'kept of 3 genuine asks. The location is still '
+                               "used to tag each lead's country and to pick the "
+                               'sending account.',
+                    )
+                pairs = [
+                    (facebook_apify.group_id_from_url(url) or url, '')
+                    for url in supplied_groups
+                ]
+                stubs = await asyncio.to_thread(
+                    _group_posts_via_apify, pairs, resolved_max, on_progress,
+                    group_keyword,
+                )
+            elif groups_only:
+                if not niche or not location:
+                    raise ValueError(
+                        "Group-first search requires both 'niche' and 'location' in filters. "
+                        "Pass groups_only=False to fall back to the open-feed search."
+                    )
+                groups = await asyncio.to_thread(
+                    _discover_group_ids_via_apify, group_search_term, 10,
+                )
+                if not groups:
+                    # Live-tested 2026-08-03: both community group actors
+                    # (scrapeforge/facebook-search-posts search_type=groups,
+                    # data-slayer/facebook-group-posts) return 0 items even
+                    # for broad/default inputs — group search on these
+                    # community actors is known non-functional. Without this
+                    # branch, groups=[] means _group_posts_via_apify loops
+                    # zero times and the job silently returns 0 leads with no
+                    # explanation. Surface a loud, actionable event, then
+                    # degrade to the open-feed search, which demonstrably
+                    # works, so the job still produces leads.
+                    _emit(
+                        on_progress, 'apify_groups_unavailable',
+                        actor=facebook_apify.search_actor(),
+                        reason='group discovery returned no groups; group search on '
+                               'community Apify actors is known non-functional — '
+                               'falling back to open-feed keyword search',
+                    )
+                    # OPEN-FEED fallback: the operator's `query` verbatim, same
+                    # as the non-groups_only branch below. See the comment there.
+                    stubs = await asyncio.to_thread(
+                        _search_posts_via_apify, query, filters,
+                        resolved_max, on_progress,
+                    )
+                else:
+                    stubs = await asyncio.to_thread(
+                        _group_posts_via_apify, groups, resolved_max, on_progress,
+                    )
+            else:
+                # OPEN-FEED search: pass the operator's `query` through
+                # VERBATIM, exactly as the browser path does below. Replacing
+                # it with f'{niche} {location}' removed the operator's only
+                # channel for an intent-shaped query — measured live, the
+                # geo-stuffed "looking for a plumber in Manchester" returned
+                # 0 usable of 20 (all adverts), while intent phrasing like
+                # "need a plumber recommendation" returned real consumer asks.
+                stubs = await asyncio.to_thread(
+                    _search_posts_via_apify, query, filters,
+                    resolved_max, on_progress,
+                )
+        elif groups_only:
             if not niche or not location:
                 raise ValueError(
                     "Group-first search requires both 'niche' and 'location' in filters. "
@@ -2399,19 +3542,67 @@ class FacebookScraper(SocialPlatformScraper):
             stubs = await asyncio.to_thread(
                 self._sync_search_posts, query, False, max_results or 50, on_progress,
             )
+        # The geographic regime for THIS search, decided ONCE (see _geo_regime)
+        # and reused by the country stamping below, the filter chain's geography
+        # stage, and the classifier prompt further down — so those three can
+        # never drift apart. A global (non-place-anchored) Apify search must not
+        # stamp its target country onto a post that names no place of its own,
+        # and the geo-mismatch filter has to agree on the same premise.
+        #
+        # OPERATOR-SUPPLIED GROUPS are geo-scoped for the strongest reason
+        # available: the GROUP supplies the geography. A post in "Dane Bank
+        # Community Page" is in Manchester, full stop. Measured three ways on
+        # real data — local groups 35% intent with CERTAIN location (~35%
+        # in-target), a global query 35% intent with GUESSED location (~3.5%
+        # in-target). Running the post-hoc country filter over group-sourced
+        # posts would only discard genuine local asks that never name their own
+        # town, which is most of them. Those same posts are ALSO why the town
+        # must stay out of the classifier prompt on this path — the second half
+        # of the regime.
+        regime = _geo_regime(
+            discovery=discovery, supplied_groups=supplied_groups,
+            query=query, location=location,
+        )
+        geo_scoped = regime.search_is_geo_scoped
+
         # Stamp country/category from the operator's filters onto every stub.
         # Uses ORIGINAL (un-translated) niche so the dashboard's "category=electrician"
         # filter finds leads scraped from German "Elektriker" groups. Without this,
         # AuthorLead lands with category=null and the Lead Matrix loses the row.
         stamp_niche = original_niche or (filters.get('category') or '').strip() or None
         stamp_location = location or None
+
+        # Group scrapes: the group's country is already resolved in
+        # fb_group_candidates.location — trust it over re-parsing free text.
+        group_country: dict = {}
+        gids = sorted({s.get('group_id') for s in stubs if s.get('group_id')})
+        if gids:
+            try:
+                rows = (table('fb_group_candidates')
+                        .select('group_id,location')
+                        .eq('platform', 'facebook').in_('group_id', gids)
+                        .execute().data or [])
+                for r in rows:
+                    cc = _group_country_from_location(r.get('location'))
+                    if cc:
+                        group_country[r['group_id']] = cc
+            except Exception:  # noqa: BLE001 — country stamping is best-effort
+                pass
+
         for s in stubs:
             if stamp_niche and not s.get('category'):
                 s['category'] = stamp_niche
             if not s.get('country'):
-                resolved = _resolve_lead_country(s.get('group_name'), location, s.get('content_excerpt'))
-                if resolved:
-                    s['country'] = resolved
+                gc = group_country.get(s.get('group_id'))
+                if gc:
+                    s['country'] = gc
+                else:
+                    resolved = _resolve_lead_country(
+                        s.get('group_name'), location, s.get('content_excerpt'),
+                        geo_scoped=geo_scoped,
+                    )
+                    if resolved:
+                        s['country'] = resolved
             if not s.get('location_confidence'):
                 s['location_confidence'] = _derive_location_confidence(
                     s.get('group_name'), s.get('content_excerpt'),
@@ -2428,55 +3619,66 @@ class FacebookScraper(SocialPlatformScraper):
         # The "looking for plumber in Birmingham" runs happened to look clean
         # only because FB returned mostly-relevant posts for common niches.
         #
-        # Moving the chain HERE means every call path (scrape_listing AND the
-        # direct search-posts action) gets the filters. The duplicate filter
-        # block in scrape_listing becomes a no-op on already-clean stubs.
+        # Running the chain HERE means every call path (scrape_listing AND the
+        # direct search-posts action) gets the filters. scrape_listing's
+        # open-feed branch marks these stubs already-filtered and does NOT run
+        # the chain a second time — that double-run used to pay for two Gemini
+        # calls per job AND re-destroy the leads this call just recovered.
         # Operator can disable via filters.exclude_businesses / asking_only /
         # use_llm_classifier. exclude_businesses and asking_only default ON for
-        # English markets and OFF for non-English (multilingual Gemini classifier
-        # is the sole gate there); an explicit filter value always wins.
+        # English markets and OFF for non-English; they now gate the FALLBACK
+        # path only (see _apply_consumer_filter_chain) — an explicit filter
+        # value always wins.
+        #
+        # `geo_scoped` starts from the DISCOVERY SOURCE: the browser search is
+        # geo-scoped (geo-stuffed group term + wrong-country group drop), the
+        # Apify actor searches globally because we do not feed it
+        # location_uid. On the Apify path the classifier therefore judges
+        # intent only and a separate country stage handles geography — passing
+        # the target city into a classifier judging globally-scattered
+        # candidates is what made every run return zero leads.
+        #
+        # OVERRIDE: if THIS query already names the target place ("need a
+        # plumber recommendation Manchester"), Facebook has already scoped the
+        # results — running the post-hoc country filter on top would only
+        # drop genuine local posts that don't spell out their own city, for
+        # zero geographic benefit. Detected from the actual query text
+        # (_query_is_place_anchored), never from the discovery source: an
+        # operator can submit any query on either path.
+        #
+        # Both halves come from the `regime` computed once above, so the
+        # country-stamping loop, this stage's geography opinion and the
+        # classifier prompt cannot disagree.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
+        # Whether the consumer filter FAILED CLOSED (classifier outage): its
+        # empty batch is "we couldn't judge these posts", not "this group is
+        # barren", so it must NOT count as a zero-yield scrape below. The chain
+        # signals this via its 'consumer_filter_unavailable' progress event —
+        # we tap the callback rather than change its return type (2 call sites).
+        # From here the chain only runs on a NON-empty batch (guard below), so
+        # fail-closed is the sole way it can hand back an untrustworthy empty.
+        filter_failed_closed = False
         if is_consumer_mode and stubs:
-            exclude_businesses, asking_only = _consumer_filter_defaults(filters, location)
-            use_llm_classifier = filters.get('use_llm_classifier', True)
+            def _yield_aware_progress(payload):
+                nonlocal filter_failed_closed
+                if isinstance(payload, dict) and payload.get('stage') == 'consumer_filter_unavailable':
+                    filter_failed_closed = True
+                if on_progress:
+                    on_progress(payload)
+            stubs = _apply_consumer_filter_chain(
+                stubs, niche=niche or query, location=location,
+                filters=filters, on_progress=_yield_aware_progress,
+                geo_scoped=regime.search_is_geo_scoped,
+                classifier_sees_location=regime.location_in_classifier_prompt,
+            )
 
-            if exclude_businesses or asking_only:
-                before = len(stubs)
-                kept: list = []
-                for s in stubs:
-                    excerpt = s.get('content_excerpt', '') or ''
-                    handle = s.get('author_handle', '') or ''
-                    if exclude_businesses and _looks_like_business_post(excerpt, handle):
-                        continue
-                    if asking_only and not _is_actively_asking(excerpt):
-                        continue
-                    kept.append(s)
-                dropped = before - len(kept)
-                if dropped > 0:
-                    _emit(on_progress, 'consumer_filtered', dropped=dropped, kept=len(kept),
-                          reason='non-asking posts (thanks/recommend/business) removed')
-                stubs = kept
-
-            # LLM final-pass — substring patterns are ~30% precision; Gemini Flash
-            # lifts to ~80-90% by judging semantic intent. Falls through silently
-            # when GEMINI_API_KEY isn't set or the API errors.
-            if use_llm_classifier and stubs:
-                excerpts = [s.get('content_excerpt', '') or '' for s in stubs]
-                niche_for_llm = niche or query
-                verdicts = _classify_consumer_posts_with_gemini(
-                    excerpts, niche_for_llm, location=location,
-                )
-                if verdicts is not None:
-                    llm_kept = [s for s, v in zip(stubs, verdicts) if v]
-                    llm_dropped = len(stubs) - len(llm_kept)
-                    if llm_dropped > 0:
-                        _emit(on_progress, 'llm_filtered',
-                              dropped=llm_dropped, kept=len(llm_kept),
-                              reason='Gemini classifier flagged as non-consumer')
-                    stubs = llm_kept
-                else:
-                    _emit(on_progress, 'llm_skipped',
-                          reason='GEMINI_API_KEY missing or API error — substring filter only')
+        # Per-group yield tracking — record AFTER the consumer filter chain so
+        # total_leads reflects real leads, not raw noise posts. `gids` is the
+        # set of groups this call actually scraped (empty for open-feed, so
+        # this is a no-op there). Skipped on a classifier OUTAGE (fail-closed),
+        # whose empty batch would otherwise read as a barren group and wrongly
+        # trip the farm-skip threshold. Best-effort; never blocks the return.
+        _record_group_yield(gids, stubs, trustworthy=not filter_failed_closed)
 
         return stubs
 
@@ -2501,7 +3703,108 @@ class FacebookScraper(SocialPlatformScraper):
     ) -> list[AuthorLead]:
         if not post_stubs:
             return []
+        if _enrich_mode() == 'stub':
+            leads = _stub_enrich_authors(post_stubs, on_progress)
+            # Detail key is `total=` on BOTH events, matching the browser
+            # path (facebook.py:2900 and :3041/:3109). Anything parsing these
+            # events reads `total`; emitting `enriched=` would break it.
+            _emit(on_progress, 'enrich_start', total=len(leads), source='stub')
+            _emit(on_progress, 'enrich_done', total=len(leads), source='stub')
+            return leads
         return await asyncio.to_thread(self._sync_enrich_authors, post_stubs, on_progress)
+
+    def join_groups(self, filters: dict) -> dict:
+        """Join customer-facing group candidates for one country, capped + jittered.
+        Owner-local (AdsPower). Synchronous; the CLI wraps it in asyncio.to_thread."""
+        country = (filters.get('country') or '').strip().upper()
+        if not country:
+            raise SystemExit("--filters must include 'country' for --action join-groups.")
+
+        account = self._claim_or_raise(country)          # fail-closed on no bound account
+        acct_id = account['id']
+
+        # Self-resetting daily budget.
+        today = _now_iso()[:10]
+        used_today = account.get('group_join_used_today') or 0
+        if account.get('group_join_used_date') != today:
+            used_today = 0
+            (table('social_accounts')
+             .update({'group_join_used_today': 0, 'group_join_used_date': today})
+             .eq('id', acct_id).execute())
+        cap = _effective_join_cap(account.get('group_join_daily_cap') or 3,
+                                  account.get('warmup_started_at'),
+                                  datetime.now(timezone.utc))
+        budget = max(0, cap - used_today)
+
+        rows = (table('fb_group_candidates')
+                # select('*') — NOT an explicit column list. scrape_count/total_leads
+                # come from migration 060; naming them 400s on any database where 060
+                # has not been applied yet, killing join_groups before it opens the
+                # browser. '*' works either way — downstream ranking reads what it
+                # needs via .get() and defaults missing fields to 0.
+                .select('*')
+                .eq('platform', 'facebook').eq('status', 'candidate').eq('audience', 'customers')
+                .execute().data or [])
+        targets = _rank_join_candidates(rows, country, budget)
+
+        counts = {'joined': 0, 'requested': 0, 'skipped_questions': 0, 'failed': 0, 'attempted': 0}
+        _emit(None, 'join_started', country=country, account=acct_id, cap=cap,
+              used_today=used_today, budget=budget, candidates=len(targets))
+        if not targets:
+            _emit(None, 'join_done', **counts)
+            return counts
+
+        driver = self._open_session(account)
+        try:
+            for i, cand in enumerate(targets):
+                gid = cand['group_id']
+                _emit(None, 'join_attempt', group_id=gid, name=cand.get('name'))
+                counts['attempted'] += 1
+                try:
+                    outcome = _join_one_group(driver, gid, None)
+                    _emit(None, 'join_result', group_id=gid, outcome=outcome)
+
+                    if outcome == 'joined':
+                        (table('fb_group_candidates').update({'status': 'joined', 'joined_detected_at': _now_iso()})
+                         .eq('platform', 'facebook').eq('group_id', gid).execute())
+                        counts['joined'] += 1
+                        _bump_group_join_counter(acct_id)
+                    elif outcome == 'requested':
+                        (table('fb_group_candidates').update({'status': 'requested'})
+                         .eq('platform', 'facebook').eq('group_id', gid).execute())
+                        counts['requested'] += 1
+                        _bump_group_join_counter(acct_id)
+                    elif outcome == 'questions':
+                        (table('fb_group_candidates').update({'status': 'questions'})
+                         .eq('platform', 'facebook').eq('group_id', gid).execute())
+                        counts['skipped_questions'] += 1
+                        _emit(None, 'join_skipped_questions', group_id=gid)
+                    else:
+                        counts['failed'] += 1
+                        _emit(None, 'join_failed', group_id=gid, reason='no_progress')
+                except Exception as exc:  # noqa: BLE001 — a dead session/timeout on one
+                    # group must not abort the whole run; count it and keep going.
+                    counts['failed'] += 1
+                    _emit(None, 'join_failed', group_id=gid, reason=str(exc)[:120])
+
+                # Checkpoint check after every group (success or exception) — stop
+                # hammering a checkpointed account instead of burning through the
+                # rest of the budget against a captcha/security-check wall.
+                if _is_checkpoint(driver):
+                    _flag_checkpoint(acct_id, 'join-run-hit-checkpoint')
+                    _emit(None, 'join_checkpoint', account=acct_id)
+                    break
+
+                if i < len(targets) - 1:
+                    _human_pause(180.0, extra=300.0)   # ~3-8 min jitter between joins
+        finally:
+            try:
+                driver.quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+        _emit(None, 'join_done', **counts)
+        return counts
 
     # ── Sync internals ───────────────────────────────────────────────
     def _claim_or_raise(self, country: Optional[str] = None) -> dict:
@@ -2546,7 +3849,7 @@ class FacebookScraper(SocialPlatformScraper):
         then the session is established for the new IP and subsequent
         requests proceed normally.
         """
-        driver = _open_driver()
+        driver = _open_driver(account)
         driver.get(FB_BASE)
         time.sleep(3)
         # Persistent-profile mode skips the DB cookie jar entirely — the
@@ -2799,33 +4102,10 @@ class FacebookScraper(SocialPlatformScraper):
                     # Handles cases like /profile.php?id=N where the handle gave
                     # no signal but og:title revealed 'RCA Dental Clinic',
                     # 'XLRT LTD', 'Acme Web Agency', etc.
-                    #
-                    # Generic biz suffixes (ltd/inc/llc/corp/...) catch profiles
-                    # that are clearly companies, not individuals. Medical-niche
-                    # tokens stay because plumber/handyman searches commonly
-                    # surface medical-clinic ads that happen to mention the niche.
-                    biz_suffixes = (
-                        # Company-form markers
-                        ' ltd', ' ltd.', ' limited', ' inc', ' inc.', ' llc',
-                        ' corp', ' corp.', ' corporation', ' co.', ' co ',
-                        ' plc', ' gmbh', ' s.r.l', ' pty', ' ag',
-                        # Common business-tail descriptors
-                        ' agency', ' agencies', ' services', ' solutions',
-                        ' consultancy', ' consulting', ' group',
-                        ' studios', ' studio',
-                    )
-                    biz_niche_tokens = (
-                        'clinic', 'dental', 'dentist', 'dds', 'orthodontic',
-                        'spa', 'salon', 'medspa', 'wellness',
-                        'pharmacy', 'medical', 'pediatric',
-                    )
-                    name_lower = display_name.lower()
-                    name_lower_padded = ' ' + name_lower + ' '
-                    matched_biz = (
-                        any(suffix in name_lower_padded for suffix in biz_suffixes)
-                        or any(tok in name_lower for tok in biz_niche_tokens)
-                    )
-                    if matched_biz:
+                    # Marker lists live at module level (_BIZ_NAME_SUFFIXES /
+                    # _BIZ_NAME_NICHE_TOKENS) and are shared with the
+                    # browserless _stub_enrich_authors path.
+                    if _display_name_looks_like_business(display_name):
                         _emit(on_progress, 'enrich_skipped_business', name=display_name, url=profile_url)
                         continue
                     # Bio link — the first external anchor in the intro section.

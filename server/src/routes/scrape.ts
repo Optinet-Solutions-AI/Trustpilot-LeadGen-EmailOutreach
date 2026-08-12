@@ -14,6 +14,42 @@ import { getSupabase } from '../lib/supabase.js';
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
 
+/**
+ * Default FB consumer-mode search phrase — server-side fallback for when a
+ * submitted job carries no query (tools/scraper/run.py requires a non-empty
+ * `query` for --action search-posts).
+ *
+ * Intent-shaped AND place-anchored. Three runs of 20 real posts each,
+ * through the same actor, only the query differing:
+ *
+ *   query                                        geography            intent-qualified
+ *   "looking for a plumber in Manchester"         Manchester           0 / 20
+ *   "need a plumber recommendation"               GLOBAL, scattered    7 / 20
+ *   "need a plumber recommendation Manchester"     Manchester, all 20  1 / 20
+ *
+ * "looking for" reads as ad copy; the place name is what makes results
+ * local. On in-target leads per pound the place-anchored form wins outright
+ * (5% intent x ~100% geography beats 35% intent x ~10% geography) because a
+ * lead outside the target town is worth far less than one inside it. A prior
+ * change stripped the location back out based on the first row alone — that
+ * conflated "looking for" phrasing with the place name. DO NOT remove the
+ * location from this query again; keep the intent phrasing AND the place.
+ *
+ * Mirror of `defaultFbQuery` in frontend/src/components/ScrapeForm.tsx — the
+ * frontend cannot import server code, so keep the two identical by hand.
+ * This is only a fallback default; an operator-supplied `query` always wins
+ * (checked at the call site below).
+ */
+function defaultFbQuery(niche: string, location = ''): string {
+  const n = niche.trim().replace(/\s+/g, ' ');
+  const loc = location.trim().replace(/\s+/g, ' ');
+  if (n && loc) return `need a ${n} recommendation ${loc}`;
+  if (n) return `need a ${n} recommendation`;
+  // No niche: fall back to the bare location rather than emitting a
+  // dangling "need a recommendation", which matches nothing useful.
+  return loc;
+}
+
 // Source-of-truth registry of supported platforms. Mirrors
 // tools/scraper/platforms/__init__.py — if you add a Python plugin,
 // add its manifest here too. We mirror in TS rather than shelling out
@@ -98,6 +134,28 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
       { name: 'groups_only',  type: 'boolean', label: 'Search inside groups only', default: false },
       { name: 'date_from',    type: 'text',    label: 'Date from (YYYY-MM-DD)' },
       { name: 'date_to',      type: 'text',    label: 'Date to (YYYY-MM-DD)' },
+      // Operator-named groups. Apify group DISCOVERY is broken (search actor
+      // returns 0 items for search_type='groups'), so the operator names the
+      // groups and discovery is skipped outright. Both fields are OPTIONAL —
+      // left empty, the search-based flow above runs exactly as before.
+      //
+      // `textarea` because this is a LIST and operators paste several at once,
+      // one per line. The frontend splits on newlines and sends a JSON ARRAY
+      // (the Python side also accepts a comma/newline string, but the array is
+      // the contract). Bare numeric group ids are accepted alongside full URLs.
+      { name: 'group_urls',   type: 'textarea', label: 'Facebook group URLs (one per line)',
+        required: false, rows: 4,
+        placeholder: 'https://www.facebook.com/groups/1572344082987398',
+        help: 'Paste the groups to read, one per line (full URL or bare group id). '
+            + 'Supplying groups skips group discovery — which does not work — and '
+            + 'reads those groups\' posts directly. Location is NOT used to match '
+            + 'posts when this is set: the group already fixes the geography.' },
+      { name: 'group_keyword', type: 'text',   label: 'Group keyword filter',
+        required: false, default: 'recommend',
+        placeholder: 'recommend',
+        help: 'Filters posts inside each group BEFORE they are billed, so this is '
+            + 'the main cost control on a group scrape. One word works best '
+            + '("recommend", "needed"); a whole phrase matches almost nothing.' },
       // Business-mode fields
       { name: 'category',     type: 'text',    label: 'Page category (slug)' },
       { name: 'country',      type: 'select',  label: 'Country', options_source: 'taxonomy:countries' },
@@ -375,11 +433,30 @@ router.post('/', async (req: Request, res: Response) => {
             merged.lead_type === 'consumers' &&
             !(typeof merged.query === 'string' && merged.query.trim())
           ) {
-            const niche = typeof merged.niche === 'string' ? merged.niche.trim() : '';
-            const location = typeof merged.location === 'string' ? merged.location.trim() : '';
-            if (niche || location) {
-              merged.query = `looking for ${niche} ${location}`.replace(/\s+/g, ' ').trim();
+            // See defaultFbQuery's docstring above for the measurement table
+            // backing the intent-shaped, place-anchored "need a <niche>
+            // recommendation <location>" default.
+            const niche = typeof merged.niche === 'string' ? merged.niche : '';
+            const location = typeof merged.location === 'string' ? merged.location : '';
+            const fallbackQuery = defaultFbQuery(niche, location);
+            if (fallbackQuery) {
+              merged.query = fallbackQuery;
             }
+          }
+          // `group_urls` reaches the scraper as a JSON ARRAY, always. The form
+          // already splits its textarea, but this route is also hit by direct
+          // API callers and by older cached form bundles, and a raw pasted
+          // blob ("url1\nurl2") must not land in the filters jsonb as one
+          // string. Split on newlines/commas, trim, drop blanks; an empty
+          // result removes the key entirely so the search-based flow is not
+          // accidentally switched into group mode by an empty textarea.
+          if (platform === 'facebook' && merged.group_urls !== undefined) {
+            const raw = merged.group_urls;
+            const list = (Array.isArray(raw) ? raw : String(raw).split(/[\n,]/))
+              .map((u) => String(u).trim())
+              .filter(Boolean);
+            if (list.length) merged.group_urls = list;
+            else delete merged.group_urls;
           }
           return merged;
         })();

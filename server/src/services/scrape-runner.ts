@@ -20,7 +20,12 @@ import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
 import { listActiveCitiesForCountry, type TripAdvisorCity } from '../db/tripadvisor-cities.js';
-import { shouldRefuseSocialOnLinux, socialProfileEnv } from './social-routing.js';
+import {
+  shouldRefuseSocialOnLinux,
+  socialProfileEnv,
+  scrapeJobUsesBrowser,
+  isFacebookConsumerJob,
+} from './social-routing.js';
 
 export const scrapeEvents = new EventEmitter();
 
@@ -654,7 +659,15 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
   // and the Windows worker will claim it on the next retry. The previous
   // silent-success-with-zero-results behavior caused jobs to complete with
   // no leads, hiding the routing bug from the dashboard.
-  if (shouldRefuseSocialOnLinux(platform, process.platform)) {
+  //
+  // Only Facebook CONSUMER mode can be browserless (Apify discovery + stub
+  // enrichment = pure HTTP). Business mode always drives a real browser
+  // (`_sync_scrape_pages` / `_sync_enrich_pages` claim an account and open a
+  // session unconditionally, ignoring FB_DISCOVERY/FB_ENRICH), so it must keep
+  // hard-refusing here — otherwise a business-mode job claimed by Linux would
+  // try to launch Chrome there and burn a social_accounts slot.
+  const usesBrowser = scrapeJobUsesBrowser(platform, filters, process.env);
+  if (shouldRefuseSocialOnLinux(platform, process.platform, { usesBrowser })) {
     throw new Error(
       `${platform} scraping is not supported on Linux workers — set ` +
       `PLATFORM_EXCLUDE=${platform} on this worker. Job will be re-queued for a Windows worker.`,
@@ -684,9 +697,15 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
     //   social-platforms master plan).
     // - businesses mode = enumerate FB Pages by category, then standard
     //   `list` + `enrich` enrichment. Same dispatch as Trustpilot/Yelp/TA.
+    //
+    // Mode detection is shared with the Linux browser guard above
+    // (isFacebookConsumerJob) so the two can never disagree: if the guard
+    // thought "browserless consumer job" while this dispatched the
+    // browser-driven business path, a Linux worker would try to launch Chrome.
+    // An absent/blank lead_type is consumer mode, matching facebook.py's
+    // `(filters.get('lead_type') or 'consumers')`.
     const fbFilters = (filters ?? {}) as Record<string, unknown>;
-    const isFbConsumerMode =
-      platform === 'facebook' && fbFilters.lead_type === 'consumers';
+    const isFbConsumerMode = platform === 'facebook' && isFacebookConsumerJob(filters);
 
     if (isFbConsumerMode) {
       const maxResults = Number(fbFilters.max_results ?? 10);

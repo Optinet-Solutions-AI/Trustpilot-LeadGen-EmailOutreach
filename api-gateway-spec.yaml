@@ -926,6 +926,20 @@ paths:
       responses:
         "200":
           description: OK
+  /api/social-groups/discovered:
+    get:
+      operationId: listDiscoveredGroups
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/social-groups/label:
+    post:
+      operationId: labelDiscoveredGroups
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/dns-health/{domain}:
     get:
       operationId: getDnsHealth

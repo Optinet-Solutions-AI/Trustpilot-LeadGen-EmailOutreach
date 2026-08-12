@@ -1,5 +1,39 @@
 import { getSupabase } from '../lib/supabase.js';
 import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
+import { categoryFamily } from '../services/lead-categories.js';
+
+/** Apply the recipient category filter, FAMILY-aware.
+ *
+ *  Each scraping platform writes its own taxonomy for the same trade —
+ *  Facebook stores the operator's typed niche ("plumber"), Yelp its slug
+ *  ("plumbers"), others "plumbing". Exact equality here silently halved
+ *  campaign audiences: a campaign for "electrician" matched 80 leads and
+ *  dropped the 78 spelled "electricians".
+ *
+ *  Shared by addLeadsByFilter and previewRecipientCount so the number the
+ *  operator is SHOWN can never diverge from the audience actually emailed.
+ *  Source of truth for the families is tools/db/category_canonical.py, which
+ *  the TS mirror is drift-guarded against.
+ *
+ *  DELIBERATELY EXACT, not substring. The Lead Matrix uses categoryOrFilter,
+ *  which builds `ilike.%needle%` — fine for browsing, where partial typing is
+ *  wanted. On THIS path substring matching silently widens the audience: it
+ *  made `casino` also select `online_casino_or_bookmaker`, adding ~98 people
+ *  to a cold-email send who were previously excluded. Growing a send list is
+ *  not something a de-fragmentation fix should do as a side effect, so we
+ *  match the family members exactly. `casino`, deliberately unmerged, has a
+ *  family of just itself and so still selects only itself.
+ */
+function applyRecipientFilters<T>(query: T, filters: { country?: string; category?: string }): T {
+  let q = query as any;
+  if (filters.country) q = q.eq('country', filters.country);
+  if (filters.category) {
+    const family = categoryFamily(filters.category);
+    if (family.length > 1) q = q.in('category', family);
+    else q = q.eq('category', family[0] ?? filters.category);
+  }
+  return q as T;
+}
 
 export async function getCampaigns() {
   const supabase = getSupabase();
@@ -224,8 +258,7 @@ export async function addLeadsByFilter(campaignId: string, filters: { country?: 
     .eq('blocked', false) // skip Trustpilot-flagged leads (migration 048)
     .eq('do_not_contact', false); // skip opted-out leads (migration 050)
 
-  if (filters.country) query = query.eq('country', filters.country);
-  if (filters.category) query = query.eq('category', filters.category);
+  query = applyRecipientFilters(query, filters);
 
   const { data: leads, error: leadsError } = await query;
   if (leadsError) throw new Error(leadsError.message);
@@ -324,8 +357,7 @@ export async function previewRecipientCount(filters: { country?: string; categor
     .eq('blocked', false) // preview must match the recipients we'd actually send to (migration 048)
     .eq('do_not_contact', false); // exclude opted-out leads (migration 050)
 
-  if (filters.country) query = query.eq('country', filters.country);
-  if (filters.category) query = query.eq('category', filters.category);
+  query = applyRecipientFilters(query, filters);
 
   const { data, count, error } = await query.limit(10);
   if (error) throw new Error(error.message);

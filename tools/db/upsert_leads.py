@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 
 # Allow running from project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from tools.db.category_canonical import canonicalize_category
 from tools.db.supabase_client import table
+from tools.db.upsert_group_candidates import upsert_group_candidate
 from tools.db.url_validator import sanitize_trustpilot_url, validate_trustpilot_url
 
 import requests
@@ -212,7 +214,11 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         'company_name': lead.get('company_name') or lead.get('name', 'Unknown'),
         'country': lead.get('country'),
         'location_confidence': lead.get('location_confidence'),
-        'category': lead.get('category'),
+        # Canonicalised so a Facebook scrape typed as "plumber" and a Yelp
+        # scrape slugged as "plumbers" land on the SAME label. The operator's
+        # original wording is not lost: scrape_jobs.filters already stores it
+        # verbatim (`{"niche": "plumber"}` / `{"category": "plumbers"}`).
+        'category': canonicalize_category(lead.get('category')),
         'website_url': lead.get('website_url'),
         'phone': lead.get('phone'),
         'primary_email': lead.get('primary_email') or lead.get('website_email'),
@@ -302,6 +308,26 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
                 )
             except Exception as e:
                 print(f"FAILED:upsert_post|{post_url}|{str(e)[:200]}")
+
+            # Capture the group as a side effect (Discovered Groups feature).
+            # This is the ONLY place lead_platform_posts gets written, so it's
+            # also the only place a group can first become visible — piggy-
+            # backing here means every future scrape grows the discovered-
+            # groups list with zero extra scrape work. Merge-safe: never
+            # touches niche/location/status/audience on an existing row (see
+            # tools/db/upsert_group_candidates.py). Failure here must not
+            # sink the post/lead upsert that already succeeded above.
+            group_id = post.get('group_id')
+            if group_id:
+                try:
+                    upsert_group_candidate(
+                        platform=platform,
+                        group_id=str(group_id),
+                        name=post.get('group_name'),
+                        seen_at=post.get('posted_at') or now_iso,
+                    )
+                except Exception as e:
+                    print(f"FAILED:group_candidate_capture|{group_id}|{str(e)[:150]}")
 
     return lead_id, is_new
 
@@ -393,7 +419,9 @@ def upsert_leads(leads: list[dict]) -> int:
             'primary_email': resolve_primary_email(lead),
             'phone': lead.get('phone'),
             'country': lead.get('country'),
-            'category': lead.get('category'),
+            # Same canonicalisation as the multi-platform path above — see
+            # tools/db/category_canonical.py.
+            'category': canonicalize_category(lead.get('category')),
             'star_rating': lead.get('star_rating') or lead.get('rating'),
             'screenshot_path': normalize_screenshot_path(lead.get('screenshot_path')),
             'profile_claimed': lead.get('profile_claimed'),
