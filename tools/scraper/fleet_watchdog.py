@@ -21,12 +21,15 @@ from tools.scraper.shared import adspower
 DEFAULT_ADSPOWER_EXE = r'C:\Program Files\adspower_global\AdsPower Global.exe'
 
 
-def check_and_recover(launch_command, *, wait_seconds: float = 90.0, poll_interval: float = 5.0) -> str:
+def check_and_recover(launch_command: list[str], *, wait_seconds: float = 90.0, poll_interval: float = 5.0) -> str:
     """Return 'ok' if the Local API is already up. Otherwise launch AdsPower via
     launch_command and poll up to wait_seconds; return 'recovered' or 'failed'."""
     if adspower.health_check():
         return 'ok'
-    subprocess.Popen(launch_command, close_fds=True)
+    try:
+        subprocess.Popen(launch_command, close_fds=True)
+    except OSError:
+        return 'failed'
     attempts = max(1, int(wait_seconds / poll_interval))
     for _ in range(attempts):
         time.sleep(poll_interval)

@@ -54,3 +54,8 @@ def test_raises_when_account_not_active(monkeypatch):
                         lambda name: _Query([{'adspower_profile_id': 'p1', 'status': 'checkpoint', 'country': 'GB'}]))
     with pytest.raises(fs.FleetSessionError):
         fs.open_account_session(account_id='acc-1')
+
+
+def test_raises_when_both_account_and_profile_given():
+    with pytest.raises(fs.FleetSessionError):
+        fs.open_account_session(account_id='acc-1', profile_id='k1flq0bx')

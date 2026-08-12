@@ -44,8 +44,10 @@ def open_account_session(*, account_id: Optional[str] = None, profile_id: Option
     no bound active profile — never returns a half-open session."""
     if not account_id and not profile_id:
         raise FleetSessionError('Pass account_id or profile_id')
+    if account_id and profile_id:
+        raise FleetSessionError('Pass account_id OR profile_id, not both')
     country = None
-    if account_id and not profile_id:
+    if account_id:
         profile_id, country = _resolve_profile_id(account_id)
     if not adspower.health_check():
         raise FleetSessionError('AdsPower Local API is not responding on this host')

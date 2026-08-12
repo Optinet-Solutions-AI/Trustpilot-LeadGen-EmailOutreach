@@ -23,3 +23,11 @@ def test_failed_when_api_stays_down(monkeypatch):
     monkeypatch.setattr(fw.subprocess, 'Popen', lambda *a, **k: None)
     monkeypatch.setattr(fw.time, 'sleep', lambda s: None)
     assert fw.check_and_recover(['AdsPower.exe'], wait_seconds=3, poll_interval=1) == 'failed'
+
+
+def test_failed_when_launch_command_missing(monkeypatch):
+    def _boom(*a, **k):
+        raise FileNotFoundError('no such exe')
+    monkeypatch.setattr(fw.adspower, 'health_check', lambda: False)
+    monkeypatch.setattr(fw.subprocess, 'Popen', _boom)
+    assert fw.check_and_recover(['C:/nope/AdsPower.exe']) == 'failed'
