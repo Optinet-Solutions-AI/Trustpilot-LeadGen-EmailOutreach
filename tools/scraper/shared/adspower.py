@@ -134,3 +134,15 @@ def stop_profile(profile_id: str) -> None:
             print(f'WARN: AdsPower stop for {profile_id}: {exc}', file=sys.stderr, flush=True)
         else:
             raise
+
+
+def health_check() -> bool:
+    """True if the AdsPower Local API is up (answers code 0 on /status).
+
+    The fleet watchdog uses this to decide whether to relaunch the desktop
+    client. Never raises — an unreachable or erroring API reads as False."""
+    try:
+        _call('/status', {})
+        return True
+    except AdsPowerError:
+        return False
