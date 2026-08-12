@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, test, expect } from 'vitest';
 import {
   shouldRefuseSocialOnLinux,
   socialProfileEnv,
@@ -146,5 +146,26 @@ describe('socialProfileEnv', () => {
   it('returns empty when no social account id', () => {
     expect(socialProfileEnv('facebook', undefined)).toEqual({});
     expect(socialProfileEnv('yelp', 'abc')).toEqual({});
+  });
+});
+
+import { chooseBrowseSpawner } from './social-routing.js';
+
+describe('chooseBrowseSpawner', () => {
+  test('connect mode always uses novnc', () => {
+    expect(chooseBrowseSpawner({ isBrowse: false, browseStream: 'cdp', hasAdspowerProfile: true }))
+      .toBe('novnc');
+  });
+  test('browse + AdsPower profile → adspower-cdp', () => {
+    expect(chooseBrowseSpawner({ isBrowse: true, browseStream: 'cdp', hasAdspowerProfile: true }))
+      .toBe('adspower-cdp');
+  });
+  test('browse + no AdsPower + BROWSE_STREAM=cdp → legacy cdp', () => {
+    expect(chooseBrowseSpawner({ isBrowse: true, browseStream: 'cdp', hasAdspowerProfile: false }))
+      .toBe('cdp');
+  });
+  test('browse + no AdsPower + default stream → novnc', () => {
+    expect(chooseBrowseSpawner({ isBrowse: true, browseStream: 'novnc', hasAdspowerProfile: false }))
+      .toBe('novnc');
   });
 });

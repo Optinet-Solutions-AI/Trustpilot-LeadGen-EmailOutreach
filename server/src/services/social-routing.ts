@@ -94,3 +94,18 @@ export function socialProfileEnv(platform: string, socialAccountId?: string | nu
   if (platform === 'instagram') return { IG_PROFILE_DIR: `C:\\ig-profiles\\${socialAccountId}` };
   return {};
 }
+
+/** Which browse spawner to use for a session. Connect mode always needs the
+ *  full-desktop noVNC path. Browse mode prefers the fleet AdsPower spawner when
+ *  the account is fleet-bound (has an adspower_profile_id); otherwise it honours
+ *  the legacy BROWSE_STREAM=cdp native-Brave path, falling back to noVNC. */
+export function chooseBrowseSpawner(opts: {
+  isBrowse: boolean;
+  browseStream: string;
+  hasAdspowerProfile: boolean;
+}): 'novnc' | 'cdp' | 'adspower-cdp' {
+  if (!opts.isBrowse) return 'novnc';
+  if (opts.hasAdspowerProfile) return 'adspower-cdp';
+  if (opts.browseStream === 'cdp') return 'cdp';
+  return 'novnc';
+}

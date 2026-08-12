@@ -24,6 +24,7 @@ import {
 } from '../db/social-connect-requests.js';
 import { encryptCookie } from '../lib/encryption.js';
 import { getSupabase } from '../lib/supabase.js';
+import { chooseBrowseSpawner } from '../services/social-routing.js';
 
 const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
@@ -57,6 +58,7 @@ function resolveScript(scriptName: string): string {
 
 const SPAWN_SCRIPT_NOVNC = resolveScript('ec2-windows-spawn-noVNC.ps1');
 const SPAWN_SCRIPT_CDP   = resolveScript('ec2-windows-spawn-cdp.ps1');
+const SPAWN_SCRIPT_ADSPOWER_CDP = resolveScript('ec2-windows-spawn-adspower-cdp.ps1');
 
 /** Resolved spawner for the current mode (connect always uses noVNC). */
 function resolveSpawnScript(): string { return SPAWN_SCRIPT_NOVNC; }
@@ -149,34 +151,35 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
     void (async () => {
       await fs.mkdir(profileDir, { recursive: true });
 
-      // Choose the spawner script.
-      // - Connect mode always uses noVNC (operator needs OS-level access).
-      // - Browse mode uses the CDP bridge when BROWSE_STREAM=cdp; otherwise
-      //   falls back to noVNC (the default, so nothing breaks while validating).
-      const useCdp = isBrowse && BROWSE_STREAM === 'cdp';
-      const spawnerScript = useCdp ? SPAWN_SCRIPT_CDP : SPAWN_SCRIPT_NOVNC;
-      log(`spawner=${useCdp ? 'cdp' : 'novnc'} script=${spawnerScript}`);
+      // Fleet accounts (bound to an AdsPower profile) get the AdsPower CDP
+      // spawner; everything else keeps the legacy noVNC / native-Brave-CDP paths.
+      let hasAdspowerProfile = false;
+      try {
+        const { data } = await getSupabase()
+          .from('social_accounts').select('adspower_profile_id').eq('id', row.id).single();
+        hasAdspowerProfile = !!(data?.adspower_profile_id);
+      } catch (err) {
+        log(`adspower_profile_id lookup failed for ${row.id}: ${(err as Error).message}`);
+      }
+      const kind = chooseBrowseSpawner({ isBrowse, browseStream: BROWSE_STREAM, hasAdspowerProfile });
+      const spawnerScript =
+        kind === 'adspower-cdp' ? SPAWN_SCRIPT_ADSPOWER_CDP
+        : kind === 'cdp' ? SPAWN_SCRIPT_CDP
+        : SPAWN_SCRIPT_NOVNC;
+      log(`spawner=${kind} script=${spawnerScript}`);
 
-      // Build spawn args.
-      // CDP spawner: -ProfileDir, -AccountId, -TargetUrl (no -Mode param needed).
-      // noVNC spawner: -ProfileDir, -AccountId, -Mode, [-TargetUrl].
-      const spawnArgs: string[] = [
-        '-ExecutionPolicy', 'Bypass',
-        '-File', spawnerScript,
-        '-ProfileDir', profileDir,
-        '-AccountId', row.id,
-      ];
-      if (useCdp) {
-        // CDP spawner takes -TargetUrl directly (no -Mode).
-        if (row.connect_target_url) {
-          spawnArgs.push('-TargetUrl', row.connect_target_url);
-        }
+      const spawnArgs: string[] = ['-ExecutionPolicy', 'Bypass', '-File', spawnerScript];
+      if (kind === 'adspower-cdp') {
+        // AdsPower spawner resolves the profile itself; no -ProfileDir.
+        spawnArgs.push('-AccountId', row.id);
+        if (row.connect_target_url) spawnArgs.push('-TargetUrl', row.connect_target_url);
+      } else if (kind === 'cdp') {
+        spawnArgs.push('-ProfileDir', profileDir, '-AccountId', row.id);
+        if (row.connect_target_url) spawnArgs.push('-TargetUrl', row.connect_target_url);
       } else {
-        // noVNC spawner takes -Mode and optional -TargetUrl.
-        spawnArgs.push('-Mode', isBrowse ? 'browse' : 'connect');
-        if (isBrowse && row.connect_target_url) {
-          spawnArgs.push('-TargetUrl', row.connect_target_url);
-        }
+        spawnArgs.push('-ProfileDir', profileDir, '-AccountId', row.id,
+                       '-Mode', isBrowse ? 'browse' : 'connect');
+        if (isBrowse && row.connect_target_url) spawnArgs.push('-TargetUrl', row.connect_target_url);
       }
 
       // Spawn the PowerShell script which prints the tunnel URL to stdout on its
