@@ -41,9 +41,10 @@ foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
 Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # 1. Open the AdsPower profile and get its CDP port (this launches the browser).
-$CDP_PORT = (& $py -m tools.scraper.fleet_session --account $AccountId --print-port 2>&1 | Select-Object -Last 1).Trim()
+$CDP_PORT = (& $py -m tools.scraper.fleet_session --account $AccountId --print-port 2>&1 | Select-Object -Last 1 | Out-String).Trim()
 if (-not ($CDP_PORT -match '^\d+$')) {
     Write-Host "FATAL: fleet_session did not return a numeric CDP port (got: '$CDP_PORT')"
+    & $py -m tools.scraper.fleet_session --account $AccountId --stop 2>&1 | Out-Null
     exit 3
 }
 Write-Host "AdsPower profile open; CDP port=$CDP_PORT"
