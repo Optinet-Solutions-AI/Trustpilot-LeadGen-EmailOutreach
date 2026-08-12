@@ -320,10 +320,19 @@ def _bump_group_join_counter(account_id: str) -> None:
      .eq('id', account_id).execute())
 
 
-def _record_group_yield(scraped_group_ids: list[str], leads: list[dict]) -> None:
+def _record_group_yield(scraped_group_ids: list[str], leads: list[dict],
+                        *, trustworthy: bool = True) -> None:
     """After a group scrape, bump each scraped group's scrape_count + total_leads
-    (leads attributed by group_id) + last_scraped_at. Best-effort; never fatal."""
-    if not scraped_group_ids:
+    (leads attributed by group_id) + last_scraped_at. Best-effort; never fatal.
+
+    ``trustworthy=False`` skips recording ENTIRELY. Pass it when the consumer
+    filter FAILED CLOSED — i.e. the Gemini classifier was unavailable and there
+    was no language-appropriate substring fallback, so the chain dropped the
+    whole batch (its 'consumer_filter_unavailable' exit). That empty result
+    means "we could not judge these posts", NOT "this group is unproductive";
+    counting it as a zero-yield scrape would wrongly push a genuinely good group
+    toward the two-scrapes-no-leads farm-skip threshold in _is_yield_farm."""
+    if not scraped_group_ids or not trustworthy:
         return
     from collections import Counter
     per_group = Counter((lead.get('group_id') or '') for lead in leads)
@@ -3641,10 +3650,24 @@ class FacebookScraper(SocialPlatformScraper):
         # country-stamping loop, this stage's geography opinion and the
         # classifier prompt cannot disagree.
         is_consumer_mode = (filters.get('lead_type') or 'consumers').lower() == 'consumers'
+        # Whether the consumer filter FAILED CLOSED (classifier outage): its
+        # empty batch is "we couldn't judge these posts", not "this group is
+        # barren", so it must NOT count as a zero-yield scrape below. The chain
+        # signals this via its 'consumer_filter_unavailable' progress event —
+        # we tap the callback rather than change its return type (2 call sites).
+        # From here the chain only runs on a NON-empty batch (guard below), so
+        # fail-closed is the sole way it can hand back an untrustworthy empty.
+        filter_failed_closed = False
         if is_consumer_mode and stubs:
+            def _yield_aware_progress(payload):
+                nonlocal filter_failed_closed
+                if isinstance(payload, dict) and payload.get('stage') == 'consumer_filter_unavailable':
+                    filter_failed_closed = True
+                if on_progress:
+                    on_progress(payload)
             stubs = _apply_consumer_filter_chain(
                 stubs, niche=niche or query, location=location,
-                filters=filters, on_progress=on_progress,
+                filters=filters, on_progress=_yield_aware_progress,
                 geo_scoped=regime.search_is_geo_scoped,
                 classifier_sees_location=regime.location_in_classifier_prompt,
             )
@@ -3652,8 +3675,10 @@ class FacebookScraper(SocialPlatformScraper):
         # Per-group yield tracking — record AFTER the consumer filter chain so
         # total_leads reflects real leads, not raw noise posts. `gids` is the
         # set of groups this call actually scraped (empty for open-feed, so
-        # this is a no-op there). Best-effort; never blocks the return.
-        _record_group_yield(gids, stubs)
+        # this is a no-op there). Skipped on a classifier OUTAGE (fail-closed),
+        # whose empty batch would otherwise read as a barren group and wrongly
+        # trip the farm-skip threshold. Best-effort; never blocks the return.
+        _record_group_yield(gids, stubs, trustworthy=not filter_failed_closed)
 
         return stubs
 
