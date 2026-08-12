@@ -11,13 +11,16 @@
 #
 # Args:
 #   -AccountId   the social_accounts.id (fleet_session resolves its adspower_profile_id)
-#   -RepoDir     repo root (for the .venv python + the bridge js). Default C:\opt\scraper
+#   -RepoDir     repo root (for the .venv python + the bridge js). Defaults to
+#                self-located from this script's own path (<repo>\scripts\... -> <repo>),
+#                mirroring ec2-windows-spawn-cdp.ps1's Find-RepoRoot.
 #   -TargetUrl   deep-link (logged; the VA navigates in-session for now)
 param(
     [Parameter(Mandatory=$true)][string]$AccountId,
-    [string]$RepoDir = 'C:\opt\scraper',
+    [string]$RepoDir = $null,
     [string]$TargetUrl = 'https://www.facebook.com/'
 )
+if (-not $RepoDir) { $RepoDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
 $ErrorActionPreference = 'Continue'
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 

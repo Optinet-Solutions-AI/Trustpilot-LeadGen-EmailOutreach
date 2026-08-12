@@ -105,13 +105,13 @@ def main() -> int:
             close_account_session(account_id=args.account, profile_id=args.profile)
             return 0
         out = open_account_session(account_id=args.account, profile_id=args.profile)
+        if args.print_port:
+            print(port_from_cdp_address(out['cdp_address']))
+        else:
+            print(json.dumps(out))
     except FleetSessionError as exc:
         print(f'FLEET SESSION FAILED: {exc}', file=sys.stderr, flush=True)
         return 1
-    if args.print_port:
-        print(port_from_cdp_address(out['cdp_address']))
-    else:
-        print(json.dumps(out))
     return 0
 
 

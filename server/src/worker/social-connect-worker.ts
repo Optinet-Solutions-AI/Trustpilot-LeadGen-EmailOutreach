@@ -25,6 +25,7 @@ import {
 import { encryptCookie } from '../lib/encryption.js';
 import { getSupabase } from '../lib/supabase.js';
 import { chooseBrowseSpawner } from '../services/social-routing.js';
+import { config } from '../config.js';
 
 const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
@@ -65,6 +66,16 @@ function resolveSpawnScript(): string { return SPAWN_SCRIPT_NOVNC; }
 // Keep the function so any future callers of the old name still compile.
 const SPAWN_SCRIPT = resolveSpawnScript();
 const FB_SESSION_COOKIE = 'c_user';
+
+// Resolve PYTHON to an absolute path — same reasoning as social-accounts.ts:
+// Windows' CreateProcess is finicky about relative .exe paths even with cwd set.
+// Used to stop the AdsPower profile ourselves when an adspower-cdp session ends
+// (see finishSession below) since the PS spawner's own cleanup only runs on the
+// browser-self-close path.
+const PYTHON_RAW = config.pythonPath || 'python';
+const PYTHON = path.isAbsolute(PYTHON_RAW)
+  ? PYTHON_RAW
+  : path.resolve(config.projectRoot, PYTHON_RAW);
 
 function log(msg: string): void {
   console.log(`[social-connect-worker] ${msg}`);
@@ -151,6 +162,11 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
     void (async () => {
       await fs.mkdir(profileDir, { recursive: true });
 
+      // Set when `kind` is computed below so finishSession (defined further
+      // down in this closure, invoked later on every termination path) knows
+      // whether this session needs its AdsPower profile stopped.
+      let spawnerKind: 'novnc' | 'cdp' | 'adspower-cdp' | null = null;
+
       // Fleet accounts (bound to an AdsPower profile) get the AdsPower CDP
       // spawner; everything else keeps the legacy noVNC / native-Brave-CDP paths.
       let hasAdspowerProfile = false;
@@ -162,6 +178,7 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
         log(`adspower_profile_id lookup failed for ${row.id}: ${(err as Error).message}`);
       }
       const kind = chooseBrowseSpawner({ isBrowse, browseStream: BROWSE_STREAM, hasAdspowerProfile });
+      spawnerKind = kind;
       const spawnerScript =
         kind === 'adspower-cdp' ? SPAWN_SCRIPT_ADSPOWER_CDP
         : kind === 'cdp' ? SPAWN_SCRIPT_CDP
@@ -210,6 +227,24 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
         if (watchInterval !== null) clearInterval(watchInterval);
         if (endWatchInterval !== null) clearInterval(endWatchInterval);
         clearInterval(expirySweep);
+        if (spawnerKind === 'adspower-cdp') {
+          // AdsPower profiles are launched out-of-tree by the AdsPower desktop
+          // client (a child of AdsPower.exe, not of our PowerShell), so
+          // killProcessTree's taskkill /T /F on `child.pid` never reaches the
+          // browser. The PS spawner's own `--stop` cleanup only runs from its
+          // `finally` block, which only fires on the browser-self-close path
+          // (CDP port stops answering) — the operator-End and expiry paths
+          // never reach it. Stop the profile ourselves here, in the one place
+          // that runs on every termination path, so it never leaks open.
+          try {
+            spawn(PYTHON, ['-m', 'tools.scraper.fleet_session', '--account', row.id, '--stop'], {
+              cwd: config.projectRoot,
+              windowsHide: true,
+            });
+          } catch (err) {
+            log(`adspower --stop spawn failed for account=${row.id}: ${(err as Error).message}`);
+          }
+        }
         resolve();
       };
 
