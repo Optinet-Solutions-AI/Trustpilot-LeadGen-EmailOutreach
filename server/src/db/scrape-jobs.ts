@@ -141,18 +141,28 @@ export async function claimNextPendingJob(
   maxConcurrent = 3,
   platformFilter: string | null = null,
   platformExclude: string | null = null,
+  browserlessFacebookOk = false,
 ): Promise<ScrapeJob | null> {
   const supabase = getSupabase();
-  // platform_filter / platform_exclude are post-migration-043 params.
-  // Both default to NULL on the SQL side, so passing null here is the
-  // pre-043 behavior. Windows EC2 worker sets platform_filter='facebook';
-  // Linux EC2 worker sets platform_exclude='facebook'.
-  const { data, error } = await supabase.rpc('claim_next_pending_scrape_job', {
+  // Send ONLY the params that are actually set. Every optional RPC arg has a
+  // SQL-side DEFAULT, so omitting one is identical to passing its default —
+  // and omitting keeps two properties we rely on:
+  //   1. p_browserless_facebook_ok (migration 061) is sent ONLY when a worker
+  //      opts in, so every other worker keeps calling the pre-061 signature
+  //      and never hits "function not found" during the deploy→migrate gap.
+  //   2. platform_filter / platform_exclude (migration 043/047) are omitted
+  //      when null, so an unconfigured worker makes the minimal call.
+  // Windows EC2 worker sets platform_filter='facebook'; Linux EC2 worker sets
+  // platform_exclude='facebook,instagram' (+ browserlessFacebookOk to still
+  // claim cookieless consumer FB).
+  const rpcArgs: Record<string, unknown> = {
     p_worker_id: workerId,
     p_max_concurrent: maxConcurrent,
-    p_platform_filter: platformFilter,
-    p_platform_exclude: platformExclude,
-  });
+  };
+  if (platformFilter !== null) rpcArgs.p_platform_filter = platformFilter;
+  if (platformExclude !== null) rpcArgs.p_platform_exclude = platformExclude;
+  if (browserlessFacebookOk) rpcArgs.p_browserless_facebook_ok = true;
+  const { data, error } = await supabase.rpc('claim_next_pending_scrape_job', rpcArgs);
   if (error) throw new Error(error.message);
   // RPC declares RETURNS SETOF scrape_jobs so data is an array. Empty array
   // means nothing to claim. We also defensively handle the legacy composite

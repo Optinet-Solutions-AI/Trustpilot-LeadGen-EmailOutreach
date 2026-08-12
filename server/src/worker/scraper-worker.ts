@@ -36,6 +36,16 @@ const WORKER_ID = process.env.WORKER_ID || `worker-${os.hostname()}-${process.pi
 // (preserves the pre-migration-043 behavior).
 const PLATFORM_FILTER = process.env.PLATFORM_FILTER || null;
 const PLATFORM_EXCLUDE = process.env.PLATFORM_EXCLUDE || null;
+// BROWSERLESS_FB_OK — when '1'/'true', this worker ALSO claims consumer-mode
+// (browserless, Apify-discovery) Facebook jobs even though PLATFORM_EXCLUDE
+// lists 'facebook'. Lets the always-on Linux worker run cookieless FB
+// discovery (pure HTTP — no browser) while business-mode FB + all Instagram
+// stay excluded for the Windows browser worker. Requires migration 061; the
+// worker sends the opt-in param only when this is set, so it is safe to
+// deploy this code before the migration is applied.
+const BROWSERLESS_FB_OK =
+  process.env.BROWSERLESS_FB_OK === '1' ||
+  (process.env.BROWSERLESS_FB_OK || '').toLowerCase() === 'true';
 const STALE_SWEEP_INTERVAL_MS = 5 * 60_000;
 const STALE_MAX_AGE_MIN = 10;
 const DRAIN_TIMEOUT_MS = 60_000;
@@ -98,7 +108,7 @@ async function pollOnce(): Promise<void> {
   while (!shuttingDown && inFlight.size < MAX_CONCURRENT) {
     let job: ScrapeJob | null;
     try {
-      job = await claimNextPendingJob(WORKER_ID, MAX_CONCURRENT, PLATFORM_FILTER, PLATFORM_EXCLUDE);
+      job = await claimNextPendingJob(WORKER_ID, MAX_CONCURRENT, PLATFORM_FILTER, PLATFORM_EXCLUDE, BROWSERLESS_FB_OK);
     } catch (err) {
       log(`claim error: ${err instanceof Error ? err.message : err}`);
       return;
@@ -153,7 +163,8 @@ async function drainOrAbandon(signal: string): Promise<void> {
 async function main(): Promise<void> {
   log(
     `starting max_concurrent=${MAX_CONCURRENT} poll=${POLL_INTERVAL_MS}ms ` +
-    `platform_filter=${PLATFORM_FILTER ?? '<none>'} platform_exclude=${PLATFORM_EXCLUDE ?? '<none>'}`,
+    `platform_filter=${PLATFORM_FILTER ?? '<none>'} platform_exclude=${PLATFORM_EXCLUDE ?? '<none>'} ` +
+    `browserless_fb_ok=${BROWSERLESS_FB_OK}`,
   );
 
   // Social-connect worker runs alongside the scrape poll loop in this same
