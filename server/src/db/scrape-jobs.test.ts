@@ -200,6 +200,40 @@ describe('claimNextPendingJob', () => {
 
     expect(result).toBeNull();
   });
+
+  test('sends platform_filter / platform_exclude only when they are set', async () => {
+    mockSupabase.rpc.mockResolvedValue({ data: null, error: null });
+
+    await claimNextPendingJob('windows-fb-worker', 2, 'facebook', null);
+
+    expect(mockSupabase.rpc).toHaveBeenCalledWith('claim_next_pending_scrape_job', {
+      p_worker_id: 'windows-fb-worker',
+      p_max_concurrent: 2,
+      p_platform_filter: 'facebook',
+    });
+  });
+
+  test('opts a Linux worker into browserless FB: exclude set + p_browserless_facebook_ok:true', async () => {
+    mockSupabase.rpc.mockResolvedValue({ data: null, error: null });
+
+    await claimNextPendingJob('ec2-sg-1', 3, null, 'facebook,instagram', true);
+
+    expect(mockSupabase.rpc).toHaveBeenCalledWith('claim_next_pending_scrape_job', {
+      p_worker_id: 'ec2-sg-1',
+      p_max_concurrent: 3,
+      p_platform_exclude: 'facebook,instagram',
+      p_browserless_facebook_ok: true,
+    });
+  });
+
+  test('omits p_browserless_facebook_ok when not opted in, so pre-061 workers keep the old signature', async () => {
+    mockSupabase.rpc.mockResolvedValue({ data: null, error: null });
+
+    await claimNextPendingJob('ec2-sg-1', 3, null, 'facebook,instagram', false);
+
+    const [, args] = mockSupabase.rpc.mock.calls[0];
+    expect(args).not.toHaveProperty('p_browserless_facebook_ok');
+  });
 });
 
 // ── heartbeat ──────────────────────────────────────────────────
