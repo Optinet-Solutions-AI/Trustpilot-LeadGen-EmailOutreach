@@ -988,7 +988,13 @@ class YelpScraper(BasePlatformScraper):
                 results[idx] = enriched
 
                 shot_flag = 'shot' if screenshot_path else 'noshot'
-                site_flag = 'site' if detail.get('website_url') else 'nosite'
+                # Read from `enriched` (the merged result), not `detail` — on
+                # the apify path `detail` is always {} even though the stub
+                # (and therefore `enriched`) carries a real website_url. On
+                # the legacy path the stub's own website_url is always None,
+                # so `enriched.get('website_url')` is truthiness-equivalent
+                # to the old `detail.get('website_url')` there.
+                site_flag = 'site' if enriched.get('website_url') else 'nosite'
                 print(
                     f"PROGRESS:profile_saved:{idx + 1}|{total}|{slug_for_file}|"
                     f"none|{shot_flag}|{site_flag}",

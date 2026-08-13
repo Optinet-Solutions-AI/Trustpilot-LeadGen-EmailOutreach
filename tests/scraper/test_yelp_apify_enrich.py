@@ -93,3 +93,48 @@ def test_enrichment_progress_events_are_unchanged(monkeypatch, capsys):
     assert 'PROGRESS:profile_progress:' in out
     assert 'PROGRESS:profile_saved:' in out
     assert 'PROGRESS:profile_done:' in out
+
+
+def test_profile_saved_site_flag_reflects_the_stub_on_the_apify_path(monkeypatch, capsys):
+    # Regression: `detail` is always {} on the apify path, so a site_flag
+    # read from `detail` would report "nosite" for every apify lead even
+    # when the stub (and therefore the merged result) carries a real
+    # website_url. The flag must be derived from the merged `enriched`
+    # dict instead.
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: False)
+    stubs = _stubs(2)
+    stubs[1]['website_url'] = None
+    stubs[1]['website_email'] = None
+    _run(stubs)
+    out = capsys.readouterr().out
+    saved_lines = [
+        line for line in out.splitlines()
+        if line.startswith('PROGRESS:profile_saved:')
+    ]
+    assert len(saved_lines) == 2
+    with_site = next(line for line in saved_lines if 'biz-0' in line)
+    without_site = next(line for line in saved_lines if 'biz-1' in line)
+    assert with_site.split('|')[-1] == 'site'
+    assert without_site.split('|')[-1] == 'nosite'
+
+
+def test_legacy_cap_truncates_stubs_to_default_25(monkeypatch, capsys):
+    # The legacy (fusion/browser/relay) cap path still truncates the input
+    # list itself, unlike the apify path where the cap only governs
+    # screenshots. Pin this so the shared cap-block refactor can't silently
+    # regress it.
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'browser')
+    monkeypatch.delenv('YELP_MAX_ENRICH', raising=False)
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: False)
+    monkeypatch.setattr(yelp, 'fetch_via_scrapingbee', lambda *a, **k: '<html></html>')
+    rows = _run(_stubs(30))
+    assert len(rows) == 25
+    out = capsys.readouterr().out
+    assert 'PROGRESS:enrich_capped:25|30|' in out
+    assert 'skipping' in out and 'long-tail leads' in out
+    # Must describe dropping leads, not the apify screenshot-capping wording.
+    assert 'screenshotting' not in out
+    assert 'keep full data' not in out
