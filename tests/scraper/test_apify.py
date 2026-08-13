@@ -417,3 +417,50 @@ def test_timeout_recovery_finds_correct_run_not_a_newer_racer(monkeypatch):
 
     result = apify.run_actor('some/actor', {})
     assert result == [{'mine': True}]
+
+
+def test_408_run_timeout_recovers_instead_of_raising(monkeypatch):
+    """run-sync-get-dataset-items has a HARD 300s SERVER-side cap, separate
+    from our client `timeout`. When it trips Apify answers HTTP 408
+    run-timeout-exceeded — while the run keeps executing and BILLING.
+
+    Measured live 2026-08-13: a 408 came back at 301.6s and the run behind it
+    was still RUNNING, had scraped 169 items and had already billed $0.45 —
+    every item discarded, reported to the operator as "0 businesses". That is
+    the same condition as a client-side Timeout arriving by a different door,
+    so it must route to recovery rather than fall through to the generic 4xx
+    raise.
+    """
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    post_calls = []
+
+    def fake_post(url, **kwargs):
+        post_calls.append(url)
+        return _Resp(
+            408, None,
+            '{"error":{"type":"run-timeout-exceeded","message":'
+            '"Actor run exceeded the timeout of 300 seconds for this API endpoint"}}',
+        )
+
+    monkeypatch.setattr(apify.requests, 'post', fake_post)
+    monkeypatch.setattr(apify.time, 'sleep', lambda s: None)
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/runs'):
+            return _runs_resp([
+                {'id': 'run408', 'status': 'SUCCEEDED', 'startedAt': _iso_now(),
+                 'defaultDatasetId': 'ds408'},
+            ])
+        if url.endswith('/items'):
+            return _Resp(200, [{'biz': 1}, {'biz': 2}])
+        raise AssertionError(f'unexpected GET {url}')
+
+    monkeypatch.setattr(apify.requests, 'get', fake_get)
+
+    result = apify.run_actor('memo23/yelp-scraper', {})
+
+    assert result == [{'biz': 1}, {'biz': 2}]
+    assert len(post_calls) == 1, (
+        'a 408 must never cause a second POST — the first run is still '
+        'executing and billing, so a retry pays twice for one job'
+    )

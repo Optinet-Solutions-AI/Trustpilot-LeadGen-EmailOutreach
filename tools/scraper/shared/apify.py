@@ -42,6 +42,27 @@ A TIMEOUT IS NOT A FAILURE
   ConnectionError that is NOT a Timeout means the request never reached
   Apify at all — nothing started, nothing billed — so that case keeps the
   normal retry-with-backoff path.
+
+  THIS FAILURE ARRIVES BY TWO DOORS
+
+  The client-side exception above is only half of it. run-sync-get-dataset-
+  items ALSO enforces its own hard 300-second ceiling server-side, entirely
+  independent of the `timeout` we pass, and when a run outlives it the
+  endpoint answers HTTP 408 with error.type "run-timeout-exceeded". That is
+  a normal response, not an exception, so it used to fall through to the
+  generic 4xx branch and raise — walking straight past this module's whole
+  reason for existing.
+
+  Measured incident (2026-08-13, Yelp): a 408 came back at 301.6s. The run
+  behind it was still RUNNING, had already scraped 169 items and billed
+  $0.45, and every one of those items was thrown away — the operator was
+  told "0 businesses". A 408 therefore routes to the same recovery as a
+  client timeout, and is likewise never retried.
+
+  The practical consequence for callers: sizing a request so it plausibly
+  finishes inside 300s is a cost optimisation, not a correctness
+  requirement. Overrunning is survivable — you wait longer and still get
+  the data — but it is never free.
 """
 from __future__ import annotations
 
@@ -156,6 +177,24 @@ def run_actor(
                 f'Apify returned 402 (out of credit / plan limit) for actor '
                 f'{actor_id}: {resp.text[:300]}'
             )
+        if resp.status_code == 408:
+            # The SERVER-side twin of the client Timeout handled above. This
+            # endpoint has its own hard 300s ceiling, independent of our
+            # `timeout`, and answers 408 run-timeout-exceeded when a run
+            # outlives it — while the run itself keeps going and keeps
+            # billing. Falling through to the generic 4xx raise below would
+            # discard work already paid for, so this routes to the same
+            # recovery as a client timeout. Deliberately NOT retried: the
+            # first run is still in flight, so a second POST bills twice for
+            # one job.
+            print(
+                f'INFO: apify actor={actor_id} status=408 elapsed={elapsed}s attempt={attempt} — '
+                f'the API endpoint gave up at its 300s ceiling but the run is still executing and '
+                f'IS BEING BILLED on Apify right now; NOT retrying (that would double-bill) — '
+                f'switching to recovery: locating the run and waiting for it to finish',
+                file=sys.stderr, flush=True,
+            )
+            return _recover_timed_out_run(actor_id, started, client_timeout=timeout)
         if resp.status_code >= 500:
             print(f'INFO: apify actor={actor_id} status={resp.status_code} elapsed={elapsed}s attempt={attempt}', file=sys.stderr, flush=True)
             if attempt < MAX_ATTEMPTS:
