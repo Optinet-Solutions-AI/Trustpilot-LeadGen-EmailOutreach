@@ -237,9 +237,18 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
           // never reach it. Stop the profile ourselves here, in the one place
           // that runs on every termination path, so it never leaks open.
           try {
-            spawn(PYTHON, ['-m', 'tools.scraper.fleet_session', '--account', row.id, '--stop'], {
-              cwd: config.projectRoot,
-              windowsHide: true,
+            const stopChild = spawn(
+              PYTHON,
+              ['-m', 'tools.scraper.fleet_session', '--account', row.id, '--stop'],
+              { cwd: config.projectRoot, windowsHide: true },
+            );
+            // CRITICAL: spawn reports a missing executable (ENOENT) via an async
+            // 'error' event, NOT a synchronous throw the try/catch would catch.
+            // Without this listener an unhandled 'error' crashes the whole worker
+            // process, so a stray PYTHON path would take down every session — not
+            // just leak this one profile. Same pattern as social-accounts.ts.
+            stopChild.on('error', (err) => {
+              log(`adspower --stop spawn failed for account=${row.id}: ${err.message}`);
             });
           } catch (err) {
             log(`adspower --stop spawn failed for account=${row.id}: ${(err as Error).message}`);
