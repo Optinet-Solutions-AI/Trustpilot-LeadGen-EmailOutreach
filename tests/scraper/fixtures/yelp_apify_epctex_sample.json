@@ -1,0 +1,507 @@
+[
+  {
+    "inputSource": "plumbers",
+    "businessId": "DJeYn2iaANnD5FfRiwlDRw",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/bell-and-sons-plumbing-calumet-city",
+    "title": "Bell & Sons Plumbing",
+    "rating": 5,
+    "reviewCount": 7,
+    "priceRange": null,
+    "categories": [
+      "Plumbing"
+    ],
+    "isBusinessClosed": false,
+    "history": null,
+    "address": {
+      "city": "Calumet City",
+      "regionCode": "IL",
+      "addressLine1": "PO Box 2174",
+      "addressLine2": "",
+      "addressLine3": null,
+      "postalCode": "60409",
+      "formatted": "PO Box 2174\nCalumet City, IL 60409"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.6099709,
+        "longitude": -87.5445302
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/d6C_D5yH1ivKyrhFkWQHUw/o.jpg",
+    "operationHours": {
+      "Mon": "8:00 AM - 5:00 PM",
+      "Tue": "8:00 AM - 5:00 PM",
+      "Wed": "8:00 AM - 5:00 PM",
+      "Thu": "8:00 AM - 5:00 PM",
+      "Fri": "8:00 AM - 5:00 PM",
+      "Sat": "Closed",
+      "Sun": "Closed"
+    },
+    "amenities": [],
+    "about": null,
+    "website": null,
+    "phoneNumber": "(708) 965-0543",
+    "reservationUrl": null,
+    "mediaCount": 3
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "UYWo_u2ytj-_Z6j129x6tw",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/boehm-plumbing-chicago",
+    "title": "Boehm Plumbing",
+    "rating": 5,
+    "reviewCount": 7,
+    "priceRange": null,
+    "categories": [
+      "Plumbing"
+    ],
+    "isBusinessClosed": false,
+    "history": null,
+    "address": {
+      "city": "Chicago",
+      "regionCode": "IL",
+      "addressLine1": "4019 N Mozart St",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60618",
+      "formatted": "4019 N Mozart St\nIrving Park\nChicago, IL 60618"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.9546654,
+        "longitude": -87.6991324
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/ld2sYWDuaKFcNkkuLllgkQ/o.jpg",
+    "operationHours": null,
+    "amenities": [],
+    "about": null,
+    "website": null,
+    "phoneNumber": "(773) 583-5468",
+    "reservationUrl": null,
+    "mediaCount": 2
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "lG80KWHasqOgygysOwPxEA",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/dans-sewer-and-drainage-chicago",
+    "title": "Dan's sewer and drainage",
+    "rating": 5,
+    "reviewCount": 6,
+    "priceRange": null,
+    "categories": [
+      "Plumbing"
+    ],
+    "isBusinessClosed": false,
+    "history": null,
+    "address": {
+      "city": "Chicago",
+      "regionCode": "IL",
+      "addressLine1": "",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60707",
+      "formatted": "Chicago, IL 60707"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.9236507,
+        "longitude": -87.8107561
+      }
+    ],
+    "primaryPhoto": null,
+    "operationHours": null,
+    "amenities": [],
+    "about": "Sewer drain rodding and cleaning",
+    "website": null,
+    "phoneNumber": "(773) 368-6587",
+    "reservationUrl": null
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "9Viv2T4FWv-qhhM9APXlYw",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/tidy-handyman-deerfield-3",
+    "title": "Tidy Handyman",
+    "rating": 5,
+    "reviewCount": 25,
+    "priceRange": null,
+    "categories": [
+      "Electricians",
+      "Plumbing",
+      "Handyman"
+    ],
+    "isBusinessClosed": false,
+    "history": "Our head specialist, Stas, has been a hands-on problem solver since childhood. By the age of 10, he had already mastered soldering techniques, and by 14, he could fix almost anything in his home. After graduating high school, he served in the army before continuing his education at Kharkivsʹkyy Industrialʹno-Pedahohichnyy Tekhnikum. With over 25 years of experience in the handyman industry as of 2024, Stas is not only a skilled professional but also a mentor who trains our beginner handymen to become true professionals.\n\nAt Tidy Handyman, we take pride in providing clean, professional, and reliable services.",
+    "address": {
+      "city": "Deerfield",
+      "regionCode": "IL",
+      "addressLine1": "",
+      "addressLine2": "",
+      "addressLine3": null,
+      "postalCode": "60015",
+      "formatted": "Deerfield, IL 60015"
+    },
+    "coordinates": [
+      {
+        "latitude": 42.162956,
+        "longitude": -87.8557335
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/bpedar9a_OZ0ohwhSFJyYQ/o.jpg",
+    "operationHours": {
+      "Mon": "8:00 AM - 5:00 PM",
+      "Tue": "8:00 AM - 5:00 PM",
+      "Wed": "8:00 AM - 5:00 PM",
+      "Thu": "8:00 AM - 5:00 PM",
+      "Fri": "8:00 AM - 5:00 PM",
+      "Sat": "8:00 AM - 5:00 PM",
+      "Sun": "Closed"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsBitcoin": "Accepts Cryptocurrency",
+        "isEnabled": true
+      },
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": false
+      }
+    ],
+    "about": "Tidy Handyman – Reliable Help for Your Home\nAt Tidy Handyman, we believe every project — big or small — deserves attention, care, and quality workmanship. We offer a wide range of handyman services, including:\n\t•\tPlumbing and electrical repairs\n\t•\tFurniture assembly and TV mounting\n\t•\tHome upgrades and odd jobs (door installation, lock replacement, fixture installation, and more)\n\nWith over 25 years of combined experience, we pride ourselves on clear communication, fair pricing, and work that’s done right the first time. Our clients know they can count on us for professionalism, punctuality, and respect for their home.\n\nWe serve Deerfield and the surrounding areas, and also offer bilingual service in Russian and Ukrainian to better meet your needs.\n\nContact us today to schedule your project — we’re here to help you cross every task off your list.\n",
+    "website": "https://booktidyhandyman.com",
+    "phoneNumber": "(224) 390-0045",
+    "reservationUrl": null,
+    "mediaCount": 95
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "QBILzGteL8k-6TByZd8fjg",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/lees-furnace-service-calumets-city",
+    "title": "Lees Furnace Service",
+    "rating": 5,
+    "reviewCount": 5,
+    "priceRange": null,
+    "categories": [
+      "Heating & Air Conditioning/HVAC",
+      "Electricians",
+      "Plumbing"
+    ],
+    "isBusinessClosed": false,
+    "history": "Lees Furnace Service was established in 2015 to provide affordable quality furnace maintenance and installation services. Seeing a growing need, we expanded our services to now include maintenance, remodeling, plumbing, and electrical. We pride ourselves in educating customers and guaranteeing our work, treating every project as if it were our own.",
+    "address": {
+      "city": "Calumets city",
+      "regionCode": "IL",
+      "addressLine1": "443 Mackinaw Ave",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60409",
+      "formatted": "443 Mackinaw Ave\nCalumets city, IL 60409"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.62392029999999,
+        "longitude": -87.5417887
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/6niTG3VLnZVXQI6d6ah2WQ/o.jpg",
+    "operationHours": {
+      "Mon": "8:00 AM - 5:00 PM",
+      "Tue": "8:00 AM - 5:00 PM",
+      "Wed": "8:00 AM - 5:00 PM",
+      "Thu": "8:00 AM - 5:00 PM",
+      "Fri": "8:00 AM - 5:00 PM",
+      "Sat": "Closed",
+      "Sun": "Closed"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsBitcoin": "Accepts Cryptocurrency",
+        "isEnabled": false
+      },
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": true
+      },
+      {
+        "BusinessOpenToAll": "Open to All",
+        "isEnabled": true
+      }
+    ],
+    "about": "HWe are HVAC certified and provide quality services at an affordable price. We provide installation and repair services for new furnaces, air conditioner units, and ductwork. Additionally, we offer property management maintenance services, home remodeling, plumbing, and electrical work.",
+    "website": null,
+    "phoneNumber": "(773) 828-9057",
+    "reservationUrl": null,
+    "mediaCount": 20
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "wG3P5Hb44_4_sR8Gi2EFpA",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/loyal-handyman-chicago",
+    "title": "Loyal Handyman",
+    "rating": 4.9,
+    "reviewCount": 278,
+    "priceRange": null,
+    "categories": [
+      "Handyman",
+      "TV Mounting",
+      "Plumbing"
+    ],
+    "isBusinessClosed": false,
+    "history": null,
+    "address": {
+      "city": "Chicago",
+      "regionCode": "IL",
+      "addressLine1": "",
+      "addressLine2": "",
+      "addressLine3": null,
+      "postalCode": "60610",
+      "formatted": "Near North Side\nChicago, IL 60610"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.9003099,
+        "longitude": -87.63338710000001
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/TqfMBzs3HvFhAzOUg7igPg/o.jpg",
+    "operationHours": {
+      "Mon": "8:00 AM - 10:00 PM",
+      "Tue": "8:00 AM - 10:00 PM",
+      "Wed": "8:00 AM - 10:00 PM",
+      "Thu": "8:00 AM - 10:00 PM",
+      "Fri": "8:00 AM - 10:00 PM",
+      "Sat": "8:00 AM - 10:00 PM",
+      "Sun": "8:00 AM - 10:00 PM"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsBitcoin": "Accepts Cryptocurrency",
+        "isEnabled": false
+      },
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": true
+      }
+    ],
+    "about": "Looking for professional and reliable handyman?\n“Loyal Handyman” is your trusted service for a wide range of home maintenance and repair needs.\n\nABOUT US:\n* 12 years in business \n* Certified Professionals \n* Highly Skilled & Trained\n* Courteous & Friendly\n* Free consultations \n* Free estimates \n* Fixed pricing \n* Satisfaction guaranteed",
+    "website": "http://loyalhandy.com",
+    "phoneNumber": "(872) 334-4525",
+    "reservationUrl": null,
+    "mediaCount": 118
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "QfSUPrXDyt2yFWv8Rpl8Hg",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/einstein-plumbing-usa-chicago",
+    "title": "Einstein Plumbing USA",
+    "rating": 5,
+    "reviewCount": 6,
+    "priceRange": null,
+    "categories": [
+      "Plumbing"
+    ],
+    "isBusinessClosed": false,
+    "history": null,
+    "address": {
+      "city": "Chicago",
+      "regionCode": "IL",
+      "addressLine1": "5935 Central Park Ave",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60634",
+      "formatted": "5935 Central Park Ave\nNorth Park\nChicago, IL 60634"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.9894392760171,
+        "longitude": -87.7185123413801
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/XnM9ic8SDqlp1uflgZ-jpQ/o.jpg",
+    "operationHours": {
+      "Mon": "8:00 AM - 5:00 PM",
+      "Tue": "8:00 AM - 5:00 PM",
+      "Wed": "8:00 AM - 5:00 PM",
+      "Thu": "8:00 AM - 5:00 PM",
+      "Fri": "8:00 AM - 5:00 PM",
+      "Sat": "Closed",
+      "Sun": "Closed"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": true
+      }
+    ],
+    "about": "At Einstein Plumbing, we specialize in expert water heater installations designed to bring comfort, reliability, and efficiency to your home or business. Whether you’re replacing an outdated tank or upgrading to the latest tankless model, our licensed Chicago plumbers deliver top-quality workmanship and fast, dependable service.\nTankless water heaters are the future of home comfort—providing endless hot water, lower energy bills, and space-saving convenience. Unlike traditional tanks that constantly heat water, tankless systems heat on demand, giving you hot water exactly when you need it while using less energy. We work with leading brands to ensure our customers get durable, high-performance systems that last.\nOur team handles everything from removal and disposal of old units to professional installation and safety testing of your new system. We take pride in clean, efficient, and code-compliant installs—done right the first time.\nWhether you’re ready for a full upgrade or simply exploring your options, Einstein Plumbing is here to help you find the perfect fit for your home and budget. Experience the convenience of tankless hot water today!",
+    "website": "http://www.einsteinplumbingusa.com",
+    "phoneNumber": "(815) 404-9473",
+    "reservationUrl": null,
+    "mediaCount": 57
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "aWEhXnvMw1W5RepHw3U-aw",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/hey-guy-oakbrook-terrace-2",
+    "title": "Hey Guy HVAC, Plumbing & Electrical",
+    "rating": 5,
+    "reviewCount": 7,
+    "priceRange": null,
+    "categories": [
+      "Heating & Air Conditioning/HVAC",
+      "Plumbing",
+      "Electricians"
+    ],
+    "isBusinessClosed": false,
+    "history": "started new company in 2010 after leaving former partnership. Customers of former company sought out Wayne because of his expertise. He is a trusted resource.",
+    "address": {
+      "city": "Oakbrook Terrace",
+      "regionCode": "IL",
+      "addressLine1": "17W 697 Butterfield Rd",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60181",
+      "formatted": "17W 697 Butterfield Rd\nOakbrook Terrace, IL 60181"
+    },
+    "coordinates": [
+      {
+        "latitude": 41.84951208887312,
+        "longitude": -87.9746304411044
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/E1E-ZjNmaLVoIOGHU9k-EA/o.jpg",
+    "operationHours": {
+      "Mon": "Open 24 hours",
+      "Tue": "Open 24 hours",
+      "Wed": "Open 24 hours",
+      "Thu": "Open 24 hours",
+      "Fri": "Open 24 hours",
+      "Sat": "Open 24 hours",
+      "Sun": "Open 24 hours"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": true
+      }
+    ],
+    "about": "No matter how big or small the job, Hey Guy is the name to trust. We offer emergency and same-day services for HVAC, Plumbing, Electrical & construction/remodeling services. Whether you need HVAC repair or installation, plumbing repairs, or professional electrician services, Hey Guy has the expertise you need to cover all issues under your roof. Schedule an estimate by calling us at (630) 723 - 7716, or filling out our online form today!",
+    "website": "https://www.heyguypros.com",
+    "phoneNumber": "(630) 723-7716",
+    "reservationUrl": null,
+    "mediaCount": 25
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "8Jbw_YFkwcDzxpzB9C-HOw",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/hartwig-mechanical-harvard",
+    "title": "Hartwig Mechanical",
+    "rating": 5,
+    "reviewCount": 6,
+    "priceRange": null,
+    "categories": [
+      "Plumbing",
+      "Heating & Air Conditioning/HVAC",
+      "Water Purification Services"
+    ],
+    "isBusinessClosed": false,
+    "history": "Established in 1958, Hartwig Plumbing & Heating, Inc. provides commercial and residential mechanicals needs across the Midwest.",
+    "address": {
+      "city": "Harvard",
+      "regionCode": "IL",
+      "addressLine1": "20800 E Brink St",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60033",
+      "formatted": "20800 E Brink St\nHarvard, IL 60033"
+    },
+    "coordinates": [
+      {
+        "latitude": 42.41334982582644,
+        "longitude": -88.60385853153657
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/qvo8wow6bpd1bGBUCEEzeA/o.jpg",
+    "operationHours": {
+      "Mon": "7:00 AM - 4:00 PM",
+      "Tue": "7:00 AM - 4:00 PM",
+      "Wed": "7:00 AM - 4:00 PM",
+      "Thu": "7:00 AM - 4:00 PM",
+      "Fri": "7:00 AM - 2:30 PM",
+      "Sat": "Closed",
+      "Sun": "Closed"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": true
+      }
+    ],
+    "about": "Hartwig Mechanical, Inc. is consistently recognized as one of the top commercial plumbing, engineering, mechanical, facility maintenance, and HVAC contractors in Illinois and Wisconsin",
+    "website": "https://hartwigmechanical.com",
+    "phoneNumber": "(815) 943-4430",
+    "reservationUrl": null,
+    "mediaCount": 33
+  },
+  {
+    "inputSource": "plumbers",
+    "businessId": "U2gt1kBR_vVumxuv1FVYlA",
+    "type": "business",
+    "url": "https://www.yelp.com/biz/a-c-t-plumbing-and-property-management-hampshire",
+    "title": "A.C.T. Plumbing & Property Management",
+    "rating": 5,
+    "reviewCount": 44,
+    "priceRange": null,
+    "categories": [
+      "Plumbing",
+      "Water Heater Installation/Repair"
+    ],
+    "isBusinessClosed": false,
+    "history": null,
+    "address": {
+      "city": "Hampshire",
+      "regionCode": "IL",
+      "addressLine1": "2660 Hennig Rd",
+      "addressLine2": "",
+      "addressLine3": "",
+      "postalCode": "60140",
+      "formatted": "2660 Hennig Rd\nHampshire, IL 60140"
+    },
+    "coordinates": [
+      {
+        "latitude": 42.129773,
+        "longitude": -88.4683166
+      }
+    ],
+    "primaryPhoto": "https://s3-media0.fl.yelpcdn.com/bphoto/XR1NykiordR99Uv728hdyA/o.jpg",
+    "operationHours": {
+      "Mon": "Open 24 hours",
+      "Tue": "Open 24 hours",
+      "Wed": "Open 24 hours",
+      "Thu": "Open 24 hours",
+      "Fri": "Open 24 hours",
+      "Sat": "Open 24 hours",
+      "Sun": "Open 24 hours"
+    },
+    "amenities": [
+      {
+        "BusinessAcceptsCreditCards": "Accepts Credit Cards",
+        "isEnabled": true
+      }
+    ],
+    "about": "A.C.T. specializes in water heaters, sump and ejector pumps, battery backup systems, toilets and faucets, garbage disposals, drain cleaning, and repair services. \n\nA.C.T. Plumbing & Property Management, Inc. is a family owned and operated, full service plumbing company. With over 20 years of experience, our plumbers have the knowledge and background to help with just about any plumbing need you may have!  \n\nA.C.T. serves residential and commercial clients. Our plumbers have extensive background in remodeling and new construction, as well as repair services. We pride ourselves in making you feel like one of the family! Call today for a free estimate for all of your plumbing needs!\n\nA.C.T. offers a 10% discount to senior citizens and all military personnel. (Discount up to $250. ID may be required)",
+    "website": "http://www.actplumbingandpm.com",
+    "phoneNumber": "(847) 227-8733",
+    "reservationUrl": null,
+    "mediaCount": 12
+  }
+]
