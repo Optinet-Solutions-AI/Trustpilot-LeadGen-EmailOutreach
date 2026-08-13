@@ -180,7 +180,15 @@ def build_actor_input(city: str, category: str, max_items: int) -> dict:
         'fetchBusinessDetails': True,
         'scrapeReviews': False,
         'enrichEmails': enrich_emails,
-        'useCachedData': True,
+        # Cache OFF by default. Billing is per returned item, not per fetch,
+        # so the cache saves time but never money — while measurably costing
+        # data. Measured 2026-08-13, same query and market: cached rows came
+        # back with website populated on 1/10 and empty strings elsewhere;
+        # the same query with the cache off returned 3/10. We pay full price
+        # either way, so paying for thinner rows is a pure loss. Set
+        # YELP_APIFY_USE_CACHE=true to trade that data back for speed.
+        'useCachedData': (os.environ.get('YELP_APIFY_USE_CACHE', 'false')
+                          .strip().lower() == 'true'),
         # This actor's maxCacheAgeDays defaults to UNSET, i.e. cached rows of
         # unbounded age. Pin it so we keep the cache discount without serving
         # arbitrarily stale businesses.

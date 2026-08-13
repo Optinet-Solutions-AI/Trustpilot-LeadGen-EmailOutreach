@@ -95,3 +95,15 @@ def test_default_ceiling_is_sized_for_the_300s_sync_window(monkeypatch):
     monkeypatch.delenv('YELP_APIFY_OVERFETCH', raising=False)
     monkeypatch.delenv('YELP_APIFY_MAX_ITEMS', raising=False)
     assert ya.resolve_max_items(240) == 100
+
+
+def test_cache_is_off_by_default_because_it_returns_thinner_rows(monkeypatch):
+    """Billing is per returned item, not per fetch, so the actor's cache
+    saves time but never money — while measurably costing data. Measured
+    2026-08-13 on the same query/market: cached rows had website populated
+    on 1/10 (empty strings elsewhere), uncached on 3/10. Paying full price
+    for thinner rows is a pure loss, so the default is off."""
+    monkeypatch.delenv('YELP_APIFY_USE_CACHE', raising=False)
+    assert ya.build_actor_input('New York, NY', 'plumbers', 40)['useCachedData'] is False
+    monkeypatch.setenv('YELP_APIFY_USE_CACHE', 'true')
+    assert ya.build_actor_input('New York, NY', 'plumbers', 40)['useCachedData'] is True
