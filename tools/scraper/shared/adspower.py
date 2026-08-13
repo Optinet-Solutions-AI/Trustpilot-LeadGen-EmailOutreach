@@ -44,6 +44,12 @@ DEFAULT_BASE = 'http://local.adspower.com:50325'
 REQUEST_TIMEOUT = 60
 # AdsPower documents a 1 request/second limit on the Local API.
 MIN_INTERVAL_SECONDS = 1.1
+# browser/start can return code 0 with an EMPTY ws.selenium on the first call
+# while the profile's Chrome + CDP debug port are still coming up (observed
+# live on EC2, 2026-08-13: first call empty, second call returned the port).
+# Since browser/start is idempotent, re-poll it until the port is ready.
+START_MAX_ATTEMPTS = 6
+START_RETRY_DELAY_SECONDS = 1.5
 
 _last_call_at: float = 0.0
 
@@ -103,20 +109,29 @@ def start_profile(profile_id: str) -> dict:
     .../cwd_global/chrome_150/chromedriver.exe), so there is no version-matching
     problem on this path (unlike the legacy Brave path).
     """
-    data = _call('/api/v1/browser/start', {
-        'user_id': profile_id,
-        'open_tabs': 1,       # don't restore the previous session's tabs
-        'ip_tab': 0,          # skip AdsPower's own IP-check tab
-    })
-    debugger_address = ((data.get('ws') or {}).get('selenium') or '').strip()
-    webdriver_path = (data.get('webdriver') or '').strip()
-    if not debugger_address:
-        raise AdsPowerError(
-            f'AdsPower started profile {profile_id} but returned no selenium '
-            f'debugger address. Response data: {data}'
-        )
-    print(f'INFO: AdsPower profile {profile_id} at {debugger_address}', file=sys.stderr, flush=True)
-    return {'debugger_address': debugger_address, 'webdriver_path': webdriver_path}
+    data: dict = {}
+    for attempt in range(1, START_MAX_ATTEMPTS + 1):
+        data = _call('/api/v1/browser/start', {
+            'user_id': profile_id,
+            'open_tabs': 1,       # don't restore the previous session's tabs
+            'ip_tab': 0,          # skip AdsPower's own IP-check tab
+        })
+        debugger_address = ((data.get('ws') or {}).get('selenium') or '').strip()
+        webdriver_path = (data.get('webdriver') or '').strip()
+        if debugger_address:
+            suffix = f' (attempt {attempt})' if attempt > 1 else ''
+            print(f'INFO: AdsPower profile {profile_id} at {debugger_address}{suffix}',
+                  file=sys.stderr, flush=True)
+            return {'debugger_address': debugger_address, 'webdriver_path': webdriver_path}
+        if attempt < START_MAX_ATTEMPTS:
+            print(f'INFO: AdsPower profile {profile_id} started but its CDP debug port '
+                  f'is not ready yet (attempt {attempt}/{START_MAX_ATTEMPTS}); retrying...',
+                  file=sys.stderr, flush=True)
+            time.sleep(START_RETRY_DELAY_SECONDS)
+    raise AdsPowerError(
+        f'AdsPower started profile {profile_id} but returned no selenium debugger '
+        f'address after {START_MAX_ATTEMPTS} attempts. Last response data: {data}'
+    )
 
 
 def stop_profile(profile_id: str) -> None:

@@ -72,6 +72,47 @@ def test_start_profile_rejects_missing_selenium_address(monkeypatch):
         adspower.start_profile('kxxxxx')
 
 
+def test_start_profile_retries_until_cdp_port_is_ready(monkeypatch):
+    """Live on EC2 (2026-08-13): the FIRST browser/start returns code 0 with an
+    EMPTY ws.selenium, and a second idempotent call returns the real debug port
+    (127.0.0.1:62108). The client must retry on that empty address instead of
+    raising, because browser/start is idempotent and the port comes up shortly."""
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    calls = {'n': 0}
+
+    def flaky(url, **kw):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _Resp(200, {'code': 0, 'data': {'ws': {'selenium': ''}, 'webdriver': ''}})
+        return _Resp(200, {'code': 0, 'data': {
+            'ws': {'selenium': '127.0.0.1:62108'},
+            'webdriver': 'C:\\adspower\\chromedriver.exe',
+        }})
+
+    monkeypatch.setattr(adspower.requests, 'get', flaky)
+    out = adspower.start_profile('kxxxxx')
+    assert out['debugger_address'] == '127.0.0.1:62108'
+    assert out['webdriver_path'] == 'C:\\adspower\\chromedriver.exe'
+    assert calls['n'] == 2, 'should retry exactly once after the empty first address'
+
+
+def test_start_profile_gives_up_after_max_attempts_when_never_ready(monkeypatch):
+    """If the debug port never comes up, retrying can't help — raise, but only
+    after exhausting the bounded attempt budget so a genuinely dead profile
+    surfaces to the operator."""
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    calls = {'n': 0}
+
+    def always_empty(url, **kw):
+        calls['n'] += 1
+        return _Resp(200, {'code': 0, 'data': {'ws': {'selenium': ''}, 'webdriver': ''}})
+
+    monkeypatch.setattr(adspower.requests, 'get', always_empty)
+    with pytest.raises(adspower.AdsPowerError):
+        adspower.start_profile('kxxxxx')
+    assert calls['n'] == adspower.START_MAX_ATTEMPTS
+
+
 def test_calls_are_throttled_to_one_per_second(monkeypatch):
     slept = []
     monkeypatch.setattr(adspower.time, 'sleep', slept.append)
