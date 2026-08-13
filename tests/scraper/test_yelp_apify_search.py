@@ -85,3 +85,13 @@ def test_junk_rows_do_not_kill_the_city(monkeypatch):
                         lambda *a, **k: [{'garbage': 1}] + _fixture())
     rows = ya.search_city_apify('Chicago, IL', 'plumbers', 20)
     assert len(rows) == 10
+
+
+def test_default_ceiling_is_sized_for_the_300s_sync_window(monkeypatch):
+    """run-sync-get-dataset-items dies at a hard 300s. Measured 2026-08-13:
+    the actor managed 169 items in 324s (~2s/item), so the old 200-item
+    ceiling could never land inside the window — it 408'd every time, and
+    the abandoned run still billed."""
+    monkeypatch.delenv('YELP_APIFY_OVERFETCH', raising=False)
+    monkeypatch.delenv('YELP_APIFY_MAX_ITEMS', raising=False)
+    assert ya.resolve_max_items(240) == 100

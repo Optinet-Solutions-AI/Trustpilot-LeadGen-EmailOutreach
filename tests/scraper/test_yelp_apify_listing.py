@@ -102,3 +102,22 @@ def test_all_filtered_out_reports_filter_too_strict_not_empty(monkeypatch, capsy
     assert rows == []
     assert 'FAILED:listing|yelp|filter_too_strict' in out
     assert 'apify_empty' not in out
+
+
+def test_per_city_ask_is_bounded_by_what_the_job_still_needs(monkeypatch):
+    """per_city_cap defaults to 240 and is independent of max_results, so a
+    10-lead job used to ask the actor for a full city's worth. Every returned
+    row is billed, and an oversized ask is what blew through the sync
+    endpoint's 300s ceiling in the first place."""
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    asks = []
+
+    def fake(city, category, cap):
+        asks.append(cap)
+        return _mapped()[:3]
+
+    monkeypatch.setattr(yelp, 'search_city_apify', fake)
+    _run(YelpScraper(), max_results=5)
+    assert asks, 'the actor was never called'
+    assert asks[0] == 5, f'first city should ask for at most the job total, got {asks[0]}'
+    assert all(a <= 5 for a in asks), f'no city may out-ask the job total: {asks}'

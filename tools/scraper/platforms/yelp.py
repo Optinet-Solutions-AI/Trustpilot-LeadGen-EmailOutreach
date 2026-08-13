@@ -599,8 +599,18 @@ class YelpScraper(BasePlatformScraper):
                 print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
 
                 if use_apify:
+                    # Ask for what this job still NEEDS, not what one city
+                    # could yield. per_city_cap defaults to 240 and is
+                    # independent of max_results, so a 10-lead job used to ask
+                    # the actor for a full city — every row of which is billed,
+                    # and an oversized ask is what blew through the sync
+                    # endpoint's 300s ceiling. Unlike the browser source, where
+                    # over-asking costs only time, here it costs money.
+                    city_cap = per_city_cap
+                    if max_results is not None:
+                        city_cap = max(1, min(city_cap, max_results - len(results)))
                     businesses = await asyncio.to_thread(
-                        search_city_apify, city, category, per_city_cap,
+                        search_city_apify, city, category, city_cap,
                     )
                     if not businesses:
                         # Distinct from "returned rows but all filtered out"

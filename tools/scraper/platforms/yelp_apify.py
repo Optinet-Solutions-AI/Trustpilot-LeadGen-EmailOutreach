@@ -128,7 +128,14 @@ def map_business(item: dict) -> Optional[dict]:
 
 
 _DEFAULT_OVERFETCH = 4
-_DEFAULT_MAX_ITEMS = 200
+# Sized against the SERVER-side 300s ceiling on run-sync-get-dataset-items,
+# not against appetite. Measured 2026-08-13: the actor produced 169 items in
+# 324s (~2s/item) and still wasn't finished, so the original 200 could never
+# land inside the window — it 408'd, and the abandoned run billed anyway.
+# 100 items ≈ 200s leaves real headroom. Overrunning is survivable now that
+# a 408 routes to run recovery (see shared/apify.py), but it is never free,
+# so the default stays inside the window.
+_DEFAULT_MAX_ITEMS = 100
 _DEFAULT_CACHE_DAYS = 30
 _DEFAULT_MARKETS = 'US'
 
