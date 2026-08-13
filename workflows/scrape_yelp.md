@@ -49,6 +49,52 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 
 ---
 
+## Listing via Apify — `YELP_LISTING_SOURCE=apify` (DEFAULT)
+
+Cookieless HTTP. No browser, no DataDome slider, no sticky IP — so it runs on
+Cloud Run and the Linux worker, which is what makes Yelp available to users
+other than the owner.
+
+| Piece | File |
+|---|---|
+| Actor input, mapping, over-fetch, market gate | `tools/scraper/platforms/yelp_apify.py` |
+| Listing branch | `tools/scraper/platforms/yelp.py` (`scrape_listing`, `source == 'apify'`) |
+| Screenshot-only enrichment | `tools/scraper/platforms/yelp.py` (`enrich_profiles`) |
+| Shared actor client (timeout recovery, 402 handling) | `tools/scraper/shared/apify.py` |
+
+**Measured cost (2026-08-12):** `memo23/yelp-scraper` billed $0.0365 for 10
+businesses — roughly $3.65 per 1,000 — and returned rating, review count,
+phone (10/10), website (8/10), contact email (5/10) and claimed status
+(10/10). The alternative `epctex/yelp-business-api` is ~$0.50 per 1,000 but
+returns no email and no claimed status.
+
+**One call now does both stages.** Listing and profile data arrive together,
+so `enrich_profiles` performs no HTML fetch — only screenshots. That halves
+ScrapingBee calls per lead and removes the old `YELP_MAX_ENRICH=25` data cap,
+which used to discard website and phone for every lead past the 25th.
+
+**Rating filtering is client-side, by necessity.** `searchSortBy` offers only
+`''` (Recommended), `rating` (DESCENDING) and `review_count`. Nothing sorts
+ascending, so low-rated leads are reached by over-fetching the Recommended
+feed (`YELP_APIFY_OVERFETCH`, default 4x, ceiling `YELP_APIFY_MAX_ITEMS`) and
+filtering locally. Each city logs `returned N businesses, K matched filter` —
+watch that ratio and raise the multiplier if runs come up short.
+
+**US only until probed.** `YELP_APIFY_MARKETS` (default `US`) gates it. Other
+countries fail with `FAILED:listing|yelp|apify_market_unverified|<country>`
+rather than silently returning zero. To add one: run a single-city probe for
+that country, confirm real rows, then add the ISO code to the env var.
+
+| Failure | Meaning |
+|---|---|
+| `FAILED:listing\|yelp\|apify_credit` | Apify account out of credit — top up |
+| `FAILED:listing\|yelp\|apify_empty\|<city>` | Actor returned nothing; if every city does this, the actor broke |
+| `FAILED:listing\|yelp\|apify_error` | Generic Apify failure (missing token, 5xx, malformed payload) — leads already gathered from earlier cities in the same run are preserved |
+| `FAILED:listing\|yelp\|filter_too_strict` | Rows returned but none in the rating band — widen `max_rating` |
+| `FAILED:listing\|yelp\|apify_market_unverified` | Country not in `YELP_APIFY_MARKETS` |
+
+---
+
 ## Parsing the `/search` page
 
 | Field | Source |
@@ -114,6 +160,8 @@ Per lead:
 ---
 
 ## Server-side listing via residential proxy — `YELP_LISTING_SOURCE=relay` (DataDome)
+
+> Fallback only — the default path is Apify (see above). Use this when an actor is withdrawn or for a market Apify cannot reach.
 
 Yelp's `/search` is guarded by **DataDome** (not PerimeterX). Verified empirically 2026-07-14:
 
