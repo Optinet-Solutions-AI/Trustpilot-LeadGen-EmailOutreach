@@ -27,7 +27,7 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 | Fusion client | `tools/scraper/shared/yelp_fusion.py` — wraps `search_businesses_paged`, `list_categories` (used only when `YELP_LISTING_SOURCE=fusion`) |
 | Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` — on `apify` this is screenshot-only, no HTML fetch; on `browser`/`fusion`/`relay` it fetches `/biz/<slug>` via ScrapingBee `stealth_proxy` |
 | Profile parser | `_extract_profile_detail()` unwraps `/biz_redir?url=…` for the business website |
-| City seed | `tools/scraper/data/yelp_country_cities.json` (13 markets) |
+| City seed | `tools/scraper/data/yelp_country_cities.json` (24 markets) |
 | Category seed | `tools/scraper/data/yelp_categories.json` (30 SMB verticals) |
 | Upsert | `tools/db/upsert_leads.py` → `_upsert_nontrustpilot_lead` (writes `lead_platform_presences(platform='yelp')`) |
 
@@ -42,12 +42,17 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 | Call | URL / Endpoint | Service | Credits |
 |---|---|---|---|
 | Listing | `GET https://api.yelp.com/v3/businesses/search` | Yelp Fusion API | Free (5k/day) |
-| Profile page | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` | 75 / fetch |
-| Screenshot | bundled with profile fetch | ScrapingBee | free |
+| Profile page | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` (`fetch_via_scrapingbee`) | 75 / fetch |
+| Screenshot | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` (`fetch_screenshot_via_scrapingbee` — a SEPARATE paid call, not bundled) | 75 / fetch |
 
 **Why split:** ScrapingBee `stealth_proxy` can reach `/biz/<slug>` (verified — 200 OK, 1.8 MB HTML in the original probe) but CANNOT reach `/search` (verified — 100% timeout, 5/5 in the 2026-05-18 smoke test). Fusion is the only way into Yelp's listing data without burning credits on a service that doesn't work.
 
-**Cost model:** ~30 Fusion calls (free) + ~30-60 ScrapingBee profile fetches at 75 cr = **2,250-4,500 credits per scrape**.
+**Cost model (`browser`/`fusion`/`relay` fallback paths):** ~30 Fusion calls
+(free) + ~30-60 leads × TWO ScrapingBee calls each (profile HTML fetch +
+screenshot fetch, 75 cr/call = 150 cr/lead) = **4,500-9,000 credits per
+scrape**. The default `apify` path pays ScrapingBee for the screenshot only
+(no profile-HTML call) — 75 cr/lead, half this — see "Listing via Apify"
+below.
 
 ---
 
