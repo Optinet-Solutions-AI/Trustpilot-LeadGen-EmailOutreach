@@ -1,0 +1,87 @@
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+import tools.scraper.platforms.yelp_apify as ya
+
+FIXTURES = os.path.join(os.path.dirname(__file__), 'fixtures')
+
+
+def _fixture():
+    with open(os.path.join(FIXTURES, 'yelp_apify_memo23_sample.json'), encoding='utf-8') as f:
+        return json.load(f)
+
+
+def test_over_fetches_because_yelp_cannot_sort_ascending(monkeypatch):
+    # No Yelp sort returns low-rated first, so we pull extra and filter
+    # client-side. Default multiplier is 4.
+    monkeypatch.delenv('YELP_APIFY_OVERFETCH', raising=False)
+    monkeypatch.delenv('YELP_APIFY_MAX_ITEMS', raising=False)
+    assert ya.resolve_max_items(20) == 80
+
+
+def test_over_fetch_is_bounded_so_spend_cannot_run_away(monkeypatch):
+    monkeypatch.setenv('YELP_APIFY_OVERFETCH', '4')
+    monkeypatch.setenv('YELP_APIFY_MAX_ITEMS', '200')
+    assert ya.resolve_max_items(240) == 200
+
+
+def test_actor_input_carries_search_terms_and_bounded_cache(monkeypatch):
+    monkeypatch.delenv('YELP_APIFY_CACHE_DAYS', raising=False)
+    monkeypatch.delenv('YELP_APIFY_ENRICH_EMAILS', raising=False)
+    payload = ya.build_actor_input('Chicago, IL', 'plumbers', 80)
+    assert payload['searchTerms'] == ['plumbers']
+    assert payload['searchLocation'] == 'Chicago, IL'
+    assert payload['maxItems'] == 80
+    assert payload['enrichEmails'] is True
+    assert payload['scrapeReviews'] is False
+    # Cache defaults to unbounded age on this actor — pin it or rows can be
+    # arbitrarily stale.
+    assert payload['maxCacheAgeDays'] == 30
+
+
+def test_market_gate_allows_us_and_blocks_unverified(monkeypatch):
+    monkeypatch.delenv('YELP_APIFY_MARKETS', raising=False)
+    assert ya.market_allowed('US') is True
+    assert ya.market_allowed('us') is True
+    assert ya.market_allowed('DE') is False
+    monkeypatch.setenv('YELP_APIFY_MARKETS', 'US,CA')
+    assert ya.market_allowed('CA') is True
+
+
+def test_search_city_maps_actor_output(monkeypatch):
+    calls = {}
+
+    def fake_run_actor(actor_id, run_input, **kwargs):
+        calls['actor_id'] = actor_id
+        calls['run_input'] = run_input
+        return _fixture()
+
+    monkeypatch.setattr(ya, 'run_actor', fake_run_actor)
+    monkeypatch.delenv('APIFY_YELP_ACTOR', raising=False)
+    rows = ya.search_city_apify('Chicago, IL', 'plumbers', 20)
+    assert calls['actor_id'] == 'memo23/yelp-scraper'
+    assert calls['run_input']['maxItems'] == 80
+    assert len(rows) == 10
+    assert all('/biz/' in r['url'] for r in rows)
+
+
+def test_actor_is_env_swappable(monkeypatch):
+    calls = {}
+
+    def fake_run_actor(actor_id, run_input, **kwargs):
+        calls['actor_id'] = actor_id
+        return []
+
+    monkeypatch.setattr(ya, 'run_actor', fake_run_actor)
+    monkeypatch.setenv('APIFY_YELP_ACTOR', 'epctex/yelp-business-api')
+    ya.search_city_apify('Chicago, IL', 'plumbers', 20)
+    assert calls['actor_id'] == 'epctex/yelp-business-api'
+
+
+def test_junk_rows_do_not_kill_the_city(monkeypatch):
+    monkeypatch.setattr(ya, 'run_actor',
+                        lambda *a, **k: [{'garbage': 1}] + _fixture())
+    rows = ya.search_city_apify('Chicago, IL', 'plumbers', 20)
+    assert len(rows) == 10

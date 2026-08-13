@@ -26,8 +26,11 @@ SHAPE CONTRACT
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional
+
+from tools.scraper.shared.apify import ApifyCreditError, run_actor  # noqa: F401
 
 DEFAULT_ACTOR = 'memo23/yelp-scraper'
 
@@ -122,3 +125,79 @@ def map_business(item: dict) -> Optional[dict]:
         'website_email': item.get('contactEmail') or None,
         'profile_claimed': parse_claimed(item.get('isClaimed')),
     }
+
+
+_DEFAULT_OVERFETCH = 4
+_DEFAULT_MAX_ITEMS = 200
+_DEFAULT_CACHE_DAYS = 30
+_DEFAULT_MARKETS = 'US'
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(str(os.environ.get(name, '')).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def actor_id() -> str:
+    return (os.environ.get('APIFY_YELP_ACTOR') or '').strip() or DEFAULT_ACTOR
+
+
+def resolve_max_items(per_city_cap: int) -> int:
+    """How many businesses to ask the actor for, for one city.
+
+    Yelp offers no ascending-rating sort (searchSortBy is
+    ''|rating|review_count, and `rating` is DESCENDING), so the low-rated
+    leads we want can only be reached by pulling a wider slice and filtering
+    client-side. The ceiling keeps a wide over-fetch from running away with
+    spend.
+    """
+    overfetch = _env_int('YELP_APIFY_OVERFETCH', _DEFAULT_OVERFETCH)
+    ceiling = _env_int('YELP_APIFY_MAX_ITEMS', _DEFAULT_MAX_ITEMS)
+    return max(1, min(per_city_cap * overfetch, ceiling))
+
+
+def build_actor_input(city: str, category: str, max_items: int) -> dict:
+    """Actor input. `searchSortBy` is deliberately '' (Yelp's Recommended
+    order) — it returns a MIXED rating spread, whereas 'rating' returns
+    nothing but 5.0s and would starve a max_rating=3.5 run."""
+    enrich_emails = (os.environ.get('YELP_APIFY_ENRICH_EMAILS', 'true')
+                     .strip().lower() != 'false')
+    return {
+        'searchTerms': [category],
+        'searchLocation': city,
+        'searchSortBy': '',
+        'maxItems': max_items,
+        'fetchBusinessDetails': True,
+        'scrapeReviews': False,
+        'enrichEmails': enrich_emails,
+        'useCachedData': True,
+        # This actor's maxCacheAgeDays defaults to UNSET, i.e. cached rows of
+        # unbounded age. Pin it so we keep the cache discount without serving
+        # arbitrarily stale businesses.
+        'maxCacheAgeDays': _env_int('YELP_APIFY_CACHE_DAYS', _DEFAULT_CACHE_DAYS),
+    }
+
+
+def market_allowed(country: str) -> bool:
+    """Only markets verified by a live probe are enabled.
+
+    Adding one is a probe plus an env edit, never a code change.
+    """
+    raw = (os.environ.get('YELP_APIFY_MARKETS') or '').strip() or _DEFAULT_MARKETS
+    allowed = {c.strip().upper() for c in raw.split(',') if c.strip()}
+    return str(country or '').strip().upper() in allowed
+
+
+def search_city_apify(city: str, category: str, per_city_cap: int) -> list[dict]:
+    """Run the actor for one city and return mapped, Fusion-shaped businesses.
+
+    Raises ApifyCreditError straight through — an out-of-credit account must
+    never be reported as an empty market.
+    """
+    max_items = resolve_max_items(per_city_cap)
+    items = run_actor(actor_id(), build_actor_input(city, category, max_items))
+    mapped = [map_business(i) for i in (items or [])]
+    return [m for m in mapped if m]
