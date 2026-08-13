@@ -2,7 +2,7 @@
 
 **Objective:** Scrape Yelp listings for low-rated businesses, enrich with website/phone, upsert via the multi-platform path.
 
-Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages — every attempt against `/search` times out at 90 seconds (verified by smoke test 2026-05-18). So Yelp uses a **two-source design**: listing through Yelp Fusion (free, 5,000/day), profile enrichment through ScrapingBee.
+Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages — every attempt against `/search` times out at 90 seconds (verified by smoke test 2026-05-18). **Listing now defaults to a cookieless Apify actor** (`YELP_LISTING_SOURCE=apify`, `memo23/yelp-scraper`) that returns listing and profile data in one call, so the default path needs no browser and no Fusion key. Yelp Fusion has since gone paid with an expired trial, and the headed-browser (`browser`) and residential-proxy DataDome (`relay`) paths further down are fallbacks for a withdrawn actor or an unverified market.
 
 ---
 
@@ -23,9 +23,9 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 
 | Step | Tool |
 |---|---|
-| Listing | `tools/scraper/platforms/yelp.py` → `scrape_listing()` calls Fusion `GET /v3/businesses/search` |
-| Fusion client | `tools/scraper/shared/yelp_fusion.py` — wraps `search_businesses_paged`, `list_categories` |
-| Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` fetches `/biz/<slug>` via ScrapingBee `stealth_proxy` |
+| Listing | `tools/scraper/platforms/yelp.py` → `scrape_listing()` — source-dependent; **default `apify`** delegates to `tools/scraper/platforms/yelp_apify.py` (see below), `fusion` calls `GET /v3/businesses/search`, `browser`/`relay` scrape the `/search` HTML |
+| Fusion client | `tools/scraper/shared/yelp_fusion.py` — wraps `search_businesses_paged`, `list_categories` (used only when `YELP_LISTING_SOURCE=fusion`) |
+| Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` — on `apify` this is screenshot-only, no HTML fetch; on `browser`/`fusion`/`relay` it fetches `/biz/<slug>` via ScrapingBee `stealth_proxy` |
 | Profile parser | `_extract_profile_detail()` unwraps `/biz_redir?url=…` for the business website |
 | City seed | `tools/scraper/data/yelp_country_cities.json` (13 markets) |
 | Category seed | `tools/scraper/data/yelp_categories.json` (30 SMB verticals) |
@@ -34,6 +34,8 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 ---
 
 ## Network strategy
+
+> Fallback-only material: describes the `fusion`/`browser`/`relay` combo (Fusion or browser-scraped listing + ScrapingBee profile fetch). The default path is Apify — see "Listing via Apify" below.
 
 **Two sources, picked by what each can actually reach:**
 
@@ -97,6 +99,8 @@ that country, confirm real rows, then add the ISO code to the env var.
 
 ## Parsing the `/search` page
 
+> Applies to the `browser`/`relay` fallback sources, which scrape this HTML page directly. The default `apify` source receives structured JSON from the actor and never touches this markup.
+
 | Field | Source |
 |---|---|
 | `name` | text of the `/biz/<slug>` anchor that isn't a "N reviews" link or a bare digit |
@@ -140,6 +144,8 @@ Per lead:
 
 ## Failure modes
 
+> Fallback-source failure modes (`browser`/`fusion`/`relay`). For the default Apify path's failure codes, see "Listing via Apify" above.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | `FAILED:listing|yelp|missing_key|SCRAPINGBEE_API_KEY` | Env var not set | `gcloud run services update trustpilot-crm --update-env-vars SCRAPINGBEE_API_KEY=...` or set in local `.env` |
@@ -153,9 +159,11 @@ Per lead:
 
 | Variable | Required | Notes |
 |---|---|---|
-| `SCRAPINGBEE_API_KEY` | Yes | Same key used for TripAdvisor; powers both listing and profile for Yelp |
+| `SCRAPINGBEE_API_KEY` | Yes | Same key used for TripAdvisor. On the default `apify` path it buys ONLY the enrichment screenshot — one 75-credit `/biz/<slug>` fetch per lead. On the `browser`/`fusion`/`relay` fallback paths it also fetches profile HTML for website/phone/claimed status — two 75-credit calls per lead where the Apify path needs one. |
 
-`YELP_API_KEY` is **no longer used** — removed when listing pivoted from Fusion to `/search` via ScrapingBee.
+`YELP_API_KEY` is only needed when `YELP_LISTING_SOURCE=fusion` — Fusion is a fallback, not the default, and its trial has expired (`400 TRIAL_EXPIRED`).
+
+The full `YELP_LISTING_SOURCE=apify` variable set (`APIFY_YELP_ACTOR`, `YELP_APIFY_ENRICH_EMAILS`, `YELP_APIFY_OVERFETCH`, `YELP_APIFY_MAX_ITEMS`, `YELP_APIFY_CACHE_DAYS`, `YELP_APIFY_MARKETS`) is documented in "Listing via Apify" above and in `CLAUDE.md`'s env var table — not duplicated here.
 
 ---
 
@@ -245,7 +253,13 @@ Measured 2026-07-14 (network-level, from the dev box): a `_session-<token>` pins
 
 ---
 
-## EC2 activation runbook — making Yelp discovery run for ALL users
+## EC2 activation runbook — making the `relay` fallback run for ALL users
+
+> Fallback only. Apify already makes Yelp listing available to every user with
+> no dedicated worker, no EC2 relay, and no slider-solving (see "Listing via
+> Apify" above) — that's the default path. This runbook exists for the
+> `relay` fallback: use it only if the Apify actor is withdrawn or a market
+> is unreachable via Apify.
 
 > **Preferred host: the Linux worker under xvfb (cheaper).** The Windows box
 > carries a Windows-license premium and is only needed for FB/IG. To avoid
@@ -310,5 +324,5 @@ worker **inside the interactive noVNC session** (same place FB login runs), e.g.
 
 ## Adding markets and categories
 
-- **New country:** add a `"XX": ["City, Region", ...]` entry to `tools/scraper/data/yelp_country_cities.json`. Format mirrors what Yelp's `find_loc=` param accepts. JSON edit only — no code change.
+- **New country:** add a `"XX": ["City, Region", ...]` entry to `tools/scraper/data/yelp_country_cities.json`. Format mirrors what Yelp's `find_loc=` param accepts. JSON edit only — no code change. On the default `apify` path a country also needs a live single-city probe and its ISO code added to `YELP_APIFY_MARKETS` (see "Listing via Apify" above) before it will return anything.
 - **New category:** add `{"slug": "...", "display_name": "..."}` to `tools/scraper/data/yelp_categories.json`. Slugs are passed verbatim as `find_desc=` on the search URL; Yelp accepts category aliases AND human-readable keywords there. Run taxonomy refresh to land it in `platform_categories`.
