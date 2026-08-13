@@ -83,9 +83,30 @@ which used to discard website and phone for every lead past the 25th.
 **Rating filtering is client-side, by necessity.** `searchSortBy` offers only
 `''` (Recommended), `rating` (DESCENDING) and `review_count`. Nothing sorts
 ascending, so low-rated leads are reached by over-fetching the Recommended
-feed (`YELP_APIFY_OVERFETCH`, default 4x, ceiling `YELP_APIFY_MAX_ITEMS`) and
-filtering locally. Each city logs `returned N businesses, K matched filter` —
-watch that ratio and raise the multiplier if runs come up short.
+feed (`YELP_APIFY_OVERFETCH`, ceiling `YELP_APIFY_MAX_ITEMS`) and filtering
+locally.
+
+**Measured yield (2026-08-13, 233 live US businesses):**
+
+| Rating band | Share of the Recommended feed |
+|---|---|
+| 5.0 | 34.8% |
+| 4.5–4.9 | 31.8% |
+| 4.0–4.4 | 11.6% |
+| 3.5–3.9 | 6.4% |
+| ≤3.4 | 15.5% |
+
+Only **16.3%** land at or below the default `max_rating` of 3.5. So roughly
+**6 businesses must be fetched per usable lead** — about **$0.017 per lead**
+at $0.00275/item — which is why the over-fetch default is **6x**, not the 4x
+originally guessed (4x returned only ~65% of the leads a run asked for).
+Contact coverage across the same sample: website **52%**, contact email
+**18%**. Each city logs `returned N businesses, K matched filter`; if a
+market's ratio drifts well below 16%, raise the multiplier for it.
+
+**Do not raise the multiplier by more than the ceiling allows.** Every
+fetched business is billed whether or not it survives the filter, and the
+per-city ask is also bounded by what the job still needs (`max_results`).
 
 **US only until probed.** `YELP_APIFY_MARKETS` (default `US`) gates it. Other
 countries fail with `FAILED:listing|yelp|apify_market_unverified|<country>`

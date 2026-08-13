@@ -127,7 +127,14 @@ def map_business(item: dict) -> Optional[dict]:
     }
 
 
-_DEFAULT_OVERFETCH = 4
+# Measured 2026-08-13 across 233 live businesses: only 16.3% sit at or below
+# the default max_rating of 3.5 (5.0★ alone is 34.8% of the feed). Yelp has
+# no ascending sort, so the low-rated tail is reachable only by over-fetching
+# the Recommended feed and filtering locally — and at 4x a run returned just
+# ~65% of the leads it was asked for. 6x covers it (6 × 16.3% ≈ 0.98 leads
+# per lead requested). Roughly 6 fetched businesses per usable lead, about
+# $0.017 each at $0.00275/item.
+_DEFAULT_OVERFETCH = 6
 # Sized against the SERVER-side 300s ceiling on run-sync-get-dataset-items,
 # not against appetite. Measured 2026-08-13: the actor produced 169 items in
 # 324s (~2s/item) and still wasn't finished, so the original 200 could never

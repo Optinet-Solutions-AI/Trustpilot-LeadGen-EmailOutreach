@@ -15,10 +15,13 @@ def _fixture():
 
 def test_over_fetches_because_yelp_cannot_sort_ascending(monkeypatch):
     # No Yelp sort returns low-rated first, so we pull extra and filter
-    # client-side. Default multiplier is 4.
+    # client-side. Measured 2026-08-13 over 233 live businesses: only 16.3%
+    # sit at or below the default max_rating of 3.5, so a 4x multiplier
+    # returned ~65% of the leads asked for. The default is 6x.
     monkeypatch.delenv('YELP_APIFY_OVERFETCH', raising=False)
     monkeypatch.delenv('YELP_APIFY_MAX_ITEMS', raising=False)
-    assert ya.resolve_max_items(20) == 80
+    # 10 rather than 20 so this pins the MULTIPLIER, not the 100-item ceiling.
+    assert ya.resolve_max_items(10) == 60
 
 
 def test_over_fetch_is_bounded_so_spend_cannot_run_away(monkeypatch):
@@ -62,7 +65,8 @@ def test_search_city_maps_actor_output(monkeypatch):
     monkeypatch.delenv('APIFY_YELP_ACTOR', raising=False)
     rows = ya.search_city_apify('Chicago, IL', 'plumbers', 20)
     assert calls['actor_id'] == 'memo23/yelp-scraper'
-    assert calls['run_input']['maxItems'] == 80
+    # 20 x the 6x over-fetch is 120, clipped by the 100-item ceiling.
+    assert calls['run_input']['maxItems'] == 100
     assert len(rows) == 10
     assert all('/biz/' in r['url'] for r in rows)
 
