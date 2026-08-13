@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import tools.scraper.platforms.yelp as yelp
 from tools.scraper.platforms.yelp import YelpScraper
-from tools.scraper.shared.apify import ApifyCreditError
+from tools.scraper.shared.apify import ApifyCreditError, ApifyError
 
 FIXTURES = os.path.join(os.path.dirname(__file__), 'fixtures')
 FILTERS = {'country': 'US', 'category': 'plumbers',
@@ -66,6 +66,24 @@ def test_out_of_credit_is_not_reported_as_an_empty_market(monkeypatch, capsys):
     rows = _run(YelpScraper())
     assert rows == []
     assert 'FAILED:listing|yelp|apify_credit' in capsys.readouterr().out
+
+
+def test_generic_apify_error_reports_distinctly_and_keeps_partial_results(monkeypatch, capsys):
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    calls = {'n': 0}
+
+    def flaky(*a, **k):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _mapped()
+        raise ApifyError('actor run failed: HTTP 500')
+
+    monkeypatch.setattr(yelp, 'search_city_apify', flaky)
+    rows = _run(YelpScraper())
+    out = capsys.readouterr().out
+    assert rows, 'leads collected from the first city before the failure must survive'
+    assert 'FAILED:listing|yelp|apify_error' in out
+    assert 'apify_credit' not in out
 
 
 def test_empty_actor_result_is_distinct_from_filtered_out(monkeypatch, capsys):

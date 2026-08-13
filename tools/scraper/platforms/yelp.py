@@ -86,7 +86,7 @@ from tools.scraper.shared.scrapingbee import (
 from tools.scraper.shared.local_browser import LocalBrowserFetcher, BrowserBlocked
 from tools.scraper.shared.proxy_relay import RelayServer, get_exit_ip
 from tools.scraper.platforms.yelp_apify import market_allowed, search_city_apify
-from tools.scraper.shared.apify import ApifyCreditError
+from tools.scraper.shared.apify import ApifyCreditError, ApifyError
 
 
 # Where the country → list-of-cities seed lives.
@@ -727,6 +727,21 @@ class YelpScraper(BasePlatformScraper):
                 f"FAILED:listing|yelp|apify_credit|{e}. {len(results)} businesses "
                 f"collected before the account ran out. Top up at "
                 f"https://console.apify.com/billing and re-run.",
+                flush=True,
+            )
+        except ApifyError as e:
+            # Broader than ApifyCreditError — catches a missing token, a
+            # non-402 4xx/5xx from the actor, a non-JSON/non-list payload, or
+            # an unrecoverable timeout. Must sit AFTER the credit handler:
+            # ApifyCreditError subclasses ApifyError, so ordering it first
+            # here would make the credit-specific handler unreachable. Without
+            # this handler the exception escaped scrape_listing entirely —
+            # discarding partial results and dying with a traceback instead of
+            # a FAILED line the dashboard's Failures pane can parse.
+            print(
+                f"FAILED:listing|yelp|apify_error|{e}. {len(results)} businesses "
+                f"collected before the actor failed. Check "
+                f"https://console.apify.com/actors/runs for the failed run.",
                 flush=True,
             )
         finally:
