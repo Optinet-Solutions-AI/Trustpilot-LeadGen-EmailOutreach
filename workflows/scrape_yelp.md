@@ -108,6 +108,29 @@ market's ratio drifts well below 16%, raise the multiplier for it.
 fetched business is billed whether or not it survives the filter, and the
 per-city ask is also bounded by what the job still needs (`max_results`).
 
+### What a real production-band run costs and how long it takes
+
+Measured 2026-08-13, `max_rating=3.5`, `min_review_count=5`, `max_results=10`:
+
+- The city fan-out issues **one actor run per city, sequentially**, and each
+  run carries roughly 40s of its own startup before it returns anything. Six
+  cities took over 10 minutes and the job had not finished.
+- Total spend was about **$0.48 for ~10 leads (~$0.05/lead)** — higher than
+  the $0.017/lead the raw 16.3% yield implies, because later cities
+  re-fetch businesses that dedup or the rating filter then discards.
+- The per-city ask correctly shrinks as leads accumulate (observed: 60, 24,
+  24, 24, 12, 12, 10 items), so a nearly-complete job stops paying for a
+  full city.
+
+Practical guidance: a tight band like `max_rating=3.5` is a **long** job, not
+a quick one. Budget 10-15 minutes and expect sequential city runs. If you
+need it faster, widen `max_rating` (far more of the feed qualifies, so it
+finishes in one or two cities) rather than raising the over-fetch, which
+only makes each individual city run longer and dearer.
+
+Still cheap in context: even $0.05/lead is a fraction of the fallback path's
+150 ScrapingBee credits per lead.
+
 **US only until probed.** `YELP_APIFY_MARKETS` (default `US`) gates it. Other
 countries fail with `FAILED:listing|yelp|apify_market_unverified|<country>`
 rather than silently returning zero. To add one: run a single-city probe for
