@@ -783,7 +783,21 @@ class YelpScraper(BasePlatformScraper):
     ) -> list[dict]:
         if not profile_stubs:
             return []
+
+        apify_mode = (os.environ.get('YELP_LISTING_SOURCE', 'browser')
+                      .strip().lower() == 'apify')
+
         if not scrapingbee_enabled():
+            if apify_mode:
+                # Not a degraded run: on this path ScrapingBee only produces
+                # screenshots. Website, phone, email and claimed status all
+                # arrived with the listing.
+                print(
+                    "  Yelp: SCRAPINGBEE_API_KEY unset — returning apify leads "
+                    "with full data but no screenshots.",
+                    flush=True,
+                )
+                return [{**s, 'platform': self.name} for s in profile_stubs]
             print(
                 "FAILED:enrich|yelp|missing_key|SCRAPINGBEE_API_KEY is not set; "
                 "returning stubs without website/phone/screenshot.",
@@ -801,25 +815,62 @@ class YelpScraper(BasePlatformScraper):
         # 5★/1-review newbies and 1★/many-review chains. Operator can raise
         # via the YELP_MAX_ENRICH env var for one-off larger runs.
         # Default chosen 2026-05-20 to cut typical Yelp credit spend by ~80%.
+        #
+        # On the apify path, website/phone/email/claimed already arrived with
+        # the listing, so the cap no longer needs to gate data — only which
+        # leads get a screenshot (the one remaining real spend on this path).
+        # Default is unlimited screenshots on the apify path; the legacy
+        # default of 25 is unchanged.
         import math
-        try:
-            max_enrich = max(1, int(os.environ.get('YELP_MAX_ENRICH', '25')))
-        except ValueError:
-            max_enrich = 25
+        raw_cap = str(os.environ.get('YELP_MAX_ENRICH', '')).strip()
+        if apify_mode:
+            try:
+                max_shots = int(raw_cap) if raw_cap else len(profile_stubs)
+            except ValueError:
+                max_shots = len(profile_stubs)
+            max_shots = max(1, max_shots)
+        else:
+            try:
+                max_shots = max(1, int(raw_cap or '25'))
+            except ValueError:
+                max_shots = 25
 
-        if len(profile_stubs) > max_enrich:
-            def _quality(stub: dict) -> float:
-                rating = float(stub.get('rating') or 0.0)
-                reviews = int(stub.get('review_count') or 0)
-                return rating * math.log1p(reviews)
-            ranked = sorted(profile_stubs, key=_quality, reverse=True)
+        def _quality(stub: dict) -> float:
+            rating = float(stub.get('rating') or 0.0)
+            reviews = int(stub.get('review_count') or 0)
+            return rating * math.log1p(reviews)
+
+        if apify_mode:
+            # Every stub is processed; only the top-N get a screenshot.
+            shot_urls = {
+                s.get('profile_url')
+                for s in sorted(profile_stubs, key=_quality, reverse=True)[:max_shots]
+            }
+            if len(profile_stubs) > max_shots:
+                print(
+                    f"PROGRESS:enrich_capped:{max_shots}|{len(profile_stubs)}|"
+                    f"screenshotting top {max_shots} by rating x log(review_count); "
+                    f"all {len(profile_stubs)} leads keep full data",
+                    flush=True,
+                )
+            # ScrapingBee stealth screenshots are 75 credits each — make the
+            # projected spend visible in the job log BEFORE it is spent.
             print(
-                f"PROGRESS:enrich_capped:{max_enrich}|{len(profile_stubs)}|"
-                f"keeping top {max_enrich} by rating × log(review_count); "
-                f"skipping {len(profile_stubs) - max_enrich} long-tail leads",
+                f"  Yelp: {len(shot_urls)} screenshots planned "
+                f"(~{len(shot_urls) * 75} ScrapingBee credits).",
                 flush=True,
             )
-            profile_stubs = ranked[:max_enrich]
+        else:
+            shot_urls = None  # legacy path: everything that survives the cap
+            if len(profile_stubs) > max_shots:
+                ranked = sorted(profile_stubs, key=_quality, reverse=True)
+                print(
+                    f"PROGRESS:enrich_capped:{max_shots}|{len(profile_stubs)}|"
+                    f"keeping top {max_shots} by rating x log(review_count); "
+                    f"skipping {len(profile_stubs) - max_shots} long-tail leads",
+                    flush=True,
+                )
+                profile_stubs = ranked[:max_shots]
 
         total = len(profile_stubs)
         if screenshots_dir:
@@ -843,24 +894,30 @@ class YelpScraper(BasePlatformScraper):
                     flush=True,
                 )
 
-                html = await asyncio.to_thread(
-                    fetch_via_scrapingbee,
-                    profile_url,
-                    render_js=True,
-                    premium_proxy=False,
-                    stealth_proxy=True,
-                )
-                if not html:
-                    print(
-                        f"FAILED:profile|{profile_url}|empty_html|"
-                        f"ScrapingBee returned no HTML",
-                        flush=True,
+                if apify_mode:
+                    # website/phone/claimed already arrived with the listing —
+                    # the 75-credit HTML fetch would only re-derive them.
+                    detail: dict = {}
+                    want_shot = shot_urls is None or profile_url in shot_urls
+                else:
+                    want_shot = True
+                    html = await asyncio.to_thread(
+                        fetch_via_scrapingbee,
+                        profile_url,
+                        render_js=True,
+                        premium_proxy=False,
+                        stealth_proxy=True,
                     )
-                    results[idx] = {**stub, 'platform': self.name}
-                    print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
-                    return
-
-                detail = _extract_profile_detail(html)
+                    if not html:
+                        print(
+                            f"FAILED:profile|{profile_url}|empty_html|"
+                            f"ScrapingBee returned no HTML",
+                            flush=True,
+                        )
+                        results[idx] = {**stub, 'platform': self.name}
+                        print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
+                        return
+                    detail = _extract_profile_detail(html)
 
                 # Screenshot: fetch from ScrapingBee, upload to Supabase
                 # Storage directly, and store the resulting PUBLIC URL on the
@@ -869,7 +926,7 @@ class YelpScraper(BasePlatformScraper):
                 # screenshot_path is the public URL from this moment on so
                 # there's no two-step race with the post-enrich upload.
                 screenshot_path = ''
-                if screenshots_dir or supabase_storage_enabled():
+                if want_shot and (screenshots_dir or supabase_storage_enabled()):
                     png = await asyncio.to_thread(
                         fetch_screenshot_via_scrapingbee,
                         profile_url,
