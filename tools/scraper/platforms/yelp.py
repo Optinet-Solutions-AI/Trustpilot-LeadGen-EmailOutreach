@@ -85,7 +85,12 @@ from tools.scraper.shared.scrapingbee import (
 )
 from tools.scraper.shared.local_browser import LocalBrowserFetcher, BrowserBlocked
 from tools.scraper.shared.proxy_relay import RelayServer, get_exit_ip
-from tools.scraper.platforms.yelp_apify import market_allowed, search_city_apify
+from tools.scraper.platforms.yelp_apify import (
+    job_item_budget,
+    market_allowed,
+    resolve_max_items,
+    search_city_apify,
+)
 from tools.scraper.shared.apify import ApifyCreditError, ApifyError
 
 
@@ -501,6 +506,9 @@ class YelpScraper(BasePlatformScraper):
         seen_urls: set[str] = set()
         global_page = 0  # SSE event counter — frontend's "page N" label
         total_seen_pre_filter = 0  # counts every Fusion result, for diagnostics
+        # Apify spend guard (apify source only) — see the city loop below.
+        item_budget = job_item_budget()
+        items_asked_for = 0
 
         use_browser = source in ('browser', 'relay')
         use_apify = source == 'apify'
@@ -609,8 +617,31 @@ class YelpScraper(BasePlatformScraper):
                     city_cap = per_city_cap
                     if max_results is not None:
                         city_cap = max(1, min(city_cap, max_results - len(results)))
+
+                    # Whole-job spend guard. The per-city ceiling bounds one
+                    # city; nothing bounded the fan-out across every seeded
+                    # city until here. Budget is charged on what we ASK for,
+                    # not what comes back: the ask is the upper bound on what
+                    # the actor can bill, so accounting this way can only
+                    # under-spend, never over-spend.
+                    budget_left = item_budget - items_asked_for
+                    asked = resolve_max_items(city_cap, budget_left)
+                    if asked <= 0:
+                        print(
+                            f"FAILED:listing|yelp|apify_budget_exhausted|Job hit its "
+                            f"{item_budget}-item Apify budget after {city_idx} "
+                            f"{'city' if city_idx == 1 else 'cities'} and stopped with "
+                            f"{len(results)} leads. Raise YELP_APIFY_MAX_ITEMS_PER_JOB to "
+                            f"spend more per job, or narrow the search. At ~$0.00275/item "
+                            f"this job cost roughly ${items_asked_for * 0.00275:.2f}.",
+                            flush=True,
+                        )
+                        break
+                    items_asked_for += asked
+
                     businesses = await asyncio.to_thread(
                         search_city_apify, city, category, city_cap,
+                        item_budget=budget_left,
                     )
                     if not businesses:
                         # Distinct from "returned rows but all filtered out"

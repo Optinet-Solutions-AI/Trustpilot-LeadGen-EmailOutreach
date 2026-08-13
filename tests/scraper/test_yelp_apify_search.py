@@ -111,3 +111,31 @@ def test_cache_is_off_by_default_because_it_returns_thinner_rows(monkeypatch):
     assert ya.build_actor_input('New York, NY', 'plumbers', 40)['useCachedData'] is False
     monkeypatch.setenv('YELP_APIFY_USE_CACHE', 'true')
     assert ya.build_actor_input('New York, NY', 'plumbers', 40)['useCachedData'] is True
+
+
+def test_job_budget_clamps_a_city_ask_and_can_reach_zero(monkeypatch):
+    """The per-city ceiling bounds ONE city; the job budget bounds the whole
+    fan-out. It must be able to return 0 — a floor of 1 would keep buying one
+    more item forever instead of stopping."""
+    monkeypatch.delenv('YELP_APIFY_OVERFETCH', raising=False)
+    monkeypatch.delenv('YELP_APIFY_MAX_ITEMS', raising=False)
+    assert ya.resolve_max_items(10, 25) == 25       # budget below the 6x ask
+    assert ya.resolve_max_items(10, 500) == 60      # budget above it: unchanged
+    assert ya.resolve_max_items(10, 0) == 0         # exhausted
+    assert ya.resolve_max_items(10, -5) == 0        # never negative
+
+
+def test_search_city_does_not_call_the_actor_with_no_budget(monkeypatch):
+    """Starting a run we cannot pay for still bills for the run and every row
+    it returns, so an exhausted budget must skip the call entirely."""
+    called = []
+    monkeypatch.setattr(ya, 'run_actor', lambda *a, **k: called.append(1) or [])
+    assert ya.search_city_apify('New York, NY', 'plumbers', 10, item_budget=0) == []
+    assert not called, 'the actor must not be started with no budget left'
+
+
+def test_job_budget_default_is_read_from_env(monkeypatch):
+    monkeypatch.delenv('YELP_APIFY_MAX_ITEMS_PER_JOB', raising=False)
+    assert ya.job_item_budget() == 500
+    monkeypatch.setenv('YELP_APIFY_MAX_ITEMS_PER_JOB', '120')
+    assert ya.job_item_budget() == 120

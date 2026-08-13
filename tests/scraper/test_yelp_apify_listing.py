@@ -112,7 +112,7 @@ def test_per_city_ask_is_bounded_by_what_the_job_still_needs(monkeypatch):
     monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
     asks = []
 
-    def fake(city, category, cap):
+    def fake(city, category, cap, item_budget=None):
         asks.append(cap)
         return _mapped()[:3]
 
@@ -121,3 +121,25 @@ def test_per_city_ask_is_bounded_by_what_the_job_still_needs(monkeypatch):
     assert asks, 'the actor was never called'
     assert asks[0] == 5, f'first city should ask for at most the job total, got {asks[0]}'
     assert all(a <= 5 for a in asks), f'no city may out-ask the job total: {asks}'
+
+
+def test_job_stops_and_reports_when_the_apify_budget_runs_out(monkeypatch, capsys):
+    """A wide country fans out over every seeded city, each billed separately.
+    Nothing bounded that before the job budget, and once the token is on Cloud
+    Run any operator can start such a job."""
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    # 60 items buys one city at the 6x default, so the second city is refused.
+    monkeypatch.setenv('YELP_APIFY_MAX_ITEMS_PER_JOB', '60')
+    calls = []
+
+    def fake(city, category, cap, item_budget=None):
+        calls.append(city)
+        return _mapped()[:1]
+
+    monkeypatch.setattr(yelp, 'search_city_apify', fake)
+    rows = _run(YelpScraper(), max_results=50)
+    out = capsys.readouterr().out
+    assert len(calls) == 1, f'budget should have stopped the fan-out after one city, got {calls}'
+    assert 'FAILED:listing|yelp|apify_budget_exhausted' in out
+    # Leads already gathered are kept, not discarded.
+    assert len(rows) == 1

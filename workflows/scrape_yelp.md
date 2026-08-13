@@ -131,6 +131,13 @@ only makes each individual city run longer and dearer.
 Still cheap in context: even $0.05/lead is a fraction of the fallback path's
 150 ScrapingBee credits per lead.
 
+**Every job is capped.** `YELP_APIFY_MAX_ITEMS_PER_JOB` (default 500 items,
+~$1.40) bounds the whole city fan-out, not just one city. It is the only
+cap on Apify spend anywhere in this system, and once `APIFY_API_TOKEN` is
+set on Cloud Run ANY dashboard user can start a billable Yelp job — so
+lower it before widening access. On exhaustion the job stops cleanly with
+`apify_budget_exhausted` and keeps the leads it already found.
+
 **US only until probed.** `YELP_APIFY_MARKETS` (default `US`) gates it. Other
 countries fail with `FAILED:listing|yelp|apify_market_unverified|<country>`
 rather than silently returning zero. To add one: run a single-city probe for
@@ -139,6 +146,7 @@ that country, confirm real rows, then add the ISO code to the env var.
 | Failure | Meaning |
 |---|---|
 | `FAILED:listing\|yelp\|apify_credit` | Apify account out of credit — top up |
+| `FAILED:listing\|yelp\|apify_budget_exhausted` | The job hit `YELP_APIFY_MAX_ITEMS_PER_JOB`. Leads already gathered are kept. Raise the budget or narrow the search |
 | `FAILED:listing\|yelp\|apify_empty\|<city>` | Actor returned nothing; if every city does this, the actor broke |
 | `FAILED:listing\|yelp\|apify_error` | Generic Apify failure (missing token, 5xx, malformed payload) — leads already gathered from earlier cities in the same run are preserved |
 | `FAILED:listing\|yelp\|filter_too_strict` | Rows returned but none in the rating band — widen `max_rating` |

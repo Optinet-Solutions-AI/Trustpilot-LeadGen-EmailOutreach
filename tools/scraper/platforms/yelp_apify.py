@@ -144,6 +144,10 @@ _DEFAULT_OVERFETCH = 6
 # so the default stays inside the window.
 _DEFAULT_MAX_ITEMS = 100
 _DEFAULT_CACHE_DAYS = 30
+# ~$1.40 per job at memo23's measured $0.00275/item, and enough to fill a
+# normal run: at the measured 16.3% low-rated yield, 500 fetched businesses
+# is roughly 80 usable leads.
+_DEFAULT_JOB_ITEM_BUDGET = 500
 _DEFAULT_MARKETS = 'US'
 
 
@@ -159,7 +163,24 @@ def actor_id() -> str:
     return (os.environ.get('APIFY_YELP_ACTOR') or '').strip() or DEFAULT_ACTOR
 
 
-def resolve_max_items(per_city_cap: int) -> int:
+def job_item_budget() -> int:
+    """Hard ceiling on how many BILLABLE items one job may fetch, across all
+    its cities.
+
+    The per-city ceiling alone does not bound a job: a wide country fans out
+    over every seeded city and each one is billed separately. Once the token
+    is deployed, any operator can start such a job from the dashboard, and
+    nothing else in this system caps Apify spend. This is that cap.
+
+    Counted in items rather than dollars because the per-item price is a
+    property of whichever actor APIFY_YELP_ACTOR names, and a hardcoded
+    price would silently rot the moment that changes. At memo23's measured
+    $0.00275/item the default works out to roughly $1.40 per job.
+    """
+    return _env_int('YELP_APIFY_MAX_ITEMS_PER_JOB', _DEFAULT_JOB_ITEM_BUDGET)
+
+
+def resolve_max_items(per_city_cap: int, item_budget: Optional[int] = None) -> int:
     """How many businesses to ask the actor for, for one city.
 
     Yelp offers no ascending-rating sort (searchSortBy is
@@ -167,10 +188,20 @@ def resolve_max_items(per_city_cap: int) -> int:
     leads we want can only be reached by pulling a wider slice and filtering
     client-side. The ceiling keeps a wide over-fetch from running away with
     spend.
+
+    `item_budget`, when given, is what the whole JOB has left to spend (see
+    job_item_budget). It clamps this city's ask so the last city of a job
+    cannot overshoot the budget, and it is allowed to return 0 — meaning
+    "the job is out of budget, do not call the actor at all". That zero is
+    why this returns `min(...)` unguarded by max(1, ...) once a budget is
+    supplied: a floor of 1 would keep buying one more item forever.
     """
     overfetch = _env_int('YELP_APIFY_OVERFETCH', _DEFAULT_OVERFETCH)
     ceiling = _env_int('YELP_APIFY_MAX_ITEMS', _DEFAULT_MAX_ITEMS)
-    return max(1, min(per_city_cap * overfetch, ceiling))
+    want = max(1, min(per_city_cap * overfetch, ceiling))
+    if item_budget is not None:
+        want = min(want, max(0, item_budget))
+    return want
 
 
 def build_actor_input(city: str, category: str, max_items: int) -> dict:
@@ -213,13 +244,25 @@ def market_allowed(country: str) -> bool:
     return str(country or '').strip().upper() in allowed
 
 
-def search_city_apify(city: str, category: str, per_city_cap: int) -> list[dict]:
+def search_city_apify(
+    city: str,
+    category: str,
+    per_city_cap: int,
+    *,
+    item_budget: Optional[int] = None,
+) -> list[dict]:
     """Run the actor for one city and return mapped, Fusion-shaped businesses.
 
     Raises ApifyCreditError straight through — an out-of-credit account must
     never be reported as an empty market.
+
+    `item_budget` is the job's remaining item allowance. At zero we return
+    without calling the actor, because starting a run we have no budget for
+    still bills for the run and everything it returns.
     """
-    max_items = resolve_max_items(per_city_cap)
+    max_items = resolve_max_items(per_city_cap, item_budget)
+    if max_items <= 0:
+        return []
     items = run_actor(actor_id(), build_actor_input(city, category, max_items))
     mapped = [map_business(i) for i in (items or [])]
     return [m for m in mapped if m]
