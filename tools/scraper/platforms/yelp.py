@@ -85,6 +85,8 @@ from tools.scraper.shared.scrapingbee import (
 )
 from tools.scraper.shared.local_browser import LocalBrowserFetcher, BrowserBlocked
 from tools.scraper.shared.proxy_relay import RelayServer, get_exit_ip
+from tools.scraper.platforms.yelp_apify import market_allowed, search_city_apify
+from tools.scraper.shared.apify import ApifyCreditError
 
 
 # Where the country → list-of-cities seed lives.
@@ -467,6 +469,19 @@ class YelpScraper(BasePlatformScraper):
             )
             return []
 
+        if source == 'apify' and not market_allowed(country):
+            print(
+                f"FAILED:listing|yelp|apify_market_unverified|{country}|"
+                f"Only markets in YELP_APIFY_MARKETS (default US) have been "
+                f"probed against the Apify actor. Probe one city for this "
+                f"country first, then add it to YELP_APIFY_MARKETS. Not "
+                f"falling back to the browser source, because that only runs "
+                f"on the owner's desktop and would look like an empty market "
+                f"on a server.",
+                flush=True,
+            )
+            return []
+
         min_rating = float(filters.get('min_rating', 1.0))
         max_rating = float(filters.get('max_rating', 3.5))
         min_review_count = int(filters.get('min_review_count', 5))
@@ -488,6 +503,7 @@ class YelpScraper(BasePlatformScraper):
         total_seen_pre_filter = 0  # counts every Fusion result, for diagnostics
 
         use_browser = source in ('browser', 'relay')
+        use_apify = source == 'apify'
 
         # ── relay source: headed Chrome through the non-MITM residential-proxy
         # relay on a STICKY US session, replaying a human-minted DataDome cookie.
@@ -569,15 +585,36 @@ class YelpScraper(BasePlatformScraper):
         try:
             for city_idx, city in enumerate(cities):
                 global_page += 1
+                if use_apify:
+                    source_label = 'querying Apify actor...'
+                elif use_browser:
+                    source_label = 'querying Yelp /search (browser)...'
+                else:
+                    source_label = 'querying Fusion...'
                 print(
-                    f"  [city {city_idx + 1}/{len(cities)}] {city}: "
-                    + ("querying Yelp /search (browser)..." if use_browser else "querying Fusion..."),
+                    f"  [city {city_idx + 1}/{len(cities)}] {city}: {source_label}",
                     flush=True,
                 )
                 # Emit "we're looking at page N" the moment we START fetching.
                 print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
 
-                if use_browser:
+                if use_apify:
+                    businesses = await asyncio.to_thread(
+                        search_city_apify, city, category, per_city_cap,
+                    )
+                    if not businesses:
+                        # Distinct from "returned rows but all filtered out"
+                        # (reported once at the end as filter_too_strict). A
+                        # broken actor and a thin market must not look alike.
+                        print(
+                            f"FAILED:listing|yelp|apify_empty|{city}|The actor "
+                            f"returned 0 businesses for '{category}'. If every "
+                            f"city reports this, the actor is broken or its "
+                            f"input keys changed — check "
+                            f"https://console.apify.com/actors/runs.",
+                            flush=True,
+                        )
+                elif use_browser:
                     businesses = await asyncio.to_thread(
                         _search_city_browser, fetch_fn, city, category, per_city_cap,
                     )
@@ -633,6 +670,12 @@ class YelpScraper(BasePlatformScraper):
                         'country': country,
                         'category': category,
                         'city': city,
+                        # Present only on the apify source, which returns them
+                        # with the listing. None on browser/fusion, where they
+                        # come from the ScrapingBee profile fetch instead.
+                        'website_url': b.get('website_url'),
+                        'website_email': b.get('website_email'),
+                        'profile_claimed': b.get('profile_claimed'),
                     })
                     page_kept += 1
 
@@ -679,6 +722,13 @@ class YelpScraper(BasePlatformScraper):
                     f"earlier cities. Wait for cooldown and re-run remaining cities.",
                     flush=True,
                 )
+        except ApifyCreditError as e:
+            print(
+                f"FAILED:listing|yelp|apify_credit|{e}. {len(results)} businesses "
+                f"collected before the account ran out. Top up at "
+                f"https://console.apify.com/billing and re-run.",
+                flush=True,
+            )
         finally:
             if browser_ctx:
                 browser_ctx.__exit__(None, None, None)
