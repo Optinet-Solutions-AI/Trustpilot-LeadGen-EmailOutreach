@@ -420,8 +420,23 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
 // existing browse-mode adspower-cdp spawn/tunnel-parse mechanism rather than
 // inventing a new one. Activation (status='active', connect_status='captured')
 // happens in the API route once the VA finishes the FB login in the streamed
-// browser — this branch only gets the row to connect_status='ready'.
+// browser — this branch only gets the row to connect_status='ready', and then
+// HOLDS the session open (see handleOnboardRequest) until a terminal status.
 // ---------------------------------------------------------------------------
+
+/**
+ * Which `connect_status` values end an onboarding stream. Exported and unit
+ * tested in isolation because the surrounding hold/teardown logic in
+ * `handleOnboardRequest` is only reachable through `pollOnce`'s
+ * spawn/DB/timer glue, which has no unit harness (live-smoke territory) —
+ * this is the one piece of that decision that can be pulled out and verified
+ * directly. `'captured'` is the VA-clicked-Done path (API route); `'expired'`
+ * is this branch's own TTL sweep; `'ended'` is watched for parity with
+ * browse mode even though nothing currently sets it on an onboard row.
+ */
+export function isTerminalOnboardStatus(status: string | null | undefined): boolean {
+  return status === 'captured' || status === 'expired' || status === 'ended';
+}
 
 /**
  * Builds a country-pinned Enigma sticky-session proxy_config JSON string for
@@ -494,76 +509,209 @@ const onboardRecordProfileId: OnboardDeps['recordProfileId'] = async (accountId,
   if (error) throw new Error(`recordProfileId: ${error.message}`);
 };
 
-/** Reuses SPAWN_SCRIPT_ADSPOWER_CDP — the same spawner + tunnel-URL parsing
- * browse mode uses (`-ProfileId` instead of `-AccountId` since the onboarding
- * account's status isn't 'active' yet, so fleet_session can't resolve it by
- * account id — see the script's own header comment). */
-const onboardSpawnStream: OnboardDeps['spawnStream'] = (accountId, profileId) =>
-  new Promise<string>((resolve, reject) => {
-    const spawnArgs = ['-ExecutionPolicy', 'Bypass', '-File', SPAWN_SCRIPT_ADSPOWER_CDP, '-ProfileId', profileId];
-    const child = spawn('powershell', spawnArgs, { windowsHide: true });
-    let settled = false;
-    const fail = (msg: string): void => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(msg));
-    };
-    // Same ENOENT-crashes-the-worker hazard as onboardCreateProfile above.
-    child.on('error', (err) => fail(`adspower-cdp spawn failed for account=${accountId}: ${err.message}`));
-    child.stdout.on('data', (buf: Buffer) => {
-      const lines = buf.toString('utf8').split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        log(`[onboard ps stdout] ${trimmed.slice(0, 200)}`);
-        if (!settled) {
-          // Same trycloudflare match browse mode uses to detect the tunnel line.
-          const match = trimmed.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com[^\s]*/i);
-          if (match) { settled = true; resolve(match[0]); }
-        }
-      }
-    });
-    child.stderr.on('data', (buf: Buffer) => {
-      log(`[onboard ps stderr] ${buf.toString('utf8').trim().slice(0, 200)}`);
-    });
-    child.on('exit', (code) => {
-      if (!settled) fail(`adspower-cdp spawn exited code=${code} before printing a tunnel URL`);
-    });
-  });
-
 const onboardSetReady: OnboardDeps['setReady'] = async (accountId, tunnelUrl) => {
   await updateConnectStatus(accountId, { connect_status: 'ready', connect_tunnel_url: tunnelUrl });
 };
 
+/**
+ * Runs the full onboard lifecycle for one claimed row and resolves only when
+ * the streamed session actually ends — NEVER at 'ready'. This holds the
+ * module-level `busy` guard for the whole session, exactly like browse mode's
+ * `handleRequest`, because the onboarding stream shares the same fixed
+ * BRIDGE_PORT/cloudflared resources as every other adspower-cdp session on
+ * this box: releasing `busy` at 'ready' would let a second poll spawn a
+ * competing session that tears down this one's tunnel mid-login (the ps1
+ * script unconditionally kills anything already on BRIDGE_PORT and every
+ * cloudflared process on startup).
+ *
+ * Reuses browse mode's exact lifecycle pieces: `killProcessTree`,
+ * `END_WATCH_INTERVAL_MS`, and a `finishSession`-shaped idempotent teardown
+ * (here `finishOnboardSession`). The only new terminal signal is
+ * `connect_status='captured'` (set by the API's onboard-complete route once
+ * the VA clicks Done) — `'expired'` (this branch's own TTL sweep, mirroring
+ * connect mode) and `'ended'` are watched too for parity/future-proofing,
+ * plus the stream child exiting on its own.
+ */
 async function handleOnboardRequest(row: ConnectRequestRow): Promise<void> {
-  log(`claimed account=${row.id} session=${row.connect_session_id} mode=onboard`);
-  try {
-    const { data, error } = await getSupabase()
-      .from('social_accounts').select('country').eq('id', row.id).single();
-    if (error) throw new Error(`country lookup: ${error.message}`);
-    const country = ((data as { country?: string } | null)?.country || '').trim();
-    if (!country) throw new Error(`account ${row.id} has no country set`);
+  return new Promise((resolve) => {
+    log(`claimed account=${row.id} session=${row.connect_session_id} mode=onboard`);
 
-    const proxyJson = buildOnboardProxyConfig(country, row.connect_session_id ?? row.id);
+    void (async () => {
+      // finalized: a terminal connect_status has been observed/written — set
+      // before any further teardown decision so concurrent timers don't race
+      // to write conflicting statuses (same guard shape as handleRequest).
+      let finalized = false;
+      // sessionEnded: finishOnboardSession has run — idempotent, first caller wins.
+      let sessionEnded = false;
+      let streamChild: ReturnType<typeof spawn> | null = null;
+      let profileIdForStop: string | null = null;
+      let endWatchInterval: ReturnType<typeof setInterval> | null = null;
+      let expirySweep: ReturnType<typeof setInterval> | null = null;
 
-    await buildOnboardSteps(
-      { accountId: row.id, country, proxyJson },
-      {
-        createProfile: onboardCreateProfile,
-        recordProfileId: onboardRecordProfileId,
-        spawnStream: onboardSpawnStream,
-        setReady: onboardSetReady,
-      },
-    );
-  } catch (err) {
-    const message = (err as Error).message ?? String(err);
-    log(`onboard failed for account=${row.id}: ${message}`);
-    try {
-      await updateConnectStatus(row.id, { connect_status: 'failed', connect_error: message.slice(0, 1800) });
-    } catch (statusErr) {
-      log(`onboard failed-status update also failed for account=${row.id}: ${(statusErr as Error).message}`);
-    }
-  }
+      // Rolling stdout/stderr tail, same shape as handleRequest's recentOutput,
+      // surfaced in connect_error if the stream dies unexpectedly.
+      const recentOutput: string[] = [];
+      const MAX_RECENT = 40;
+      const pushRecent = (tag: string, line: string): void => {
+        recentOutput.push(`${tag} ${line}`);
+        if (recentOutput.length > MAX_RECENT) recentOutput.shift();
+      };
+
+      const finishOnboardSession = (): void => {
+        if (sessionEnded) return;
+        sessionEnded = true;
+        if (endWatchInterval !== null) clearInterval(endWatchInterval);
+        if (expirySweep !== null) clearInterval(expirySweep);
+        killProcessTree(streamChild?.pid);
+        if (profileIdForStop) {
+          // Stop by --profile, not --account: the onboarding account's
+          // status isn't 'active' yet (activation is the API route's job),
+          // and fleet_session's --account resolution requires status='active'
+          // — see the -ProfileId addition in the ps1 spawner for the same reason.
+          try {
+            const stopChild = spawn(
+              PYTHON,
+              ['-m', 'tools.scraper.fleet_session', '--profile', profileIdForStop, '--stop'],
+              { cwd: config.projectRoot, windowsHide: true },
+            );
+            // CRITICAL: same ENOENT-crashes-the-worker hazard as every other
+            // spawn in this file — must have an 'error' listener.
+            stopChild.on('error', (err) => {
+              log(`onboard adspower --stop spawn failed for account=${row.id}: ${err.message}`);
+            });
+          } catch (err) {
+            log(`onboard adspower --stop spawn failed for account=${row.id}: ${(err as Error).message}`);
+          }
+        }
+        resolve();
+      };
+
+      try {
+        const { data, error } = await getSupabase()
+          .from('social_accounts').select('country').eq('id', row.id).single();
+        if (error) throw new Error(`country lookup: ${error.message}`);
+        const country = ((data as { country?: string } | null)?.country || '').trim();
+        if (!country) throw new Error(`account ${row.id} has no country set`);
+
+        const proxyJson = buildOnboardProxyConfig(country, row.connect_session_id ?? row.id);
+
+        // Reuses SPAWN_SCRIPT_ADSPOWER_CDP — the same spawner + tunnel-URL
+        // parsing browse mode uses (`-ProfileId` instead of `-AccountId`, per
+        // the reason above). Unlike the pre-fix version, this does NOT settle
+        // once the tunnel URL is captured — the child and its exit are wired
+        // into the outer closure (`streamChild`, `profileIdForStop`) so the
+        // session can be watched and torn down after buildOnboardSteps returns.
+        const spawnStream: OnboardDeps['spawnStream'] = (accountId, profileId) =>
+          new Promise<string>((resolveStream, rejectStream) => {
+            profileIdForStop = profileId;
+            const spawnArgs = ['-ExecutionPolicy', 'Bypass', '-File', SPAWN_SCRIPT_ADSPOWER_CDP, '-ProfileId', profileId];
+            const child = spawn('powershell', spawnArgs, { windowsHide: true });
+            streamChild = child;
+            let settled = false;
+            // Same ENOENT-crashes-the-worker hazard as every other spawn here.
+            child.on('error', (err) => {
+              if (!settled) { settled = true; rejectStream(new Error(`adspower-cdp spawn failed for account=${accountId}: ${err.message}`)); }
+            });
+            child.stdout.on('data', (buf: Buffer) => {
+              const lines = buf.toString('utf8').split(/\r?\n/);
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                log(`[onboard ps stdout] ${trimmed.slice(0, 200)}`);
+                pushRecent('out:', trimmed.slice(0, 200));
+                if (!settled) {
+                  // Same trycloudflare match browse mode uses to detect the tunnel line.
+                  const match = trimmed.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com[^\s]*/i);
+                  if (match) { settled = true; resolveStream(match[0]); }
+                }
+              }
+            });
+            child.stderr.on('data', (buf: Buffer) => {
+              const trimmed = buf.toString('utf8').trim();
+              if (!trimmed) return;
+              log(`[onboard ps stderr] ${trimmed.slice(0, 200)}`);
+              pushRecent('err:', trimmed.slice(0, 200));
+            });
+            child.on('exit', (code) => {
+              if (!settled) {
+                settled = true;
+                rejectStream(new Error(`adspower-cdp spawn exited code=${code} before printing a tunnel URL`));
+                return;
+              }
+              // The tunnel was up (and 'ready' presumably set) and the stream
+              // ended on its own — e.g. the ps1 script's own CDP-poll loop
+              // noticed the AdsPower browser closed. Mirrors handleRequest's
+              // child.on('exit'): if no terminal status was reached yet
+              // (VA never clicked Done, TTL hadn't fired), mark failed with
+              // the recent output tail so the operator can diagnose it.
+              if (!finalized) {
+                finalized = true;
+                const tail = recentOutput.slice(-20).join(' | ');
+                void updateConnectStatus(row.id, {
+                  connect_status: 'failed',
+                  connect_error: `onboard stream exited code=${code} | recent: ${tail}`.slice(0, 1800),
+                });
+              }
+              finishOnboardSession();
+            });
+          });
+
+        await buildOnboardSteps(
+          { accountId: row.id, country, proxyJson },
+          {
+            createProfile: onboardCreateProfile,
+            recordProfileId: onboardRecordProfileId,
+            spawnStream,
+            setReady: onboardSetReady,
+          },
+        );
+
+        // 'ready' is now set and the CDP stream is live. Do NOT resolve here —
+        // hold `busy` for the whole session (see the function doc comment).
+        // End-watch: poll for the row reaching a terminal connect_status, the
+        // same shape as handleRequest's browse-mode end-watch loop.
+        endWatchInterval = setInterval(async () => {
+          if (finalized) return;
+          try {
+            const status = await getConnectStatusValue(row.id);
+            if (isTerminalOnboardStatus(status)) {
+              finalized = true;
+              log(`account=${row.id} onboard session reached terminal status=${status}; tearing down stream`);
+              finishOnboardSession();
+            }
+          } catch (err) {
+            log(`onboard end-watch poll error: ${(err as Error).message}`);
+          }
+        }, END_WATCH_INTERVAL_MS);
+
+        // TTL sweep — mirrors connect mode's expirySweep: if the VA abandons
+        // the login before the TTL, mark 'expired' ourselves rather than
+        // waiting forever for a 'captured' that will never come.
+        const expiresAt = row.connect_expires_at ? new Date(row.connect_expires_at).getTime() : Date.now() + 600_000;
+        expirySweep = setInterval(async () => {
+          if (finalized) return;
+          if (Date.now() > expiresAt) {
+            finalized = true; // set before async work, mirroring handleRequest's expirySweep
+            log(`account=${row.id} onboard session expired without completion; marking expired`);
+            await updateConnectStatus(row.id, {
+              connect_status: 'expired',
+              connect_error: 'onboarding login not completed within the session TTL',
+            });
+            finishOnboardSession();
+          }
+        }, 5_000);
+      } catch (err) {
+        const message = (err as Error).message ?? String(err);
+        log(`onboard failed for account=${row.id}: ${message}`);
+        try {
+          await updateConnectStatus(row.id, { connect_status: 'failed', connect_error: message.slice(0, 1800) });
+        } catch (statusErr) {
+          log(`onboard failed-status update also failed for account=${row.id}: ${(statusErr as Error).message}`);
+        }
+        finishOnboardSession();
+      }
+    })();
+  });
 }
 
 async function pollOnce(platform: string): Promise<void> {
