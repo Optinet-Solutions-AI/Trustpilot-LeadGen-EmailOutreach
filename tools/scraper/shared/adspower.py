@@ -58,6 +58,15 @@ class AdsPowerError(RuntimeError):
     """A Local API call failed."""
 
 
+class AdsPowerUnreachable(AdsPowerError):
+    """The Local API could not be reached at all (connection refused/timeout).
+
+    Distinct from a call that reached the API but got an error code back: the
+    watchdog relaunches AdsPower only when it is genuinely unreachable. A
+    reachable-but-erroring API (e.g. Security Verification on without a key)
+    is a config problem a relaunch cannot fix — see probe()."""
+
+
 def _base() -> str:
     return (os.environ.get('ADSPOWER_API_BASE') or DEFAULT_BASE).rstrip('/')
 
@@ -81,7 +90,7 @@ def _call(path: str, params: dict) -> dict:
     try:
         resp = requests.get(url, params=params, headers=_headers(), timeout=REQUEST_TIMEOUT)
     except requests.exceptions.RequestException as exc:
-        raise AdsPowerError(
+        raise AdsPowerUnreachable(
             f'Could not reach the AdsPower Local API at {url}. Is the AdsPower '
             f'desktop app running on this host? Underlying error: {exc}'
         ) from exc
@@ -154,10 +163,28 @@ def stop_profile(profile_id: str) -> None:
 def health_check() -> bool:
     """True if the AdsPower Local API is up (answers code 0 on /status).
 
-    The fleet watchdog uses this to decide whether to relaunch the desktop
-    client. Never raises — an unreachable or erroring API reads as False."""
+    A simple boolean for callers that only care whether the API is usable.
+    Never raises — an unreachable or erroring API both read as False. The
+    watchdog uses probe() instead, because it must distinguish those two."""
+    return probe() == 'up'
+
+
+def probe() -> str:
+    """Classify the Local API state for the watchdog. Never raises.
+
+      'up'          — /status answered code 0; the client is healthy.
+      'unreachable' — could not connect at all; the client is down and a
+                      relaunch is the right recovery.
+      'error'       — the client answered but with an error code / bad body
+                      (e.g. Security Verification enabled without a valid
+                      ADSPOWER_API_KEY). A relaunch cannot fix this and would
+                      just thrash the GUI every watchdog tick, so the watchdog
+                      must surface it instead of relaunching.
+    """
     try:
         _call('/status', {})
-        return True
+        return 'up'
+    except AdsPowerUnreachable:
+        return 'unreachable'
     except AdsPowerError:
-        return False
+        return 'error'

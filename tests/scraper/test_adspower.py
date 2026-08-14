@@ -58,9 +58,40 @@ def test_start_profile_raises_when_local_api_unreachable(monkeypatch):
         raise adspower.requests.exceptions.ConnectionError('connection refused')
 
     monkeypatch.setattr(adspower.requests, 'get', refuse)
-    with pytest.raises(adspower.AdsPowerError) as exc:
+    # AdsPowerUnreachable is-a AdsPowerError, so existing callers are unaffected.
+    with pytest.raises(adspower.AdsPowerUnreachable) as exc:
         adspower.start_profile('kxxxxx')
     assert 'AdsPower desktop app' in str(exc.value)
+
+
+def test_probe_returns_up_when_status_ok(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(adspower.requests, 'get', lambda url, **kw: _Resp(200, {'code': 0, 'data': {}}))
+    assert adspower.probe() == 'up'
+    assert adspower.health_check() is True
+
+
+def test_probe_returns_unreachable_on_connection_error(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+
+    def refuse(url, **kw):
+        raise adspower.requests.exceptions.ConnectionError('connection refused')
+
+    monkeypatch.setattr(adspower.requests, 'get', refuse)
+    assert adspower.probe() == 'unreachable'
+    assert adspower.health_check() is False
+
+
+def test_probe_returns_error_when_api_answers_with_error_code(monkeypatch):
+    """The client is up but rejects the call (e.g. Security Verification on
+    without a key). This must be distinguishable from 'unreachable' so the
+    watchdog does not relaunch a running client."""
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(adspower.requests, 'get', lambda url, **kw: _Resp(200, {
+        'code': -1, 'msg': 'Please config the api key in Security Verification',
+    }))
+    assert adspower.probe() == 'error'
+    assert adspower.health_check() is False
 
 
 def test_start_profile_rejects_missing_selenium_address(monkeypatch):
