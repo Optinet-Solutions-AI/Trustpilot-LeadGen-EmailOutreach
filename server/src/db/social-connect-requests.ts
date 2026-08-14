@@ -238,3 +238,53 @@ export async function getConnectStatusValue(accountId: string): Promise<string |
   if (error) return null;
   return (data as { connect_status: string | null }).connect_status;
 }
+
+// Onboarding wizard: create a brand-new social_accounts row for a country
+// that has no FB account yet (as opposed to enqueueConnectRequest, which
+// re-logs-in an EXISTING account). The row starts life pre-active — status
+// must be one of the social_accounts_status_check values
+// ('active' | 'checkpoint' | 'banned' | 'disabled'); there is no
+// 'provisioning' value in that CHECK constraint (it only exists in the
+// separate connect_status lifecycle), so we park the row as 'disabled'
+// until activateOnboardedAccount flips it. `handle` (the FB username) is
+// NOT NULL with no default and is unknown before login, so it gets an
+// empty-string placeholder until the worker learns it post-login.
+export async function enqueueOnboardRequest(
+  opts: { country: string; requestedBy: string },
+): Promise<{ accountId: string; sessionId: string }> {
+  const sb = getSupabase();
+  const sessionId = crypto.randomUUID();
+  const now = new Date();
+  const expires = new Date(now.getTime() + TTL_MS);
+  const { data, error } = await sb
+    .from('social_accounts')
+    .insert({
+      platform: 'facebook',
+      handle: '',
+      country: opts.country,
+      status: 'disabled',
+      connect_mode: 'onboard',
+      connect_session_id: sessionId,
+      connect_status: 'requested' as ConnectStatus,
+      connect_requested_by: opts.requestedBy,
+      connect_started_at: now.toISOString(),
+      connect_expires_at: expires.toISOString(),
+    })
+    .select('id')
+    .single();
+  if (error) throw new Error(`enqueueOnboardRequest: ${error.message}`);
+  return { accountId: (data as { id: string }).id, sessionId };
+}
+
+export async function activateOnboardedAccount(accountId: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from('social_accounts')
+    .update({
+      status: 'active',
+      connect_status: 'captured' as ConnectStatus,
+      last_login_at: new Date().toISOString(),
+    })
+    .eq('id', accountId)
+    .eq('connect_mode', 'onboard');
+  if (error) throw new Error(`activateOnboardedAccount: ${error.message}`);
+}
