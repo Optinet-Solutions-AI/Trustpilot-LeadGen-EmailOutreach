@@ -878,12 +878,27 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       await updateJob(jobId, { total_found: rawData.length });
       emitProgress(jobId, 'category_done', String(rawData.length));
     } else {
-      const { promise: listPromise } = runPython(jobId, 'tools/scraper/run.py', [
+      // The operator's requested lead count has to reach the scraper as
+      // --max-results. run.py accepts it and every plugin's scrape_listing
+      // takes it, but it was never being passed, so a job asking for 5 leads
+      // paginated as if it wanted the platform default (240 per city).
+      //
+      // That is expensive, not just wasteful, on any metered source: a live
+      // Yelp/Apify job asking for 5 leads returned 195 and then queued 195
+      // profile screenshots at 75 credits each. Every metered listing source
+      // needs this bound.
+      const listArgs = [
         '--platform', platform,
         '--action', 'list',
         '--filters', filtersJson,
         '--output', rawOutput,
-      ], platformEnv);
+      ];
+      const requestedMax = Number((filters as Record<string, unknown> | undefined)?.max_results);
+      if (Number.isFinite(requestedMax) && requestedMax > 0) {
+        listArgs.push('--max-results', String(Math.floor(requestedMax)));
+      }
+      const { promise: listPromise } = runPython(jobId, 'tools/scraper/run.py',
+        listArgs, platformEnv);
       await listPromise;
 
       try {
