@@ -1,8 +1,9 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams } from '../types/scrape';
+import api from '../api/client';
 import CountryPicker from './CountryPicker';
 import LocationPicker from './LocationPicker';
 import NichePicker from './NichePicker';
@@ -15,12 +16,16 @@ import RangeInput from '../ui/RangeInput';
 import Combobox from '../ui/Combobox';
 import ScrapeCostAdvisory from './ScrapeCostAdvisory';
 
-// Outreach country scope. Restricts the Trustpilot, TripAdvisor, Yelp,
-// and FB businesses country dropdowns to the same set that maps cleanly
-// onto the country-mismatch group filter in
-// tools/scraper/platforms/facebook.py. Covers full Europe + United States.
-// Keep these ISO codes in sync with CITY_TO_COUNTRY + _COUNTRY_NAME_TOKENS
-// in that Python file.
+// Outreach country scope. Restricts the Trustpilot, TripAdvisor, and Yelp
+// country dropdowns to the same set that maps cleanly onto the
+// country-mismatch group filter in tools/scraper/platforms/facebook.py.
+// Covers full Europe + United States. Keep these ISO codes in sync with
+// CITY_TO_COUNTRY + _COUNTRY_NAME_TOKENS in that Python file.
+//
+// The FB businesses dropdown no longer uses this list directly (Option A:
+// it's gated to onboarded active markets via GET /api/social-accounts/countries,
+// fetched below) — this constant is kept only as its pre-fetch fallback so the
+// picker doesn't render empty for the instant before that call resolves.
 const OUTREACH_COUNTRY_CODES = [
   // Western & Central Europe
   'GB', 'IE',
@@ -173,6 +178,27 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [fbGroupKeyword, setFbGroupKeyword] = useState('recommend');
   const fbParsedGroups = parseGroupUrls(fbGroupUrls);
   const fbIsGroupScrape = fbParsedGroups.length > 0;
+
+  // Active-market gate (Option A). The FB businesses country field is
+  // restricted to countries that actually have an onboarded, active FB
+  // account — picking anything else can never run. null = not fetched yet
+  // (falls back to OUTREACH_COUNTRY_CODES below so the picker isn't empty
+  // for an instant); [] = fetched and genuinely no active markets.
+  const [fbActiveCountries, setFbActiveCountries] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    if (platform !== 'facebook' || fbActiveCountries !== null) return;
+    let cancelled = false;
+    api
+      .get('/social-accounts/countries')
+      .then((res) => {
+        if (cancelled) return;
+        const list = (res.data?.data?.countries ?? []) as string[];
+        setFbActiveCountries(Array.isArray(list) ? list : []);
+      })
+      .catch(() => { if (!cancelled) setFbActiveCountries([]); });
+    return () => { cancelled = true; };
+  }, [platform, fbActiveCountries]);
 
   // Shared flags
   const [enrich, setEnrich] = useState(false);
@@ -523,7 +549,20 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-country">
                     Country
                   </label>
-                  <CountryPicker id="fb-country" value={fbCountry} onChange={setFbCountry} disabled={busy} restrict={OUTREACH_COUNTRY_CODES} />
+                  {fbActiveCountries !== null && fbActiveCountries.length === 0 ? (
+                    <p className="text-[11px] text-on-surface-variant">
+                      No onboarded Facebook accounts yet &mdash; add one on the{' '}
+                      <a href="/social-accounts" className="underline">Social Accounts</a> page.
+                    </p>
+                  ) : (
+                    <CountryPicker
+                      id="fb-country"
+                      value={fbCountry}
+                      onChange={setFbCountry}
+                      disabled={busy}
+                      restrict={fbActiveCountries ?? OUTREACH_COUNTRY_CODES}
+                    />
+                  )}
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fb-category">
