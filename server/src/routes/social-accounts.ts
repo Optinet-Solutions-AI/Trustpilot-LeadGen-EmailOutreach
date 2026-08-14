@@ -13,7 +13,8 @@ import path from 'path';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 import { encryptCookie } from '../lib/encryption.js';
-import { enqueueConnectRequest, getConnectRequestStatus, enqueueBrowseSession, endBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
+import { enqueueConnectRequest, getConnectRequestStatus, enqueueBrowseSession, endBrowseSession, AccountInUseError, enqueueOnboardRequest, activateOnboardedAccount } from '../db/social-connect-requests.js';
+import { listActiveCountries } from '../db/social-accounts-countries.js';
 
 const router = Router();
 
@@ -91,6 +92,38 @@ router.post('/', async (req: Request, res: Response) => {
       .single();
     if (error) throw new Error(error.message);
     res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
+  }
+});
+
+// ── GET /api/social-accounts/countries ───────────────────────────────
+// Distinct active-account countries (drives the FB scrape dropdown,
+// Option A). Registered BEFORE any /:id route so 'countries' is never
+// parsed as an :id.
+router.get('/countries', async (_req: Request, res: Response) => {
+  try {
+    const countries = await listActiveCountries();
+    res.json({ success: true, data: { countries } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
+  }
+});
+
+// ── POST /api/social-accounts/onboard ────────────────────────────────
+// Start onboarding a NEW country-pinned FB account (creates the row; the
+// EC2 worker does the AdsPower profile creation + stream). Also
+// registered before any /:id route for the same reason as /countries.
+router.post('/onboard', async (req: Request, res: Response) => {
+  const country = String(req.body?.country ?? '').trim();
+  if (!country) {
+    res.status(400).json({ success: false, error: 'country is required' });
+    return;
+  }
+  try {
+    const requestedBy = String(req.body?.requestedBy ?? 'va');
+    const { accountId } = await enqueueOnboardRequest({ country, requestedBy });
+    res.json({ success: true, data: { accountId } });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -315,6 +348,17 @@ router.get('/:id/connect-status', async (req: Request, res: Response) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// ── POST /api/social-accounts/:id/onboard-complete ───────────────────
+// VA clicked "Done" in the streamed onboarding browser — verify + activate.
+router.post('/:id/onboard-complete', async (req: Request, res: Response) => {
+  try {
+    await activateOnboardedAccount(String(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
   }
 });
 
