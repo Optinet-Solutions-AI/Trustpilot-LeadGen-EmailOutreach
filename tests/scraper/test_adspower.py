@@ -231,6 +231,39 @@ def test_stop_profile_propagates_connection_error(monkeypatch):
     assert 'AdsPower desktop app' in str(exc.value)
 
 
+def test_create_profile_returns_new_user_id(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    seen = {}
+
+    def capture(url, **kw):
+        seen['url'] = url
+        seen['json'] = kw.get('json')
+        return _Resp(200, {'code': 0, 'data': {'id': 'knewprof1'}})
+
+    # create uses POST, not GET
+    monkeypatch.setattr(adspower.requests, 'post', capture)
+    pid = adspower.create_profile(
+        name='fleet-GB-1',
+        country='GB',
+        proxy_config={'proxy_soft': 'other', 'proxy_type': 'http',
+                      'proxy_host': 'gb.enigma.io', 'proxy_port': '1000',
+                      'proxy_user': 'u', 'proxy_password': 'p'},
+    )
+    assert pid == 'knewprof1'
+    assert seen['url'].endswith('/api/v1/user/create')
+    assert seen['json']['user_proxy_config']['proxy_host'] == 'gb.enigma.io'
+    assert seen['json']['name'] == 'fleet-GB-1'
+
+
+def test_create_profile_raises_on_api_error(monkeypatch):
+    monkeypatch.setattr(adspower.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(adspower.requests, 'post',
+                        lambda url, **kw: _Resp(200, {'code': -1, 'msg': 'group not found'}))
+    with pytest.raises(adspower.AdsPowerError) as exc:
+        adspower.create_profile(name='x', country='GB', proxy_config={})
+    assert 'group not found' in str(exc.value)
+
+
 from tools.scraper.shared import uc_driver
 
 

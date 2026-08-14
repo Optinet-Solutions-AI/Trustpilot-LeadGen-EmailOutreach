@@ -107,6 +107,50 @@ def _call(path: str, params: dict) -> dict:
     return payload.get('data') or {}
 
 
+def _call_post(path: str, body: dict) -> dict:
+    _throttle()
+    url = f'{_base()}{path}'
+    try:
+        resp = requests.post(url, json=body, headers=_headers(), timeout=REQUEST_TIMEOUT)
+    except requests.exceptions.RequestException as exc:
+        raise AdsPowerUnreachable(
+            f'Could not reach the AdsPower Local API at {url}. Is the AdsPower '
+            f'desktop app running on this host? Underlying error: {exc}'
+        ) from exc
+    if resp.status_code >= 400:
+        raise AdsPowerError(f'AdsPower {path} returned HTTP {resp.status_code}: {resp.text[:200]}')
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise AdsPowerError(f'AdsPower {path} returned non-JSON response: {resp.text[:200]}') from exc
+    if payload.get('code') != 0:
+        raise AdsPowerError(f'AdsPower {path} failed: {payload.get("msg") or payload}')
+    return payload.get('data') or {}
+
+
+def create_profile(*, name: str, country: str, proxy_config: dict) -> str:
+    """Create a fresh AdsPower profile bound to a country proxy. Returns the new
+    profile id (user_id). The login itself is NOT done here — a human logs into
+    Facebook in the streamed browser afterward, and AdsPower persists it in the
+    profile. `group_id` '0' = ungrouped; override with ADSPOWER_FLEET_GROUP_ID."""
+    group_id = (os.environ.get('ADSPOWER_FLEET_GROUP_ID') or '0').strip()
+    body = {
+        'name': name,
+        'group_id': group_id,
+        'user_proxy_config': proxy_config or {'proxy_soft': 'no_proxy'},
+        # AdsPower requires a fingerprint_config object; empty = auto-randomised,
+        # which is exactly what we want (each account a distinct fingerprint).
+        'fingerprint_config': {'automatic_timezone': '1'},
+        'remark': f'fleet onboarded country={country}',
+    }
+    data = _call_post('/api/v1/user/create', body)
+    pid = str(data.get('id') or '').strip()
+    if not pid:
+        raise AdsPowerError(f'AdsPower create returned no profile id. Response: {data}')
+    print(f'INFO: AdsPower created profile {pid} (country={country})', file=sys.stderr, flush=True)
+    return pid
+
+
 def start_profile(profile_id: str) -> dict:
     """Launch an AdsPower profile and return its Selenium attach details.
 
