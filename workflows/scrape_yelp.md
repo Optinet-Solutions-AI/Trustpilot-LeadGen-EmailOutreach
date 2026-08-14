@@ -2,7 +2,7 @@
 
 **Objective:** Scrape Yelp listings for low-rated businesses, enrich with website/phone, upsert via the multi-platform path.
 
-Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages — every attempt against `/search` times out at 90 seconds (verified by smoke test 2026-05-18). So Yelp uses a **two-source design**: listing through Yelp Fusion (free, 5,000/day), profile enrichment through ScrapingBee.
+Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingBee `stealth_proxy` ONLY reaches `/biz/<slug>` profile pages — every attempt against `/search` times out at 90 seconds (verified by smoke test 2026-05-18). **Listing now defaults to a cookieless Apify actor** (`YELP_LISTING_SOURCE=apify`, `memo23/yelp-scraper`) that returns listing and profile data in one call, so the default path needs no browser and no Fusion key. Yelp Fusion has since gone paid with an expired trial, and the headed-browser (`browser`) and residential-proxy DataDome (`relay`) paths further down are fallbacks for a withdrawn actor or an unverified market.
 
 ---
 
@@ -23,11 +23,11 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 
 | Step | Tool |
 |---|---|
-| Listing | `tools/scraper/platforms/yelp.py` → `scrape_listing()` calls Fusion `GET /v3/businesses/search` |
-| Fusion client | `tools/scraper/shared/yelp_fusion.py` — wraps `search_businesses_paged`, `list_categories` |
-| Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` fetches `/biz/<slug>` via ScrapingBee `stealth_proxy` |
+| Listing | `tools/scraper/platforms/yelp.py` → `scrape_listing()` — source-dependent; **default `apify`** delegates to `tools/scraper/platforms/yelp_apify.py` (see below), `fusion` calls `GET /v3/businesses/search`, `browser`/`relay` scrape the `/search` HTML |
+| Fusion client | `tools/scraper/shared/yelp_fusion.py` — wraps `search_businesses_paged`, `list_categories` (used only when `YELP_LISTING_SOURCE=fusion`) |
+| Profile enrichment | `tools/scraper/platforms/yelp.py` → `enrich_profiles()` — on `apify` this is screenshot-only, no HTML fetch; on `browser`/`fusion`/`relay` it fetches `/biz/<slug>` via ScrapingBee `stealth_proxy` |
 | Profile parser | `_extract_profile_detail()` unwraps `/biz_redir?url=…` for the business website |
-| City seed | `tools/scraper/data/yelp_country_cities.json` (13 markets) |
+| City seed | `tools/scraper/data/yelp_country_cities.json` (24 markets) |
 | Category seed | `tools/scraper/data/yelp_categories.json` (30 SMB verticals) |
 | Upsert | `tools/db/upsert_leads.py` → `_upsert_nontrustpilot_lead` (writes `lead_platform_presences(platform='yelp')`) |
 
@@ -35,21 +35,131 @@ Yelp's PerimeterX edge rejects direct Playwright across the board, and ScrapingB
 
 ## Network strategy
 
+> Fallback-only material: describes the `fusion`/`browser`/`relay` combo (Fusion or browser-scraped listing + ScrapingBee profile fetch). The default path is Apify — see "Listing via Apify" below.
+
 **Two sources, picked by what each can actually reach:**
 
 | Call | URL / Endpoint | Service | Credits |
 |---|---|---|---|
 | Listing | `GET https://api.yelp.com/v3/businesses/search` | Yelp Fusion API | Free (5k/day) |
-| Profile page | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` | 75 / fetch |
-| Screenshot | bundled with profile fetch | ScrapingBee | free |
+| Profile page | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` (`fetch_via_scrapingbee`) | 75 / fetch |
+| Screenshot | `https://www.yelp.com/biz/<slug>` | ScrapingBee `stealth_proxy` (`fetch_screenshot_via_scrapingbee` — a SEPARATE paid call, not bundled) | 75 / fetch |
 
 **Why split:** ScrapingBee `stealth_proxy` can reach `/biz/<slug>` (verified — 200 OK, 1.8 MB HTML in the original probe) but CANNOT reach `/search` (verified — 100% timeout, 5/5 in the 2026-05-18 smoke test). Fusion is the only way into Yelp's listing data without burning credits on a service that doesn't work.
 
-**Cost model:** ~30 Fusion calls (free) + ~30-60 ScrapingBee profile fetches at 75 cr = **2,250-4,500 credits per scrape**.
+**Cost model (`browser`/`fusion`/`relay` fallback paths):** ~30 Fusion calls
+(free) + ~30-60 leads × TWO ScrapingBee calls each (profile HTML fetch +
+screenshot fetch, 75 cr/call = 150 cr/lead) = **4,500-9,000 credits per
+scrape**. The default `apify` path pays ScrapingBee for the screenshot only
+(no profile-HTML call) — 75 cr/lead, half this — see "Listing via Apify"
+below.
+
+---
+
+## Listing via Apify — `YELP_LISTING_SOURCE=apify` (DEFAULT)
+
+Cookieless HTTP. No browser, no DataDome slider, no sticky IP — so it runs on
+Cloud Run and the Linux worker, which is what makes Yelp available to users
+other than the owner.
+
+| Piece | File |
+|---|---|
+| Actor input, mapping, over-fetch, market gate | `tools/scraper/platforms/yelp_apify.py` |
+| Listing branch | `tools/scraper/platforms/yelp.py` (`scrape_listing`, `source == 'apify'`) |
+| Screenshot-only enrichment | `tools/scraper/platforms/yelp.py` (`enrich_profiles`) |
+| Shared actor client (timeout recovery, 402 handling) | `tools/scraper/shared/apify.py` |
+
+**Measured cost (2026-08-12):** `memo23/yelp-scraper` bills **$0.00275 per
+item plus a $0.009 start fee per city run**. The 10-item probe therefore cost
+$0.0365 in total — $0.00365/item at that size, but the start fee amortises
+away as a run gets bigger, so quote the two components rather than a single
+per-item figure. It returned rating, review count,
+phone (10/10), website (8/10), contact email (5/10) and claimed status
+(10/10). The alternative `epctex/yelp-business-api` is ~$0.50 per 1,000 but
+returns no email and no claimed status.
+
+**One call now does both stages.** Listing and profile data arrive together,
+so `enrich_profiles` performs no HTML fetch — only screenshots. That halves
+ScrapingBee calls per lead and removes the old `YELP_MAX_ENRICH=25` data cap,
+which used to discard website and phone for every lead past the 25th.
+
+**Rating filtering is client-side, by necessity.** `searchSortBy` offers only
+`''` (Recommended), `rating` (DESCENDING) and `review_count`. Nothing sorts
+ascending, so low-rated leads are reached by over-fetching the Recommended
+feed (`YELP_APIFY_OVERFETCH`, ceiling `YELP_APIFY_MAX_ITEMS`) and filtering
+locally.
+
+**Measured yield (2026-08-13, 233 live US businesses):**
+
+| Rating band | Share of the Recommended feed |
+|---|---|
+| 5.0 | 34.8% |
+| 4.5–4.9 | 31.8% |
+| 4.0–4.4 | 11.6% |
+| 3.5–3.9 | 6.4% |
+| ≤3.4 | 15.5% |
+
+Only **16.3%** land at or below the default `max_rating` of 3.5. So roughly
+**6 businesses must be fetched per usable lead** — about **$0.017 per lead**
+at $0.00275/item plus the per-run start fee — which is why the over-fetch default is **6x**, not the 4x
+originally guessed (4x returned only ~65% of the leads a run asked for).
+Contact coverage across the same sample: website **52%**, contact email
+**18%**. Each city logs `returned N businesses, K matched filter`; if a
+market's ratio drifts well below 16%, raise the multiplier for it.
+
+**Do not raise the multiplier by more than the ceiling allows.** Every
+fetched business is billed whether or not it survives the filter, and the
+per-city ask is also bounded by what the job still needs (`max_results`).
+
+### What a real production-band run costs and how long it takes
+
+Measured 2026-08-13, `max_rating=3.5`, `min_review_count=5`, `max_results=10`:
+
+- The city fan-out issues **one actor run per city, sequentially**, and each
+  run carries roughly 40s of its own startup before it returns anything. Six
+  cities took over 10 minutes and the job had not finished.
+- Total spend was about **$0.48 for ~10 leads (~$0.05/lead)** — higher than
+  the $0.017/lead the raw 16.3% yield implies, because later cities
+  re-fetch businesses that dedup or the rating filter then discards.
+- The per-city ask correctly shrinks as leads accumulate (observed: 60, 24,
+  24, 24, 12, 12, 10 items), so a nearly-complete job stops paying for a
+  full city.
+
+Practical guidance: a tight band like `max_rating=3.5` is a **long** job, not
+a quick one. Budget 10-15 minutes and expect sequential city runs. If you
+need it faster, widen `max_rating` (far more of the feed qualifies, so it
+finishes in one or two cities) rather than raising the over-fetch, which
+only makes each individual city run longer and dearer.
+
+Still cheap in context: even $0.05/lead is a fraction of the fallback path's
+150 ScrapingBee credits per lead.
+
+**Every job is capped.** `YELP_APIFY_MAX_ITEMS_PER_JOB` (default 500 items,
+~$1.40) bounds the whole city fan-out, not just one city. It is the only
+cap on Apify spend anywhere in this system, and once `APIFY_API_TOKEN` is
+set on Cloud Run ANY dashboard user can start a billable Yelp job — so
+lower it before widening access. On exhaustion the job stops cleanly with
+`apify_budget_exhausted` and keeps the leads it already found.
+
+**US only until probed.** `YELP_APIFY_MARKETS` (default `US`) gates it. Other
+countries fail with `FAILED:listing|yelp|apify_market_unverified|<country>`
+rather than silently returning zero. To add one: run a single-city probe for
+that country, confirm real rows, then add the ISO code to the env var.
+
+| Failure | Meaning |
+|---|---|
+| `FAILED:listing\|yelp\|apify_credit` | Apify account out of credit — top up |
+| `FAILED:listing\|yelp\|apify_budget_exhausted` | The job hit `YELP_APIFY_MAX_ITEMS_PER_JOB`. Leads already gathered are kept. Raise the budget or narrow the search |
+| `FAILED:listing\|yelp\|apify_empty\|<city>` | Actor returned nothing; if every city does this, the actor broke |
+| `FAILED:listing\|yelp\|apify_error` | Generic Apify failure (missing token, 5xx, malformed payload) — leads already gathered from earlier cities in the same run are preserved |
+| `FAILED:listing\|yelp\|filter_too_strict` | Rows returned but none in the rating band — widen `max_rating` |
+| `FAILED:listing\|yelp\|apify_market_unverified` | Country not in `YELP_APIFY_MARKETS` |
 
 ---
 
 ## Parsing the `/search` page
+
+> Applies to the `browser`/`relay` fallback sources, which scrape this HTML page directly. The default `apify` source receives structured JSON from the actor and never touches this markup.
 
 | Field | Source |
 |---|---|
@@ -94,6 +204,8 @@ Per lead:
 
 ## Failure modes
 
+> Fallback-source failure modes (`browser`/`fusion`/`relay`). For the default Apify path's failure codes, see "Listing via Apify" above.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | `FAILED:listing|yelp|missing_key|SCRAPINGBEE_API_KEY` | Env var not set | `gcloud run services update trustpilot-crm --update-env-vars SCRAPINGBEE_API_KEY=...` or set in local `.env` |
@@ -107,13 +219,17 @@ Per lead:
 
 | Variable | Required | Notes |
 |---|---|---|
-| `SCRAPINGBEE_API_KEY` | Yes | Same key used for TripAdvisor; powers both listing and profile for Yelp |
+| `SCRAPINGBEE_API_KEY` | Yes | Same key used for TripAdvisor. On the default `apify` path it buys ONLY the enrichment screenshot — one 75-credit `/biz/<slug>` fetch per lead. On the `browser`/`fusion`/`relay` fallback paths it also fetches profile HTML for website/phone/claimed status — two 75-credit calls per lead where the Apify path needs one. |
 
-`YELP_API_KEY` is **no longer used** — removed when listing pivoted from Fusion to `/search` via ScrapingBee.
+`YELP_API_KEY` is only needed when `YELP_LISTING_SOURCE=fusion` — Fusion is a fallback, not the default, and its trial has expired (`400 TRIAL_EXPIRED`).
+
+The full `YELP_LISTING_SOURCE=apify` variable set (`APIFY_YELP_ACTOR`, `YELP_APIFY_ENRICH_EMAILS`, `YELP_APIFY_OVERFETCH`, `YELP_APIFY_MAX_ITEMS`, `YELP_APIFY_CACHE_DAYS`, `YELP_APIFY_MARKETS`) is documented in "Listing via Apify" above and in `CLAUDE.md`'s env var table — not duplicated here.
 
 ---
 
 ## Server-side listing via residential proxy — `YELP_LISTING_SOURCE=relay` (DataDome)
+
+> Fallback only — the default path is Apify (see above). Use this when an actor is withdrawn or for a market Apify cannot reach.
 
 Yelp's `/search` is guarded by **DataDome** (not PerimeterX). Verified empirically 2026-07-14:
 
@@ -197,7 +313,13 @@ Measured 2026-07-14 (network-level, from the dev box): a `_session-<token>` pins
 
 ---
 
-## EC2 activation runbook — making Yelp discovery run for ALL users
+## EC2 activation runbook — making the `relay` fallback run for ALL users
+
+> Fallback only. Apify already makes Yelp listing available to every user with
+> no dedicated worker, no EC2 relay, and no slider-solving (see "Listing via
+> Apify" above) — that's the default path. This runbook exists for the
+> `relay` fallback: use it only if the Apify actor is withdrawn or a market
+> is unreachable via Apify.
 
 > **Preferred host: the Linux worker under xvfb (cheaper).** The Windows box
 > carries a Windows-license premium and is only needed for FB/IG. To avoid
@@ -262,5 +384,5 @@ worker **inside the interactive noVNC session** (same place FB login runs), e.g.
 
 ## Adding markets and categories
 
-- **New country:** add a `"XX": ["City, Region", ...]` entry to `tools/scraper/data/yelp_country_cities.json`. Format mirrors what Yelp's `find_loc=` param accepts. JSON edit only — no code change.
+- **New country:** add a `"XX": ["City, Region", ...]` entry to `tools/scraper/data/yelp_country_cities.json`. Format mirrors what Yelp's `find_loc=` param accepts. JSON edit only — no code change. On the default `apify` path a country also needs a live single-city probe and its ISO code added to `YELP_APIFY_MARKETS` (see "Listing via Apify" above) before it will return anything.
 - **New category:** add `{"slug": "...", "display_name": "..."}` to `tools/scraper/data/yelp_categories.json`. Slugs are passed verbatim as `find_desc=` on the search URL; Yelp accepts category aliases AND human-readable keywords there. Run taxonomy refresh to land it in `platform_categories`.

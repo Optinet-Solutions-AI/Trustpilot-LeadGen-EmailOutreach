@@ -85,6 +85,13 @@ from tools.scraper.shared.scrapingbee import (
 )
 from tools.scraper.shared.local_browser import LocalBrowserFetcher, BrowserBlocked
 from tools.scraper.shared.proxy_relay import RelayServer, get_exit_ip
+from tools.scraper.platforms.yelp_apify import (
+    job_item_budget,
+    market_allowed,
+    resolve_max_items,
+    search_city_apify,
+)
+from tools.scraper.shared.apify import ApifyCreditError, ApifyError
 
 
 # Where the country → list-of-cities seed lives.
@@ -97,6 +104,14 @@ _CATEGORIES_PATH = os.path.join(_DATA_DIR, 'yelp_categories.json')
 # bounded — operator can override per-scrape via filters.max_pages.
 _DEFAULT_MAX_PAGES_PER_CITY = 5
 _RESULTS_PER_PAGE = 10
+
+# memo23/yelp-scraper's billing, measured from live runs 2026-08-12/13. TWO
+# components, and conflating them misreports spend: a marginal per-item
+# charge, plus a fixed start fee EVERY city run pays. The 10-item probe cost
+# $0.0365 = $0.009 + 10 x $0.00275, which is why "$0.00365/item" is only true
+# at that size — the start fee amortises away as a run gets bigger.
+_APIFY_ITEM_USD = 0.00275
+_APIFY_RUN_START_USD = 0.009
 
 # Domains we never accept as a business "website" (Yelp links these on
 # unclaimed pages or as social fallbacks).
@@ -467,6 +482,19 @@ class YelpScraper(BasePlatformScraper):
             )
             return []
 
+        if source == 'apify' and not market_allowed(country):
+            print(
+                f"FAILED:listing|yelp|apify_market_unverified|{country}|"
+                f"Only markets in YELP_APIFY_MARKETS (default US) have been "
+                f"probed against the Apify actor. Probe one city for this "
+                f"country first, then add it to YELP_APIFY_MARKETS. Not "
+                f"falling back to the browser source, because that only runs "
+                f"on the owner's desktop and would look like an empty market "
+                f"on a server.",
+                flush=True,
+            )
+            return []
+
         min_rating = float(filters.get('min_rating', 1.0))
         max_rating = float(filters.get('max_rating', 3.5))
         min_review_count = int(filters.get('min_review_count', 5))
@@ -486,8 +514,13 @@ class YelpScraper(BasePlatformScraper):
         seen_urls: set[str] = set()
         global_page = 0  # SSE event counter — frontend's "page N" label
         total_seen_pre_filter = 0  # counts every Fusion result, for diagnostics
+        # Apify spend guard (apify source only) — see the city loop below.
+        item_budget = job_item_budget()
+        items_asked_for = 0
+        runs_started = 0
 
         use_browser = source in ('browser', 'relay')
+        use_apify = source == 'apify'
 
         # ── relay source: headed Chrome through the non-MITM residential-proxy
         # relay on a STICKY US session, replaying a human-minted DataDome cookie.
@@ -569,15 +602,72 @@ class YelpScraper(BasePlatformScraper):
         try:
             for city_idx, city in enumerate(cities):
                 global_page += 1
+                if use_apify:
+                    source_label = 'querying Apify actor...'
+                elif use_browser:
+                    source_label = 'querying Yelp /search (browser)...'
+                else:
+                    source_label = 'querying Fusion...'
                 print(
-                    f"  [city {city_idx + 1}/{len(cities)}] {city}: "
-                    + ("querying Yelp /search (browser)..." if use_browser else "querying Fusion..."),
+                    f"  [city {city_idx + 1}/{len(cities)}] {city}: {source_label}",
                     flush=True,
                 )
                 # Emit "we're looking at page N" the moment we START fetching.
                 print(f"PROGRESS:category_progress:{global_page}:{len(results)}", flush=True)
 
-                if use_browser:
+                if use_apify:
+                    # Ask for what this job still NEEDS, not what one city
+                    # could yield. per_city_cap defaults to 240 and is
+                    # independent of max_results, so a 10-lead job used to ask
+                    # the actor for a full city — every row of which is billed,
+                    # and an oversized ask is what blew through the sync
+                    # endpoint's 300s ceiling. Unlike the browser source, where
+                    # over-asking costs only time, here it costs money.
+                    city_cap = per_city_cap
+                    if max_results is not None:
+                        city_cap = max(1, min(city_cap, max_results - len(results)))
+
+                    # Whole-job spend guard. The per-city ceiling bounds one
+                    # city; nothing bounded the fan-out across every seeded
+                    # city until here. Budget is charged on what we ASK for,
+                    # not what comes back: the ask is the upper bound on what
+                    # the actor can bill, so accounting this way can only
+                    # under-spend, never over-spend.
+                    budget_left = item_budget - items_asked_for
+                    asked = resolve_max_items(city_cap, budget_left)
+                    if asked <= 0:
+                        print(
+                            f"FAILED:listing|yelp|apify_budget_exhausted|Job hit its "
+                            f"{item_budget}-item Apify budget after {city_idx} "
+                            f"{'city' if city_idx == 1 else 'cities'} and stopped with "
+                            f"{len(results)} leads. Raise YELP_APIFY_MAX_ITEMS_PER_JOB to "
+                            f"spend more per job, or narrow the search. At "
+                            f"${_APIFY_ITEM_USD}/item plus ${_APIFY_RUN_START_USD} per city "
+                            f"run, this job cost roughly "
+                            f"${items_asked_for * _APIFY_ITEM_USD + runs_started * _APIFY_RUN_START_USD:.2f}.",
+                            flush=True,
+                        )
+                        break
+                    items_asked_for += asked
+                    runs_started += 1
+
+                    businesses = await asyncio.to_thread(
+                        search_city_apify, city, category, city_cap,
+                        item_budget=budget_left,
+                    )
+                    if not businesses:
+                        # Distinct from "returned rows but all filtered out"
+                        # (reported once at the end as filter_too_strict). A
+                        # broken actor and a thin market must not look alike.
+                        print(
+                            f"FAILED:listing|yelp|apify_empty|{city}|The actor "
+                            f"returned 0 businesses for '{category}'. If every "
+                            f"city reports this, the actor is broken or its "
+                            f"input keys changed — check "
+                            f"https://console.apify.com/actors/runs.",
+                            flush=True,
+                        )
+                elif use_browser:
                     businesses = await asyncio.to_thread(
                         _search_city_browser, fetch_fn, city, category, per_city_cap,
                     )
@@ -633,6 +723,19 @@ class YelpScraper(BasePlatformScraper):
                         'country': country,
                         'category': category,
                         'city': city,
+                        # Present only on the apify source, which returns them
+                        # with the listing. None on browser/fusion, where they
+                        # come from the ScrapingBee profile fetch instead.
+                        'website_url': b.get('website_url'),
+                        'website_email': b.get('website_email'),
+                        'profile_claimed': b.get('profile_claimed'),
+                        # Provenance travels WITH the lead so enrich_profiles
+                        # can tell how it was produced. Reading the env there
+                        # instead would mis-handle a stub file enriched later
+                        # on a box configured for a different source — and
+                        # `run.py --action enrich --input <file>` makes that
+                        # reachable.
+                        'listing_source': source,
                     })
                     page_kept += 1
 
@@ -679,6 +782,28 @@ class YelpScraper(BasePlatformScraper):
                     f"earlier cities. Wait for cooldown and re-run remaining cities.",
                     flush=True,
                 )
+        except ApifyCreditError as e:
+            print(
+                f"FAILED:listing|yelp|apify_credit|{e}. {len(results)} businesses "
+                f"collected before the account ran out. Top up at "
+                f"https://console.apify.com/billing and re-run.",
+                flush=True,
+            )
+        except ApifyError as e:
+            # Broader than ApifyCreditError — catches a missing token, a
+            # non-402 4xx/5xx from the actor, a non-JSON/non-list payload, or
+            # an unrecoverable timeout. Must sit AFTER the credit handler:
+            # ApifyCreditError subclasses ApifyError, so ordering it first
+            # here would make the credit-specific handler unreachable. Without
+            # this handler the exception escaped scrape_listing entirely —
+            # discarding partial results and dying with a traceback instead of
+            # a FAILED line the dashboard's Failures pane can parse.
+            print(
+                f"FAILED:listing|yelp|apify_error|{e}. {len(results)} businesses "
+                f"collected before the actor failed. Check "
+                f"https://console.apify.com/actors/runs for the failed run.",
+                flush=True,
+            )
         finally:
             if browser_ctx:
                 browser_ctx.__exit__(None, None, None)
@@ -718,7 +843,41 @@ class YelpScraper(BasePlatformScraper):
     ) -> list[dict]:
         if not profile_stubs:
             return []
+
+        # How these leads were PRODUCED decides whether the ScrapingBee
+        # profile fetch is redundant — not how this box happens to be
+        # configured right now. `run.py --action enrich --input <file>` is a
+        # standalone entry point, and the docs tell operators to set
+        # YELP_LISTING_SOURCE=apify box-wide, so re-enriching a
+        # browser/fusion stub file would otherwise skip the fetch those leads
+        # actually need and yield rows with no website, phone or email — with
+        # no warning. Stubs written before this field existed have no
+        # provenance, so those fall back to the env var.
+        stub_sources = {
+            str(s.get('listing_source') or '').strip().lower()
+            for s in profile_stubs
+        }
+        stub_sources.discard('')
+        if stub_sources:
+            # A mixed batch takes the legacy path: spending credits we didn't
+            # strictly need is recoverable, silently dropping contact data is
+            # not.
+            apify_mode = stub_sources == {'apify'}
+        else:
+            apify_mode = (os.environ.get('YELP_LISTING_SOURCE', 'browser')
+                          .strip().lower() == 'apify')
+
         if not scrapingbee_enabled():
+            if apify_mode:
+                # Not a degraded run: on this path ScrapingBee only produces
+                # screenshots. Website, phone, email and claimed status all
+                # arrived with the listing.
+                print(
+                    "  Yelp: SCRAPINGBEE_API_KEY unset — returning apify leads "
+                    "with full data but no screenshots.",
+                    flush=True,
+                )
+                return [{**s, 'platform': self.name} for s in profile_stubs]
             print(
                 "FAILED:enrich|yelp|missing_key|SCRAPINGBEE_API_KEY is not set; "
                 "returning stubs without website/phone/screenshot.",
@@ -736,25 +895,62 @@ class YelpScraper(BasePlatformScraper):
         # 5★/1-review newbies and 1★/many-review chains. Operator can raise
         # via the YELP_MAX_ENRICH env var for one-off larger runs.
         # Default chosen 2026-05-20 to cut typical Yelp credit spend by ~80%.
+        #
+        # On the apify path, website/phone/email/claimed already arrived with
+        # the listing, so the cap no longer needs to gate data — only which
+        # leads get a screenshot (the one remaining real spend on this path).
+        # Default is unlimited screenshots on the apify path; the legacy
+        # default of 25 is unchanged.
         import math
-        try:
-            max_enrich = max(1, int(os.environ.get('YELP_MAX_ENRICH', '25')))
-        except ValueError:
-            max_enrich = 25
+        raw_cap = str(os.environ.get('YELP_MAX_ENRICH', '')).strip()
+        if apify_mode:
+            try:
+                max_shots = int(raw_cap) if raw_cap else len(profile_stubs)
+            except ValueError:
+                max_shots = len(profile_stubs)
+            max_shots = max(1, max_shots)
+        else:
+            try:
+                max_shots = max(1, int(raw_cap or '25'))
+            except ValueError:
+                max_shots = 25
 
-        if len(profile_stubs) > max_enrich:
-            def _quality(stub: dict) -> float:
-                rating = float(stub.get('rating') or 0.0)
-                reviews = int(stub.get('review_count') or 0)
-                return rating * math.log1p(reviews)
-            ranked = sorted(profile_stubs, key=_quality, reverse=True)
+        def _quality(stub: dict) -> float:
+            rating = float(stub.get('rating') or 0.0)
+            reviews = int(stub.get('review_count') or 0)
+            return rating * math.log1p(reviews)
+
+        if apify_mode:
+            # Every stub is processed; only the top-N get a screenshot.
+            shot_urls = {
+                s.get('profile_url')
+                for s in sorted(profile_stubs, key=_quality, reverse=True)[:max_shots]
+            }
+            if len(profile_stubs) > max_shots:
+                print(
+                    f"PROGRESS:enrich_capped:{max_shots}|{len(profile_stubs)}|"
+                    f"screenshotting top {max_shots} by rating x log(review_count); "
+                    f"all {len(profile_stubs)} leads keep full data",
+                    flush=True,
+                )
+            # ScrapingBee stealth screenshots are 75 credits each — make the
+            # projected spend visible in the job log BEFORE it is spent.
             print(
-                f"PROGRESS:enrich_capped:{max_enrich}|{len(profile_stubs)}|"
-                f"keeping top {max_enrich} by rating × log(review_count); "
-                f"skipping {len(profile_stubs) - max_enrich} long-tail leads",
+                f"  Yelp: {len(shot_urls)} screenshots planned "
+                f"(~{len(shot_urls) * 75} ScrapingBee credits).",
                 flush=True,
             )
-            profile_stubs = ranked[:max_enrich]
+        else:
+            shot_urls = None  # legacy path: everything that survives the cap
+            if len(profile_stubs) > max_shots:
+                ranked = sorted(profile_stubs, key=_quality, reverse=True)
+                print(
+                    f"PROGRESS:enrich_capped:{max_shots}|{len(profile_stubs)}|"
+                    f"keeping top {max_shots} by rating x log(review_count); "
+                    f"skipping {len(profile_stubs) - max_shots} long-tail leads",
+                    flush=True,
+                )
+                profile_stubs = ranked[:max_shots]
 
         total = len(profile_stubs)
         if screenshots_dir:
@@ -778,24 +974,30 @@ class YelpScraper(BasePlatformScraper):
                     flush=True,
                 )
 
-                html = await asyncio.to_thread(
-                    fetch_via_scrapingbee,
-                    profile_url,
-                    render_js=True,
-                    premium_proxy=False,
-                    stealth_proxy=True,
-                )
-                if not html:
-                    print(
-                        f"FAILED:profile|{profile_url}|empty_html|"
-                        f"ScrapingBee returned no HTML",
-                        flush=True,
+                if apify_mode:
+                    # website/phone/claimed already arrived with the listing —
+                    # the 75-credit HTML fetch would only re-derive them.
+                    detail: dict = {}
+                    want_shot = shot_urls is None or profile_url in shot_urls
+                else:
+                    want_shot = True
+                    html = await asyncio.to_thread(
+                        fetch_via_scrapingbee,
+                        profile_url,
+                        render_js=True,
+                        premium_proxy=False,
+                        stealth_proxy=True,
                     )
-                    results[idx] = {**stub, 'platform': self.name}
-                    print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
-                    return
-
-                detail = _extract_profile_detail(html)
+                    if not html:
+                        print(
+                            f"FAILED:profile|{profile_url}|empty_html|"
+                            f"ScrapingBee returned no HTML",
+                            flush=True,
+                        )
+                        results[idx] = {**stub, 'platform': self.name}
+                        print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
+                        return
+                    detail = _extract_profile_detail(html)
 
                 # Screenshot: fetch from ScrapingBee, upload to Supabase
                 # Storage directly, and store the resulting PUBLIC URL on the
@@ -804,7 +1006,7 @@ class YelpScraper(BasePlatformScraper):
                 # screenshot_path is the public URL from this moment on so
                 # there's no two-step race with the post-enrich upload.
                 screenshot_path = ''
-                if screenshots_dir or supabase_storage_enabled():
+                if want_shot and (screenshots_dir or supabase_storage_enabled()):
                     png = await asyncio.to_thread(
                         fetch_screenshot_via_scrapingbee,
                         profile_url,
@@ -866,7 +1068,13 @@ class YelpScraper(BasePlatformScraper):
                 results[idx] = enriched
 
                 shot_flag = 'shot' if screenshot_path else 'noshot'
-                site_flag = 'site' if detail.get('website_url') else 'nosite'
+                # Read from `enriched` (the merged result), not `detail` — on
+                # the apify path `detail` is always {} even though the stub
+                # (and therefore `enriched`) carries a real website_url. On
+                # the legacy path the stub's own website_url is always None,
+                # so `enriched.get('website_url')` is truthiness-equivalent
+                # to the old `detail.get('website_url')` there.
+                site_flag = 'site' if enriched.get('website_url') else 'nosite'
                 print(
                     f"PROGRESS:profile_saved:{idx + 1}|{total}|{slug_for_file}|"
                     f"none|{shot_flag}|{site_flag}",

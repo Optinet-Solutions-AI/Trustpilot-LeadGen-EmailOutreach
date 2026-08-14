@@ -1,4 +1,5 @@
 """Tests for the Apify actor runner. No network — requests.post is patched."""
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -417,3 +418,130 @@ def test_timeout_recovery_finds_correct_run_not_a_newer_racer(monkeypatch):
 
     result = apify.run_actor('some/actor', {})
     assert result == [{'mine': True}]
+
+
+def test_408_run_timeout_recovers_instead_of_raising(monkeypatch):
+    """run-sync-get-dataset-items has a HARD 300s SERVER-side cap, separate
+    from our client `timeout`. When it trips Apify answers HTTP 408
+    run-timeout-exceeded — while the run keeps executing and BILLING.
+
+    Measured live 2026-08-13: a 408 came back at 301.6s and the run behind it
+    was still RUNNING, had scraped 169 items and had already billed $0.45 —
+    every item discarded, reported to the operator as "0 businesses". That is
+    the same condition as a client-side Timeout arriving by a different door,
+    so it must route to recovery rather than fall through to the generic 4xx
+    raise.
+    """
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    post_calls = []
+
+    def fake_post(url, **kwargs):
+        post_calls.append(url)
+        return _Resp(
+            408,
+            {'error': {
+                'type': 'run-timeout-exceeded',
+                'message': 'Actor run exceeded the timeout of 300 seconds for this API endpoint',
+            }},
+            '{"error":{"type":"run-timeout-exceeded"}}',
+        )
+
+    monkeypatch.setattr(apify.requests, 'post', fake_post)
+    monkeypatch.setattr(apify.time, 'sleep', lambda s: None)
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/runs'):
+            return _runs_resp([
+                {'id': 'run408', 'status': 'SUCCEEDED', 'startedAt': _iso_now(),
+                 'defaultDatasetId': 'ds408'},
+            ])
+        if url.endswith('/items'):
+            return _Resp(200, [{'biz': 1}, {'biz': 2}])
+        raise AssertionError(f'unexpected GET {url}')
+
+    monkeypatch.setattr(apify.requests, 'get', fake_get)
+
+    result = apify.run_actor('memo23/yelp-scraper', {})
+
+    assert result == [{'biz': 1}, {'biz': 2}]
+    assert len(post_calls) == 1, (
+        'a 408 must never cause a second POST — the first run is still '
+        'executing and billing, so a retry pays twice for one job'
+    )
+
+
+def test_408_from_infrastructure_raises_instead_of_recovering(monkeypatch):
+    """A 408 from a CDN or load balancer in front of Apify means NO run was
+    started and nothing is billing. Recovering from it would poll for 20
+    minutes for a run that does not exist — and _find_started_run's clock-skew
+    window could adopt a CONCURRENT run of the same actor (this module is
+    shared with production Facebook discovery) and return its dataset."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    post_calls = []
+
+    def fake_post(url, **kwargs):
+        post_calls.append(url)
+        return _Resp(408, None, '<html>408 Request Timeout — nginx</html>')
+
+    monkeypatch.setattr(apify.requests, 'post', fake_post)
+    monkeypatch.setattr(apify.time, 'sleep', lambda s: None)
+
+    def no_gets(url, **kwargs):
+        raise AssertionError(
+            'recovery must not run for a 408 that is not run-timeout-exceeded'
+        )
+
+    monkeypatch.setattr(apify.requests, 'get', no_gets)
+
+    with pytest.raises(apify.ApifyError) as exc:
+        apify.run_actor('some/actor', {})
+    assert '408' in str(exc.value)
+    assert len(post_calls) == 1, 'still must not retry — a 408 is not a transport blip'
+
+
+def test_heartbeat_prints_while_the_post_blocks(monkeypatch, capsys):
+    """scrape-runner.ts SIGKILLs a scraper after 300s of silence on both
+    streams, and the 408 that starts run recovery arrives at ~301s. Without
+    something printing during the blocking POST the process dies just before
+    it can recover, and the orphaned run bills to completion."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(apify, 'HEARTBEAT_SECONDS', 0.05)
+
+    def slow_post(url, **kwargs):
+        time.sleep(0.3)
+        return _Resp(200, [{'ok': True}])
+
+    monkeypatch.setattr(apify.requests, 'post', slow_post)
+    assert apify.run_actor('some/actor', {}) == [{'ok': True}]
+    err = capsys.readouterr().err
+    assert 'heartbeat' in err, 'nothing printed during the blocking POST'
+
+
+def test_heartbeat_wrapper_still_surfaces_transport_errors(monkeypatch):
+    """The wrapper runs the POST on a worker thread; exceptions must still
+    reach the caller's except-clauses, or timeout recovery never fires."""
+    monkeypatch.setenv('APIFY_API_TOKEN', 'tok')
+    monkeypatch.setattr(apify, 'HEARTBEAT_SECONDS', 0.05)
+    post_calls = []
+
+    def timing_out(url, **kwargs):
+        post_calls.append(url)
+        raise requests.exceptions.ReadTimeout('read timed out')
+
+    monkeypatch.setattr(apify.requests, 'post', timing_out)
+    monkeypatch.setattr(apify.time, 'sleep', lambda s: None)
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/runs'):
+            return _runs_resp([
+                {'id': 'runHB', 'status': 'SUCCEEDED', 'startedAt': _iso_now(),
+                 'defaultDatasetId': 'dsHB'},
+            ])
+        if url.endswith('/items'):
+            return _Resp(200, [{'recovered': True}])
+        raise AssertionError(f'unexpected GET {url}')
+
+    monkeypatch.setattr(apify.requests, 'get', fake_get)
+
+    assert apify.run_actor('some/actor', {}) == [{'recovered': True}]
+    assert len(post_calls) == 1
