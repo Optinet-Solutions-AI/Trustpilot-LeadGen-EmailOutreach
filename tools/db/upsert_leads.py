@@ -223,8 +223,21 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         'phone': lead.get('phone'),
         'primary_email': lead.get('primary_email') or lead.get('website_email'),
         'website_email': lead.get('website_email'),
+        # An unclaimed listing is the highest-converting cold-outreach target
+        # — nobody is watching that profile, so the pitch lands fresh. The
+        # column (migration 022) and the Trustpilot pipeline have always
+        # carried it, but this non-Trustpilot path silently dropped it, so
+        # every Yelp and TripAdvisor lead reached the CRM with it NULL.
+        # Bug discovered 2026-08-14, when the Apify path started returning
+        # claim status for 10/10 businesses and none of it survived the write.
+        'profile_claimed': lead.get('profile_claimed'),
         'scraped_at': now_iso,
     }
+    # None-stripped so a field this scrape didn't observe can't overwrite a
+    # good value from an earlier one. NOTE this makes False and None
+    # indistinguishable at the DB layer for booleans — fine for
+    # profile_claimed, where None means "this source doesn't report it" and
+    # is exactly what we want left alone.
     leads_row = {k: v for k, v in leads_row.items() if v is not None}
 
     # 3. INSERT new or UPDATE existing leads row
