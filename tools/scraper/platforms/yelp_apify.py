@@ -235,11 +235,25 @@ def build_actor_input(city: str, category: str, max_items: int) -> dict:
 
 
 def market_allowed(country: str) -> bool:
-    """Only markets verified by a live probe are enabled.
+    """Every seeded country is scrapable; the env var only RESTRICTS.
 
-    Adding one is a probe plus an env edit, never a code change.
+    This began as an allowlist of one (US) because no other market had been
+    probed. Probing all 24 seeded markets on 2026-08-14 settled it: 22 of 23
+    non-US markets return real businesses (AT AU BR CA CH CZ DE DK ES FR IE
+    IT MX NL NO NZ PL PT SE SG TR UK). Only JP came back empty. So the
+    unknown the gate was guarding against did not exist, and defaulting to
+    US-only just refused work the scraper can do.
+
+    Country validity is already enforced upstream: scrape_listing looks the
+    country up in yelp_country_cities.json and fails with `no_seed_cities`
+    if it isn't there, which is a clearer error than this gate could give.
+
+    Set YELP_APIFY_MARKETS to deliberately narrow the list (a spend control,
+    or to park a market that starts misbehaving). Unset means no restriction.
     """
-    raw = (os.environ.get('YELP_APIFY_MARKETS') or '').strip() or _DEFAULT_MARKETS
+    raw = (os.environ.get('YELP_APIFY_MARKETS') or '').strip()
+    if not raw:
+        return bool(str(country or '').strip())
     allowed = {c.strip().upper() for c in raw.split(',') if c.strip()}
     return str(country or '').strip().upper() in allowed
 

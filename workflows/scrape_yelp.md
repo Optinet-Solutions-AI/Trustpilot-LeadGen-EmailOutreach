@@ -141,10 +141,18 @@ set on Cloud Run ANY dashboard user can start a billable Yelp job — so
 lower it before widening access. On exhaustion the job stops cleanly with
 `apify_budget_exhausted` and keeps the leads it already found.
 
-**US only until probed.** `YELP_APIFY_MARKETS` (default `US`) gates it. Other
-countries fail with `FAILED:listing|yelp|apify_market_unverified|<country>`
-rather than silently returning zero. To add one: run a single-city probe for
-that country, confirm real rows, then add the ISO code to the env var.
+**All 24 seeded markets are scrapable.** Probed live 2026-08-14 (one city
+each, `restaurants`, 5 items): **22 of 23 non-US markets returned real
+businesses** — AT AU BR CA CH CZ DE DK ES FR IE IT MX NL NO NZ PL PT SE SG TR
+UK. Only **JP** came back empty, which is Yelp coverage, not a block.
+
+`YELP_APIFY_MARKETS` now only ever *narrows* the list; unset means no
+restriction. An unknown country is still refused upstream by the city-seed
+lookup (`no_seed_cities`), which is a clearer error than the gate gave.
+
+Caveat worth knowing: that probe used `restaurants`, Yelp's strongest non-US
+category. Trades like `plumbers` may need a localised search term in
+non-English markets — a search-term question, not an access one.
 
 | Failure | Meaning |
 |---|---|

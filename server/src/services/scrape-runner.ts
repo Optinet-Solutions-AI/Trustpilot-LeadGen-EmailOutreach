@@ -19,6 +19,7 @@ import { updateJob, markJobFailed } from '../db/scrape-jobs.js';
 import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
+
 import { listActiveCitiesForCountry, type TripAdvisorCity } from '../db/tripadvisor-cities.js';
 import {
   shouldRefuseSocialOnLinux,
@@ -26,6 +27,24 @@ import {
   scrapeJobUsesBrowser,
   isFacebookConsumerJob,
 } from './social-routing.js';
+
+/**
+ * Last listing-phase FAILED: line per job, so a zero-result run can say WHY.
+ * Without it every empty listing reports "nothing matched your filter", which
+ * is wrong — and actively misleading — whenever the scraper never got to look.
+ */
+const lastListingFailure = new Map<string, { reasonCode: string; message: string }>();
+
+/**
+ * Reason codes that mean "the scraper could not run", as opposed to "it ran
+ * and the market/filter was genuinely empty". These flip a zero-result job to
+ * `failed`, because there is an action for the operator to take.
+ */
+const BLOCKING_LISTING_REASONS = new Set([
+  'apify_market_unverified', 'apify_credit', 'apify_error', 'apify_budget_exhausted',
+  'missing_key', 'invalid_filters', 'no_seed_cities', 'ip_blocked',
+  'datadome_challenge', 'sticky_ip_drift', 'no_datadome_cookie',
+]);
 
 export const scrapeEvents = new EventEmitter();
 
@@ -89,6 +108,7 @@ scrapeEvents.on('progress', (event: { jobId: string; stage: string; detail: stri
     void flushRecentEvents(jobId).then(() => {
       recentEventsByJob.delete(jobId);
     });
+    lastListingFailure.delete(jobId);
     return;
   }
   scheduleFlush(jobId);
@@ -398,6 +418,9 @@ function runPython(
           insertFailure({ job_id: jobId, url, stage, error_message: errorMsg });
           // Rich item_failed payload: phase|url|reason_code|msg — frontend translates to a friendly line
           emitProgress(jobId, 'item_failed', `${stage}|${url}|${reasonCode}|${errorMsg}`);
+          if (stage === 'listing') {
+            lastListingFailure.set(jobId, { reasonCode, message: errorMsg });
+          }
         }
 
         if (trimmed) console.log(`  [PY] ${trimmed}`);
@@ -912,12 +935,26 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
     }
 
     if (rawData.length === 0) {
+      // "No listings matched the filter" is only true when the scraper
+      // actually looked and found nothing. If it refused to run — an
+      // unverified market, no seed cities, out of credit, a spend cap — that
+      // message sends the operator off to widen a rating band that was never
+      // the problem. A real case: an Austria scrape was blocked by the
+      // market gate and reported "Completed · 0 found · No listings matched
+      // the filter", hiding the actual reason entirely.
+      const blocked = lastListingFailure.get(jobId);
+      const couldNotRun = blocked && BLOCKING_LISTING_REASONS.has(blocked.reasonCode);
       await updateJob(jobId, {
-        status: 'completed',
+        status: couldNotRun ? 'failed' : 'completed',
         total_scraped: 0,
         completed_at: new Date().toISOString(),
+        ...(blocked ? { last_error: `${blocked.reasonCode}: ${blocked.message}` } : {}),
       });
-      emitProgress(jobId, 'completed', 'No listings matched the filter.');
+      emitProgress(
+        jobId,
+        couldNotRun ? 'failed' : 'completed',
+        blocked ? blocked.message : 'No listings matched the filter.',
+      );
       return;
     }
 

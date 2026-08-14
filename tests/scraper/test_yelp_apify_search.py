@@ -44,13 +44,26 @@ def test_actor_input_carries_search_terms_and_bounded_cache(monkeypatch):
     assert payload['maxCacheAgeDays'] == 30
 
 
-def test_market_gate_allows_us_and_blocks_unverified(monkeypatch):
+def test_every_market_is_allowed_by_default(monkeypatch):
+    """The gate began as a US-only allowlist because nothing else had been
+    probed. Probing all 24 seeded markets on 2026-08-14 found 22 of 23 non-US
+    markets returning real businesses, so the unknown it guarded against did
+    not exist. Unknown countries are still rejected upstream by the city-seed
+    lookup, with a clearer message than this gate could give."""
     monkeypatch.delenv('YELP_APIFY_MARKETS', raising=False)
-    assert ya.market_allowed('US') is True
-    assert ya.market_allowed('us') is True
-    assert ya.market_allowed('DE') is False
+    for cc in ('US', 'us', 'DE', 'FR', 'AU', 'BR', 'TR', 'SG'):
+        assert ya.market_allowed(cc) is True, cc
+    assert ya.market_allowed('') is False
+    assert ya.market_allowed(None) is False
+
+
+def test_env_var_narrows_the_markets_when_set(monkeypatch):
+    """Setting it is now a deliberate restriction — a spend control, or
+    parking a market that starts misbehaving."""
     monkeypatch.setenv('YELP_APIFY_MARKETS', 'US,CA')
     assert ya.market_allowed('CA') is True
+    assert ya.market_allowed('us') is True
+    assert ya.market_allowed('DE') is False
 
 
 def test_search_city_maps_actor_output(monkeypatch):
