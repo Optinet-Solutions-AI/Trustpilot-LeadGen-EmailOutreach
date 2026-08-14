@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api/client';
 import { useBrowseSession, type BrowseStatus } from '../hooks/useBrowseSession';
+import OnboardAccountModal from '../components/OnboardAccountModal';
 import Button from '../ui/Button';
 import LoadingState from '../ui/LoadingState';
 import Pill from '../ui/Pill';
@@ -103,6 +104,7 @@ export default function SocialAccounts() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showOnboard, setShowOnboard] = useState(false);
   const [form, setForm] = useState({
     platform: 'facebook' as Platform,
     handle: '',
@@ -404,12 +406,27 @@ export default function SocialAccounts() {
         title="Social Accounts"
         subtitle="Connected Facebook and Instagram sessions used by the scraper. (build: v3-poll)"
         actions={
-          <Button onClick={() => setShowCreate((v) => !v)}>
-            <span className="material-symbols-outlined text-[18px] mr-1">add</span>
-            Add account
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setShowOnboard(true)}>
+              <span className="material-symbols-outlined text-[18px] mr-1">smart_display</span>
+              Add FB Account
+            </Button>
+            <Button onClick={() => setShowCreate((v) => !v)}>
+              <span className="material-symbols-outlined text-[18px] mr-1">add</span>
+              Add account
+            </Button>
+          </div>
         }
       />
+
+      {showOnboard && (
+        <OnboardAccountModal
+          onClose={() => {
+            setShowOnboard(false);
+            void load();
+          }}
+        />
+      )}
 
       {error && (
         <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
