@@ -26,6 +26,7 @@ import { encryptCookie } from '../lib/encryption.js';
 import { getSupabase } from '../lib/supabase.js';
 import { chooseBrowseSpawner } from '../services/social-routing.js';
 import { config } from '../config.js';
+import { buildOnboardSteps, OnboardDeps } from './onboard-branch.js';
 
 const POLL_INTERVAL_MS = 10_000;
 const COOKIE_WATCH_INTERVAL_MS = 2_000;
@@ -413,13 +414,169 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Onboarding branch (`connect_mode='onboard'`): create a brand-new AdsPower
+// profile for a country that has none yet, then stream it — mirroring the
+// existing browse-mode adspower-cdp spawn/tunnel-parse mechanism rather than
+// inventing a new one. Activation (status='active', connect_status='captured')
+// happens in the API route once the VA finishes the FB login in the streamed
+// browser — this branch only gets the row to connect_status='ready'.
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a country-pinned Enigma sticky-session proxy_config JSON string for
+ * a freshly created AdsPower profile. Mirrors the sticky-password scheme in
+ * tools/scraper/provision_adspower_profile.py (`_sticky_proxy_password`) —
+ * same RESIDENTIAL_PROXY_* credentials already used for the FB engagement
+ * fleet (no new proxy provider, no new env vars), keyed to a fresh
+ * per-onboarding session id so concurrent onboards don't collide on one
+ * sticky IP. Falls back to '{}' (adspower.py's own no-proxy default) with a
+ * log warning if the residential-proxy env vars aren't configured, rather
+ * than failing the whole onboard.
+ */
+function buildOnboardProxyConfig(country: string, sessionSeed: string): string {
+  const host = process.env.RESIDENTIAL_PROXY_HOST;
+  const port = process.env.RESIDENTIAL_PROXY_PORT;
+  const user = process.env.RESIDENTIAL_PROXY_USERNAME;
+  const basePassword = process.env.RESIDENTIAL_PROXY_PASSWORD;
+  if (!host || !port || !user || !basePassword) {
+    log('RESIDENTIAL_PROXY_* not fully configured — onboarding profile will get no proxy (no_proxy fallback)');
+    return '{}';
+  }
+  const base = basePassword.split('_country-')[0].split('_session-')[0].trim();
+  const sessionId = sessionSeed.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'onboard';
+  const password = `${base}_country-${country.toUpperCase()}_session-${sessionId}_lifetime-30`;
+  return JSON.stringify({
+    proxy_soft: 'other',
+    proxy_type: 'http',
+    proxy_host: host,
+    proxy_port: port,
+    proxy_user: user,
+    proxy_password: password,
+  });
+}
+
+/** Spawns `python -m tools.scraper.fleet_session --create ...` and resolves
+ * the trimmed stdout as the new profile id. */
+const onboardCreateProfile: OnboardDeps['createProfile'] = (country, proxyJson) =>
+  new Promise<string>((resolve, reject) => {
+    const child = spawn(
+      PYTHON,
+      ['-m', 'tools.scraper.fleet_session', '--create', '--country', country, '--proxy-json', proxyJson],
+      { cwd: config.projectRoot, windowsHide: true },
+    );
+    let out = '';
+    let errOut = '';
+    child.stdout.on('data', (buf: Buffer) => { out += buf.toString('utf8'); });
+    child.stderr.on('data', (buf: Buffer) => { errOut += buf.toString('utf8'); });
+    // CRITICAL: spawn reports a missing executable (ENOENT) via an async
+    // 'error' event, NOT a synchronous throw — same pattern as finishSession's
+    // --stop spawn above. Without this listener an unhandled 'error' crashes
+    // the whole worker process, not just this one onboard attempt.
+    child.on('error', (err) => {
+      reject(new Error(`fleet_session --create spawn failed: ${err.message}`));
+    });
+    child.on('exit', (code) => {
+      const profileId = out.trim().split(/\r?\n/).pop()?.trim() ?? '';
+      if (code === 0 && profileId) {
+        resolve(profileId);
+      } else {
+        reject(new Error(`fleet_session --create exited code=${code}: ${(errOut || out).slice(-500)}`));
+      }
+    });
+  });
+
+const onboardRecordProfileId: OnboardDeps['recordProfileId'] = async (accountId, profileId) => {
+  const { error } = await getSupabase()
+    .from('social_accounts')
+    .update({ adspower_profile_id: profileId })
+    .eq('id', accountId);
+  if (error) throw new Error(`recordProfileId: ${error.message}`);
+};
+
+/** Reuses SPAWN_SCRIPT_ADSPOWER_CDP — the same spawner + tunnel-URL parsing
+ * browse mode uses (`-ProfileId` instead of `-AccountId` since the onboarding
+ * account's status isn't 'active' yet, so fleet_session can't resolve it by
+ * account id — see the script's own header comment). */
+const onboardSpawnStream: OnboardDeps['spawnStream'] = (accountId, profileId) =>
+  new Promise<string>((resolve, reject) => {
+    const spawnArgs = ['-ExecutionPolicy', 'Bypass', '-File', SPAWN_SCRIPT_ADSPOWER_CDP, '-ProfileId', profileId];
+    const child = spawn('powershell', spawnArgs, { windowsHide: true });
+    let settled = false;
+    const fail = (msg: string): void => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(msg));
+    };
+    // Same ENOENT-crashes-the-worker hazard as onboardCreateProfile above.
+    child.on('error', (err) => fail(`adspower-cdp spawn failed for account=${accountId}: ${err.message}`));
+    child.stdout.on('data', (buf: Buffer) => {
+      const lines = buf.toString('utf8').split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        log(`[onboard ps stdout] ${trimmed.slice(0, 200)}`);
+        if (!settled) {
+          // Same trycloudflare match browse mode uses to detect the tunnel line.
+          const match = trimmed.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com[^\s]*/i);
+          if (match) { settled = true; resolve(match[0]); }
+        }
+      }
+    });
+    child.stderr.on('data', (buf: Buffer) => {
+      log(`[onboard ps stderr] ${buf.toString('utf8').trim().slice(0, 200)}`);
+    });
+    child.on('exit', (code) => {
+      if (!settled) fail(`adspower-cdp spawn exited code=${code} before printing a tunnel URL`);
+    });
+  });
+
+const onboardSetReady: OnboardDeps['setReady'] = async (accountId, tunnelUrl) => {
+  await updateConnectStatus(accountId, { connect_status: 'ready', connect_tunnel_url: tunnelUrl });
+};
+
+async function handleOnboardRequest(row: ConnectRequestRow): Promise<void> {
+  log(`claimed account=${row.id} session=${row.connect_session_id} mode=onboard`);
+  try {
+    const { data, error } = await getSupabase()
+      .from('social_accounts').select('country').eq('id', row.id).single();
+    if (error) throw new Error(`country lookup: ${error.message}`);
+    const country = ((data as { country?: string } | null)?.country || '').trim();
+    if (!country) throw new Error(`account ${row.id} has no country set`);
+
+    const proxyJson = buildOnboardProxyConfig(country, row.connect_session_id ?? row.id);
+
+    await buildOnboardSteps(
+      { accountId: row.id, country, proxyJson },
+      {
+        createProfile: onboardCreateProfile,
+        recordProfileId: onboardRecordProfileId,
+        spawnStream: onboardSpawnStream,
+        setReady: onboardSetReady,
+      },
+    );
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    log(`onboard failed for account=${row.id}: ${message}`);
+    try {
+      await updateConnectStatus(row.id, { connect_status: 'failed', connect_error: message.slice(0, 1800) });
+    } catch (statusErr) {
+      log(`onboard failed-status update also failed for account=${row.id}: ${(statusErr as Error).message}`);
+    }
+  }
+}
+
 async function pollOnce(platform: string): Promise<void> {
   if (busy) return;
   busy = true;
   try {
     const row = await claimPendingConnectRequest(platform);
     if (!row) return;
-    await handleRequest(row);
+    if (row.connect_mode === 'onboard') {
+      await handleOnboardRequest(row);
+    } else {
+      await handleRequest(row);
+    }
   } catch (err) {
     log(`poll error: ${(err as Error).message}`);
   } finally {

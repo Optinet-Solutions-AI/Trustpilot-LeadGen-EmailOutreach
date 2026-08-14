@@ -10,16 +10,31 @@
 #   - On exit: stops the AdsPower profile + kills cloudflared + the Node bridge
 #
 # Args:
-#   -AccountId   the social_accounts.id (fleet_session resolves its adspower_profile_id)
+#   -AccountId   the social_accounts.id (fleet_session resolves its adspower_profile_id).
+#                Requires the account row's status='active' (fleet_session's
+#                _resolve_profile_id gate) — use -ProfileId instead for a row
+#                that isn't active yet (e.g. mid-onboarding, pre-activation).
+#   -ProfileId   a raw AdsPower profile id, bypassing the account lookup/active
+#                check entirely. Added for the onboarding wizard: a freshly
+#                created profile belongs to a social_accounts row that is
+#                still 'disabled' until the VA finishes login and the
+#                onboard-complete route activates it, so -AccountId can't be
+#                used yet. Exactly one of -AccountId / -ProfileId is required.
 #   -RepoDir     repo root (for the .venv python + the bridge js). Defaults to
 #                self-located from this script's own path (<repo>\scripts\... -> <repo>),
 #                mirroring ec2-windows-spawn-cdp.ps1's Find-RepoRoot.
 #   -TargetUrl   deep-link (logged; the VA navigates in-session for now)
 param(
-    [Parameter(Mandatory=$true)][string]$AccountId,
+    [string]$AccountId,
+    [string]$ProfileId,
     [string]$RepoDir = $null,
     [string]$TargetUrl = 'https://www.facebook.com/'
 )
+if (-not $AccountId -and -not $ProfileId) {
+    Write-Host "FATAL: pass -AccountId or -ProfileId"
+    exit 2
+}
+$FsIdArgs = if ($ProfileId) { @('--profile', $ProfileId) } else { @('--account', $AccountId) }
 if (-not $RepoDir) { $RepoDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
 $ErrorActionPreference = 'Continue'
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
@@ -36,7 +51,7 @@ if (-not (Test-Path $CLOUDFLARED))   { Write-Host "FATAL: cloudflared not found 
 if (-not $NODE)                      { Write-Host "FATAL: node not found in PATH"; exit 2 }
 if (-not (Test-Path $BRIDGE_SCRIPT)) { Write-Host "FATAL: browse-stream-bridge.js not found (run 'cd server && npm run build')"; exit 2 }
 
-Write-Host "AdsPower CDP spawn: account=$AccountId targetUrl=$TargetUrl"
+Write-Host "AdsPower CDP spawn: account=$AccountId profile=$ProfileId targetUrl=$TargetUrl"
 
 # Kill leftovers on the bridge port from any previous unclean exit.
 $pids = Get-NetTCPConnection -LocalPort $BRIDGE_PORT -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
@@ -44,10 +59,10 @@ foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
 Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # 1. Open the AdsPower profile and get its CDP port (this launches the browser).
-$CDP_PORT = (& $py -m tools.scraper.fleet_session --account $AccountId --print-port 2>&1 | Select-Object -Last 1 | Out-String).Trim()
+$CDP_PORT = (& $py -m tools.scraper.fleet_session @FsIdArgs --print-port 2>&1 | Select-Object -Last 1 | Out-String).Trim()
 if (-not ($CDP_PORT -match '^\d+$')) {
     Write-Host "FATAL: fleet_session did not return a numeric CDP port (got: '$CDP_PORT')"
-    & $py -m tools.scraper.fleet_session --account $AccountId --stop 2>&1 | Out-Null
+    & $py -m tools.scraper.fleet_session @FsIdArgs --stop 2>&1 | Out-Null
     exit 3
 }
 Write-Host "AdsPower profile open; CDP port=$CDP_PORT"
@@ -78,7 +93,7 @@ if (-not $tunnelUrl) {
     Write-Host "FATAL: cloudflared did not print a tunnel URL within 45s"
     if ($cfProc)     { Stop-Process -Id $cfProc.Id     -Force -ErrorAction SilentlyContinue }
     if ($bridgeProc) { Stop-Process -Id $bridgeProc.Id -Force -ErrorAction SilentlyContinue }
-    & $py -m tools.scraper.fleet_session --account $AccountId --stop 2>&1 | Out-Null
+    & $py -m tools.scraper.fleet_session @FsIdArgs --stop 2>&1 | Out-Null
     Remove-Item $tunnelLogOut, $tunnelLogErr -ErrorAction SilentlyContinue
     exit 3
 }
@@ -96,7 +111,7 @@ try {
 } finally {
     if ($cfProc)     { Stop-Process -Id $cfProc.Id     -Force -ErrorAction SilentlyContinue }
     if ($bridgeProc) { Stop-Process -Id $bridgeProc.Id -Force -ErrorAction SilentlyContinue }
-    & $py -m tools.scraper.fleet_session --account $AccountId --stop 2>&1 | Out-Null
+    & $py -m tools.scraper.fleet_session @FsIdArgs --stop 2>&1 | Out-Null
     Remove-Item $tunnelLogOut, $tunnelLogErr -ErrorAction SilentlyContinue
-    Write-Host "AdsPower CDP session cleanup complete for account=$AccountId"
+    Write-Host "AdsPower CDP session cleanup complete for account=$AccountId profile=$ProfileId"
 }

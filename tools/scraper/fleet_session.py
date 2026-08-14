@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from typing import Optional
 
 from tools.db.supabase_client import table
@@ -77,6 +78,30 @@ def port_from_cdp_address(cdp_address: str) -> int:
         raise FleetSessionError(f'CDP address {cdp_address!r} has a non-integer port') from exc
 
 
+def create_fleet_profile(*, country: str, proxy_json: str) -> str:
+    """Create a brand-new AdsPower profile pinned to `country` (the FB
+    onboarding wizard's worker branch). Returns the new profile id.
+
+    `proxy_json` is passed through verbatim as `proxy_config` — the caller
+    (the Node worker) is responsible for building a real country-proxy JSON
+    payload; an empty/blank value here falls through to adspower.py's own
+    no-proxy default. Wraps adspower.AdsPowerError as FleetSessionError so
+    main_with_args has one exception type to catch."""
+    short_id = uuid.uuid4().hex[:8]
+    try:
+        proxy_config = json.loads(proxy_json or '{}')
+    except (TypeError, ValueError) as exc:
+        raise FleetSessionError(f'--proxy-json is not valid JSON: {exc}') from exc
+    try:
+        return adspower.create_profile(
+            name=f'fleet-{country}-{short_id}',
+            country=country,
+            proxy_config=proxy_config,
+        )
+    except adspower.AdsPowerError as exc:
+        raise FleetSessionError(f'AdsPower failed to create a profile for country={country}: {exc}') from exc
+
+
 def close_account_session(*, account_id: Optional[str] = None, profile_id: Optional[str] = None) -> None:
     """Stop the AdsPower profile for an account (or a raw profile id). Resolves
     the profile from social_accounts when given an account_id. Stopping an
@@ -90,17 +115,35 @@ def close_account_session(*, account_id: Optional[str] = None, profile_id: Optio
     adspower.stop_profile(profile_id)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description='Open/stop a secured AdsPower profile for the fleet.')
-    grp = ap.add_mutually_exclusive_group(required=True)
+def main_with_args(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description='Open/stop/create a secured AdsPower profile for the fleet.')
+    # Not required=True any more: --create is a third action that needs neither
+    # --account nor --profile. Presence is validated by hand below so --create
+    # keeps a clean, specific error message instead of argparse's generic one.
+    grp = ap.add_mutually_exclusive_group(required=False)
     grp.add_argument('--account', help='social_accounts.id')
     grp.add_argument('--profile', help='raw AdsPower profile id')
+    ap.add_argument('--create', action='store_true',
+                    help='Create a brand-new AdsPower profile (onboarding) instead of opening/stopping one.')
+    ap.add_argument('--country', help='ISO2 country code — required with --create')
+    ap.add_argument('--proxy-json', default='{}',
+                    help='JSON proxy_config to pass through on --create (default: {})')
     ap.add_argument('--print-port', action='store_true',
                     help='Open the session and print ONLY the CDP port (for the spawner).')
     ap.add_argument('--stop', action='store_true',
                     help='Stop the profile instead of opening it.')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    if not args.create and not args.account and not args.profile:
+        ap.error('one of --account, --profile, or --create is required')
+
     try:
+        if args.create:
+            if not args.country:
+                raise FleetSessionError('--create requires --country')
+            pid = create_fleet_profile(country=args.country, proxy_json=args.proxy_json)
+            print(pid)
+            return 0
         if args.stop:
             close_account_session(account_id=args.account, profile_id=args.profile)
             return 0
@@ -113,6 +156,10 @@ def main() -> int:
         print(f'FLEET SESSION FAILED: {exc}', file=sys.stderr, flush=True)
         return 1
     return 0
+
+
+def main() -> int:
+    return main_with_args(sys.argv[1:])
 
 
 if __name__ == '__main__':

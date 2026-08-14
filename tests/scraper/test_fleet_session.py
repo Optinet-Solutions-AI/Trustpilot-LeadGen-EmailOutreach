@@ -94,3 +94,21 @@ def test_close_account_session_rejects_both_and_neither(monkeypatch):
         fs.close_account_session()
     with pytest.raises(fs.FleetSessionError):
         fs.close_account_session(account_id='a', profile_id='p')
+
+
+def test_create_prints_new_profile_id(monkeypatch, capsys):
+    monkeypatch.setattr(fs.adspower, 'create_profile', lambda **kw: 'knew1')
+    rc = fs.main_with_args(['--create', '--country', 'GB', '--proxy-json', '{}'])
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == 'knew1'
+
+
+def test_create_requires_country(monkeypatch, capsys):
+    rc = fs.main_with_args(['--create'])
+    assert rc == 1
+    assert 'FLEET SESSION FAILED' in capsys.readouterr().err
+
+
+def test_main_with_args_requires_an_action(capsys):
+    with pytest.raises(SystemExit):
+        fs.main_with_args([])
