@@ -247,8 +247,12 @@ export async function getConnectStatusValue(accountId: string): Promise<string |
 // 'provisioning' value in that CHECK constraint (it only exists in the
 // separate connect_status lifecycle), so we park the row as 'disabled'
 // until activateOnboardedAccount flips it. `handle` (the FB username) is
-// NOT NULL with no default and is unknown before login, so it gets an
-// empty-string placeholder until the worker learns it post-login.
+// NOT NULL with no default and is unknown before login. It also has a
+// UNIQUE(platform, handle) constraint, so a shared empty-string placeholder
+// would let one abandoned or active row permanently block every future
+// onboarding attempt with a unique violation. Use a per-onboarding unique
+// placeholder derived from sessionId instead; it's overwritten once the
+// worker learns the real FB username post-login.
 export async function enqueueOnboardRequest(
   opts: { country: string; requestedBy: string },
 ): Promise<{ accountId: string; sessionId: string }> {
@@ -260,7 +264,7 @@ export async function enqueueOnboardRequest(
     .from('social_accounts')
     .insert({
       platform: 'facebook',
-      handle: '',
+      handle: `onboard-${sessionId}`,
       country: opts.country,
       status: 'disabled',
       connect_mode: 'onboard',

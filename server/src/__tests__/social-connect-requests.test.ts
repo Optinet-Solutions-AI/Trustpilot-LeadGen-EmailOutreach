@@ -5,6 +5,7 @@ import {
   getConnectRequestStatus,
   claimPendingConnectRequest,
   finalizeConnectRequest,
+  enqueueOnboardRequest,
 } from '../db/social-connect-requests.js';
 
 // Restore all spies after every test, regardless of which describe block they
@@ -104,6 +105,40 @@ describe('getConnectRequestStatus', () => {
     const result = await getConnectRequestStatus('a1');
     expect(result.connect_status).toBe('ready');
     expect(result.connect_tunnel_url).toBe('https://test.trycloudflare.com');
+  });
+});
+
+describe('enqueueOnboardRequest', () => {
+  it('generates a unique per-call handle placeholder, so concurrent/repeated onboarding never collides on UNIQUE(platform, handle)', async () => {
+    const inserted: Record<string, unknown>[] = [];
+    const mockSb = {
+      from: vi.fn().mockReturnValue({
+        insert: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+          inserted.push(payload);
+          return {
+            select: vi.fn().mockReturnValue({
+              single: vi
+                .fn()
+                .mockResolvedValue({ data: { id: `acct-${inserted.length}` }, error: null }),
+            }),
+          };
+        }),
+      }),
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(mockSb as any);
+
+    const r1 = await enqueueOnboardRequest({ country: 'GB', requestedBy: 'user-1' });
+    const r2 = await enqueueOnboardRequest({ country: 'GB', requestedBy: 'user-1' });
+
+    expect(inserted).toHaveLength(2);
+    expect(inserted[0].handle).toBeTruthy();
+    expect(inserted[1].handle).toBeTruthy();
+    expect(inserted[0].handle).not.toBe(inserted[1].handle);
+    expect(inserted[0].status).toBe('disabled');
+    expect(inserted[1].status).toBe('disabled');
+    expect(r1.sessionId).not.toBe(r2.sessionId);
+    expect(r1.accountId).toBe('acct-1');
+    expect(r2.accountId).toBe('acct-2');
   });
 });
 
