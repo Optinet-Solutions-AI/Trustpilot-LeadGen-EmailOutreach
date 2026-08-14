@@ -58,6 +58,10 @@ export function useOnboardAccount() {
             nextStatus = 'provisioning';
           } else if (s === 'ready') {
             nextStatus = 'ready';
+          } else if (s === 'captured') {
+            // Set once the VA clicks Done (activateOnboardedAccount) — terminal,
+            // same as the post-complete() state, NOT still-provisioning.
+            nextStatus = 'completed';
           } else if (s === 'failed') {
             nextStatus = 'failed';
           } else if (s === 'expired') {
@@ -77,7 +81,7 @@ export function useOnboardAccount() {
           }
 
           // Terminal statuses — stop polling.
-          if (nextStatus === 'ready' || nextStatus === 'failed' || nextStatus === 'expired') {
+          if (nextStatus === 'ready' || nextStatus === 'failed' || nextStatus === 'expired' || nextStatus === 'completed') {
             clearInterval(intervalRef.current!);
             intervalRef.current = null;
             setLoading(false);

@@ -40,6 +40,10 @@ export default function OnboardAccountModal({ onClose }: Props) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // CountryPicker's Combobox also handles Escape (to close its own
+      // dropdown) and calls e.preventDefault() on it — if a child already
+      // handled the key, don't also close the whole wizard.
+      if (e.defaultPrevented) return;
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handler);

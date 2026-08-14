@@ -693,10 +693,18 @@ async function handleOnboardRequest(row: ConnectRequestRow): Promise<void> {
           if (Date.now() > expiresAt) {
             finalized = true; // set before async work, mirroring handleRequest's expirySweep
             log(`account=${row.id} onboard session expired without completion; marking expired`);
-            await updateConnectStatus(row.id, {
-              connect_status: 'expired',
-              connect_error: 'onboarding login not completed within the session TTL',
-            });
+            try {
+              await updateConnectStatus(row.id, {
+                connect_status: 'expired',
+                connect_error: 'onboarding login not completed within the session TTL',
+              });
+            } catch (statusErr) {
+              // finalized is already true, so every later expirySweep/end-watch
+              // tick would short-circuit forever if we let this throw skip
+              // teardown below — always fall through to finishOnboardSession()
+              // so the stream/profile don't leak and `busy` gets released.
+              log(`onboard expiry status update failed for account=${row.id}: ${(statusErr as Error).message}`);
+            }
             finishOnboardSession();
           }
         }, 5_000);
