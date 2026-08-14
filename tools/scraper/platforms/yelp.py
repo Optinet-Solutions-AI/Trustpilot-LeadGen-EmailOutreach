@@ -105,6 +105,14 @@ _CATEGORIES_PATH = os.path.join(_DATA_DIR, 'yelp_categories.json')
 _DEFAULT_MAX_PAGES_PER_CITY = 5
 _RESULTS_PER_PAGE = 10
 
+# memo23/yelp-scraper's billing, measured from live runs 2026-08-12/13. TWO
+# components, and conflating them misreports spend: a marginal per-item
+# charge, plus a fixed start fee EVERY city run pays. The 10-item probe cost
+# $0.0365 = $0.009 + 10 x $0.00275, which is why "$0.00365/item" is only true
+# at that size — the start fee amortises away as a run gets bigger.
+_APIFY_ITEM_USD = 0.00275
+_APIFY_RUN_START_USD = 0.009
+
 # Domains we never accept as a business "website" (Yelp links these on
 # unclaimed pages or as social fallbacks).
 _EXCLUDED_DOMAINS = (
@@ -509,6 +517,7 @@ class YelpScraper(BasePlatformScraper):
         # Apify spend guard (apify source only) — see the city loop below.
         item_budget = job_item_budget()
         items_asked_for = 0
+        runs_started = 0
 
         use_browser = source in ('browser', 'relay')
         use_apify = source == 'apify'
@@ -632,12 +641,15 @@ class YelpScraper(BasePlatformScraper):
                             f"{item_budget}-item Apify budget after {city_idx} "
                             f"{'city' if city_idx == 1 else 'cities'} and stopped with "
                             f"{len(results)} leads. Raise YELP_APIFY_MAX_ITEMS_PER_JOB to "
-                            f"spend more per job, or narrow the search. At ~$0.00275/item "
-                            f"this job cost roughly ${items_asked_for * 0.00275:.2f}.",
+                            f"spend more per job, or narrow the search. At "
+                            f"${_APIFY_ITEM_USD}/item plus ${_APIFY_RUN_START_USD} per city "
+                            f"run, this job cost roughly "
+                            f"${items_asked_for * _APIFY_ITEM_USD + runs_started * _APIFY_RUN_START_USD:.2f}.",
                             flush=True,
                         )
                         break
                     items_asked_for += asked
+                    runs_started += 1
 
                     businesses = await asyncio.to_thread(
                         search_city_apify, city, category, city_cap,
@@ -717,6 +729,13 @@ class YelpScraper(BasePlatformScraper):
                         'website_url': b.get('website_url'),
                         'website_email': b.get('website_email'),
                         'profile_claimed': b.get('profile_claimed'),
+                        # Provenance travels WITH the lead so enrich_profiles
+                        # can tell how it was produced. Reading the env there
+                        # instead would mis-handle a stub file enriched later
+                        # on a box configured for a different source — and
+                        # `run.py --action enrich --input <file>` makes that
+                        # reachable.
+                        'listing_source': source,
                     })
                     page_kept += 1
 
@@ -825,8 +844,28 @@ class YelpScraper(BasePlatformScraper):
         if not profile_stubs:
             return []
 
-        apify_mode = (os.environ.get('YELP_LISTING_SOURCE', 'browser')
-                      .strip().lower() == 'apify')
+        # How these leads were PRODUCED decides whether the ScrapingBee
+        # profile fetch is redundant — not how this box happens to be
+        # configured right now. `run.py --action enrich --input <file>` is a
+        # standalone entry point, and the docs tell operators to set
+        # YELP_LISTING_SOURCE=apify box-wide, so re-enriching a
+        # browser/fusion stub file would otherwise skip the fetch those leads
+        # actually need and yield rows with no website, phone or email — with
+        # no warning. Stubs written before this field existed have no
+        # provenance, so those fall back to the env var.
+        stub_sources = {
+            str(s.get('listing_source') or '').strip().lower()
+            for s in profile_stubs
+        }
+        stub_sources.discard('')
+        if stub_sources:
+            # A mixed batch takes the legacy path: spending credits we didn't
+            # strictly need is recoverable, silently dropping contact data is
+            # not.
+            apify_mode = stub_sources == {'apify'}
+        else:
+            apify_mode = (os.environ.get('YELP_LISTING_SOURCE', 'browser')
+                          .strip().lower() == 'apify')
 
         if not scrapingbee_enabled():
             if apify_mode:

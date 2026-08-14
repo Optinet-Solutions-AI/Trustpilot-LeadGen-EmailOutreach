@@ -69,8 +69,11 @@ other than the owner.
 | Screenshot-only enrichment | `tools/scraper/platforms/yelp.py` (`enrich_profiles`) |
 | Shared actor client (timeout recovery, 402 handling) | `tools/scraper/shared/apify.py` |
 
-**Measured cost (2026-08-12):** `memo23/yelp-scraper` billed $0.0365 for 10
-businesses — roughly $3.65 per 1,000 — and returned rating, review count,
+**Measured cost (2026-08-12):** `memo23/yelp-scraper` bills **$0.00275 per
+item plus a $0.009 start fee per city run**. The 10-item probe therefore cost
+$0.0365 in total — $0.00365/item at that size, but the start fee amortises
+away as a run gets bigger, so quote the two components rather than a single
+per-item figure. It returned rating, review count,
 phone (10/10), website (8/10), contact email (5/10) and claimed status
 (10/10). The alternative `epctex/yelp-business-api` is ~$0.50 per 1,000 but
 returns no email and no claimed status.
@@ -98,7 +101,7 @@ locally.
 
 Only **16.3%** land at or below the default `max_rating` of 3.5. So roughly
 **6 businesses must be fetched per usable lead** — about **$0.017 per lead**
-at $0.00275/item — which is why the over-fetch default is **6x**, not the 4x
+at $0.00275/item plus the per-run start fee — which is why the over-fetch default is **6x**, not the 4x
 originally guessed (4x returned only ~65% of the leads a run asked for).
 Contact coverage across the same sample: website **52%**, contact email
 **18%**. Each city logs `returned N businesses, K matched filter`; if a

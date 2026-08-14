@@ -138,3 +138,50 @@ def test_legacy_cap_truncates_stubs_to_default_25(monkeypatch, capsys):
     # Must describe dropping leads, not the apify screenshot-capping wording.
     assert 'screenshotting' not in out
     assert 'keep full data' not in out
+
+
+def test_browser_stubs_still_get_their_profile_fetch_on_an_apify_box(monkeypatch):
+    """The box says apify, but these leads came from the browser source, so
+    they carry no website/phone yet and MUST still be fetched. Reading the env
+    instead of the stub's provenance would silently return contactless leads."""
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: False)
+    fetched = []
+    monkeypatch.setattr(yelp, 'fetch_via_scrapingbee',
+                        lambda url, **k: fetched.append(url) or '<html></html>')
+    stubs = [{**s, 'listing_source': 'browser', 'website_url': None,
+              'website_email': None, 'profile_claimed': None} for s in _stubs(2)]
+    _run(stubs)
+    assert len(fetched) == 2, 'browser-sourced stubs must still be fetched'
+
+
+def test_apify_stubs_skip_the_fetch_even_if_the_env_says_browser(monkeypatch):
+    """Mirror case: provenance says apify, so the 75-credit fetch is redundant
+    no matter how this box is configured."""
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'browser')
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: False)
+
+    def explode(*a, **k):
+        raise AssertionError('apify-sourced stubs already carry this data')
+
+    monkeypatch.setattr(yelp, 'fetch_via_scrapingbee', explode)
+    stubs = [{**s, 'listing_source': 'apify'} for s in _stubs(2)]
+    rows = _run(stubs)
+    assert len(rows) == 2
+    assert all(r['website_email'] for r in rows)
+
+
+def test_mixed_provenance_takes_the_safe_legacy_path(monkeypatch):
+    """Spending credits we didn't strictly need is recoverable; silently
+    dropping contact data is not."""
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: False)
+    fetched = []
+    monkeypatch.setattr(yelp, 'fetch_via_scrapingbee',
+                        lambda url, **k: fetched.append(url) or '<html></html>')
+    a, b = _stubs(2)
+    _run([{**a, 'listing_source': 'apify'}, {**b, 'listing_source': 'browser'}])
+    assert len(fetched) == 2
