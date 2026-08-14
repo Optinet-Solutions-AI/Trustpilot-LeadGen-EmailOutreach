@@ -14,7 +14,7 @@ param(
     [Parameter(Mandatory=$true)][string]$User,
     [Parameter(Mandatory=$true)][string]$Password,
     [string]$RepoDir = 'C:\opt\scraper',
-    [string]$AdsPowerExe = 'C:\Program Files\adspower_global\AdsPower Global.exe'
+    [string]$AdsPowerExe = 'C:\Program Files\AdsPower Global\AdsPower Global.exe'
 )
 $ErrorActionPreference = 'Stop'
 $py = Join-Path $RepoDir '.venv\Scripts\python.exe'

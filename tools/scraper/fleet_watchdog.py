@@ -17,8 +17,12 @@ import time
 from tools.scraper.shared import adspower
 
 # AdsPower's installed executable on Windows (client 8.7.x). Override with
-# ADSPOWER_EXE if a future build changes the path.
-DEFAULT_ADSPOWER_EXE = r'C:\Program Files\adspower_global\AdsPower Global.exe'
+# ADSPOWER_EXE if a future build changes the path. NB: the PROGRAM dir is
+# "AdsPower Global" (pretty name) — not "adspower_global", which is only the
+# per-user DATA dir under AppData. Verified live on the EC2 fleet host
+# 2026-08-14; the old adspower_global default made the launch + watchdog tasks
+# silently fail (exe not found) so AdsPower never came back after a reboot.
+DEFAULT_ADSPOWER_EXE = r'C:\Program Files\AdsPower Global\AdsPower Global.exe'
 
 
 def check_and_recover(launch_command: list[str], *, wait_seconds: float = 90.0, poll_interval: float = 5.0) -> str:
