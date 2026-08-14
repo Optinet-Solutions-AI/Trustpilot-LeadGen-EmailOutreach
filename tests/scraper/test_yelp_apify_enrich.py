@@ -48,7 +48,14 @@ def test_apify_path_keeps_the_actor_supplied_fields(monkeypatch):
     assert rows[0]['profile_claimed'] is False
 
 
-def test_screenshots_are_uncapped_by_default_on_the_apify_path(monkeypatch):
+def test_data_is_never_capped_on_the_apify_path(monkeypatch):
+    """The legacy path's cap TRUNCATES the lead list, discarding website and
+    phone past the 25th. On this path the cap must only govern screenshots —
+    every lead keeps its data.
+
+    (This test previously asserted screenshots were unlimited too. A live
+    job disproved that: see test_screenshots_are_bounded_by_default_not_unlimited.)
+    """
     monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
     monkeypatch.delenv('YELP_MAX_ENRICH', raising=False)
     monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
@@ -56,9 +63,8 @@ def test_screenshots_are_uncapped_by_default_on_the_apify_path(monkeypatch):
     monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee', lambda *a, **k: b'PNG')
     monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
     rows = _run(_stubs(30))
-    # The old default of 25 would have dropped 5 leads entirely.
-    assert len(rows) == 30
-    assert all(r.get('screenshot_path') for r in rows)
+    assert len(rows) == 30, 'no lead may be dropped — the legacy cap would have lost 5'
+    assert all(r['website_email'] for r in rows), 'every lead keeps its contact data'
 
 
 def test_explicit_cap_limits_screenshots_but_never_data(monkeypatch):
@@ -185,3 +191,38 @@ def test_mixed_provenance_takes_the_safe_legacy_path(monkeypatch):
     a, b = _stubs(2)
     _run([{**a, 'listing_source': 'apify'}, {**b, 'listing_source': 'browser'}])
     assert len(fetched) == 2
+
+
+def test_screenshots_are_bounded_by_default_not_unlimited(monkeypatch):
+    """Regression for a live incident: a job asking for 5 leads received 195
+    from the listing, and an unbounded screenshot pass queued 195 ScrapingBee
+    calls at 75 credits each (~14,600 credits). How many leads a listing
+    returns is not something this stage controls, so it must not be what
+    bounds the spend."""
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    monkeypatch.delenv('YELP_MAX_ENRICH', raising=False)
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: True)
+    shots = []
+    monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee',
+                        lambda url, **k: shots.append(url) or b'PNG')
+    monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
+
+    rows = _run(_stubs(195))
+
+    assert len(rows) == 195, 'every lead must still be returned with its data'
+    assert len(shots) == 25, f'screenshots must be bounded by default, got {len(shots)}'
+
+
+def test_explicit_cap_still_raises_the_screenshot_ceiling(monkeypatch):
+    monkeypatch.setenv('YELP_LISTING_SOURCE', 'apify')
+    monkeypatch.setenv('YELP_MAX_ENRICH', '40')
+    monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
+    monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: True)
+    shots = []
+    monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee',
+                        lambda url, **k: shots.append(url) or b'PNG')
+    monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
+
+    _run(_stubs(60))
+    assert len(shots) == 40

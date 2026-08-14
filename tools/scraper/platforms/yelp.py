@@ -113,6 +113,12 @@ _RESULTS_PER_PAGE = 10
 _APIFY_ITEM_USD = 0.00275
 _APIFY_RUN_START_USD = 0.009
 
+# Ceiling on profile screenshots per run when YELP_MAX_ENRICH is unset. Each
+# is a 75-credit ScrapingBee stealth call, so this is the difference between
+# a normal run and a four-figure credit bill when a listing returns far more
+# leads than the job asked for. Matches the legacy path's long-standing 25.
+_DEFAULT_MAX_SHOTS = 25
+
 # Domains we never accept as a business "website" (Yelp links these on
 # unclaimed pages or as social fallbacks).
 _EXCLUDED_DOMAINS = (
@@ -904,10 +910,20 @@ class YelpScraper(BasePlatformScraper):
         import math
         raw_cap = str(os.environ.get('YELP_MAX_ENRICH', '')).strip()
         if apify_mode:
+            # Screenshots were previously UNLIMITED here, on the reasoning
+            # that a run is ~25 leads and every lead deserves one. A live job
+            # disproved the premise: a request for 5 leads returned 195, and
+            # the unbounded pass queued 195 ScrapingBee calls at 75 credits
+            # each — roughly 14,600 credits from a job that asked for five.
+            #
+            # So the intent survives ("the leads you asked for get a
+            # screenshot") but it is bounded, because the number of leads a
+            # listing returns is not something this stage controls. Raise
+            # YELP_MAX_ENRICH deliberately for a bigger run.
             try:
-                max_shots = int(raw_cap) if raw_cap else len(profile_stubs)
+                max_shots = int(raw_cap) if raw_cap else _DEFAULT_MAX_SHOTS
             except ValueError:
-                max_shots = len(profile_stubs)
+                max_shots = _DEFAULT_MAX_SHOTS
             max_shots = max(1, max_shots)
         else:
             try:
