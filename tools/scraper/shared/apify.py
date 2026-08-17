@@ -42,12 +42,44 @@ A TIMEOUT IS NOT A FAILURE
   ConnectionError that is NOT a Timeout means the request never reached
   Apify at all — nothing started, nothing billed — so that case keeps the
   normal retry-with-backoff path.
+
+  THIS FAILURE ARRIVES BY TWO DOORS
+
+  The client-side exception above is only half of it. run-sync-get-dataset-
+  items ALSO enforces its own hard 300-second ceiling server-side, entirely
+  independent of the `timeout` we pass, and when a run outlives it the
+  endpoint answers HTTP 408 with error.type "run-timeout-exceeded". That is
+  a normal response, not an exception, so it used to fall through to the
+  generic 4xx branch and raise — walking straight past this module's whole
+  reason for existing.
+
+  Measured incident (2026-08-13, Yelp): a 408 came back at 301.6s. The run
+  behind it was still RUNNING, had already scraped 169 items and billed
+  $0.45, and every one of those items was thrown away — the operator was
+  told "0 businesses". A 408 therefore routes to the same recovery as a
+  client timeout, and is likewise never retried.
+
+  The practical consequence for callers: sizing a request so it plausibly
+  finishes inside 300s is a cost optimisation, not a correctness
+  requirement. Overrunning is survivable — you wait longer and still get
+  the data — but it is never free.
+
+  THAT SURVIVABILITY DEPENDS ON THE HEARTBEAT
+
+  It is only true because _post_with_heartbeat keeps printing while the POST
+  blocks. scrape-runner.ts kills a scraper after 300s of silence on BOTH
+  streams, and the 408 that triggers recovery arrives at ~301s — so without
+  the heartbeat the process is killed a moment before it can recover, and
+  the orphaned run bills to completion with nobody collecting its data.
+  Anything that silences this module during a long run re-breaks that.
 """
 from __future__ import annotations
 
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime
 from typing import Any, Optional
 
@@ -64,6 +96,11 @@ APIFY_BASE = 'https://api.apify.com/v2'
 DEFAULT_TIMEOUT = 900
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 5)
+
+# How often to print a keep-alive while the blocking POST is in flight. Must
+# stay comfortably under scrape-runner.ts's 300s silence watchdog, which
+# SIGKILLs a scraper that prints nothing — see _post_with_heartbeat.
+HEARTBEAT_SECONDS = 30
 
 # Timeout recovery (see "A TIMEOUT IS NOT A FAILURE" above). Poll interval is
 # deliberately loose — this is not a status endpoint we should hammer — and
@@ -101,6 +138,62 @@ def _actor_path(actor_id: str) -> str:
     return actor_id.replace('/', '~')
 
 
+def _post_with_heartbeat(url: str, *, params: dict, json_body: dict, timeout: int,
+                         actor_id: str):
+    """POST, printing a heartbeat to stderr while we wait.
+
+    run-sync-get-dataset-items blocks for minutes and this process prints
+    NOTHING while it does. scrape-runner.ts kills a scraper after 300s of
+    silence on both stdout and stderr — and the server-side 408 that starts
+    run recovery arrives at ~301s. Without a heartbeat the process is
+    therefore SIGKILLed a moment before the recovery it needs can begin,
+    reported to the operator as "hung — likely OOM or Playwright freeze",
+    leaving an orphaned run that bills to completion with nobody collecting
+    its data.
+
+    The heartbeat resets that watchdog, which is what makes overrunning the
+    300s ceiling survivable rather than fatal.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            requests.post, url, params=params, json=json_body, timeout=timeout,
+        )
+        waited = 0
+        while True:
+            try:
+                return future.result(timeout=HEARTBEAT_SECONDS)
+            except FutureTimeout:
+                waited += HEARTBEAT_SECONDS
+                print(
+                    f'INFO: apify actor={actor_id} waiting {waited}s for the run to finish '
+                    f'(heartbeat — keeps the scrape-runner watchdog from killing this '
+                    f'process mid-run)',
+                    file=sys.stderr, flush=True,
+                )
+
+
+def _is_run_timeout(resp) -> bool:
+    """True only for Apify's own "the run outlived this endpoint" 408.
+
+    A 408 from infrastructure in front of the API (CDN, load balancer) means
+    no run was started and nothing is billing, so it must NOT trigger run
+    recovery. Apify marks the real one with error.type ==
+    'run-timeout-exceeded'. Unparsable bodies are treated as NOT a run
+    timeout: raising is the safe default, since the recovery path can
+    misattribute a concurrent run of the same actor.
+    """
+    try:
+        payload = resp.json()
+    except (ValueError, AttributeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get('error')
+    if not isinstance(error, dict):
+        return False
+    return str(error.get('type') or '').strip() == 'run-timeout-exceeded'
+
+
 def run_actor(
     actor_id: str,
     run_input: dict,
@@ -117,11 +210,12 @@ def run_actor(
     for attempt in range(1, MAX_ATTEMPTS + 1):
         started = time.time()
         try:
-            resp = requests.post(
+            resp = _post_with_heartbeat(
                 url,
                 params={'token': _token()},
-                json=run_input,
+                json_body=run_input,
                 timeout=timeout,
+                actor_id=actor_id,
             )
         except requests.exceptions.Timeout as exc:
             # Timeout (incl. ReadTimeout, and ConnectTimeout which also
@@ -156,6 +250,33 @@ def run_actor(
                 f'Apify returned 402 (out of credit / plan limit) for actor '
                 f'{actor_id}: {resp.text[:300]}'
             )
+        if resp.status_code == 408 and _is_run_timeout(resp):
+            # The SERVER-side twin of the client Timeout handled above. This
+            # endpoint has its own hard 300s ceiling, independent of our
+            # `timeout`, and answers 408 run-timeout-exceeded when a run
+            # outlives it — while the run itself keeps going and keeps
+            # billing. Falling through to the generic 4xx raise below would
+            # discard work already paid for, so this routes to the same
+            # recovery as a client timeout. Deliberately NOT retried: the
+            # first run is still in flight, so a second POST bills twice for
+            # one job.
+            #
+            # Gated on Apify's own error.type rather than the bare status:
+            # a 408 from a CDN or load balancer in front of the API means no
+            # run was ever started, and treating that as "recover" would
+            # spend 20 minutes polling for a run that does not exist — and
+            # worse, _find_started_run's clock-skew window could adopt a
+            # CONCURRENT run of the same actor started by another process
+            # and hand back its dataset. That matters here: this module is
+            # shared with production Facebook discovery.
+            print(
+                f'INFO: apify actor={actor_id} status=408 elapsed={elapsed}s attempt={attempt} — '
+                f'the API endpoint gave up at its 300s ceiling but the run is still executing and '
+                f'IS BEING BILLED on Apify right now; NOT retrying (that would double-bill) — '
+                f'switching to recovery: locating the run and waiting for it to finish',
+                file=sys.stderr, flush=True,
+            )
+            return _recover_timed_out_run(actor_id, started, client_timeout=timeout)
         if resp.status_code >= 500:
             print(f'INFO: apify actor={actor_id} status={resp.status_code} elapsed={elapsed}s attempt={attempt}', file=sys.stderr, flush=True)
             if attempt < MAX_ATTEMPTS:
