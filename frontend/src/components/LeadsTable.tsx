@@ -936,6 +936,18 @@ export default function LeadsTable({
         // the fleet's logged-in, country-pinned browser to a new tab —
         // same "Open as James (hosted)" flow as LeadDetail.tsx, resolved
         // per-row via /leads/:id/accounts + /leads/:id/browse.
+        //
+        // Land the stream straight on the CONVERSATION when the profile has a
+        // stable numeric id — facebook.com/messages/t/<id> opens the chat with
+        // that person. FB's newer opaque pfbid / vanity profiles don't accept a
+        // direct DM URL, so those open the profile (its Message button is one
+        // click away) rather than a broken /messages/t/ link.
+        const fbNumericId = p.profile_url.includes('/profile.php')
+          ? (p.profile_url.match(/[?&]id=(\d+)/) || [])[1]
+          : null;
+        const fbMessageUrl = fbNumericId
+          ? `https://www.facebook.com/messages/t/${fbNumericId}`
+          : p.profile_url;
         const isBusy = messagingLeadId === lead.id
           && (resolvingAccounts || hostedStatus === 'starting' || hostedStatus === 'provisioning');
         return (
@@ -943,7 +955,7 @@ export default function LeadsTable({
             <button
               type="button"
               disabled={isBusy}
-              onClick={() => void openMessageHosted(lead.id, p.profile_url)}
+              onClick={() => void openMessageHosted(lead.id, fbMessageUrl)}
               title="Open as James (hosted) — streams the fleet's logged-in browser to your tab"
               aria-label="Message on Facebook"
               className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
