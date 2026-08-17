@@ -107,6 +107,32 @@ Contact coverage across the same sample: website **52%**, contact email
 **18%**. Each city logs `returned N businesses, K matched filter`; if a
 market's ratio drifts well below 16%, raise the multiplier for it.
 
+### Outside the US, most listings have no rating at all
+
+Measured 2026-08-14: **all 133** roofing businesses in Austria came back with
+no rating whatsoever, and across 22 non-US cities only **2%** of restaurants
+were rated ≤3.5 (versus **16.3%** in the US). Yelp's international presence is
+largely a bare directory — listings exist, nobody reviews them.
+
+The rating filter drops ratingless businesses, so those markets returned
+nothing **at any filter setting**: the country "worked" and still produced
+zero leads. Tick **Include unrated businesses** (`include_unrated`) to keep
+them. Rating band and `min_review_count` do not apply to an unrated row —
+they can't, it has no rating and no reviews — but they still apply normally
+to every business that does have one.
+
+An unrated, *unclaimed* listing is a strong cold-outreach target: nobody is
+managing that profile at all. `profile_claimed` is stored on every lead, so
+filter for it when building the campaign.
+
+Those leads carry `rating = null` permanently — the Lead Matrix rating column
+shows blank, and a campaign template interpolating a rating renders empty.
+
+When every returned business is unrated and the flag is off, listing emits
+`FAILED:listing|yelp|all_unrated` naming the option, rather than
+`filter_too_strict` — widening `max_rating` cannot help when there is no
+rating to widen past.
+
 **Do not raise the multiplier by more than the ceiling allows.** Every
 fetched business is billed whether or not it survives the filter, and the
 per-city ask is also bounded by what the job still needs (`max_results`).

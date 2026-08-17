@@ -156,6 +156,10 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [yMinRating, setYMinRating] = useState(1.0);
   const [yMaxRating, setYMaxRating] = useState(3.5);
   const [yMinReviewCount, setYMinReviewCount] = useState(5);
+  // Outside the US most Yelp listings have never been reviewed at all —
+  // every one of 133 Austrian roofers measured had no rating. Those markets
+  // return nothing until this is on.
+  const [yIncludeUnrated, setYIncludeUnrated] = useState(false);
 
   // Facebook fields — two modes (consumers/businesses) toggled by leadType.
   // Consumer mode is now group-first: niche + location → discover groups
@@ -237,6 +241,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         min_rating: yMinRating,
         max_rating: yMaxRating,
         min_review_count: yMinReviewCount,
+        include_unrated: yIncludeUnrated,
         enrich,
         verify,
         forceRescrape,
@@ -646,6 +651,15 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <p className="mt-1 text-[11px] text-on-surface-variant">
                 Drop businesses with fewer than this many Yelp reviews
               </p>
+            </div>
+            <div className="sm:col-span-2">
+              <Toggle
+                checked={yIncludeUnrated}
+                onChange={(e) => setYIncludeUnrated(e.target.checked)}
+                disabled={busy}
+                label="Include unrated businesses"
+                description="Keeps listings with no rating at all. Needed outside the US, where most businesses have never been reviewed — the rating and review filters don't apply to them."
+              />
             </div>
           </>
         )}
