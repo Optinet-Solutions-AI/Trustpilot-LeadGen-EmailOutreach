@@ -36,6 +36,11 @@ if (-not $AccountId -and -not $ProfileId) {
 }
 $FsIdArgs = if ($ProfileId) { @('--profile', $ProfileId) } else { @('--account', $AccountId) }
 if (-not $RepoDir) { $RepoDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
+# `python -m tools.scraper.fleet_session` resolves the `tools` package from the
+# current directory, so we MUST run from the repo root — otherwise Python throws
+# ModuleNotFoundError: No module named 'tools'. All absolute paths below ($py,
+# $BRIDGE_SCRIPT, $CLOUDFLARED) are unaffected by the cwd change.
+Set-Location $RepoDir
 $ErrorActionPreference = 'Continue'
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
