@@ -166,15 +166,36 @@ export async function enqueueBrowseSession(
 ): Promise<ConnectRequestRow> {
   const sb = getSupabase();
 
-  // Pre-read: populate heldBy/expiresAt for error reporting and early-exit on
-  // an obvious active hit (gives a clean message in the common case).
+  // Pre-read: populate heldBy/expiresAt for error reporting, early-exit on an
+  // obvious active hit (gives a clean message in the common case), AND carry
+  // enough of the row to detect a same-operator reconnect below.
   const { data: cur, error: e1 } = await sb
     .from('social_accounts')
-    .select('connect_status, connect_mode, connect_requested_by, connect_expires_at')
+    .select('connect_status, connect_mode, connect_requested_by, connect_expires_at, connect_tunnel_url, connect_session_id, connect_started_at, connect_error, connect_target_url')
     .eq('id', accountId)
     .single();
   if (e1) throw new Error(`enqueueBrowseSession read: ${e1.message}`);
   if (cur && (BROWSE_ACTIVE_STATES as readonly string[]).includes(cur.connect_status)) {
+    // Reconnect: the SAME operator already holds a live session that already
+    // has a working tunnel — hand that session back instead of throwing
+    // "in use". Without this, closing the viewer tab (which doesn't end the
+    // session) locks the VA out of their own in-progress browse for the rest
+    // of the 45-min TTL. A different operator, or a session that hasn't
+    // produced a tunnel yet (genuinely still provisioning), still throws below
+    // exactly as before.
+    if (cur.connect_requested_by === opts.requestedBy && cur.connect_tunnel_url) {
+      return {
+        id: accountId,
+        connect_session_id: cur.connect_session_id ?? null,
+        connect_status: cur.connect_status as ConnectStatus,
+        connect_tunnel_url: cur.connect_tunnel_url,
+        connect_started_at: cur.connect_started_at ?? null,
+        connect_expires_at: cur.connect_expires_at ?? null,
+        connect_error: cur.connect_error ?? null,
+        connect_mode: cur.connect_mode ?? null,
+        connect_target_url: cur.connect_target_url ?? null,
+      };
+    }
     throw new AccountInUseError(
       cur.connect_requested_by ?? null,
       cur.connect_expires_at ?? null,

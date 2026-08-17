@@ -11,6 +11,29 @@ function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
 }
 
+// Writes a big, obvious "Open the streamed browser" link into the
+// placeholder tab once the tunnel is ready, THEN attempts the programmatic
+// redirect. The redirect alone isn't reliable: it fires from a useEffect
+// triggered by an async poll tick, seconds after the original click, not
+// from the click's own user gesture — browsers' tab-napping protections can
+// (and in practice do) silently swallow a background tab's `.location`
+// reassignment when it isn't tied to a gesture. Writing a real, clickable
+// link first means the VA always has a one-click way in even when the
+// auto-redirect below is dropped, with zero copy-pasting of a raw URL.
+function writeHostedStreamDoc(w: Window, url: string): void {
+  try {
+    w.document.open();
+    w.document.write(`<!doctype html><title>Browser Session</title>
+      <body style="font:14px sans-serif;padding:40px;color:#333;text-align:center;background:#fafafa">
+        <p style="margin:0 0 20px;color:#555">The streamed browser is ready.</p>
+        <a href="${url}" style="display:inline-block;font-size:18px;font-weight:700;color:#fff;background:#b0004a;padding:16px 32px;border-radius:10px;text-decoration:none">Open the streamed browser &rarr;</a>
+        <p style="margin:20px 0 0;color:#888;font-size:12px">If this page doesn't switch automatically, click the button above.</p>
+      </body>`);
+    w.document.close();
+  } catch { /* about:blank is same-origin; ignore if it ever isn't */ }
+  try { w.location.href = url; } catch { /* best-effort auto-redirect only */ }
+}
+
 // "not_verified" is a UI-only pseudo-status: the email exists on the lead
 // but no verification has ever been run against it. Distinct from "unknown"
 // (which means a verifier was run and returned inconclusive).
@@ -297,6 +320,7 @@ export default function LeadsTable({
     error: hostedError,
     tunnelUrl: hostedTunnelUrl,
     startForLead: hostedStartForLead,
+    end: hostedEnd,
   } = useBrowseSession();
   const hostedTabOpened = useRef(false);
   const hostedWindowRef = useRef<Window | null>(null);
@@ -305,9 +329,22 @@ export default function LeadsTable({
   useEffect(() => {
     if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
       hostedTabOpened.current = true;
+      // Navigate the tab we pre-opened during the click. Write a real,
+      // clickable link into it FIRST (see writeHostedStreamDoc) — the
+      // programmatic redirect that follows isn't guaranteed to fire since
+      // this callback is several seconds removed from the original click
+      // gesture, so the link is the reliable path in, not just a fallback.
       const w = hostedWindowRef.current;
-      if (w && !w.closed) w.location.href = hostedTunnelUrl;
-      else window.open(hostedTunnelUrl, '_blank');
+      if (w && !w.closed) writeHostedStreamDoc(w, hostedTunnelUrl);
+      else {
+        // The placeholder tab is gone (closed, or the original window.open
+        // was itself blocked) — a fresh window.open here is even less likely
+        // to succeed since it's not tied to a user gesture either. Best
+        // effort only; the "Reopen stream" link rendered below the Message
+        // button is the guaranteed way in.
+        const opened = window.open(hostedTunnelUrl, '_blank');
+        if (opened) writeHostedStreamDoc(opened, hostedTunnelUrl);
+      }
     }
   }, [hostedStatus, hostedTunnelUrl]);
 
@@ -970,7 +1007,27 @@ export default function LeadsTable({
               <p className="mt-1 text-[10px] text-red-600 font-semibold leading-tight max-w-[140px]">{hostedError}</p>
             )}
             {messagingLeadId === lead.id && hostedStatus === 'ready' && (
-              <p className="mt-1 text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
+              <div className="mt-1 flex flex-col items-start gap-0.5">
+                <p className="text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
+                {hostedTunnelUrl && (
+                  <a
+                    href={hostedTunnelUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] text-purple-700 underline"
+                  >
+                    Reopen stream
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void hostedEnd()}
+                  className="text-[10px] text-purple-600 hover:underline"
+                  title="Release this account so it's free for the next Message click instead of waiting out the session TTL"
+                >
+                  End session
+                </button>
+              </div>
             )}
           </td>
         );

@@ -42,6 +42,29 @@ function readLeadIdFromUrl(): string | null {
   return candidate === '_id' ? null : candidate;
 }
 
+// Writes a big, obvious "Open the streamed browser" link into the
+// placeholder tab once the tunnel is ready, THEN attempts the programmatic
+// redirect. The redirect alone isn't reliable: it fires from a useEffect
+// triggered by an async poll tick, seconds after the original click, not
+// from the click's own user gesture — browsers' tab-napping protections can
+// (and in practice do) silently swallow a background tab's `.location`
+// reassignment when it isn't tied to a gesture. Writing a real, clickable
+// link first means the VA always has a one-click way in even when the
+// auto-redirect below is dropped, with zero copy-pasting of a raw URL.
+function writeHostedStreamDoc(w: Window, url: string): void {
+  try {
+    w.document.open();
+    w.document.write(`<!doctype html><title>Browser Session</title>
+      <body style="font:14px sans-serif;padding:40px;color:#333;text-align:center;background:#fafafa">
+        <p style="margin:0 0 20px;color:#555">The streamed browser is ready.</p>
+        <a href="${url}" style="display:inline-block;font-size:18px;font-weight:700;color:#fff;background:#7e22ce;padding:16px 32px;border-radius:10px;text-decoration:none">Open the streamed browser &rarr;</a>
+        <p style="margin:20px 0 0;color:#888;font-size:12px">If this page doesn't switch automatically, click the button above.</p>
+      </body>`);
+    w.document.close();
+  } catch { /* about:blank is same-origin; ignore if it ever isn't */ }
+  try { w.location.href = url; } catch { /* best-effort auto-redirect only */ }
+}
+
 export default function LeadDetail() {
   const router = useRouter();
   // Start as null on every render path (server build + client mount) so the
@@ -207,12 +230,22 @@ export default function LeadDetail() {
   useEffect(() => {
     if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
       hostedTabOpened.current = true;
-      // Navigate the tab we pre-opened during the click (popup blockers allow a
-      // window opened in a user gesture; a window.open inside this effect is
-      // usually blocked). Fall back to a fresh open if that tab was closed.
+      // Navigate the tab we pre-opened during the click. Write a real,
+      // clickable link into it FIRST (see writeHostedStreamDoc) — the
+      // programmatic redirect that follows isn't guaranteed to fire since
+      // this callback is several seconds removed from the original click
+      // gesture, so the link is the reliable path in, not just a fallback.
       const w = hostedWindowRef.current;
-      if (w && !w.closed) w.location.href = hostedTunnelUrl;
-      else window.open(hostedTunnelUrl, '_blank');
+      if (w && !w.closed) writeHostedStreamDoc(w, hostedTunnelUrl);
+      else {
+        // The placeholder tab is gone (closed, or the original window.open
+        // was itself blocked) — a fresh window.open here is even less likely
+        // to succeed since it's not tied to a user gesture either. Best
+        // effort only; the "Reopen stream" link rendered below is the
+        // guaranteed way in.
+        const opened = window.open(hostedTunnelUrl, '_blank');
+        if (opened) writeHostedStreamDoc(opened, hostedTunnelUrl);
+      }
     }
   }, [hostedStatus, hostedTunnelUrl]);
 

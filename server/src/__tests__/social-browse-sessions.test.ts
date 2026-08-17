@@ -168,6 +168,69 @@ describe('enqueueBrowseSession', () => {
     });
     expect(r.connect_status).toBe('requested');
   });
+
+  // Reconnect: closing the viewer tab doesn't end the browse session (that
+  // requires an explicit /browse/end call), so the account stays "active" for
+  // the full TTL. The SAME operator clicking Message again must get their
+  // live stream handed back, not an "in use" error.
+  it('reconnects (returns the existing row, no throw) when the same requestedBy already holds a live session with a tunnel', async () => {
+    rows['acc4'] = {
+      id: 'acc4',
+      connect_status: 'active',
+      connect_mode: 'browse',
+      connect_requested_by: 'jane',
+      connect_expires_at: '2099-01-01T00:00:00.000Z',
+      connect_tunnel_url: 'https://stream.example.com/acc4',
+      connect_session_id: 'sess-acc4',
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(makeFakeClient() as any);
+
+    const r = await enqueueBrowseSession('acc4', {
+      targetUrl: 'https://fb.com/p/4',
+      requestedBy: 'jane',
+    });
+
+    expect(r.connect_status).toBe('active');
+    expect(r.connect_tunnel_url).toBe('https://stream.example.com/acc4');
+    expect(r.connect_session_id).toBe('sess-acc4');
+    // Reconnect is read-only — it must not touch/reset the existing session.
+    expect(rows['acc4'].connect_requested_by).toBe('jane');
+    expect(rows['acc4'].connect_status).toBe('active');
+  });
+
+  it('still throws AccountInUseError when a DIFFERENT operator holds a live session with a tunnel', async () => {
+    rows['acc5'] = {
+      id: 'acc5',
+      connect_status: 'active',
+      connect_mode: 'browse',
+      connect_requested_by: 'bob',
+      connect_expires_at: '2099-01-01T00:00:00.000Z',
+      connect_tunnel_url: 'https://stream.example.com/acc5',
+      connect_session_id: 'sess-acc5',
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(makeFakeClient() as any);
+
+    await expect(
+      enqueueBrowseSession('acc5', { targetUrl: null, requestedBy: 'jane' }),
+    ).rejects.toBeInstanceOf(AccountInUseError);
+  });
+
+  it('still throws AccountInUseError for the same requestedBy when there is no tunnel yet (genuinely in-flight)', async () => {
+    rows['acc6'] = {
+      id: 'acc6',
+      connect_status: 'provisioning',
+      connect_mode: 'browse',
+      connect_requested_by: 'jane',
+      connect_expires_at: '2099-01-01T00:00:00.000Z',
+      connect_tunnel_url: null,
+      connect_session_id: 'sess-acc6',
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(makeFakeClient() as any);
+
+    await expect(
+      enqueueBrowseSession('acc6', { targetUrl: null, requestedBy: 'jane' }),
+    ).rejects.toBeInstanceOf(AccountInUseError);
+  });
 });
 
 describe('endBrowseSession', () => {
