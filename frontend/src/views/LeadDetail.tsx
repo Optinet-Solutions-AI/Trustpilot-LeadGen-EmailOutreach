@@ -10,11 +10,13 @@ import { useLeadDiscoveries, useDiscoveryActions } from '../hooks/useDiscoveredC
 import { useCommentDrafts } from '../hooks/useCommentDrafts';
 import type { CommentDraft } from '../hooks/useCommentDrafts';
 import { useBrowseSession } from '../hooks/useBrowseSession';
+import { useLeadAccounts, type LeadAccountOption } from '../hooks/useLeadAccounts';
 import StatusBadge from '../components/StatusBadge';
 import ActivityTimeline from '../components/ActivityTimeline';
 import NoteEditor from '../components/NoteEditor';
 import FollowUpScheduler from '../components/FollowUpScheduler';
 import QuickSendModal from '../components/QuickSendModal';
+import AccountPickerModal from '../components/AccountPickerModal';
 import JobProgress from '../components/JobProgress';
 import type { Lead, LeadStatus } from '../types/lead';
 
@@ -213,10 +215,39 @@ export default function LeadDetail() {
       else window.open(hostedTunnelUrl, '_blank');
     }
   }, [hostedStatus, hostedTunnelUrl]);
-  const openInJamesHosted = (targetLeadId: string, postUrl: string) => {
+
+  // Account picker: only populated when a lead's country has >1 active FB
+  // account, so the VA can pick which one drives the session. Cleared as
+  // soon as a choice is made or the picker is cancelled.
+  const { fetchAccounts: fetchLeadAccounts } = useLeadAccounts();
+  const [accountPicker, setAccountPicker] = useState<{
+    leadId: string;
+    postUrl: string;
+    country: string | null;
+    accounts: LeadAccountOption[];
+  } | null>(null);
+  // Set only on the 0-accounts case (or a failed accounts lookup) — shown as
+  // an inline banner instead of ever starting a session.
+  const [noAccountError, setNoAccountError] = useState<string | null>(null);
+  // True only while GET /leads/:id/accounts is in flight, i.e. before
+  // hostedStatus has anything to say — keeps the button disabled and
+  // labeled during that gap so a double-click can't fire two lookups.
+  const [resolvingAccounts, setResolvingAccounts] = useState(false);
+
+  // Kicks off the actual browse session against a specific account — shared
+  // by the auto-picked (exactly 1 account) and manually-picked (>1 accounts,
+  // via AccountPickerModal) paths below.
+  const startHostedSession = (targetLeadId: string, postUrl: string, accountId: string) => {
+    void hostedStartForLead(targetLeadId, { targetUrl: postUrl, requestedBy: 'operator', accountId });
+  };
+
+  const openInJamesHosted = async (targetLeadId: string, postUrl: string) => {
     hostedTabOpened.current = false;
+    setNoAccountError(null);
+    setAccountPicker(null);
     // Open the tab NOW, during the click (a user gesture), so the browser
-    // doesn't block it; show a placeholder until the stream URL is ready.
+    // doesn't block it; show a placeholder until we know which account will
+    // drive the session (and until the stream URL itself is ready).
     const w = window.open('about:blank', '_blank');
     if (w) {
       hostedWindowRef.current = w;
@@ -226,7 +257,37 @@ export default function LeadDetail() {
         );
       } catch { /* about:blank is same-origin; ignore if it ever isn't */ }
     }
-    void hostedStartForLead(targetLeadId, { targetUrl: postUrl, requestedBy: 'operator' });
+
+    // Resolve which of the lead's country-pinned accounts should drive this
+    // session BEFORE enqueuing the browse job: 0 accounts -> friendly
+    // message, no session started; 1 account -> use it silently, no extra
+    // click; >1 accounts -> let the VA pick (the placeholder tab stays open
+    // and is only navigated once a choice is made and the stream is ready).
+    setResolvingAccounts(true);
+    let result: { country: string | null; accounts: LeadAccountOption[] };
+    try {
+      result = await fetchLeadAccounts(targetLeadId);
+    } catch (err) {
+      hostedWindowRef.current?.close();
+      setNoAccountError(err instanceof Error ? err.message : 'Could not load Facebook accounts for this lead');
+      return;
+    } finally {
+      setResolvingAccounts(false);
+    }
+
+    const { country, accounts } = result;
+    if (accounts.length === 0) {
+      hostedWindowRef.current?.close();
+      setNoAccountError(
+        `No active Facebook account for this lead's country (${country ?? 'unknown'}) — onboard one on the Social Accounts page`,
+      );
+      return;
+    }
+    if (accounts.length === 1) {
+      startHostedSession(targetLeadId, postUrl, accounts[0].id);
+      return;
+    }
+    setAccountPicker({ leadId: targetLeadId, postUrl, country, accounts });
   };
 
   // The local "Open as James" / "Post" tools spawn a browser on the operator's
@@ -817,17 +878,29 @@ export default function LeadDetail() {
                 {/* "Open as James (hosted)" — opens the post live in the worker's
                     logged-in browser via the CDP stream; works from any machine. */}
                 <button
-                  disabled={hostedStatus === 'starting' || hostedStatus === 'provisioning'}
-                  onClick={() => openInJamesHosted(lead.id, fbPost.post_url!)}
+                  disabled={resolvingAccounts || hostedStatus === 'starting' || hostedStatus === 'provisioning'}
+                  onClick={() => void openInJamesHosted(lead.id, fbPost.post_url!)}
                   className="inline-flex items-center gap-1 text-xs text-purple-700 border border-purple-300 rounded-md px-2 py-1 hover:bg-purple-50 disabled:opacity-50 transition-colors"
                   title="Open as James (hosted) — streams the worker's logged-in browser to your tab; review the draft, then post in-stream"
                 >
                   <span className="material-symbols-outlined text-[13px]">cast</span>
-                  {hostedStatus === 'starting' || hostedStatus === 'provisioning'
+                  {resolvingAccounts
+                    ? 'Checking accounts…'
+                    : hostedStatus === 'starting' || hostedStatus === 'provisioning'
                     ? 'Starting stream…'
                     : 'Open as James (hosted)'}
                 </button>
               </div>
+
+              {/* No active account for this lead's country — surfaced instead
+                  of ever starting a session. Server-side geo guard is the
+                  source of truth; this only reflects what it returned. */}
+              {noAccountError && (
+                <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded text-xs flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[14px] text-amber-700 mt-px">warning</span>
+                  <p className="font-semibold text-amber-800">{noAccountError}</p>
+                </div>
+              )}
 
               {/* Hosted browse-stream status */}
               {(hostedStatus === 'starting' || hostedStatus === 'provisioning') && (
@@ -1030,6 +1103,26 @@ export default function LeadDetail() {
             setQuickSendOpen(false);
             api.get(`/leads/${id}`).then((res) => setLead(res.data.data));
             fetchNotes();
+          }}
+        />
+      )}
+
+      {/* Shown only when the "Open as James (hosted)" lead's country has >1
+          active FB account — see openInJamesHosted above for the 0/1/>1
+          branching. The placeholder tab opened on click stays open behind
+          this modal and is navigated to the stream once a choice is made. */}
+      {accountPicker && (
+        <AccountPickerModal
+          accounts={accountPicker.accounts}
+          country={accountPicker.country}
+          onSelect={(accountId) => {
+            const { leadId, postUrl } = accountPicker;
+            setAccountPicker(null);
+            startHostedSession(leadId, postUrl, accountId);
+          }}
+          onClose={() => {
+            hostedWindowRef.current?.close();
+            setAccountPicker(null);
           }}
         />
       )}

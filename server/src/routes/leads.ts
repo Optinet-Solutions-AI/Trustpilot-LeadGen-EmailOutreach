@@ -15,7 +15,7 @@ import {
 } from '../services/claimed-check-job.js';
 import { launchBrowser, TIER_CONFIGS } from '../services/scrapers/browser-launcher.js';
 import { enqueueBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
-import { resolveLeadAccount } from '../services/lead-account-resolver.js';
+import { resolveLeadAccount, listActiveAccountsForLead, validateAccountForLead } from '../services/lead-account-resolver.js';
 import { config } from '../config.js';
 
 // Shared per-process registry — survives across requests so the SSE stream
@@ -522,23 +522,56 @@ router.post('/:id/open-local', (req: Request, res: Response) => {
   res.status(202).json({ success: true, data: { launching: true } });
 });
 
+// GET /api/leads/:id/accounts — active Facebook accounts pinned to the
+// lead's country, for the manual account-picker in the browse UI. No FB
+// credential fields (encrypted_cookies etc.) are ever selected/returned.
+router.get('/:id/accounts', async (req: Request, res: Response) => {
+  try {
+    const data = await listActiveAccountsForLead(param(req.params.id));
+    res.json({ success: true, data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // POST /api/leads/:id/browse — resolve the lead's Facebook account server-side
-// and enqueue a browse session pointed at the lead's post URL.
+// (or use the caller's chosen accountId, geo-validated against the lead's
+// country) and enqueue a browse session pointed at the lead's post URL.
 router.post('/:id/browse', async (req: Request, res: Response) => {
   try {
-    const { targetUrl, requestedBy } = req.body as { targetUrl?: string | null; requestedBy?: string };
+    const { targetUrl, requestedBy, accountId } = req.body as {
+      targetUrl?: string | null;
+      requestedBy?: string;
+      accountId?: string;
+    };
     if (!requestedBy) {
       res.status(400).json({ success: false, error: 'requestedBy is required' });
       return;
     }
 
-    const resolved = await resolveLeadAccount(param(req.params.id));
+    const leadId = param(req.params.id);
+    let resolved: { account_id: string; country: string | null } | null;
+    let wasChosen = false;
+
+    if (accountId) {
+      const validated = await validateAccountForLead(accountId, leadId);
+      if (!validated.ok) {
+        res.status(400).json({ success: false, error: validated.reason });
+        return;
+      }
+      resolved = { account_id: validated.account_id, country: validated.country };
+      wasChosen = true;
+    } else {
+      resolved = await resolveLeadAccount(leadId);
+    }
+
     if (!resolved) {
       // Fetch the lead's country for the error message (same pattern as comment-drafts).
       const { data: leadRow } = await getSupabase()
         .from('leads')
         .select('country')
-        .eq('id', param(req.params.id))
+        .eq('id', leadId)
         .maybeSingle();
       const country = (leadRow as { country?: string | null } | null)?.country ?? 'unknown';
       res.status(409).json({
@@ -554,11 +587,12 @@ router.post('/:id/browse', async (req: Request, res: Response) => {
     });
 
     // Smoke-log so a live hosted-comment test is traceable in Cloud Run logs:
-    // shows the lead → resolved account/country → enqueued browse session.
+    // shows the lead → resolved account/country (chosen or auto-resolved) →
+    // enqueued browse session.
     console.log(
-      `[leads/browse] lead=${param(req.params.id)} account=${resolved.account_id} ` +
-      `country=${resolved.country ?? 'n/a'} requestedBy=${requestedBy} ` +
-      `session=${row.connect_session_id} status=${row.connect_status}`,
+      `[leads/browse] lead=${leadId} account=${resolved.account_id} ` +
+      `country=${resolved.country ?? 'n/a'} source=${wasChosen ? 'chosen' : 'auto'} ` +
+      `requestedBy=${requestedBy} session=${row.connect_session_id} status=${row.connect_status}`,
     );
 
     res.json({ success: true, data: { account_id: resolved.account_id, ...row } });

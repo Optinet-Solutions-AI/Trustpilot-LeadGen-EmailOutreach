@@ -8,6 +8,13 @@
  *
  * Returns null if no suitable account is found (caller must 409).
  * NEVER falls back to an arbitrary cross-country account.
+ *
+ * Also exports the manual account-picker helpers used by
+ * GET /api/leads/:id/accounts and the accountId branch of
+ * POST /api/leads/:id/browse:
+ *   - listActiveAccountsForLead — active Facebook accounts pinned to the
+ *     lead's country, for the picker UI.
+ *   - validateAccountForLead — the geo guard for a user-chosen accountId.
  */
 import { getSupabase } from '../lib/supabase.js';
 import { resolvePoolAccountForCountry } from './pool-account-resolver.js';
@@ -63,4 +70,98 @@ export async function resolveLeadAccount(lead_id: string): Promise<ResolvedAccou
   // or flipped to checkpoint). With a single account this returns it as before;
   // with several it spreads load across the country's pool for multiple users.
   return resolvePoolAccountForCountry(country);
+}
+
+export interface LeadAccountOption {
+  id: string;
+  display_name: string | null;
+  handle: string;
+  country: string | null;
+  status: string;
+  used_today: number;
+  daily_cap: number;
+  hourly_cap: number;
+}
+
+export interface LeadAccountsForPicker {
+  country: string | null;
+  accounts: LeadAccountOption[];
+}
+
+/**
+ * listActiveAccountsForLead — powers the manual account-picker UI. Returns
+ * every active Facebook account pinned to the lead's country, least-used
+ * first, so the operator can choose instead of accepting the auto-pick from
+ * resolveLeadAccount. Never selects encrypted_cookies or other FB credential
+ * columns — this response shape reaches the frontend.
+ */
+export async function listActiveAccountsForLead(lead_id: string): Promise<LeadAccountsForPicker> {
+  const supabase = getSupabase();
+
+  const { data: leadRow, error: leadErr } = await supabase
+    .from('leads')
+    .select('country')
+    .eq('id', lead_id)
+    .maybeSingle();
+  if (leadErr) throw new Error(`listActiveAccountsForLead lead lookup: ${leadErr.message}`);
+
+  const country = (leadRow as { country?: string | null } | null)?.country ?? null;
+  if (!country) return { country: null, accounts: [] };
+
+  const { data, error } = await supabase
+    .from('social_accounts')
+    .select('id, display_name, handle, country, status, used_today, daily_cap, hourly_cap')
+    .eq('platform', 'facebook')
+    .eq('status', 'active')
+    .eq('country', country)
+    .order('used_today', { ascending: true });
+  if (error) throw new Error(`listActiveAccountsForLead accounts lookup: ${error.message}`);
+
+  return { country, accounts: (data ?? []) as LeadAccountOption[] };
+}
+
+/**
+ * validateAccountForLead — the geo guard for the manual account-picker. A
+ * user-chosen accountId must still be an active Facebook account pinned to
+ * the lead's own country; otherwise POST /:id/browse must reject it with a
+ * 400 rather than let a wrong-geo or inactive account through.
+ */
+export async function validateAccountForLead(
+  accountId: string,
+  lead_id: string,
+): Promise<{ ok: true; account_id: string; country: string | null } | { ok: false; reason: string }> {
+  const supabase = getSupabase();
+
+  const { data: leadRow, error: leadErr } = await supabase
+    .from('leads')
+    .select('country')
+    .eq('id', lead_id)
+    .maybeSingle();
+  if (leadErr) throw new Error(`validateAccountForLead lead lookup: ${leadErr.message}`);
+
+  const leadCountry = (leadRow as { country?: string | null } | null)?.country ?? null;
+
+  const { data: acct, error: acctErr } = await supabase
+    .from('social_accounts')
+    .select('id, country, status, platform')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (acctErr) throw new Error(`validateAccountForLead account lookup: ${acctErr.message}`);
+
+  const account = acct as { id: string; country: string | null; status: string; platform: string } | null;
+
+  if (
+    !account ||
+    account.platform !== 'facebook' ||
+    account.status !== 'active' ||
+    !leadCountry ||
+    account.country !== leadCountry
+  ) {
+    return {
+      ok: false,
+      reason: `Chosen account is not an active Facebook account for this lead's country (${leadCountry ?? 'unknown'})`,
+    };
+  }
+
+  return { ok: true, account_id: account.id, country: account.country };
 }

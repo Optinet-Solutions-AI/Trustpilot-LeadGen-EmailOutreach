@@ -134,9 +134,14 @@ export function useBrowseSession() {
   }, [beginPolling]);
 
   // ── startForLead: resolve account server-side then poll ───────────────────
+  // `opts.accountId` is optional — pass it when the caller already knows
+  // which of the lead's country-pinned accounts should drive the session
+  // (e.g. the VA picked one from a multi-account list, or there was only
+  // one to begin with). Omit it to fall back to the server's own
+  // resolution logic, unchanged from before this was added.
   const startForLead = useCallback(async (
     leadId: string,
-    opts: { targetUrl?: string | null; requestedBy: string },
+    opts: { targetUrl?: string | null; requestedBy: string; accountId?: string },
   ): Promise<void> => {
     // Cancel any existing poll before starting a new one.
     if (intervalRef.current !== null) {
@@ -155,6 +160,7 @@ export function useBrowseSession() {
       const res = await api.post(`/leads/${leadId}/browse`, {
         targetUrl: opts.targetUrl ?? null,
         requestedBy: opts.requestedBy,
+        ...(opts.accountId ? { accountId: opts.accountId } : {}),
       });
       accountId = (res.data.data as { account_id: string }).account_id;
     } catch (err) {
