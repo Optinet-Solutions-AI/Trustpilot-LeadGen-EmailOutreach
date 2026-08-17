@@ -459,6 +459,21 @@ class YelpScraper(BasePlatformScraper):
             'max': 1000,
             'step': 1,
         },
+        # Outside the US, Yelp is largely a bare directory — listings exist,
+        # nobody reviews them. Measured 2026-08-14: ALL 133 roofing
+        # businesses in Austria had no rating whatsoever. Since the rating
+        # filter drops ratingless rows, those markets return nothing at any
+        # setting until this is ticked. An unrated, unclaimed business is a
+        # fine cold-outreach target — nobody is managing that listing.
+        {
+            'name': 'include_unrated',
+            'type': 'boolean',
+            'label': 'Include unrated businesses',
+            'required': False,
+            'default': False,
+            'help': ('Keeps listings with no rating at all. Essential outside '
+                     'the US, where most businesses have never been reviewed.'),
+        },
     ]
 
     async def scrape_listing(
@@ -504,6 +519,7 @@ class YelpScraper(BasePlatformScraper):
         min_rating = float(filters.get('min_rating', 1.0))
         max_rating = float(filters.get('max_rating', 3.5))
         min_review_count = int(filters.get('min_review_count', 5))
+        include_unrated = bool(filters.get('include_unrated', False))
         per_city_cap = int(filters.get('per_city_cap', 240))
 
         country_cities = _load_country_cities()
@@ -520,6 +536,7 @@ class YelpScraper(BasePlatformScraper):
         seen_urls: set[str] = set()
         global_page = 0  # SSE event counter — frontend's "page N" label
         total_seen_pre_filter = 0  # counts every Fusion result, for diagnostics
+        total_unrated = 0  # businesses Yelp has never had a rating for
         # Apify spend guard (apify source only) — see the city loop below.
         item_budget = job_item_budget()
         items_asked_for = 0
@@ -703,12 +720,21 @@ class YelpScraper(BasePlatformScraper):
                     rating = b.get('rating')
                     review_count = int(b.get('review_count') or 0)
                     if rating is None:
-                        continue
-                    rating_f = float(rating)
-                    if not (min_rating <= rating_f <= max_rating):
-                        continue
-                    if review_count < min_review_count:
-                        continue
+                        total_unrated += 1
+                        if not include_unrated:
+                            continue
+                        # A ratingless business has 0 reviews by definition,
+                        # so applying min_review_count here would drop every
+                        # one and make this flag do nothing. The rating band
+                        # is meaningless for it too. Both checks are for
+                        # businesses that HAVE a rating.
+                        rating_f = None
+                    else:
+                        rating_f = float(rating)
+                        if not (min_rating <= rating_f <= max_rating):
+                            continue
+                        if review_count < min_review_count:
+                            continue
                     profile_url = _strip_query(b.get('url') or '')
                     if not profile_url or profile_url in seen_urls:
                         continue
@@ -823,7 +849,21 @@ class YelpScraper(BasePlatformScraper):
         # event the operator sees "completed, 0 found" and can't tell whether
         # Yelp had no data or the filter was too strict. Surfaced as a
         # FAILED row so it shows up in the per-job Failures pane.
-        if total_seen_pre_filter > 0 and not results:
+        if total_seen_pre_filter > 0 and not results and total_unrated == total_seen_pre_filter:
+            # The Austria case: 133 businesses returned, every one ratingless.
+            # Telling the operator to widen max_rating here would be useless
+            # advice — there is no rating to widen past.
+            print(
+                f"FAILED:listing|yelp|all_unrated|"
+                f"Listing returned {total_seen_pre_filter} businesses for "
+                f"{country}/{category} and NONE of them has a rating — Yelp "
+                f"has never been reviewed in this market. Widening max_rating "
+                f"will not help. Tick 'Include unrated businesses' "
+                f"(include_unrated) to keep them; an unrated, unclaimed "
+                f"listing is still a valid outreach target.",
+                flush=True,
+            )
+        elif total_seen_pre_filter > 0 and not results:
             print(
                 f"FAILED:listing|yelp|filter_too_strict|"
                 f"Listing returned {total_seen_pre_filter} businesses for "

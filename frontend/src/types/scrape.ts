@@ -38,6 +38,7 @@ export interface YelpScrapeParams {
   min_rating: number;
   max_rating: number;
   min_review_count: number;  // Yelp-specific: don't outreach businesses with too few reviews to act on
+  include_unrated?: boolean;  // Yelp-specific: keep listings Yelp has no rating for at all
   enrich: boolean;
   verify: boolean;
   forceRescrape: boolean;

@@ -237,6 +237,7 @@ export function ScrapeProvider({ children }: { children: ReactNode }) {
             min_rating: params.min_rating,
             max_rating: params.max_rating,
             min_review_count: params.min_review_count,
+            include_unrated: params.include_unrated,
             enrich: params.enrich,
             verify: params.verify,
           },
