@@ -457,18 +457,25 @@ function startCdpBridge(
           ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46,
         };
         const vk = VK[msg['key'] as string] ?? 0;
+        // A printable char is typed by Input.insertText below. If we ALSO put
+        // `text` on the dispatchKeyEvent, CDP types it a SECOND time — that was
+        // the "eemmee" double-character bug. So for a printable keyDown we send
+        // the key event with EMPTY text (just the key semantics) and let
+        // insertText do the actual character; special keys (Backspace/Enter/
+        // arrows) keep their text/vk so they edit the field.
+        const isPrintableKeyDown = msg['event'] === 'keyDown' && !!text && text.length === 1;
         sendToCdp('Input.dispatchKeyEvent', {
           type: msg['event'],
           key: msg['key'],
           code: msg['code'],
-          text: text ?? '',
-          unmodifiedText: text ?? '',
+          text: isPrintableKeyDown ? '' : (text ?? ''),
+          unmodifiedText: isPrintableKeyDown ? '' : (text ?? ''),
           windowsVirtualKeyCode: vk,
           nativeVirtualKeyCode: vk,
         });
-        // insertText for printable characters so they land in input fields.
-        if (msg['event'] === 'keyDown' && text && text.length === 1) {
-          sendToCdp('Input.insertText', { text });
+        // insertText for printable characters so they land in input fields exactly once.
+        if (isPrintableKeyDown) {
+          sendToCdp('Input.insertText', { text: text as string });
         }
       }
     });

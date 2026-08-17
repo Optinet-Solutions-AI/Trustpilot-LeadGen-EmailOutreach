@@ -297,3 +297,28 @@ export async function activateOnboardedAccount(accountId: string): Promise<void>
     .eq('connect_mode', 'onboard');
   if (error) throw new Error(`activateOnboardedAccount: ${error.message}`);
 }
+
+// Corrects activateOnboardedAccount's optimistic flip when the worker's
+// post-hoc check (fleet_session --check-fb-login, run against the
+// still-open AdsPower profile right before it's stopped) finds NO live
+// Facebook session — i.e. the VA clicked "Done" without actually logging
+// in. status='disabled' takes the account out of active rotation.
+//
+// connect_status is set to 'failed', NOT left at 'captured': the
+// frontend's visibleAccounts filter only hides a disabled onboard row when
+// connect_status !== 'captured' (see SocialAccounts.tsx) — leaving
+// 'captured' on a disabled, never-actually-logged-in row would make it
+// keep showing as if it were a real (if inactive) account instead of the
+// abandoned/failed attempt it actually is.
+export async function downgradeUnverifiedOnboard(accountId: string, reason: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from('social_accounts')
+    .update({
+      status: 'disabled',
+      connect_status: 'failed' as ConnectStatus,
+      connect_error: reason,
+    })
+    .eq('id', accountId)
+    .eq('connect_mode', 'onboard');
+  if (error) throw new Error(`downgradeUnverifiedOnboard: ${error.message}`);
+}

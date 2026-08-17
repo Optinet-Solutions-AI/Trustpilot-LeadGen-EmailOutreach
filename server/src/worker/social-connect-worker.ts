@@ -21,6 +21,7 @@ import {
   updateConnectStatus,
   finalizeConnectRequest,
   getConnectStatusValue,
+  downgradeUnverifiedOnboard,
 } from '../db/social-connect-requests.js';
 import { encryptCookie } from '../lib/encryption.js';
 import { getSupabase } from '../lib/supabase.js';
@@ -514,6 +515,50 @@ const onboardSetReady: OnboardDeps['setReady'] = async (accountId, tunnelUrl) =>
 };
 
 /**
+ * Login-verification gate: runs `fleet_session --profile <id> --check-fb-login`
+ * against the STILL-OPEN AdsPower profile right after the VA clicks "Done"
+ * (connect_status reaches 'captured') and BEFORE finishOnboardSession stops
+ * it — once stopped there is no browser left to read cookies from. Without
+ * this, an account was marked ACTIVE purely because the VA clicked a
+ * button, with no proof a real Facebook login ever happened.
+ *
+ * Fail-closed: resolves false (NOT logged in) on a spawn error, non-zero
+ * exit, or any output whose last non-empty line isn't exactly 'LOGGED_IN' —
+ * mirroring the Python side's own fail-closed contract for
+ * --check-fb-login. Never rejects.
+ */
+function checkFbLoginVerified(profileId: string): Promise<boolean> {
+  return new Promise((resolveCheck) => {
+    let out = '';
+    const child = spawn(
+      PYTHON,
+      ['-m', 'tools.scraper.fleet_session', '--profile', profileId, '--check-fb-login'],
+      { cwd: config.projectRoot, windowsHide: true },
+    );
+    child.stdout.on('data', (buf: Buffer) => { out += buf.toString('utf8'); });
+    child.stderr.on('data', (buf: Buffer) => {
+      const trimmed = buf.toString('utf8').trim();
+      if (trimmed) log(`[check-fb-login stderr] ${trimmed.slice(0, 200)}`);
+    });
+    // CRITICAL: same ENOENT-crashes-the-worker hazard as every other spawn
+    // in this file — must have an 'error' listener, or a bad PYTHON path
+    // would crash the whole worker process instead of just this one check.
+    child.on('error', (err) => {
+      log(`check-fb-login spawn failed for profile=${profileId}: ${err.message}`);
+      resolveCheck(false);
+    });
+    child.on('exit', (code) => {
+      const lines = out.trim().split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const last = lines.length ? lines[lines.length - 1].trim() : '';
+      if (code !== 0) {
+        log(`check-fb-login exited code=${code} for profile=${profileId} (output tail: ${last || '<empty>'})`);
+      }
+      resolveCheck(last === 'LOGGED_IN');
+    });
+  });
+}
+
+/**
  * Runs the full onboard lifecycle for one claimed row and resolves only when
  * the streamed session actually ends — NEVER at 'ready'. This holds the
  * module-level `busy` guard for the whole session, exactly like browse mode's
@@ -677,6 +722,29 @@ async function handleOnboardRequest(row: ConnectRequestRow): Promise<void> {
             if (isTerminalOnboardStatus(status)) {
               finalized = true;
               log(`account=${row.id} onboard session reached terminal status=${status}; tearing down stream`);
+              // Login-verification gate — only for the VA-clicked-Done path
+              // ('captured'). 'expired'/'ended' never went through
+              // activateOnboardedAccount so there is nothing to verify or
+              // downgrade. Must run BEFORE finishOnboardSession's --stop
+              // below, while the profile is still open to read cookies from.
+              if (status === 'captured') {
+                const loggedIn = profileIdForStop
+                  ? await checkFbLoginVerified(profileIdForStop)
+                  : false;
+                if (loggedIn) {
+                  log(`account=${row.id} onboard FB login verified — leaving active`);
+                } else {
+                  log(`account=${row.id} onboard captured but no live FB session verified; downgrading to disabled`);
+                  try {
+                    await downgradeUnverifiedOnboard(
+                      row.id,
+                      'No Facebook session detected — the login was not completed.',
+                    );
+                  } catch (downgradeErr) {
+                    log(`downgrade failed for account=${row.id}: ${(downgradeErr as Error).message}`);
+                  }
+                }
+              }
               finishOnboardSession();
             }
           } catch (err) {
