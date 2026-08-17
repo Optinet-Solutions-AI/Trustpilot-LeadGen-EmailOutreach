@@ -824,6 +824,20 @@ paths:
       responses:
         "200":
           description: OK
+  /api/social-accounts/countries:
+    get:
+      operationId: listActiveSocialCountries
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/onboard:
+    post:
+      operationId: onboardSocialAccount
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/social-accounts/{id}:
     patch:
       operationId: updateSocialAccount
@@ -898,6 +912,18 @@ paths:
   /api/social-accounts/{id}/browse/end:
     post:
       operationId: browseSocialAccountEnd
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/social-accounts/{id}/onboard-complete:
+    post:
+      operationId: onboardCompleteSocialAccount
       security: []
       parameters:
         - in: path
