@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Lead, LeadStatus, VerificationStatus } from '../types/lead';
 import LeadLinkWarning from './LeadLinkWarning';
 import LeadsCardList from './LeadsCardList';
+import AccountPickerModal from './AccountPickerModal';
 import api from '../api/client';
+import { useBrowseSession } from '../hooks/useBrowseSession';
+import { useLeadAccounts, type LeadAccountOption } from '../hooks/useLeadAccounts';
 
 function formatScrapedDate(date: Date): string {
   return date.toLocaleDateString();
@@ -281,6 +284,101 @@ export default function LeadsTable({
       setOpenLocalError((s) => ({ ...s, [leadId]: msg }));
     }
   };
+
+  // "Message" (Facebook rows only) — mirrors LeadDetail.tsx's "Open as James
+  // (hosted)" flow: opens the lead's FB profile live in the worker's
+  // logged-in, country-pinned browser via the CDP stream, instead of a plain
+  // facebook.com link that would open the operator's OWN (logged-out /
+  // wrong-account) browser. Only one hosted session runs at a time — same
+  // single useBrowseSession instance as LeadDetail — and `messagingLeadId`
+  // scopes the status feedback to whichever row started it.
+  const {
+    status: hostedStatus,
+    error: hostedError,
+    tunnelUrl: hostedTunnelUrl,
+    startForLead: hostedStartForLead,
+  } = useBrowseSession();
+  const hostedTabOpened = useRef(false);
+  const hostedWindowRef = useRef<Window | null>(null);
+  const [messagingLeadId, setMessagingLeadId] = useState<string | null>(null);
+  // Open the streamed-browser tab exactly once when the session reaches 'ready'.
+  useEffect(() => {
+    if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
+      hostedTabOpened.current = true;
+      const w = hostedWindowRef.current;
+      if (w && !w.closed) w.location.href = hostedTunnelUrl;
+      else window.open(hostedTunnelUrl, '_blank');
+    }
+  }, [hostedStatus, hostedTunnelUrl]);
+
+  // Account picker: only populated when a lead's country has >1 active FB
+  // account. Cleared as soon as a choice is made or the picker is cancelled.
+  const { fetchAccounts: fetchLeadAccounts } = useLeadAccounts();
+  const [accountPicker, setAccountPicker] = useState<{
+    leadId: string;
+    targetUrl: string;
+    country: string | null;
+    accounts: LeadAccountOption[];
+  } | null>(null);
+  // Set only on the 0-accounts case (or a failed accounts lookup) — shown as
+  // an inline note under the row's Message button instead of starting a session.
+  const [noAccountError, setNoAccountError] = useState<string | null>(null);
+  // True only while GET /leads/:id/accounts is in flight for messagingLeadId.
+  const [resolvingAccounts, setResolvingAccounts] = useState(false);
+
+  // Kicks off the actual browse session against a specific account — shared
+  // by the auto-picked (exactly 1 account) and manually-picked (>1 accounts,
+  // via AccountPickerModal) paths below.
+  const startHostedMessage = (leadId: string, targetUrl: string, accountId: string) => {
+    void hostedStartForLead(leadId, { targetUrl, requestedBy: 'operator', accountId });
+  };
+
+  const openMessageHosted = async (leadId: string, targetUrl: string) => {
+    hostedTabOpened.current = false;
+    setNoAccountError(null);
+    setAccountPicker(null);
+    setMessagingLeadId(leadId);
+
+    // Open the tab NOW, during the click (a user gesture), so the browser
+    // doesn't block it; show a placeholder until we know which account will
+    // drive the session (and until the stream URL itself is ready).
+    const w = window.open('about:blank', '_blank');
+    if (w) {
+      hostedWindowRef.current = w;
+      try {
+        w.document.write(
+          '<title>Browser Session</title><body style="font:14px sans-serif;padding:24px;color:#444">Provisioning the streamed browser… this tab will load the stream in ~20–40s.</body>',
+        );
+      } catch { /* about:blank is same-origin; ignore if it ever isn't */ }
+    }
+
+    setResolvingAccounts(true);
+    let result: { country: string | null; accounts: LeadAccountOption[] };
+    try {
+      result = await fetchLeadAccounts(leadId);
+    } catch (err) {
+      hostedWindowRef.current?.close();
+      setNoAccountError(err instanceof Error ? err.message : 'Could not load Facebook accounts for this lead');
+      return;
+    } finally {
+      setResolvingAccounts(false);
+    }
+
+    const { country, accounts } = result;
+    if (accounts.length === 0) {
+      hostedWindowRef.current?.close();
+      setNoAccountError(
+        `No active FB account for this lead's country (${country ?? 'unknown'}) — onboard one on Social Accounts`,
+      );
+      return;
+    }
+    if (accounts.length === 1) {
+      startHostedMessage(leadId, targetUrl, accounts[0].id);
+      return;
+    }
+    setAccountPicker({ leadId, targetUrl, country, accounts });
+  };
+
   useEffect(() => {
     let rafId = 0;
     const update = () => {
@@ -806,40 +904,62 @@ export default function LeadsTable({
       case 'social_action': {
         const p = lead.lead_platform_presences?.[0];
         if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
-        // Messenger deep link works for vanity handles. For /profile.php?id=N
-        // there's no m.me equivalent — Messenger doesn't accept numeric IDs.
-        // Build the platform-specific DM URL.
-        let dmHref: string;
-        let dmLabel: string;
-        if (p.platform === 'facebook') {
-          if (p.profile_url.includes('/profile.php')) {
-            // Numeric-id profile: open Messenger search prefilled with the name
-            dmHref = `https://www.facebook.com/messages/t/?recipient_id=${(p.profile_url.match(/[?&]id=(\d+)/) || [])[1] || ''}`;
-          } else {
-            dmHref = `https://m.me/${(p.author_handle || '').replace(/^@/, '')}`;
-          }
-          dmLabel = 'Message on Facebook';
-        } else if (p.platform === 'instagram') {
-          dmHref = `https://www.instagram.com/direct/new/?profile_handle=${(p.author_handle || '').replace(/^@/, '')}`;
-          dmLabel = 'Message on Instagram';
-        } else {
+
+        // Instagram stays a plain deep-link — the hosted fleet-browser flow
+        // below is Facebook-only (accounts are onboarded/pinned per FB
+        // country; there's no Instagram equivalent yet).
+        if (p.platform === 'instagram') {
+          const dmHref = `https://www.instagram.com/direct/new/?profile_handle=${(p.author_handle || '').replace(/^@/, '')}`;
+          return (
+            <td key={col} className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+              <a
+                href={dmHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Message on Instagram"
+                aria-label="Message on Instagram"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors"
+              >
+                <span className="material-symbols-outlined text-[13px]">send</span>
+                Message
+              </a>
+            </td>
+          );
+        }
+
+        if (p.platform !== 'facebook') {
           return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
         }
-        // Compact icon-only button with the full action title in a tooltip.
-        // Keeps the row scannable and lets the column be narrower (90px vs 130px).
+
+        // Facebook — instead of a plain facebook.com/m.me link (opens the
+        // OPERATOR's own, logged-out/wrong-account browser), this streams
+        // the fleet's logged-in, country-pinned browser to a new tab —
+        // same "Open as James (hosted)" flow as LeadDetail.tsx, resolved
+        // per-row via /leads/:id/accounts + /leads/:id/browse.
+        const isBusy = messagingLeadId === lead.id
+          && (resolvingAccounts || hostedStatus === 'starting' || hostedStatus === 'provisioning');
         return (
           <td key={col} className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-            <a
-              href={dmHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={dmLabel}
-              aria-label={dmLabel}
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors"
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => void openMessageHosted(lead.id, p.profile_url)}
+              title="Open as James (hosted) — streams the fleet's logged-in browser to your tab"
+              aria-label="Message on Facebook"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <span className="material-symbols-outlined text-[13px]">send</span>
-              Message
-            </a>
+              {isBusy ? (resolvingAccounts ? 'Checking…' : 'Starting…') : 'Message'}
+            </button>
+            {messagingLeadId === lead.id && noAccountError && (
+              <p className="mt-1 text-[10px] text-amber-700 font-semibold leading-tight max-w-[140px]">{noAccountError}</p>
+            )}
+            {messagingLeadId === lead.id && (hostedStatus === 'failed' || hostedStatus === 'expired') && hostedError && (
+              <p className="mt-1 text-[10px] text-red-600 font-semibold leading-tight max-w-[140px]">{hostedError}</p>
+            )}
+            {messagingLeadId === lead.id && hostedStatus === 'ready' && (
+              <p className="mt-1 text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
+            )}
           </td>
         );
       }
@@ -1032,6 +1152,26 @@ export default function LeadsTable({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Shown only when a Message-button lead's country has >1 active FB
+          account — see openMessageHosted above for the 0/1/>1 branching.
+          The placeholder tab opened on click stays open behind this modal
+          and is navigated to the stream once a choice is made. */}
+      {accountPicker && (
+        <AccountPickerModal
+          accounts={accountPicker.accounts}
+          country={accountPicker.country}
+          onSelect={(accountId) => {
+            const { leadId, targetUrl } = accountPicker;
+            setAccountPicker(null);
+            startHostedMessage(leadId, targetUrl, accountId);
+          }}
+          onClose={() => {
+            hostedWindowRef.current?.close();
+            setAccountPicker(null);
+          }}
+        />
       )}
 
       {totalPages > 1 && (
