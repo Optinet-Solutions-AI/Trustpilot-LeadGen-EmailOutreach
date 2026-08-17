@@ -140,6 +140,32 @@ describe('enqueueOnboardRequest', () => {
     expect(r1.accountId).toBe('acct-1');
     expect(r2.accountId).toBe('acct-2');
   });
+
+  it('sets display_name from a trimmed label without touching the unique handle', async () => {
+    const inserted: Record<string, unknown>[] = [];
+    const mockSb = {
+      from: vi.fn().mockReturnValue({
+        insert: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+          inserted.push(payload);
+          return {
+            select: vi.fn().mockReturnValue({
+              single: vi
+                .fn()
+                .mockResolvedValue({ data: { id: `acct-${inserted.length}` }, error: null }),
+            }),
+          };
+        }),
+      }),
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(mockSb as any);
+
+    await enqueueOnboardRequest({ country: 'GB', requestedBy: 'user-1', label: '  Maria FB  ' });
+    await enqueueOnboardRequest({ country: 'GB', requestedBy: 'user-1' });
+
+    expect(inserted[0].display_name).toBe('Maria FB');
+    expect(inserted[0].handle).toMatch(/^onboard-/);
+    expect(inserted[1].display_name).toBeNull();
+  });
 });
 
 describe('claimPendingConnectRequest', () => {

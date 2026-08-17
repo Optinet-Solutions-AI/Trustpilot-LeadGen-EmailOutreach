@@ -36,7 +36,7 @@ router.get('/', async (_req: Request, res: Response) => {
     const supabase = getSupabase();
     const { data, error } = await supabase
       .from('social_accounts')
-      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies,encrypted_fb_username,encrypted_fb_password')
+      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,connect_mode,connect_status,encrypted_cookies,encrypted_fb_username,encrypted_fb_password')
       .order('created_at', { ascending: true });
     if (error) throw new Error(error.message);
     // Don't ship any ciphertext over the wire — just boolean signals.
@@ -122,7 +122,9 @@ router.post('/onboard', async (req: Request, res: Response) => {
   }
   try {
     const requestedBy = String(req.body?.requestedBy ?? 'va');
-    const { accountId } = await enqueueOnboardRequest({ country, requestedBy });
+    const labelRaw = req.body?.label;
+    const label = typeof labelRaw === 'string' && labelRaw.trim() ? labelRaw.trim() : undefined;
+    const { accountId } = await enqueueOnboardRequest({ country, requestedBy, label });
     res.json({ success: true, data: { accountId } });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });
@@ -155,7 +157,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
       .from('social_accounts')
       .update(allowed)
       .eq('id', req.params.id)
-      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,encrypted_cookies,encrypted_fb_username,encrypted_fb_password')
+      .select('id,platform,handle,display_name,status,country,proxy_location,daily_cap,hourly_cap,comment_daily_cap,comment_used_today,used_today,used_this_hour,last_login_at,last_used_at,last_checkpoint_at,checkpoint_reason,notes,created_at,updated_at,connect_mode,connect_status,encrypted_cookies,encrypted_fb_username,encrypted_fb_password')
       .single();
     if (error) throw new Error(error.message);
     // Mask ciphertext before returning — same transform as GET /.

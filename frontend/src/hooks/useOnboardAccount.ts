@@ -102,7 +102,7 @@ export function useOnboardAccount() {
   }, []);
 
   // ── start: create the onboarding row then poll ────────────────────────
-  const start = useCallback(async (country: string): Promise<void> => {
+  const start = useCallback(async (country: string, label?: string): Promise<void> => {
     // Cancel any existing poll before starting a new one.
     if (intervalRef.current !== null) {
       clearInterval(intervalRef.current);
@@ -117,7 +117,7 @@ export function useOnboardAccount() {
 
     let newAccountId: string;
     try {
-      const res = await api.post('/social-accounts/onboard', { country });
+      const res = await api.post('/social-accounts/onboard', { country, label });
       newAccountId = (res.data.data as { accountId: string }).accountId;
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })

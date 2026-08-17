@@ -254,17 +254,22 @@ export async function getConnectStatusValue(accountId: string): Promise<string |
 // placeholder derived from sessionId instead; it's overwritten once the
 // worker learns the real FB username post-login.
 export async function enqueueOnboardRequest(
-  opts: { country: string; requestedBy: string },
+  opts: { country: string; requestedBy: string; label?: string },
 ): Promise<{ accountId: string; sessionId: string }> {
   const sb = getSupabase();
   const sessionId = crypto.randomUUID();
   const now = new Date();
   const expires = new Date(now.getTime() + TTL_MS);
+  // `label` is purely cosmetic (display_name) and never touches `handle` —
+  // handle MUST stay the per-session `onboard-<sessionId>` placeholder so the
+  // UNIQUE(platform, handle) constraint can't collide (see the comment above).
+  const trimmedLabel = opts.label?.trim();
   const { data, error } = await sb
     .from('social_accounts')
     .insert({
       platform: 'facebook',
       handle: `onboard-${sessionId}`,
+      display_name: trimmedLabel || null,
       country: opts.country,
       status: 'disabled',
       connect_mode: 'onboard',

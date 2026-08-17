@@ -17,6 +17,15 @@ interface SocialAccount {
   platform: Platform;
   handle: string;
   display_name: string | null;
+  /** How this row was created — 'onboard' rows come from the streamed
+   *  AdsPower onboarding wizard (OnboardAccountModal); other values (or
+   *  null) are the legacy manual Add-account flow. */
+  connect_mode?: string | null;
+  /** Onboarding wizard progress for connect_mode==='onboard' rows —
+   *  'captured' means the VA finished logging in and the account is live;
+   *  anything else (requested/provisioning/ready/failed/expired) alongside
+   *  status==='disabled' is an abandoned/in-flight attempt, not a real account. */
+  connect_status?: string | null;
   status: Status;
   daily_cap: number;
   hourly_cap: number;
@@ -393,10 +402,21 @@ export default function SocialAccounts() {
   };
 
   // ── render ──
+  // Hide abandoned/failed onboarding attempts (disabled rows the wizard
+  // created but never finished) — they're clutter, not real accounts.
+  // Active onboarded accounts (connect_status === 'captured' / status ===
+  // 'active') and every legacy manually-added account still show.
+  const visibleAccounts = useMemo(
+    () => accounts.filter(
+      (a) => !(a.status === 'disabled' && a.connect_mode === 'onboard' && a.connect_status !== 'captured'),
+    ),
+    [accounts],
+  );
+
   const grouped = useMemo(() => ({
-    facebook: accounts.filter((a) => a.platform === 'facebook'),
-    instagram: accounts.filter((a) => a.platform === 'instagram'),
-  }), [accounts]);
+    facebook: visibleAccounts.filter((a) => a.platform === 'facebook'),
+    instagram: visibleAccounts.filter((a) => a.platform === 'instagram'),
+  }), [visibleAccounts]);
 
   if (loading) return <LoadingState />;
 

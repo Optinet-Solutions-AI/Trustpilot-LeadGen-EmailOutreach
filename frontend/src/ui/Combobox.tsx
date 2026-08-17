@@ -198,7 +198,7 @@ export default function Combobox<V extends string>({
           </div>
           <ul
             role="listbox"
-            className="max-h-72 overflow-y-auto py-1"
+            className="max-h-60 overflow-y-auto py-1"
           >
             {filtered.length === 0 ? (
               <li className="px-3 py-4 text-sm text-secondary text-center">

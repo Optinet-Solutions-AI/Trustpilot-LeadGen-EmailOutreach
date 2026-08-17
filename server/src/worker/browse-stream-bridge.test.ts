@@ -7,8 +7,8 @@
  * and letterbox/pillarbox configurations.
  */
 
-import { describe, test, expect } from 'vitest';
-import { canvasToDevice } from './browse-stream-bridge.js';
+import { describe, test, expect, afterEach } from 'vitest';
+import { canvasToDevice, parseArgs } from './browse-stream-bridge.js';
 
 describe('canvasToDevice', () => {
   // -----------------------------------------------------------------------
@@ -150,5 +150,29 @@ describe('canvasToDevice', () => {
     // Should map close to device (640, 0).
     expect(topOfImage.x).toBe(640);
     expect(topOfImage.y).toBeLessThanOrEqual(2); // rounding tolerance
+  });
+});
+
+describe('parseArgs', () => {
+  const originalArgv = process.argv;
+  afterEach(() => { process.argv = originalArgv; });
+
+  test('defaults cdpPort/servePort and leaves targetUrl undefined when omitted', () => {
+    process.argv = ['node', 'browse-stream-bridge.js'];
+    expect(parseArgs()).toEqual({ cdpPort: 9222, servePort: 6090, targetUrl: undefined });
+  });
+
+  test('parses --cdp-port, --serve-port and --target-url', () => {
+    process.argv = [
+      'node', 'browse-stream-bridge.js',
+      '--cdp-port', '9333',
+      '--serve-port', '7000',
+      '--target-url', 'https://www.facebook.com/',
+    ];
+    expect(parseArgs()).toEqual({
+      cdpPort: 9333,
+      servePort: 7000,
+      targetUrl: 'https://www.facebook.com/',
+    });
   });
 });

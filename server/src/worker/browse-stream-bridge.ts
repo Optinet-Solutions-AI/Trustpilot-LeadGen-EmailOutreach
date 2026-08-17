@@ -330,6 +330,7 @@ function startCdpBridge(
   cdpPort: number,
   clientWs: WebSocket,
   log: (msg: string) => void,
+  targetUrl?: string,
 ): void {
   let cdpWs: WebSocket | null = null;
   let nextId = 1000;
@@ -369,6 +370,15 @@ function startCdpBridge(
     cdpWs.on('open', () => {
       log('CDP websocket open; enabling Page domain + starting screencast');
       sendToCdp('Page.enable');
+      // Some launch paths (e.g. AdsPower's browser/start with open_tabs=1)
+      // open a blank tab with no way to pass a startup URL, unlike a plain
+      // browser.exe invocation where the URL can be a CLI arg. When the
+      // caller gave us a targetUrl, drive the navigation ourselves over the
+      // same CDP channel used for Page.enable/startScreencast below.
+      if (targetUrl) {
+        log(`navigating to targetUrl=${targetUrl}`);
+        sendToCdp('Page.navigate', { url: targetUrl });
+      }
       // Higher JPEG quality + larger frame so FB text (posts, comment box) is
       // legible. quality 60 read as blurry; 85 is sharp and still tunnel-friendly.
       sendToCdp('Page.startScreencast', {
@@ -479,15 +489,17 @@ function startCdpBridge(
 // start the HTTP server.
 // ---------------------------------------------------------------------------
 
-function parseArgs(): { cdpPort: number; servePort: number } {
+export function parseArgs(): { cdpPort: number; servePort: number; targetUrl?: string } {
   const args = process.argv.slice(2);
   let cdpPort = 9222;
   let servePort = 6090;
+  let targetUrl: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--cdp-port' && args[i + 1]) cdpPort = parseInt(args[++i], 10);
     if (args[i] === '--serve-port' && args[i + 1]) servePort = parseInt(args[++i], 10);
+    if (args[i] === '--target-url' && args[i + 1]) targetUrl = args[++i];
   }
-  return { cdpPort, servePort };
+  return { cdpPort, servePort, targetUrl };
 }
 
 function log(msg: string): void {
@@ -497,7 +509,7 @@ function log(msg: string): void {
 // Only start the server when run directly (node browse-stream-bridge.js ...),
 // not when imported as a module by tests or other code.
 if (require.main === module) {
-  const { cdpPort, servePort } = parseArgs();
+  const { cdpPort, servePort, targetUrl } = parseArgs();
   const viewerHtml = buildViewerHtml();
 
   const httpServer = http.createServer((req, res) => {
@@ -515,7 +527,7 @@ if (require.main === module) {
 
   wss.on('connection', (ws, req) => {
     log(`client connected from ${req.socket.remoteAddress ?? 'unknown'}`);
-    startCdpBridge(cdpPort, ws, log);
+    startCdpBridge(cdpPort, ws, log, targetUrl);
   });
 
   httpServer.listen(servePort, '0.0.0.0', () => {

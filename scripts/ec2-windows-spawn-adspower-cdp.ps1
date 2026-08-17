@@ -23,7 +23,10 @@
 #   -RepoDir     repo root (for the .venv python + the bridge js). Defaults to
 #                self-located from this script's own path (<repo>\scripts\... -> <repo>),
 #                mirroring ec2-windows-spawn-cdp.ps1's Find-RepoRoot.
-#   -TargetUrl   deep-link (logged; the VA navigates in-session for now)
+#   -TargetUrl   deep-link the Node bridge navigates the CDP page to once the
+#                AdsPower profile's CDP port is up (AdsPower's browser/start
+#                opens a blank tab with no startup-URL option, unlike a plain
+#                browser.exe invocation, so the bridge does the Page.navigate)
 param(
     [string]$AccountId,
     [string]$ProfileId,
@@ -72,8 +75,10 @@ if (-not ($CDP_PORT -match '^\d+$')) {
 }
 Write-Host "AdsPower profile open; CDP port=$CDP_PORT"
 
-# 2. Start the Node CDP bridge against the AdsPower CDP port.
-$bridgeArgs = @("$BRIDGE_SCRIPT", "--cdp-port", "$CDP_PORT", "--serve-port", "$BRIDGE_PORT")
+# 2. Start the Node CDP bridge against the AdsPower CDP port. Pass -TargetUrl
+#    through as --target-url so the bridge navigates the blank AdsPower tab
+#    to it once the CDP websocket opens (see the param block comment above).
+$bridgeArgs = @("$BRIDGE_SCRIPT", "--cdp-port", "$CDP_PORT", "--serve-port", "$BRIDGE_PORT", "--target-url", "$TargetUrl")
 $bridgeProc = Start-Process -FilePath $NODE -ArgumentList $bridgeArgs -PassThru -WindowStyle Hidden
 Write-Host "CDP bridge launched pid=$($bridgeProc.Id) servePort=$BRIDGE_PORT"
 
