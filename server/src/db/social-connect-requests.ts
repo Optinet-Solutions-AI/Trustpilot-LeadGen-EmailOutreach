@@ -184,6 +184,21 @@ export async function enqueueBrowseSession(
     // produced a tunnel yet (genuinely still provisioning), still throws below
     // exactly as before.
     if (cur.connect_requested_by === opts.requestedBy && cur.connect_tunnel_url) {
+      // Retarget-on-reconnect: the operator is reusing their one live browser
+      // but may now be pointing at a DIFFERENT lead/post than the session was
+      // spawned on. Persist the new target so the worker's browse-mode
+      // nav-watch re-navigates the already-open, warm browser to it — without
+      // this, a second click just re-opens the tunnel still parked on the
+      // previous lead's page (the reused-session bug). Same target ⇒ skip write.
+      let effectiveTarget = cur.connect_target_url ?? null;
+      if (opts.targetUrl && opts.targetUrl !== cur.connect_target_url) {
+        const { error: retargetErr } = await sb
+          .from('social_accounts')
+          .update({ connect_target_url: opts.targetUrl })
+          .eq('id', accountId);
+        if (retargetErr) throw new Error(`enqueueBrowseSession retarget: ${retargetErr.message}`);
+        effectiveTarget = opts.targetUrl;
+      }
       return {
         id: accountId,
         connect_session_id: cur.connect_session_id ?? null,
@@ -193,7 +208,7 @@ export async function enqueueBrowseSession(
         connect_expires_at: cur.connect_expires_at ?? null,
         connect_error: cur.connect_error ?? null,
         connect_mode: cur.connect_mode ?? null,
-        connect_target_url: cur.connect_target_url ?? null,
+        connect_target_url: effectiveTarget,
       };
     }
     throw new AccountInUseError(
@@ -258,6 +273,20 @@ export async function getConnectStatusValue(accountId: string): Promise<string |
     .select('connect_status').eq('id', accountId).single();
   if (error) return null;
   return (data as { connect_status: string | null }).connect_status;
+}
+
+// Browse-mode nav-watch reads BOTH the terminal-status signal and the current
+// target in one round-trip, so the worker can tear the session down on 'ended'
+// AND re-navigate the live browser when the operator retargets it to a new
+// lead/post (see enqueueBrowseSession's retarget-on-reconnect above).
+export async function getBrowseSessionFields(
+  accountId: string,
+): Promise<{ status: string | null; targetUrl: string | null }> {
+  const { data, error } = await getSupabase().from('social_accounts')
+    .select('connect_status, connect_target_url').eq('id', accountId).single();
+  if (error) return { status: null, targetUrl: null };
+  const d = data as { connect_status: string | null; connect_target_url: string | null };
+  return { status: d.connect_status, targetUrl: d.connect_target_url };
 }
 
 // Onboarding wizard: create a brand-new social_accounts row for a country

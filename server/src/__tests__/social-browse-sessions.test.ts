@@ -198,6 +198,59 @@ describe('enqueueBrowseSession', () => {
     expect(rows['acc4'].connect_status).toBe('active');
   });
 
+  // Retarget-on-reconnect: the SAME operator clicking a DIFFERENT lead (or the
+  // post vs the profile of the same lead) reuses the one live browser — but it
+  // must be pointed at the new target. enqueueBrowseSession persists the new
+  // connect_target_url so the worker's browse-mode nav-watch re-navigates the
+  // already-open browser instead of leaving the operator on the previous page.
+  it('reconnect with a NEW target updates connect_target_url so the worker re-navigates', async () => {
+    rows['acc7'] = {
+      id: 'acc7',
+      connect_status: 'active',
+      connect_mode: 'browse',
+      connect_requested_by: 'jane',
+      connect_expires_at: '2099-01-01T00:00:00.000Z',
+      connect_tunnel_url: 'https://stream.example.com/acc7',
+      connect_session_id: 'sess-acc7',
+      connect_target_url: 'https://fb.com/leadA',
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(makeFakeClient() as any);
+
+    const r = await enqueueBrowseSession('acc7', {
+      targetUrl: 'https://fb.com/leadB',
+      requestedBy: 'jane',
+    });
+
+    // Same live session handed back…
+    expect(r.connect_tunnel_url).toBe('https://stream.example.com/acc7');
+    expect(r.connect_status).toBe('active');
+    // …but retargeted so the worker navigates the open browser to lead B.
+    expect(rows['acc7'].connect_target_url).toBe('https://fb.com/leadB');
+    expect(r.connect_target_url).toBe('https://fb.com/leadB');
+  });
+
+  it('reconnect with the SAME target leaves connect_target_url unchanged', async () => {
+    rows['acc8'] = {
+      id: 'acc8',
+      connect_status: 'active',
+      connect_mode: 'browse',
+      connect_requested_by: 'jane',
+      connect_expires_at: '2099-01-01T00:00:00.000Z',
+      connect_tunnel_url: 'https://stream.example.com/acc8',
+      connect_session_id: 'sess-acc8',
+      connect_target_url: 'https://fb.com/leadA',
+    };
+    vi.spyOn(supabaseMod, 'getSupabase').mockReturnValue(makeFakeClient() as any);
+
+    const r = await enqueueBrowseSession('acc8', {
+      targetUrl: 'https://fb.com/leadA',
+      requestedBy: 'jane',
+    });
+
+    expect(r.connect_target_url).toBe('https://fb.com/leadA');
+    expect(rows['acc8'].connect_target_url).toBe('https://fb.com/leadA');
+  });
+
   it('still throws AccountInUseError when a DIFFERENT operator holds a live session with a tunnel', async () => {
     rows['acc5'] = {
       id: 'acc5',

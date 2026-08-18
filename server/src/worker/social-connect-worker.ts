@@ -21,6 +21,7 @@ import {
   updateConnectStatus,
   finalizeConnectRequest,
   getConnectStatusValue,
+  getBrowseSessionFields,
   downgradeUnverifiedOnboard,
 } from '../db/social-connect-requests.js';
 import { encryptCookie } from '../lib/encryption.js';
@@ -152,6 +153,40 @@ async function fetchCookiesViaCDP(): Promise<Record<string, unknown>[]> {
   });
 }
 
+/**
+ * Navigates the live browse browser to a new URL over CDP — used by the
+ * browse-mode nav-watch to re-point the ALREADY-OPEN, warm AdsPower browser at
+ * a new lead/post when the operator retargets the session (enqueueBrowseSession
+ * persists the new connect_target_url on a same-operator reconnect). Reuses the
+ * running browser instead of respawning, so switching leads is instant.
+ *
+ * Opens a SECOND, short-lived CDP connection to the page target (the bridge
+ * keeps its own for screencast; CDP allows multiple clients), issues
+ * Page.navigate, then closes. Rejects on timeout / ws error so the caller can
+ * retry on the next tick.
+ */
+async function navigateViaCDP(cdpPort: number, url: string): Promise<void> {
+  const res = await fetch(`http://localhost:${cdpPort}/json`);
+  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
+  const targets = await res.json() as Array<{ type: string; url: string; webSocketDebuggerUrl: string }>;
+  const page = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools://')) ?? targets[0];
+  if (!page?.webSocketDebuggerUrl) throw new Error('no CDP page target for navigate');
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(page.webSocketDebuggerUrl);
+    const timer = setTimeout(() => { ws.close(); reject(new Error('CDP navigate timeout after 5s')); }, 5_000);
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url } }));
+    });
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as { id?: number };
+        if (msg.id === 1) { clearTimeout(timer); ws.close(); resolve(); }
+      } catch { /* ignore non-JSON frames */ }
+    });
+    ws.on('error', (err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
 async function handleRequest(row: ConnectRequestRow): Promise<void> {
   const isBrowse = row.connect_mode === 'browse';
   return new Promise((resolve) => {
@@ -206,6 +241,9 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
       const child = spawn('powershell', spawnArgs, { windowsHide: true });
 
       let tunnelUrl: string | null = null;
+      // CDP port of the browse browser, parsed from the spawner's stdout, so the
+      // browse-mode nav-watch can re-navigate the live browser on retarget.
+      let cdpPort: number | null = null;
       // finalized tracks whether we have reached a terminal state (captured OR
       // expired/ended). Used by the child exit handler to avoid double-marking a
       // row that was already transitioned by the expiry sweep or end-watch.
@@ -276,6 +314,13 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
           if (!trimmed) continue;
           log(`[ps stdout] ${trimmed.slice(0, 200)}`);
           pushRecent('out:', trimmed.slice(0, 200));
+          // The AdsPower spawner prints "AdsPower profile open; CDP port=NNNNN"
+          // before the tunnel line. Capture it so the browse nav-watch can open
+          // a CDP connection to re-navigate the live browser on retarget.
+          if (cdpPort === null) {
+            const portMatch = trimmed.match(/CDP port=(\d+)/i);
+            if (portMatch) { cdpPort = parseInt(portMatch[1], 10); log(`captured CDP port=${cdpPort} for browse nav`); }
+          }
           // First trycloudflare.com URL we see is the public tunnel.
           // Capture the full path (e.g. /vnc.html?autoconnect=true&resize=remote)
           // so the frontend can open noVNC directly instead of the landing page.
@@ -347,18 +392,36 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
           }
         }, COOKIE_WATCH_INTERVAL_MS);
       } else {
-        // BROWSE MODE: Poll the DB for 'ended' status set by endBrowseSession()
-        // (triggered when the operator clicks End in the frontend). When detected,
-        // kill the process tree and finish — do NOT write status (already 'ended').
+        // BROWSE MODE: Poll the DB each tick for TWO signals:
+        //   (a) status='ended' (operator clicked End, or expiry) → tear down.
+        //   (b) a changed connect_target_url → re-navigate the live browser to
+        //       the new lead/post. This is what lets the operator switch leads
+        //       (or jump profile→post) on the SAME warm, logged-in browser
+        //       instead of being stranded on the previous page (the reused-
+        //       session bug). The bridge already navigated to the spawn target,
+        //       so seed lastNavigatedTarget with it to avoid a redundant nav.
+        let lastNavigatedTarget = row.connect_target_url ?? null;
         endWatchInterval = setInterval(async () => {
           if (finalized) return;
           try {
-            const status = await getConnectStatusValue(row.id);
+            const { status, targetUrl } = await getBrowseSessionFields(row.id);
             if (status === 'ended') {
               finalized = true;
               log(`account=${row.id} browse session ended by operator; killing browser`);
               killProcessTree(child.pid);
               finishSession();
+              return;
+            }
+            if (targetUrl && targetUrl !== lastNavigatedTarget && cdpPort !== null) {
+              const dest = targetUrl;
+              lastNavigatedTarget = dest; // optimistic; reset below so a failure retries
+              try {
+                await navigateViaCDP(cdpPort, dest);
+                log(`re-navigated account=${row.id} browse browser to ${dest}`);
+              } catch (navErr) {
+                lastNavigatedTarget = null;
+                log(`re-navigate failed for account=${row.id} (will retry next tick): ${(navErr as Error).message}`);
+              }
             }
           } catch (err) {
             log(`end-watch poll error: ${(err as Error).message}`);
