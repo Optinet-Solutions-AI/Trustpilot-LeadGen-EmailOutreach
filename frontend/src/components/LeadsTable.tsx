@@ -325,6 +325,11 @@ export default function LeadsTable({
   const hostedTabOpened = useRef(false);
   const hostedWindowRef = useRef<Window | null>(null);
   const [messagingLeadId, setMessagingLeadId] = useState<string | null>(null);
+  // Which action started the current hosted session, so the status/controls
+  // render only in the cell the operator actually clicked — the Message cell
+  // vs the View-post cell's "Comment (hosted)" button — not duplicated across
+  // both (they share the one useBrowseSession instance and messagingLeadId).
+  const [hostedActionKind, setHostedActionKind] = useState<'message' | 'comment' | null>(null);
   // Open the streamed-browser tab exactly once when the session reaches 'ready'.
   useEffect(() => {
     if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
@@ -370,11 +375,12 @@ export default function LeadsTable({
     void hostedStartForLead(leadId, { targetUrl, requestedBy: 'operator', accountId });
   };
 
-  const openMessageHosted = async (leadId: string, targetUrl: string) => {
+  const openMessageHosted = async (leadId: string, targetUrl: string, kind: 'message' | 'comment' = 'message') => {
     hostedTabOpened.current = false;
     setNoAccountError(null);
     setAccountPicker(null);
     setMessagingLeadId(leadId);
+    setHostedActionKind(kind);
 
     // Open the tab NOW, during the click (a user gesture), so the browser
     // doesn't block it; show a placeholder until we know which account will
@@ -874,6 +880,10 @@ export default function LeadsTable({
               ? '🔎 Find in group'
               : (excerptSearchUrl ? '🔎 Find post' : '👤 View profile'));
         const excerptDisplay = cleanExcerpt.slice(0, 110);
+        // Scope the hosted-Comment button's busy/status to THIS cell (vs the
+        // Message cell) via hostedActionKind, so a click here shows feedback here.
+        const commentBusy = messagingLeadId === lead.id && hostedActionKind === 'comment'
+          && (resolvingAccounts || hostedStatus === 'starting' || hostedStatus === 'provisioning');
         return (
           <td key={col} className="px-4 py-3 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
             {/* Fast default: open the raw post in the operator's own browser
@@ -888,6 +898,40 @@ export default function LeadsTable({
               <span className="truncate max-w-[200px]">{linkLabel}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
+            {/* Hosted (Facebook only): stream the fleet's logged-in,
+                country-pinned browser straight onto this post so the VA can
+                comment AS the account — same flow as the Message button, but
+                targeting the post URL instead of the conversation. The plain
+                link above stays as the instant, logged-out peek. */}
+            {p.platform === 'facebook' && (
+              <>
+                <button
+                  type="button"
+                  disabled={commentBusy}
+                  onClick={() => void openMessageHosted(lead.id, targetUrl, 'comment')}
+                  title="Open this post in the fleet's logged-in browser so you can comment as the pinned account"
+                  className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-1.5 py-0.5 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed w-fit"
+                >
+                  <span className="material-symbols-outlined text-[12px]">forum</span>
+                  {commentBusy ? (resolvingAccounts ? 'Checking…' : 'Starting…') : 'Comment (hosted)'}
+                </button>
+                {messagingLeadId === lead.id && hostedActionKind === 'comment' && noAccountError && (
+                  <p className="mt-0.5 text-[10px] text-amber-700 font-semibold leading-tight max-w-[180px]">{noAccountError}</p>
+                )}
+                {messagingLeadId === lead.id && hostedActionKind === 'comment' && (hostedStatus === 'failed' || hostedStatus === 'expired') && hostedError && (
+                  <p className="mt-0.5 text-[10px] text-red-600 font-semibold leading-tight max-w-[180px]">{hostedError}</p>
+                )}
+                {messagingLeadId === lead.id && hostedActionKind === 'comment' && hostedStatus === 'ready' && (
+                  <div className="mt-0.5 flex flex-col items-start gap-0.5">
+                    <p className="text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
+                    {hostedTunnelUrl && (
+                      <a href={hostedTunnelUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-purple-700 underline">Reopen stream</a>
+                    )}
+                    <button type="button" onClick={() => void hostedEnd()} className="text-[10px] text-purple-600 hover:underline" title="Release this account so it's free for the next click">End session</button>
+                  </div>
+                )}
+              </>
+            )}
             {/* On-demand: spawn the local open_lead_browser tool on the operator's
                 machine. Local-dev only — /open-local 404s on the deployed gateway;
                 on the deployed app, open the post as James from the lead detail page
@@ -985,14 +1029,14 @@ export default function LeadsTable({
         const fbMessageUrl = fbNumericId
           ? `https://www.facebook.com/messages/t/${fbNumericId}`
           : p.profile_url;
-        const isBusy = messagingLeadId === lead.id
+        const isBusy = messagingLeadId === lead.id && hostedActionKind === 'message'
           && (resolvingAccounts || hostedStatus === 'starting' || hostedStatus === 'provisioning');
         return (
           <td key={col} className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               disabled={isBusy}
-              onClick={() => void openMessageHosted(lead.id, fbMessageUrl)}
+              onClick={() => void openMessageHosted(lead.id, fbMessageUrl, 'message')}
               title="Open as James (hosted) — streams the fleet's logged-in browser to your tab"
               aria-label="Message on Facebook"
               className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
@@ -1000,13 +1044,13 @@ export default function LeadsTable({
               <span className="material-symbols-outlined text-[13px]">send</span>
               {isBusy ? (resolvingAccounts ? 'Checking…' : 'Starting…') : 'Message'}
             </button>
-            {messagingLeadId === lead.id && noAccountError && (
+            {messagingLeadId === lead.id && hostedActionKind === 'message' && noAccountError && (
               <p className="mt-1 text-[10px] text-amber-700 font-semibold leading-tight max-w-[140px]">{noAccountError}</p>
             )}
-            {messagingLeadId === lead.id && (hostedStatus === 'failed' || hostedStatus === 'expired') && hostedError && (
+            {messagingLeadId === lead.id && hostedActionKind === 'message' && (hostedStatus === 'failed' || hostedStatus === 'expired') && hostedError && (
               <p className="mt-1 text-[10px] text-red-600 font-semibold leading-tight max-w-[140px]">{hostedError}</p>
             )}
-            {messagingLeadId === lead.id && hostedStatus === 'ready' && (
+            {messagingLeadId === lead.id && hostedActionKind === 'message' && hostedStatus === 'ready' && (
               <div className="mt-1 flex flex-col items-start gap-0.5">
                 <p className="text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
                 {hostedTunnelUrl && (
