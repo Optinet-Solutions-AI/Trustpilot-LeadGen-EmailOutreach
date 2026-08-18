@@ -135,7 +135,9 @@ function buildViewerHtml(): string {
   // WebSocket connection
   // ---------------------------------------------------------------------------
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  var wsUrl  = proto + '//' + location.host + '/ws';
+  // Forward ?target=<id> (multi-tab mode) to the bridge so this viewer streams
+  // the specific tab it was opened for.
+  var wsUrl  = proto + '//' + location.host + '/ws' + location.search;
 
   // Last known frame dimensions (from CDP metadata).
   var frameDeviceW = 1280;
@@ -323,6 +325,89 @@ async function discoverPageTarget(cdpPort: number): Promise<CdpTarget> {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-tab management: one browser, one tab per lead, one viewer showing the
+// active tab. Chrome only paints the ACTIVE tab, so switching = Target.activate
+// (wakes the tab) + the viewer streams that specific target. State is preserved
+// because tabs are never reloaded, just re-activated.
+// ---------------------------------------------------------------------------
+
+// leadId -> targetId, plus LRU order so we can cap open tabs and evict the oldest.
+const openTabs = new Map<string, string>();
+const tabOrder: string[] = [];
+const MAX_TABS = 8;
+
+// Persistent browser-level CDP connection for Target.* commands (create /
+// activate / close). Separate from the per-viewer page connections.
+let browserWs: WebSocket | null = null;
+let browserNextId = 5000;
+const browserPending = new Map<number, (result: Record<string, unknown>) => void>();
+
+async function ensureBrowserCdp(cdpPort: number): Promise<void> {
+  if (browserWs && browserWs.readyState === WebSocket.OPEN) return;
+  const res = await fetch(`http://localhost:${cdpPort}/json/version`);
+  if (!res.ok) throw new Error(`CDP /json/version returned ${res.status}`);
+  const { webSocketDebuggerUrl } = await res.json() as { webSocketDebuggerUrl: string };
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(webSocketDebuggerUrl);
+    const t = setTimeout(() => reject(new Error('browser CDP connect timeout')), 8_000);
+    ws.on('open', () => { clearTimeout(t); browserWs = ws; resolve(); });
+    ws.on('error', (e) => { clearTimeout(t); reject(e); });
+    ws.on('close', () => { browserWs = null; });
+    ws.on('message', (d: Buffer) => {
+      try {
+        const m = JSON.parse(d.toString()) as { id?: number; result?: Record<string, unknown> };
+        if (m.id && browserPending.has(m.id)) { browserPending.get(m.id)!(m.result ?? {}); browserPending.delete(m.id); }
+      } catch { /* ignore */ }
+    });
+  });
+}
+
+function browserCmd(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    if (!browserWs || browserWs.readyState !== WebSocket.OPEN) { reject(new Error('browser CDP not open')); return; }
+    const id = browserNextId++;
+    const t = setTimeout(() => { browserPending.delete(id); reject(new Error(`CDP ${method} timeout`)); }, 8_000);
+    browserPending.set(id, (result) => { clearTimeout(t); resolve(result); });
+    browserWs.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+// Resolve the page-target websocket URL for a targetId (looked up from /json so
+// we use the exact debugger URL rather than guessing the path format).
+async function findTargetWsUrl(cdpPort: number, targetId: string): Promise<string | null> {
+  const res = await fetch(`http://localhost:${cdpPort}/json`);
+  if (!res.ok) return null;
+  const targets = await res.json() as CdpTarget[];
+  const t = targets.find((x) => x.id === targetId);
+  return t?.webSocketDebuggerUrl ?? null;
+}
+
+// Open (or re-activate) the tab for a lead and bring it to the foreground so it
+// renders. Returns the targetId the viewer should stream (?target=<id>).
+async function openOrActivateTab(cdpPort: number, leadId: string, url: string): Promise<string> {
+  await ensureBrowserCdp(cdpPort);
+  let targetId = openTabs.get(leadId);
+  if (!targetId) {
+    const r = await browserCmd('Target.createTarget', { url });
+    targetId = r['targetId'] as string;
+    openTabs.set(leadId, targetId);
+    tabOrder.push(leadId);
+    // LRU cap — close the oldest tabs so the box's RAM stays bounded.
+    while (tabOrder.length > MAX_TABS) {
+      const evictLead = tabOrder.shift()!;
+      const evictTarget = openTabs.get(evictLead);
+      openTabs.delete(evictLead);
+      if (evictTarget) { try { await browserCmd('Target.closeTarget', { targetId: evictTarget }); } catch { /* ignore */ } }
+    }
+  } else {
+    const i = tabOrder.indexOf(leadId);
+    if (i >= 0) { tabOrder.splice(i, 1); tabOrder.push(leadId); } // mark most-recently-used
+  }
+  try { await browserCmd('Target.activateTarget', { targetId }); } catch { /* best effort */ }
+  return targetId;
+}
+
+// ---------------------------------------------------------------------------
 // Bridge: connects to CDP, relays frames → client, client events → CDP
 // ---------------------------------------------------------------------------
 
@@ -339,6 +424,7 @@ function startCdpBridge(
   clientWs: WebSocket,
   log: (msg: string) => void,
   targetUrl?: string,
+  streamTargetId?: string,
 ): void {
   let cdpWs: WebSocket | null = null;
   let nextId = 1000;
@@ -352,56 +438,76 @@ function startCdpBridge(
     cdpWs.send(JSON.stringify({ id, method, params }));
   };
 
-  // Async: discover page target then open CDP websocket.
+  // Async: resolve the target ws (a SPECIFIC tab in multi-tab mode, else the
+  // first page target) then open the CDP websocket.
   void (async () => {
-    let target: CdpTarget;
-    // Retry up to 10 times — Brave may still be loading at CDP port attach.
-    for (let attempt = 0; attempt < 10; attempt++) {
-      try {
-        target = await discoverPageTarget(cdpPort);
-        break;
-      } catch (err) {
-        if (attempt === 9) {
-          log(`CDP target discovery failed after 10 attempts: ${(err as Error).message}`);
-          clientWs.close(1011, 'CDP target not found');
-          return;
-        }
-        await new Promise<void>((r) => setTimeout(r, 1000));
+    let targetWsUrl: string;
+    if (streamTargetId) {
+      // Multi-tab mode: stream a specific lead's tab. Activate it first so
+      // Chrome paints it (background tabs are frozen), then attach to its page
+      // ws. No navigate — the tab already holds its lead's content/state.
+      try { await ensureBrowserCdp(cdpPort); await browserCmd('Target.activateTarget', { targetId: streamTargetId }); } catch { /* best effort */ }
+      let wsUrl: string | null = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        wsUrl = await findTargetWsUrl(cdpPort, streamTargetId);
+        if (wsUrl) break;
+        await new Promise<void>((r) => setTimeout(r, 500));
       }
+      if (!wsUrl) {
+        log(`target ${streamTargetId} not found`);
+        if (clientAlive) clientWs.close(1011, 'target not found');
+        return;
+      }
+      targetWsUrl = wsUrl;
+      log(`streaming specific target ${streamTargetId}`);
+    } else {
+      let target: CdpTarget;
+      // Retry up to 10 times — the browser may still be loading at CDP attach.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          target = await discoverPageTarget(cdpPort);
+          break;
+        } catch (err) {
+          if (attempt === 9) {
+            log(`CDP target discovery failed after 10 attempts: ${(err as Error).message}`);
+            clientWs.close(1011, 'CDP target not found');
+            return;
+          }
+          await new Promise<void>((r) => setTimeout(r, 1000));
+        }
+      }
+      targetWsUrl = target!.webSocketDebuggerUrl;
+      log(`CDP target: ${target!.url} ws=${target!.webSocketDebuggerUrl}`);
     }
 
     if (!clientAlive) return;
 
-    log(`CDP target: ${target!.url} ws=${target!.webSocketDebuggerUrl}`);
-    cdpWs = new WebSocket(target!.webSocketDebuggerUrl);
+    cdpWs = new WebSocket(targetWsUrl);
 
     cdpWs.on('open', () => {
       log('CDP websocket open; enabling Page domain + starting screencast');
       sendToCdp('Page.enable');
-      // Navigate the streamed page by bouncing through about:blank first:
-      // Facebook's SPA silently swallows a same-group permalink->permalink
-      // navigation (URL never changes, the old post modal stays up), so a
-      // direct Page.navigate looks successful but moves nothing. Loading
-      // about:blank tears down FB's in-page JS; the real load that follows is a
-      // genuine fresh navigation FB can't intercept. Fire-and-forget (sendToCdp
-      // doesn't await responses) with a short gap between the two navigations.
-      const navigateWithBounce = (url: string): void => {
-        sendToCdp('Page.navigate', { url: 'about:blank' });
-        setTimeout(() => sendToCdp('Page.navigate', { url }), 700);
-      };
-      // Expose THIS connection's navigate to the HTTP /navigate handler — it is
-      // the same connection that screencasts, so navigating it is guaranteed to
-      // move what the operator sees (a separate CDP connection could land on a
-      // different blank/prerender page target and move nothing).
-      activeNavigate = navigateWithBounce;
-      // Navigate to the initial target exactly ONCE for the whole process —
-      // NOT on every viewer (re)connect. The old per-connection navigate yanked
-      // the browser back to the spawn target whenever the viewer's WebSocket
-      // flapped, overriding any retarget the worker had applied.
-      if (targetUrl && !didInitialNavigate) {
-        didInitialNavigate = true;
-        log(`initial navigate to targetUrl=${targetUrl}`);
-        navigateWithBounce(targetUrl);
+      // Single-tab mode only: bounce-navigate the streamed page to the initial
+      // target and expose activeNavigate for POST /navigate. Multi-tab mode
+      // (streamTargetId set) skips this entirely — the tab already holds its
+      // lead's content, and switching is done by re-pointing the viewer to a
+      // different ?target, not by navigating.
+      if (!streamTargetId) {
+        // Bounce through about:blank first: Facebook's SPA silently swallows a
+        // same-group permalink->permalink navigation (URL never changes, old
+        // modal stays), so a direct Page.navigate looks successful but moves
+        // nothing. about:blank tears down FB's JS so the real load can't be
+        // intercepted. Fire-and-forget with a short gap.
+        const navigateWithBounce = (url: string): void => {
+          sendToCdp('Page.navigate', { url: 'about:blank' });
+          setTimeout(() => sendToCdp('Page.navigate', { url }), 700);
+        };
+        activeNavigate = navigateWithBounce;
+        if (targetUrl && !didInitialNavigate) {
+          didInitialNavigate = true;
+          log(`initial navigate to targetUrl=${targetUrl}`);
+          navigateWithBounce(targetUrl);
+        }
       }
       // Higher JPEG quality + larger frame so FB text (posts, comment box) is
       // legible. quality 60 read as blurry; 85 is sharp and still tunnel-friendly.
@@ -552,6 +658,12 @@ if (require.main === module) {
 
   const httpServer = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url ?? '/', `http://localhost:${servePort}`);
+    // CORS: the CRM (a different origin) POSTs /open-tab and /navigate through
+    // the public tunnel, so allow cross-origin requests + their preflight.
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     if (parsedUrl.pathname === '/viewer.html' || parsedUrl.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(viewerHtml);
@@ -572,6 +684,25 @@ if (require.main === module) {
           res.writeHead(400); res.end('bad json');
         }
       });
+    } else if (req.method === 'POST' && parsedUrl.pathname === '/open-tab') {
+      // The CRM POSTs {leadId, url}; open/reuse that lead's tab and return the
+      // targetId the viewer should stream (?target=<id>).
+      let body = '';
+      req.on('data', (c) => { body += c.toString(); });
+      req.on('end', () => {
+        void (async () => {
+          try {
+            const { leadId, url } = JSON.parse(body || '{}') as { leadId?: string; url?: string };
+            if (!leadId || !url) { res.writeHead(400); res.end('missing leadId/url'); return; }
+            const targetId = await openOrActivateTab(cdpPort, leadId, url);
+            log(`/open-tab lead=${leadId} -> target=${targetId}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ targetId }));
+          } catch (e) {
+            res.writeHead(500); res.end(`open-tab error: ${(e as Error).message}`);
+          }
+        })();
+      });
     } else {
       res.writeHead(404);
       res.end('Not found');
@@ -581,8 +712,10 @@ if (require.main === module) {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
   wss.on('connection', (ws, req) => {
-    log(`client connected from ${req.socket.remoteAddress ?? 'unknown'}`);
-    startCdpBridge(cdpPort, ws, log, targetUrl);
+    const u = new URL(req.url ?? '/', `http://localhost:${servePort}`);
+    const streamTargetId = u.searchParams.get('target') ?? undefined;
+    log(`client connected from ${req.socket.remoteAddress ?? 'unknown'}${streamTargetId ? ` (target=${streamTargetId})` : ''}`);
+    startCdpBridge(cdpPort, ws, log, targetUrl, streamTargetId);
   });
 
   httpServer.listen(servePort, '0.0.0.0', () => {

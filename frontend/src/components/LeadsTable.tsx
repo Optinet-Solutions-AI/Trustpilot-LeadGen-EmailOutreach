@@ -324,33 +324,53 @@ export default function LeadsTable({
   } = useBrowseSession();
   const hostedTabOpened = useRef(false);
   const hostedWindowRef = useRef<Window | null>(null);
+  // The lead+URL to open as its own tab once the session is ready (multi-tab).
+  const pendingTabRef = useRef<{ leadId: string; url: string } | null>(null);
+  // The current viewer URL (…/viewer.html?target=<id>) once the lead's tab is
+  // open — used for the "Reopen stream" link so it points at the right tab.
+  const [hostedViewerUrl, setHostedViewerUrl] = useState<string | null>(null);
   const [messagingLeadId, setMessagingLeadId] = useState<string | null>(null);
   // Which action started the current hosted session, so the status/controls
   // render only in the cell the operator actually clicked — the Message cell
   // vs the View-post cell's "Comment (hosted)" button — not duplicated across
   // both (they share the one useBrowseSession instance and messagingLeadId).
   const [hostedActionKind, setHostedActionKind] = useState<'message' | 'comment' | null>(null);
-  // Open the streamed-browser tab exactly once when the session reaches 'ready'.
+  // Once the session is ready, open the pending lead as its OWN tab in the
+  // fleet browser (POST /open-tab → targetId) and point the single reusable
+  // viewer window at that tab (?target=<id>). Each lead gets its own tab; the
+  // one window follows whichever lead you clicked, and re-clicking a lead
+  // re-activates its existing tab (state preserved).
   useEffect(() => {
-    if (hostedStatus === 'ready' && hostedTunnelUrl && !hostedTabOpened.current) {
-      hostedTabOpened.current = true;
-      // Navigate the tab we pre-opened during the click. Write a real,
-      // clickable link into it FIRST (see writeHostedStreamDoc) — the
-      // programmatic redirect that follows isn't guaranteed to fire since
-      // this callback is several seconds removed from the original click
-      // gesture, so the link is the reliable path in, not just a fallback.
+    if (hostedStatus !== 'ready' || !hostedTunnelUrl || hostedTabOpened.current) return;
+    const pending = pendingTabRef.current;
+    if (!pending) return;
+    hostedTabOpened.current = true;
+    void (async () => {
       const w = hostedWindowRef.current;
-      if (w && !w.closed) writeHostedStreamDoc(w, hostedTunnelUrl);
-      else {
-        // The placeholder tab is gone (closed, or the original window.open
-        // was itself blocked) — a fresh window.open here is even less likely
-        // to succeed since it's not tied to a user gesture either. Best
-        // effort only; the "Reopen stream" link rendered below the Message
-        // button is the guaranteed way in.
-        const opened = window.open(hostedTunnelUrl, '_blank');
-        if (opened) writeHostedStreamDoc(opened, hostedTunnelUrl);
+      try {
+        const origin = new URL(hostedTunnelUrl).origin;
+        const res = await fetch(`${origin}/open-tab`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leadId: pending.leadId, url: pending.url }),
+        });
+        if (!res.ok) throw new Error(`open-tab returned ${res.status}`);
+        const { targetId } = await res.json() as { targetId: string };
+        const viewerUrl = `${origin}/viewer.html?autoconnect=true&target=${targetId}`;
+        setHostedViewerUrl(viewerUrl);
+        // Navigate the window we pre-opened during the click (allowed — it's an
+        // existing window ref, not a fresh popup). Falls back to a clickable
+        // link if the ref is gone.
+        if (w && !w.closed) { try { w.location.href = viewerUrl; } catch { writeHostedStreamDoc(w, viewerUrl); } }
+        else window.open(viewerUrl, 'fleet-viewer');
+      } catch {
+        // If the tab API isn't reachable (older bridge), fall back to the plain
+        // single-tab stream so the operator still gets something.
+        setHostedViewerUrl(hostedTunnelUrl);
+        if (w && !w.closed) writeHostedStreamDoc(w, hostedTunnelUrl);
+        else window.open(hostedTunnelUrl, 'fleet-viewer');
       }
-    }
+    })();
   }, [hostedStatus, hostedTunnelUrl]);
 
   // Account picker: only populated when a lead's country has >1 active FB
@@ -382,15 +402,19 @@ export default function LeadsTable({
     setMessagingLeadId(leadId);
     setHostedActionKind(kind);
 
-    // Open the tab NOW, during the click (a user gesture), so the browser
-    // doesn't block it; show a placeholder until we know which account will
-    // drive the session (and until the stream URL itself is ready).
-    const w = window.open('about:blank', '_blank');
+    // Remember which lead/URL to open as a tab once the session is ready.
+    pendingTabRef.current = { leadId, url: targetUrl };
+    setHostedViewerUrl(null);
+
+    // Open (or REUSE) the single 'fleet-viewer' window NOW, during the click (a
+    // user gesture) so it isn't popup-blocked; the same named window is reused
+    // across leads so tabs don't pile up. Placeholder until the tab is ready.
+    const w = window.open('about:blank', 'fleet-viewer');
     if (w) {
       hostedWindowRef.current = w;
       try {
         w.document.write(
-          '<title>Browser Session</title><body style="font:14px sans-serif;padding:24px;color:#444">Provisioning the streamed browser… this tab will load the stream in ~20–40s.</body>',
+          '<title>Browser Session</title><body style="font:14px sans-serif;padding:24px;color:#444">Opening this lead in the streamed browser…</body>',
         );
       } catch { /* about:blank is same-origin; ignore if it ever isn't */ }
     }
@@ -923,9 +947,9 @@ export default function LeadsTable({
                 )}
                 {messagingLeadId === lead.id && hostedActionKind === 'comment' && hostedStatus === 'ready' && (
                   <div className="mt-0.5 flex flex-col items-start gap-0.5">
-                    <p className="text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
-                    {hostedTunnelUrl && (
-                      <a href={hostedTunnelUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-purple-700 underline">Reopen stream</a>
+                    <p className="text-[10px] text-purple-700 font-semibold leading-tight">Opened in the fleet window</p>
+                    {(hostedViewerUrl || hostedTunnelUrl) && (
+                      <a href={hostedViewerUrl || hostedTunnelUrl!} target="fleet-viewer" rel="noopener noreferrer" className="text-[10px] text-purple-700 underline">Reopen stream</a>
                     )}
                     <button type="button" onClick={() => void hostedEnd()} className="text-[10px] text-purple-600 hover:underline" title="Release this account so it's free for the next click">End session</button>
                   </div>
@@ -1052,11 +1076,11 @@ export default function LeadsTable({
             )}
             {messagingLeadId === lead.id && hostedActionKind === 'message' && hostedStatus === 'ready' && (
               <div className="mt-1 flex flex-col items-start gap-0.5">
-                <p className="text-[10px] text-purple-700 font-semibold leading-tight">Streamed in new tab</p>
-                {hostedTunnelUrl && (
+                <p className="text-[10px] text-purple-700 font-semibold leading-tight">Opened in the fleet window</p>
+                {(hostedViewerUrl || hostedTunnelUrl) && (
                   <a
-                    href={hostedTunnelUrl}
-                    target="_blank"
+                    href={hostedViewerUrl || hostedTunnelUrl!}
+                    target="fleet-viewer"
                     rel="noopener noreferrer"
                     className="text-[10px] text-purple-700 underline"
                   >
