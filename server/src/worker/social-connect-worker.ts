@@ -160,19 +160,22 @@ async function fetchCookiesViaCDP(): Promise<Record<string, unknown>[]> {
  * persists the new connect_target_url on a same-operator reconnect). Reuses the
  * running browser instead of respawning, so switching leads is instant.
  *
- * Opens a SECOND, short-lived CDP connection to the page target (the bridge
- * keeps its own for screencast; CDP allows multiple clients), issues
- * Page.navigate, then closes. Rejects on timeout / ws error so the caller can
- * retry on the next tick.
+ * Opens short-lived CDP connections (the bridge keeps its own for screencast;
+ * CDP allows multiple clients), issues Page.navigate, then closes.
+ *
+ * IMPORTANT — navigate EVERY real page target, not a guessed "first page".
+ * The bridge streams one specific page target; a separate CDP connection that
+ * picks `targets.find(first page)` can land on a DIFFERENT tab, because
+ * AdsPower/Facebook spawn extra page targets (blank/new-tab, prerenders). When
+ * that happened the worker's Page.navigate logged success but never moved the
+ * tab the operator was watching (it stayed on the spawn target). This fleet
+ * browser only holds the FB session, so navigating all of its page targets is
+ * safe and guarantees the streamed one is included. Rejects on timeout / ws
+ * error so the caller can retry on the next tick.
  */
-async function navigateViaCDP(cdpPort: number, url: string): Promise<void> {
-  const res = await fetch(`http://localhost:${cdpPort}/json`);
-  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
-  const targets = await res.json() as Array<{ type: string; url: string; webSocketDebuggerUrl: string }>;
-  const page = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools://')) ?? targets[0];
-  if (!page?.webSocketDebuggerUrl) throw new Error('no CDP page target for navigate');
+async function navigateOnePageTarget(wsUrl: string, url: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(page.webSocketDebuggerUrl);
+    const ws = new WebSocket(wsUrl);
     const timer = setTimeout(() => { ws.close(); reject(new Error('CDP navigate timeout after 5s')); }, 5_000);
     ws.on('open', () => {
       ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url } }));
@@ -185,6 +188,20 @@ async function navigateViaCDP(cdpPort: number, url: string): Promise<void> {
     });
     ws.on('error', (err) => { clearTimeout(timer); reject(err); });
   });
+}
+
+async function navigateViaCDP(cdpPort: number, url: string): Promise<void> {
+  const res = await fetch(`http://localhost:${cdpPort}/json`);
+  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
+  const targets = await res.json() as Array<{ type: string; url: string; webSocketDebuggerUrl: string }>;
+  const pages = targets.filter(
+    (t) => t.type === 'page' && !t.url.startsWith('devtools://') && !!t.webSocketDebuggerUrl,
+  );
+  if (pages.length === 0) throw new Error('no CDP page target for navigate');
+  log(`navigate: ${pages.length} page target(s) -> ${url}`);
+  // Navigate them all; if any one fails the whole call rejects so the nav-watch
+  // retries next tick (the streamed target must succeed to count as done).
+  await Promise.all(pages.map((p) => navigateOnePageTarget(p.webSocketDebuggerUrl, url)));
 }
 
 async function handleRequest(row: ConnectRequestRow): Promise<void> {
