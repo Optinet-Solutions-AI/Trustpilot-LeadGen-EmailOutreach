@@ -176,17 +176,46 @@ async function fetchCookiesViaCDP(): Promise<Record<string, unknown>[]> {
 async function navigateOnePageTarget(wsUrl: string, url: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
-    const timer = setTimeout(() => { ws.close(); reject(new Error('CDP navigate timeout after 5s')); }, 5_000);
+    let done = false;
+    const finish = (err?: Error): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch { /* already closing */ }
+      if (err) reject(err); else resolve();
+    };
+    // Two navigations (blank -> target), so allow a little longer.
+    const timer = setTimeout(() => finish(new Error('CDP navigate timeout after 10s')), 10_000);
     ws.on('open', () => {
-      ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url } }));
+      // Page.enable so we receive javascriptDialogOpening events (beforeunload).
+      ws.send(JSON.stringify({ id: 5, method: 'Page.enable' }));
+      // Bounce through about:blank FIRST. A same-group permalink->permalink
+      // Page.navigate is swallowed by Facebook's SPA (URL never changes, the
+      // post modal stays put) — issuing it looked successful but moved nothing.
+      // Loading about:blank tears down FB's in-page JS, so the real navigation
+      // that follows is a genuine fresh document load FB can't intercept.
+      ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: 'about:blank' } }));
     });
     ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString()) as { id?: number };
-        if (msg.id === 1) { clearTimeout(timer); ws.close(); resolve(); }
-      } catch { /* ignore non-JSON frames */ }
+      let msg: { id?: number; method?: string; result?: { errorText?: string } };
+      try { msg = JSON.parse(data.toString()); } catch { return; }
+      // Auto-accept any beforeunload/confirm dialog so it can't block the nav.
+      if (msg.method === 'Page.javascriptDialogOpening') {
+        ws.send(JSON.stringify({ id: 99, method: 'Page.handleJavaScriptDialog', params: { accept: true } }));
+        return;
+      }
+      if (msg.id === 1) {
+        // about:blank committed — now load the real target.
+        ws.send(JSON.stringify({ id: 2, method: 'Page.navigate', params: { url } }));
+      } else if (msg.id === 2) {
+        const errText = msg.result?.errorText;
+        // ERR_ABORTED is normal (e.g. a redirect supersedes); anything else is
+        // a real failure worth surfacing so the nav-watch retries next tick.
+        if (errText && errText !== 'net::ERR_ABORTED') finish(new Error(`Page.navigate: ${errText}`));
+        else finish();
+      }
     });
-    ws.on('error', (err) => { clearTimeout(timer); reject(err); });
+    ws.on('error', (err) => finish(err as Error));
   });
 }
 
