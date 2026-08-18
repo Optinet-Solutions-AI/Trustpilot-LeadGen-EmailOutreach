@@ -154,83 +154,28 @@ async function fetchCookiesViaCDP(): Promise<Record<string, unknown>[]> {
 }
 
 /**
- * Navigates the live browse browser to a new URL over CDP — used by the
- * browse-mode nav-watch to re-point the ALREADY-OPEN, warm AdsPower browser at
- * a new lead/post when the operator retargets the session (enqueueBrowseSession
- * persists the new connect_target_url on a same-operator reconnect). Reuses the
- * running browser instead of respawning, so switching leads is instant.
+ * Retargets the live browse browser by asking the BRIDGE to navigate — the
+ * browse-mode nav-watch calls this when the operator points the session at a
+ * new lead/post (enqueueBrowseSession persists the new connect_target_url on a
+ * same-operator reconnect). Reuses the running browser instead of respawning.
  *
- * Opens short-lived CDP connections (the bridge keeps its own for screencast;
- * CDP allows multiple clients), issues Page.navigate, then closes.
- *
- * IMPORTANT — navigate EVERY real page target, not a guessed "first page".
- * The bridge streams one specific page target; a separate CDP connection that
- * picks `targets.find(first page)` can land on a DIFFERENT tab, because
- * AdsPower/Facebook spawn extra page targets (blank/new-tab, prerenders). When
- * that happened the worker's Page.navigate logged success but never moved the
- * tab the operator was watching (it stayed on the spawn target). This fleet
- * browser only holds the FB session, so navigating all of its page targets is
- * safe and guarantees the streamed one is included. Rejects on timeout / ws
- * error so the caller can retry on the next tick.
+ * WHY POST the bridge instead of opening our own CDP connection: a separate CDP
+ * connection re-discovers "a page target" and can land on a DIFFERENT tab than
+ * the one being screencast (AdsPower/Facebook spawn blank/prerender page
+ * targets), so its Page.navigate moved nothing the operator could see. The
+ * bridge navigates on the SAME connection it screencasts from, so it is
+ * guaranteed to move the stream. The bridge serves on the fixed BRIDGE_PORT
+ * (6090) on localhost, and does the about:blank bounce + beforeunload handling
+ * itself. Rejects on a non-2xx so the nav-watch retries next tick.
  */
-async function navigateOnePageTarget(wsUrl: string, url: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    let done = false;
-    const finish = (err?: Error): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { ws.close(); } catch { /* already closing */ }
-      if (err) reject(err); else resolve();
-    };
-    // Two navigations (blank -> target), so allow a little longer.
-    const timer = setTimeout(() => finish(new Error('CDP navigate timeout after 10s')), 10_000);
-    ws.on('open', () => {
-      // Page.enable so we receive javascriptDialogOpening events (beforeunload).
-      ws.send(JSON.stringify({ id: 5, method: 'Page.enable' }));
-      // Bounce through about:blank FIRST. A same-group permalink->permalink
-      // Page.navigate is swallowed by Facebook's SPA (URL never changes, the
-      // post modal stays put) — issuing it looked successful but moved nothing.
-      // Loading about:blank tears down FB's in-page JS, so the real navigation
-      // that follows is a genuine fresh document load FB can't intercept.
-      ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: 'about:blank' } }));
-    });
-    ws.on('message', (data) => {
-      let msg: { id?: number; method?: string; result?: { errorText?: string } };
-      try { msg = JSON.parse(data.toString()); } catch { return; }
-      // Auto-accept any beforeunload/confirm dialog so it can't block the nav.
-      if (msg.method === 'Page.javascriptDialogOpening') {
-        ws.send(JSON.stringify({ id: 99, method: 'Page.handleJavaScriptDialog', params: { accept: true } }));
-        return;
-      }
-      if (msg.id === 1) {
-        // about:blank committed — now load the real target.
-        ws.send(JSON.stringify({ id: 2, method: 'Page.navigate', params: { url } }));
-      } else if (msg.id === 2) {
-        const errText = msg.result?.errorText;
-        // ERR_ABORTED is normal (e.g. a redirect supersedes); anything else is
-        // a real failure worth surfacing so the nav-watch retries next tick.
-        if (errText && errText !== 'net::ERR_ABORTED') finish(new Error(`Page.navigate: ${errText}`));
-        else finish();
-      }
-    });
-    ws.on('error', (err) => finish(err as Error));
+const BRIDGE_NAV_PORT = 6090;
+async function postNavigateToBridge(url: string): Promise<void> {
+  const res = await fetch(`http://localhost:${BRIDGE_NAV_PORT}/navigate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
   });
-}
-
-async function navigateViaCDP(cdpPort: number, url: string): Promise<void> {
-  const res = await fetch(`http://localhost:${cdpPort}/json`);
-  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
-  const targets = await res.json() as Array<{ type: string; url: string; webSocketDebuggerUrl: string }>;
-  const pages = targets.filter(
-    (t) => t.type === 'page' && !t.url.startsWith('devtools://') && !!t.webSocketDebuggerUrl,
-  );
-  if (pages.length === 0) throw new Error('no CDP page target for navigate');
-  log(`navigate: ${pages.length} page target(s) -> ${url}`);
-  // Navigate them all; if any one fails the whole call rejects so the nav-watch
-  // retries next tick (the streamed target must succeed to count as done).
-  await Promise.all(pages.map((p) => navigateOnePageTarget(p.webSocketDebuggerUrl, url)));
+  if (!res.ok) throw new Error(`bridge /navigate returned ${res.status}`);
 }
 
 async function handleRequest(row: ConnectRequestRow): Promise<void> {
@@ -458,11 +403,11 @@ async function handleRequest(row: ConnectRequestRow): Promise<void> {
               finishSession();
               return;
             }
-            if (targetUrl && targetUrl !== lastNavigatedTarget && cdpPort !== null) {
+            if (targetUrl && targetUrl !== lastNavigatedTarget) {
               const dest = targetUrl;
               lastNavigatedTarget = dest; // optimistic; reset below so a failure retries
               try {
-                await navigateViaCDP(cdpPort, dest);
+                await postNavigateToBridge(dest);
                 log(`re-navigated account=${row.id} browse browser to ${dest}`);
               } catch (navErr) {
                 lastNavigatedTarget = null;

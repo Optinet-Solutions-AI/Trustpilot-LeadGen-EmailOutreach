@@ -326,6 +326,14 @@ async function discoverPageTarget(cdpPort: number): Promise<CdpTarget> {
 // Bridge: connects to CDP, relays frames → client, client events → CDP
 // ---------------------------------------------------------------------------
 
+// Module-level so the initial navigation happens exactly ONCE for the whole
+// bridge process (not on every viewer reconnect, which used to yank the browser
+// back to the spawn target), and so the HTTP POST /navigate handler drives the
+// SAME screencast CDP connection — the only one guaranteed to move what the
+// operator sees.
+let didInitialNavigate = false;
+let activeNavigate: ((url: string) => void) | null = null;
+
 function startCdpBridge(
   cdpPort: number,
   clientWs: WebSocket,
@@ -370,14 +378,30 @@ function startCdpBridge(
     cdpWs.on('open', () => {
       log('CDP websocket open; enabling Page domain + starting screencast');
       sendToCdp('Page.enable');
-      // Some launch paths (e.g. AdsPower's browser/start with open_tabs=1)
-      // open a blank tab with no way to pass a startup URL, unlike a plain
-      // browser.exe invocation where the URL can be a CLI arg. When the
-      // caller gave us a targetUrl, drive the navigation ourselves over the
-      // same CDP channel used for Page.enable/startScreencast below.
-      if (targetUrl) {
-        log(`navigating to targetUrl=${targetUrl}`);
-        sendToCdp('Page.navigate', { url: targetUrl });
+      // Navigate the streamed page by bouncing through about:blank first:
+      // Facebook's SPA silently swallows a same-group permalink->permalink
+      // navigation (URL never changes, the old post modal stays up), so a
+      // direct Page.navigate looks successful but moves nothing. Loading
+      // about:blank tears down FB's in-page JS; the real load that follows is a
+      // genuine fresh navigation FB can't intercept. Fire-and-forget (sendToCdp
+      // doesn't await responses) with a short gap between the two navigations.
+      const navigateWithBounce = (url: string): void => {
+        sendToCdp('Page.navigate', { url: 'about:blank' });
+        setTimeout(() => sendToCdp('Page.navigate', { url }), 700);
+      };
+      // Expose THIS connection's navigate to the HTTP /navigate handler — it is
+      // the same connection that screencasts, so navigating it is guaranteed to
+      // move what the operator sees (a separate CDP connection could land on a
+      // different blank/prerender page target and move nothing).
+      activeNavigate = navigateWithBounce;
+      // Navigate to the initial target exactly ONCE for the whole process —
+      // NOT on every viewer (re)connect. The old per-connection navigate yanked
+      // the browser back to the spawn target whenever the viewer's WebSocket
+      // flapped, overriding any retarget the worker had applied.
+      if (targetUrl && !didInitialNavigate) {
+        didInitialNavigate = true;
+        log(`initial navigate to targetUrl=${targetUrl}`);
+        navigateWithBounce(targetUrl);
       }
       // Higher JPEG quality + larger frame so FB text (posts, comment box) is
       // legible. quality 60 read as blurry; 85 is sharp and still tunnel-friendly.
@@ -393,6 +417,13 @@ function startCdpBridge(
     cdpWs.on('message', (data: Buffer) => {
       let msg: CdpMessage;
       try { msg = JSON.parse(data.toString()) as CdpMessage; } catch { return; }
+
+      // Auto-accept any beforeunload/confirm dialog so the about:blank bounce
+      // (leaving the FB page) can't be blocked by a "Leave site?" prompt.
+      if (msg.method === 'Page.javascriptDialogOpening') {
+        sendToCdp('Page.handleJavaScriptDialog', { accept: true });
+        return;
+      }
 
       if (msg.method === 'Page.screencastFrame') {
         const params = msg.params as {
@@ -524,6 +555,23 @@ if (require.main === module) {
     if (parsedUrl.pathname === '/viewer.html' || parsedUrl.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(viewerHtml);
+    } else if (req.method === 'POST' && parsedUrl.pathname === '/navigate') {
+      // The worker's nav-watch POSTs the retarget URL here. Navigating via the
+      // screencast connection (activeNavigate) is what makes it actually show.
+      let body = '';
+      req.on('data', (c) => { body += c.toString(); });
+      req.on('end', () => {
+        try {
+          const { url } = JSON.parse(body || '{}') as { url?: string };
+          if (!url) { res.writeHead(400); res.end('missing url'); return; }
+          if (!activeNavigate) { res.writeHead(503); res.end('no active cdp connection'); return; }
+          activeNavigate(url);
+          log(`/navigate -> ${url}`);
+          res.writeHead(200); res.end('ok');
+        } catch {
+          res.writeHead(400); res.end('bad json');
+        }
+      });
     } else {
       res.writeHead(404);
       res.end('Not found');
