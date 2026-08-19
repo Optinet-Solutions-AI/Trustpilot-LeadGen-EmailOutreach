@@ -126,16 +126,103 @@ def _bio_link_from_profile(driver) -> Optional[str]:
     return None
 
 
-def _open_ig_driver():
-    """Mobile-flavored driver with the SAME proxy + persistent-profile
-    stack Facebook uses. IG_PROFILE_DIR holds the logged-in profile."""
-    from tools.scraper.shared.uc_driver import open_uc_driver
-    return open_uc_driver(
-        'IG_PROFILE_DIR',
-        user_agent=MOBILE_UA,
-        window_size=(414, 896),
-        proxy_location=os.environ.get('IG_PROXY_LOCATION'),
+class _IGSession:
+    """Holds a Playwright browser session. `.page` is the Selenium-driver
+    equivalent the scraper methods drive. `.close()` tears the whole stack down."""
+    def __init__(self, pw, browser, context, page):
+        self._pw = pw
+        self._browser = browser
+        self._context = context
+        self.page = page
+
+    def close(self) -> None:
+        for fn in (self._context.close, self._browser.close, self._pw.stop):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _proxy_for_country(country: str) -> dict:
+    """Playwright proxy dict for the residential proxy, pinned to `country` by
+    swapping the password's `_country-XX` tag. Playwright does proxy auth
+    NATIVELY — the selenium-wire path (uc_driver) crashes on Windows heavy-auth
+    pages, which is why IG scraping moved to Playwright here."""
+    host = os.environ['RESIDENTIAL_PROXY_HOST']
+    port = os.environ['RESIDENTIAL_PROXY_PORT']
+    user = os.environ['RESIDENTIAL_PROXY_USERNAME']
+    base = os.environ['RESIDENTIAL_PROXY_PASSWORD']
+    cc = (country or 'GB').upper()
+    pw_pass = (_re.sub(r'_country-[A-Za-z]{2}', f'_country-{cc}', base)
+               if '_country-' in base else f'{base}_country-{cc}')
+    return {'server': f'http://{host}:{port}', 'username': user, 'password': pw_pass}
+
+
+def _open_ig_playwright(country: str, cookies=None) -> _IGSession:
+    """Open a mobile Playwright chromium routed through `country`'s residential
+    proxy. Public IG tag pages render WITHOUT a login (validated live), so no
+    session is required; `cookies` (if supplied) seed a best-effort logged-in
+    second layer for deeper content."""
+    from playwright.sync_api import sync_playwright
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(headless=True, proxy=_proxy_for_country(country))
+    context = browser.new_context(
+        user_agent=MOBILE_UA, viewport={'width': 414, 'height': 896},
+        is_mobile=True, has_touch=True,
     )
+    if cookies:
+        pw_cookies = []
+        for c in cookies:
+            try:
+                pw_cookies.append({
+                    'name': c['name'], 'value': c['value'],
+                    'domain': c.get('domain') or '.instagram.com', 'path': c.get('path') or '/',
+                    'secure': bool(c.get('secure', True)), 'httpOnly': bool(c.get('httpOnly', False)),
+                })
+            except Exception:  # noqa: BLE001
+                continue
+        try:
+            context.add_cookies(pw_cookies)
+        except Exception:  # noqa: BLE001
+            pass
+    page = context.new_page()
+    page.set_default_timeout(45000)
+    return _IGSession(pw, browser, context, page)
+
+
+def _dismiss_cookie_modal(page) -> None:
+    """IG overlays a cookie-consent modal on first load that blocks the grid.
+    Dismiss it so posts are extractable/interactable."""
+    for label in ('Decline optional cookies', 'Only allow essential cookies', 'Allow all cookies'):
+        try:
+            btn = page.get_by_role('button', name=label)
+            if btn.count():
+                btn.first.click(timeout=3000)
+                return
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _ig_is_checkpoint_pw(page) -> bool:
+    """Playwright equivalent of FB's _is_checkpoint — IG bounced us to a login
+    or challenge wall."""
+    url = page.url or ''
+    return '/accounts/login' in url or '/challenge' in url
+
+
+def _bio_link_from_profile_pw(page) -> Optional[str]:
+    """Playwright version of _bio_link_from_profile: decode the l.instagram.com
+    bio-link shim (plain external <a> tags are Meta/IG nav chrome, not the bio)."""
+    try:
+        hrefs = page.eval_on_selector_all(
+            'a[href*="l.instagram.com"]', 'els => els.map(e => e.getAttribute("href"))')
+    except Exception:  # noqa: BLE001
+        return None
+    for h in hrefs or []:
+        decoded = _decode_bio_link(h or '')
+        if decoded:
+            return decoded
+    return None
 
 
 def _normalize_hashtag(q: str) -> str:
@@ -336,97 +423,108 @@ class InstagramScraper(SocialPlatformScraper):
             )
         return account
 
-    def _open_session(self, account: dict):
-        # Session layering (mirrors Facebook): the persistent IG_PROFILE_DIR
-        # profile loaded by _open_ig_driver() is the PRIMARY logged-in state
-        # (cookies + localStorage minted on the proxy IP at connect time).
-        # The injected sessionid jar below is a SECOND-layer fallback for a
-        # first-run/empty profile; if both fail, IG redirects to
-        # /accounts/login and we flag a checkpoint for operator re-connect.
-        driver = _open_ig_driver()
-        driver.get(IG_BASE)
-        jar = load_cookies(account['id'])
-        if jar:
-            _inject_cookies(driver, jar)
-            driver.get(IG_BASE)
-        if '/accounts/login' in driver.current_url:
-            driver.quit()
-            _flag_checkpoint(account['id'], 'cookies-rejected-redirected-to-login')
-            raise RuntimeError(f"Instagram rejected cookies for {account['handle']} — needs re-connect")
-        return driver
+    def _open_session(self, account: dict) -> '_IGSession':
+        """Open a mobile Playwright session through the account's country
+        residential proxy (native proxy auth — works on Windows, unlike the
+        selenium-wire uc_driver path). Public tag pages need no login; if the
+        account carries a stored cookie jar we seed it as a best-effort
+        logged-in second layer for deeper content."""
+        # The residential proxy is pinned by 2-letter country code (see
+        # _proxy_for_country). Use the account's country; fall back to GB if it's
+        # missing or not a 2-letter code (IG_PROXY_LOCATION can be a city name,
+        # which would corrupt the proxy password — don't use it here).
+        country = (account.get('country') or '').strip().upper()
+        if len(country) != 2:
+            country = 'GB'
+        try:
+            jar = load_cookies(account['id'])
+        except Exception:  # noqa: BLE001
+            jar = None
+        return _open_ig_playwright(country, cookies=jar)
 
     def _sync_search_hashtag(self, tag: str, max_results: int, on_progress: ProgressCallback, filter_consumers: bool = True, operator_location: str = '') -> list[PostStub]:
         account = self._claim_or_raise()
         _emit(on_progress, 'search_start', tag=tag)
-        driver = self._open_session(account)
+        session = self._open_session(account)
+        page = session.page
         results: list[PostStub] = []
         try:
-            driver.get(f'{IG_BASE}/explore/tags/{quote_plus(tag)}/')
+            page.goto(f'{IG_BASE}/explore/tags/{quote_plus(tag)}/', wait_until='domcontentloaded')
             time.sleep(SCROLL_PAUSE)
-            if _is_checkpoint(driver):
+            _dismiss_cookie_modal(page)
+            time.sleep(1.5)
+            if _ig_is_checkpoint_pw(page):
                 _flag_checkpoint(account['id'], 'captcha-during-hashtag')
                 return results
 
             seen: set[str] = set()
             for _ in range(MAX_SCROLLS_PER_QUERY):
                 try:
-                    anchors = driver.find_elements('css selector', 'a[href*="/p/"]')
-                except Exception:
-                    anchors = []
-                for a in anchors:
-                    try:
-                        href = (a.get_attribute('href') or '').split('?')[0]
-                        if '/p/' not in href or href in seen:
-                            continue
-                        seen.add(href)
-                        # Author handle is the segment before /p/.
-                        path = href.replace(IG_BASE, '').strip('/').split('/')
-                        author_handle = path[0] if path else ''
-                        author_profile_url = f'{IG_BASE}/{author_handle}/' if author_handle else ''
-                        results.append({
-                            'platform': 'instagram',
-                            'post_url': href,
-                            'author_handle': author_handle,
-                            'author_profile_url': author_profile_url,
-                            'content_excerpt': '',  # caption requires a click; left to enrich pass
-                            'posted_at': None,
-                            'media_urls': [],
-                        })
-                        _emit(on_progress, 'post_found', url=href)
-                        if len(results) >= max_results:
-                            break
-                    except Exception:
+                    hrefs = page.eval_on_selector_all(
+                        'a[href*="/p/"], a[href*="/reel/"]',
+                        'els => els.map(e => e.getAttribute("href"))')
+                except Exception:  # noqa: BLE001
+                    hrefs = []
+                for href in hrefs or []:
+                    h = (href or '').split('?')[0]
+                    if not h:
                         continue
+                    full = h if h.startswith('http') else f'{IG_BASE}{h}'
+                    if ('/p/' not in full and '/reel/' not in full) or full in seen:
+                        continue
+                    seen.add(full)
+                    # Hashtag-grid URLs are '/p/<code>/' or '/reel/<code>/' with
+                    # no author segment — the real handle comes from the post's
+                    # og:description on the visit below.
+                    path = full.replace(IG_BASE, '').strip('/').split('/')
+                    seg0 = path[0] if path else ''
+                    author_handle = seg0 if seg0 and seg0 not in ('p', 'reel', 'reels', 'explore', 'tv', 'stories') else ''
+                    author_profile_url = f'{IG_BASE}/{author_handle}/' if author_handle else ''
+                    results.append({
+                        'platform': 'instagram',
+                        'post_url': full,
+                        'author_handle': author_handle,
+                        'author_profile_url': author_profile_url,
+                        'content_excerpt': '',  # caption pulled from og:description on the visit below
+                        'posted_at': None,
+                        'media_urls': [],
+                    })
+                    _emit(on_progress, 'post_found', url=full)
+                    if len(results) >= max_results:
+                        break
                 if len(results) >= max_results:
                     break
-                driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+                try:
+                    page.mouse.wheel(0, 5000)
+                except Exception:  # noqa: BLE001
+                    pass
                 _paced_sleep()
+
             for stub in results:
                 try:
-                    driver.get(stub['post_url'])
+                    page.goto(stub['post_url'], wait_until='domcontentloaded')
                     time.sleep(SCROLL_PAUSE)
-                    if _is_checkpoint(driver):
+                    if _ig_is_checkpoint_pw(page):
                         _flag_checkpoint(account['id'], 'captcha-during-caption')
                         break
-                    page = driver.page_source
-                    stub['content_excerpt'] = _caption_from_og(page)
-                    # Real author handle lives in og:description, NOT the
-                    # '/p/<shortcode>/' grid URL. Overwrite the placeholder.
-                    handle = _author_handle_from_og(page)
+                    html = page.content()
+                    stub['content_excerpt'] = _caption_from_og(html)
+                    # Real author handle lives in og:description, NOT the grid URL.
+                    handle = _author_handle_from_og(html)
                     if handle:
                         stub['author_handle'] = handle
                         stub['author_profile_url'] = f'{IG_BASE}/{handle}/'
                     _emit(on_progress, 'caption_captured', url=stub['post_url'])
-                    _paced_sleep()  # jittered pacing between post fetches (IG flags fixed cadences)
-                except Exception:
-                    stub['content_excerpt'] = ''
-            # Location parity with Facebook (migration 049): stamp
-            # location_confidence from caption + author handle, and DROP confident
-            # wrong-country posts. IG hashtag search is GLOBAL, so without this a
-            # #plumber search pollutes results with wrong-country leads — the exact
-            # failure FB had before the location gate. City-based + conservative:
-            # a caption that names no city stays 'unconfirmed' (kept), never a
-            # false-positive drop.
+                    _paced_sleep()  # jittered pacing between fetches (IG flags fixed cadences)
+                except Exception:  # noqa: BLE001
+                    stub['content_excerpt'] = stub.get('content_excerpt', '')
+
+            # Drop stubs with no resolvable author (og:description missing), then
+            # the location gate + consumer filter (unchanged logic). IG hashtag
+            # search is GLOBAL, so the location gate (migration 049 parity) drops
+            # confident wrong-country posts; a caption naming no city stays
+            # 'unconfirmed' (kept), never a false-positive drop.
+            results = [s for s in results if s.get('author_profile_url')]
             kept: list[PostStub] = []
             for stub in results:
                 text = f"{stub.get('content_excerpt', '')} {stub.get('author_handle', '')}"
@@ -445,8 +543,7 @@ class InstagramScraper(SocialPlatformScraper):
             _emit(on_progress, 'search_done', total=len(results))
             return results
         finally:
-            try: driver.quit()
-            except Exception: pass
+            session.close()
 
     def _sync_enrich_authors(self, post_stubs: list[PostStub], on_progress: ProgressCallback) -> list[AuthorLead]:
         account = self._claim_or_raise()
@@ -458,20 +555,22 @@ class InstagramScraper(SocialPlatformScraper):
             unique_authors.setdefault(url, []).append(stub)
         _emit(on_progress, 'enrich_start', total=len(unique_authors))
 
-        driver = self._open_session(account)
+        session = self._open_session(account)
+        page = session.page
         leads: list[AuthorLead] = []
         try:
             for i, (profile_url, posts) in enumerate(unique_authors.items(), 1):
                 try:
-                    driver.get(profile_url)
+                    page.goto(profile_url, wait_until='domcontentloaded')
                     time.sleep(SCROLL_PAUSE)
-                    if _is_checkpoint(driver):
+                    _dismiss_cookie_modal(page)
+                    if _ig_is_checkpoint_pw(page):
                         _flag_checkpoint(account['id'], 'captcha-during-enrich')
                         break
-                    raw_title = driver.title or ''
+                    raw_title = page.title() or ''
                     display_name = (raw_title.split('(')[0].split(' on ')[0].strip()
                                     or posts[0].get('author_handle') or 'Unknown')
-                    bio_link = _bio_link_from_profile(driver)
+                    bio_link = _bio_link_from_profile_pw(page)
                     leads.append({
                         'platform': 'instagram',
                         'profile_url': profile_url,
@@ -482,8 +581,7 @@ class InstagramScraper(SocialPlatformScraper):
                         'email': None,
                         'location': None,
                         # Roll up the per-post location stamp so the lead carries
-                        # the same honesty flag FB writes (migration 049). upsert
-                        # reads lead['location_confidence'].
+                        # the same honesty flag FB writes (migration 049).
                         'location_confidence': _best_location_confidence(posts),
                         'is_business_profile': True,
                         'follower_count': None,
@@ -491,7 +589,7 @@ class InstagramScraper(SocialPlatformScraper):
                         'posts': posts,
                     })
                     _emit(on_progress, 'enrich_progress', i=i, total=len(unique_authors))
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     _emit(on_progress, 'enrich_failed', url=profile_url, reason=str(exc)[:80])
                 if i % COUNTER_FLUSH_EVERY == 0:
                     _bump_counters(account['id'], COUNTER_FLUSH_EVERY, COUNTER_FLUSH_EVERY)
@@ -501,25 +599,26 @@ class InstagramScraper(SocialPlatformScraper):
             _emit(on_progress, 'enrich_done', total=len(leads))
             return leads
         finally:
-            try: driver.quit()
-            except Exception: pass
+            session.close()
 
     def _sync_enrich_pages(self, stubs: list[dict], on_progress: ProgressCallback) -> list[dict]:
         # Reuse the author-enrichment for business profiles since IG draws
         # no DOM distinction between personal and business profiles for
         # public visitors.
         account = self._claim_or_raise()
-        driver = self._open_session(account)
+        session = self._open_session(account)
+        page = session.page
         out: list[dict] = []
         try:
             for i, stub in enumerate(stubs, 1):
                 try:
-                    driver.get(stub['profile_url'])
+                    page.goto(stub['profile_url'], wait_until='domcontentloaded')
                     time.sleep(SCROLL_PAUSE)
-                    if _is_checkpoint(driver):
+                    _dismiss_cookie_modal(page)
+                    if _ig_is_checkpoint_pw(page):
                         _flag_checkpoint(account['id'], 'captcha-during-page-enrich')
                         break
-                    website = _bio_link_from_profile(driver)
+                    website = _bio_link_from_profile_pw(page)
                     enriched = dict(stub)
                     enriched.update({
                         'platform': 'instagram',
@@ -529,11 +628,10 @@ class InstagramScraper(SocialPlatformScraper):
                     })
                     out.append(enriched)
                     _emit(on_progress, 'enrich_progress', i=i, total=len(stubs))
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     _emit(on_progress, 'enrich_failed', url=stub.get('profile_url'), reason=str(exc)[:80])
             _bump_counters(account['id'], len(out), len(out))
             _emit(on_progress, 'enrich_done', total=len(out))
             return out
         finally:
-            try: driver.quit()
-            except Exception: pass
+            session.close()
