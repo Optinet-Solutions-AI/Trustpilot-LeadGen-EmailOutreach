@@ -5,7 +5,7 @@ import { Search } from 'lucide-react';
 import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams, InstagramScrapeParams } from '../types/scrape';
 import api from '../api/client';
 import CountryPicker from './CountryPicker';
-import LocationPicker from './LocationPicker';
+import LocationPicker, { citiesForCountry } from './LocationPicker';
 import NichePicker from './NichePicker';
 import ComboWarning from './ComboWarning';
 import CategoryPicker from './CategoryPicker';
@@ -213,6 +213,15 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [igQuery, setIgQuery] = useState('');
   const [igLocation, setIgLocation] = useState('London');
   const [igCountry, setIgCountry] = useState('GB');
+
+  // Keep the IG location in step with the chosen country: when the country
+  // changes, default the city to that country's primary curated city (or blank
+  // if it has none). The operator can still pick another city in that country
+  // or type a custom one — this only prevents a stale cross-country mismatch
+  // (e.g. Austria + London).
+  useEffect(() => {
+    setIgLocation(citiesForCountry(igCountry)[0] ?? '');
+  }, [igCountry]);
 
   // Shared flags
   const [enrich, setEnrich] = useState(false);
@@ -688,6 +697,7 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 value={igLocation}
                 onChange={setIgLocation}
                 disabled={busy}
+                country={igCountry}
                 allowCustom
               />
             </div>

@@ -208,6 +208,13 @@ export function findCityLanguage(city: string): string | undefined {
   return LOCATION_CITIES.find((c) => c.city === city)?.language;
 }
 
+/** City names curated for a given ISO country code, in list order. Empty if
+ *  the country has no seeded cities. Used to keep a location field in step
+ *  with a country picker (e.g. the Instagram scrape form). */
+export function citiesForCountry(country: string): string[] {
+  return LOCATION_CITIES.filter((c) => c.country === country).map((c) => c.city);
+}
+
 function flagEmoji(code: string): string {
   if (!/^[A-Za-z]{2}$/.test(code)) return '';
   const A = 0x1f1e6;
@@ -228,30 +235,39 @@ interface Props {
    * hashtag search is global and any city is valid.
    */
   allowCustom?: boolean;
+  /**
+   * Scope the city list to a single ISO country code so the dropdown reflects
+   * the chosen country (e.g. AT -> only Vienna/Salzburg/Graz) instead of the
+   * whole Europe+US list. Undefined shows every city (the Facebook default).
+   */
+  country?: string;
 }
 
-export default function LocationPicker({ value, onChange, disabled, id, allowCustom }: Props) {
-  const options = useMemo<ComboboxOption[]>(
-    () =>
-      LOCATION_CITIES.map(({ city, country }) => ({
-        value: city,
-        label: city,
-        // Country code + flag emoji aren't directly searchable in the label,
-        // so feed them into searchText. "GB" or "Germany" still finds the
-        // right cities.
-        searchText: `${country} ${flagEmoji(country)}`,
-      })),
-    [],
-  );
+export default function LocationPicker({ value, onChange, disabled, id, allowCustom, country }: Props) {
+  const options = useMemo<ComboboxOption[]>(() => {
+    const src = country ? LOCATION_CITIES.filter((c) => c.country === country) : LOCATION_CITIES;
+    return src.map(({ city, country: cc }) => ({
+      value: city,
+      label: city,
+      // Country code + flag emoji aren't directly searchable in the label,
+      // so feed them into searchText. "GB" or "Germany" still finds the
+      // right cities.
+      searchText: `${cc} ${flagEmoji(cc)}`,
+    }));
+  }, [country]);
 
+  // Resolve the flag for the shown value: a listed city carries its own
+  // country; a custom typed city falls back to the scoping `country` prop.
   const selectedCountry = useMemo(
-    () => LOCATION_CITIES.find((c) => c.city === value)?.country ?? '',
-    [value],
+    () => LOCATION_CITIES.find((c) => c.city === value)?.country ?? country ?? '',
+    [value, country],
   );
 
   const pickedLanguage = useMemo(
-    () => LOCATION_CITIES.find((c) => c.city === value)?.language,
-    [value],
+    () =>
+      LOCATION_CITIES.find((c) => c.city === value)?.language ??
+      (country ? NON_ENGLISH_LANGUAGES[country] : undefined),
+    [value, country],
   );
 
   return (
