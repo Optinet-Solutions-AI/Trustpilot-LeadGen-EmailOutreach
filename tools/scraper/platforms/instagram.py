@@ -352,6 +352,10 @@ class InstagramScraper(SocialPlatformScraper):
                 'name': s.get('author_handle') or author_url.rstrip('/').split('/')[-1] or 'Unknown',
                 'rating': None,
                 'category': query,  # store hashtag/niche for the Lead Matrix
+                # Requested country, carried to enrich so a location-confirmed
+                # lead can be stamped with it (FB parity). Left off the lead
+                # row when the post's location can't be confirmed.
+                'target_country': (filters.get('country') or '').strip().upper() or None,
             })
         _emit(on_progress, 'category_done', count=len(reshaped))
         return reshaped
@@ -571,6 +575,19 @@ class InstagramScraper(SocialPlatformScraper):
                     display_name = (raw_title.split('(')[0].split(' on ')[0].strip()
                                     or posts[0].get('author_handle') or 'Unknown')
                     bio_link = _bio_link_from_profile_pw(page)
+                    # Roll up the per-post location stamp (migration 049) and,
+                    # only when the post's location is actually confirmed to be
+                    # in the requested country, stamp that country on the lead —
+                    # otherwise leave it NULL (IG hashtag results are global, so
+                    # an unconfirmed author's country is genuinely unknown). This
+                    # matches FacebookScraper, which writes a country for
+                    # confirmed leads and NULL for the rest.
+                    conf = _best_location_confidence(posts)
+                    lead_country = (
+                        posts[0].get('target_country')
+                        if conf in ('confirmed_city', 'same_country')
+                        else None
+                    )
                     leads.append({
                         'platform': 'instagram',
                         'profile_url': profile_url,
@@ -580,9 +597,11 @@ class InstagramScraper(SocialPlatformScraper):
                         'website_url': bio_link,
                         'email': None,
                         'location': None,
-                        # Roll up the per-post location stamp so the lead carries
-                        # the same honesty flag FB writes (migration 049).
-                        'location_confidence': _best_location_confidence(posts),
+                        'location_confidence': conf,
+                        # Niche hashtag + confirmed country, so the Lead Matrix
+                        # shows them and per-platform filtering works (FB parity).
+                        'category': posts[0].get('category'),
+                        'country': lead_country,
                         'is_business_profile': True,
                         'follower_count': None,
                         'bio_excerpt': None,
