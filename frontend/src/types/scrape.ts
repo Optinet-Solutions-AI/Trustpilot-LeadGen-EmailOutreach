@@ -68,7 +68,23 @@ export interface FacebookScrapeParams {
   forceRescrape: boolean;
 }
 
-export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams | FacebookScrapeParams;
+export interface InstagramScrapeParams {
+  platform: 'instagram';
+  // businesses = SMBs advertising under the hashtag (pitch targets);
+  // consumers  = intent-filtered asks under the hashtag.
+  lead_type: 'businesses' | 'consumers';
+  query: string;          // niche hashtag, without the leading '#'
+  // Optional city. IG hashtag search is global, so this isn't a search
+  // filter — it stamps location_confidence and drops confident wrong-country
+  // posts. Falls back to `country` when blank.
+  location?: string;
+  country?: string;       // outreach country (also the proxy exit country)
+  enrich: boolean;
+  verify: boolean;
+  forceRescrape: boolean;
+}
+
+export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams | FacebookScrapeParams | InstagramScrapeParams;
 
 export interface ScrapeJob {
   id: string;

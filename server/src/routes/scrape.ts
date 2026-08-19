@@ -176,6 +176,11 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
           { value: 'consumers',  label: 'Consumers asking under a hashtag (intent-filtered)' },
         ] },
       { name: 'query',    type: 'text', label: 'Niche hashtag (without #)', required: true },
+      // Optional city — IG hashtag search is global, so this stamps location
+      // and drops confident wrong-country posts (FB parity). Falls back to
+      // country when blank.
+      { name: 'location', type: 'text',   label: 'Location / city (optional)', required: false },
+      { name: 'country',  type: 'select', label: 'Country', options_source: 'taxonomy:countries' },
     ],
   },
 ];

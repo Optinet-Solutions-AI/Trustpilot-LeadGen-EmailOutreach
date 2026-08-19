@@ -35,6 +35,8 @@ const PLATFORM_BADGE: Record<string, { label: string; bg: string; fg: string }> 
   trustpilot:   { label: 'Trustpilot',   bg: 'bg-emerald-50',  fg: 'text-emerald-700' },
   tripadvisor:  { label: 'TripAdvisor',  bg: 'bg-teal-50',     fg: 'text-teal-700' },
   yelp:         { label: 'Yelp',         bg: 'bg-rose-50',     fg: 'text-rose-700' },
+  facebook:     { label: 'Facebook',     bg: 'bg-blue-50',     fg: 'text-blue-700' },
+  instagram:    { label: 'Instagram',    bg: 'bg-fuchsia-50',  fg: 'text-fuchsia-700' },
 };
 
 const PLATFORM_FILTERS: Array<{ value: string | null; label: string }> = [
@@ -42,6 +44,8 @@ const PLATFORM_FILTERS: Array<{ value: string | null; label: string }> = [
   { value: 'trustpilot',   label: 'Trustpilot' },
   { value: 'tripadvisor',  label: 'TripAdvisor' },
   { value: 'yelp',         label: 'Yelp' },
+  { value: 'facebook',     label: 'Facebook' },
+  { value: 'instagram',    label: 'Instagram' },
 ];
 
 export default function Scrape() {
@@ -370,6 +374,7 @@ export default function Scrape() {
                     category?: string;
                     niche?: string;
                     location?: string;
+                    query?: string;
                     lead_type?: 'consumers' | 'businesses';
                   } | null;
                   let displayPrimary: string;
@@ -384,6 +389,14 @@ export default function Scrape() {
                       displayPrimary = f?.category || '—';
                       displaySecondary = f?.country || '—';
                     }
+                    displayRating = null;
+                  } else if (platKey === 'instagram') {
+                    // IG has no rating and no category — the target is the
+                    // hashtag (filters.query); geo is the optional city or
+                    // the outreach country.
+                    const tag = (f?.query || f?.category || '').replace(/^#+/, '');
+                    displayPrimary = tag ? `#${tag}` : '—';
+                    displaySecondary = f?.location || f?.country || '—';
                     displayRating = null;
                   } else {
                     displayPrimary =

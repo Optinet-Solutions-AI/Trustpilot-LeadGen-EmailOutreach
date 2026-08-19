@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
-import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams } from '../types/scrape';
+import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams, InstagramScrapeParams } from '../types/scrape';
 import api from '../api/client';
 import CountryPicker from './CountryPicker';
 import LocationPicker from './LocationPicker';
@@ -128,7 +128,7 @@ const LISTING_TYPE_OPTIONS = [
   { value: 'attractions', label: 'Attractions' },
 ];
 
-type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp' | 'facebook';
+type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp' | 'facebook' | 'instagram';
 
 export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [platform, setPlatform] = useState<SupportedPlatform>('trustpilot');
@@ -204,6 +204,16 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
     return () => { cancelled = true; };
   }, [platform, fbActiveCountries]);
 
+  // Instagram fields — hashtag-driven; IG has no groups. lead_type mirrors
+  // FB: businesses (SMBs advertising under the tag — the default pitch target)
+  // vs consumers (intent-filtered asks). location is optional: IG tag search is
+  // global, so it stamps geo + drops confident wrong-country posts rather than
+  // filtering the search. country also pins the residential proxy exit.
+  const [igLeadType, setIgLeadType] = useState<'businesses' | 'consumers'>('businesses');
+  const [igQuery, setIgQuery] = useState('');
+  const [igLocation, setIgLocation] = useState('London');
+  const [igCountry, setIgCountry] = useState('GB');
+
   // Shared flags
   const [enrich, setEnrich] = useState(false);
   const [verify, setVerify] = useState(false);
@@ -276,6 +286,21 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         verify,
         forceRescrape,
       } satisfies FacebookGroupScrapeParams;
+    } else if (platform === 'instagram') {
+      // Flat shape (like Facebook): posted as-is via ScrapeContext's `else`
+      // branch; the server merges these top-level fields into filters. Strip a
+      // stray leading '#' so the Python plugin's _normalize_hashtag gets a bare
+      // tag. location is optional; blank means "use country for the geo stamp".
+      params = {
+        platform: 'instagram',
+        lead_type: igLeadType,
+        query: igQuery.trim().replace(/^#+/, ''),
+        location: igLocation.trim() || undefined,
+        country: igCountry,
+        enrich,
+        verify,
+        forceRescrape,
+      } satisfies InstagramScrapeParams;
     } else {
       params = {
         country,
@@ -588,6 +613,93 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
             <div className="sm:col-span-2 lg:col-span-3">
               <p className="text-[11px] text-amber-700 dark:text-amber-400">
                 Requires at least one connected Facebook account. Manage in <a href="/social-accounts" className="underline">Social Accounts</a>.
+              </p>
+            </div>
+          </>
+        )}
+
+        {platform === 'instagram' && (
+          <>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="block text-sm font-medium text-on-surface mb-1.5">
+                Lead type
+              </label>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="ig-lead-type"
+                    value="businesses"
+                    checked={igLeadType === 'businesses'}
+                    onChange={() => setIgLeadType('businesses')}
+                    disabled={busy}
+                  />
+                  Businesses advertising under a hashtag (SMBs to pitch)
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="ig-lead-type"
+                    value="consumers"
+                    checked={igLeadType === 'consumers'}
+                    onChange={() => setIgLeadType('consumers')}
+                    disabled={busy}
+                  />
+                  Consumers asking under a hashtag (intent-filtered)
+                </label>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ig-query">
+                Niche hashtag <span className="text-on-surface-variant font-normal">(without #)</span>
+              </label>
+              <input
+                id="ig-query"
+                type="text"
+                placeholder="plumber, roofer, dentist, …"
+                value={igQuery}
+                onChange={(e) => setIgQuery(e.target.value)}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ig-country">
+                Country
+              </label>
+              <CountryPicker
+                id="ig-country"
+                value={igCountry}
+                onChange={setIgCountry}
+                disabled={busy}
+                restrict={OUTREACH_COUNTRY_CODES}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ig-location">
+                Location / city <span className="text-on-surface-variant font-normal">(optional)</span>
+              </label>
+              <input
+                id="ig-location"
+                type="text"
+                placeholder="London"
+                value={igLocation}
+                onChange={(e) => setIgLocation(e.target.value)}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+            </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <p className="text-[11px] text-on-surface-variant">
+                Scrapes the public <strong>#{igQuery.trim().replace(/^#+/, '') || 'hashtag'}</strong> feed
+                {' '}(no login needed for discovery). Instagram tag search is global, so the country and
+                optional city don&apos;t narrow the search — they tag each lead and drop posts confidently
+                in the wrong country. {igLeadType === 'consumers'
+                  ? 'Only real consumer asks survive the Gemini intent filter.'
+                  : 'Keeps every posting account under the tag — under a niche hashtag those are the advertising SMBs to pitch.'}
+              </p>
+              <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                Requires at least one connected Instagram account. Manage in <a href="/social-accounts" className="underline">Social Accounts</a>.
               </p>
             </div>
           </>
