@@ -80,11 +80,20 @@ export default function Scrape() {
       niche?: string;
       location?: string;
     } | null;
-    const realCountry =
-      job.country && !job.country.startsWith('_') ? job.country
+    // Instagram leads are global: the scraper stamps neither country nor
+    // category on the lead row (both are NULL — IG hashtag search spans every
+    // country and the requested country is only a soft location hint). Passing
+    // the requested country here would run `country ILIKE '%GB%'` against NULL
+    // rows and hide every lead, which is exactly the "20 scraped but the row
+    // opens empty" bug. So for Instagram, narrow by platform only.
+    const isGlobalSocial = platform === 'instagram';
+    const realCountry = isGlobalSocial
+      ? undefined
+      : job.country && !job.country.startsWith('_') ? job.country
       : f?.country ?? f?.location;
-    const realCategory =
-      job.category && job.category !== 'all' ? job.category
+    const realCategory = isGlobalSocial
+      ? undefined
+      : job.category && job.category !== 'all' ? job.category
       : f?.category ?? f?.niche;
     if (realCountry) params.set('country', realCountry);
     if (realCategory) params.set('category', realCategory);
