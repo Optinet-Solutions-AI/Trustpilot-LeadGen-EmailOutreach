@@ -639,8 +639,17 @@ class InstagramScraper(SocialPlatformScraper):
                         _flag_checkpoint(account['id'], 'captcha-during-enrich')
                         break
                     raw_title = page.title() or ''
-                    display_name = (raw_title.split('(')[0].split(' on ')[0].strip()
-                                    or posts[0].get('author_handle') or 'Unknown')
+                    parsed = raw_title.split('(')[0].split(' on ')[0].strip()
+                    # Desktop IG (the AdsPower path) frequently leaves the page
+                    # title as the bare word "Instagram" — that is not a name.
+                    # Reject generic/empty titles and fall back to the @handle
+                    # captured during search, then the profile-URL slug, so the
+                    # lead's company_name is the account, never "Instagram".
+                    if parsed.lower() in ('', 'instagram'):
+                        parsed = ''
+                    handle = posts[0].get('author_handle') or ''
+                    display_name = (parsed or handle
+                                    or profile_url.rstrip('/').split('/')[-1] or 'Unknown')
                     bio_link = _bio_link_from_profile_pw(page)
                     # Roll up the per-post location stamp (migration 049) and,
                     # only when the post's location is actually confirmed to be
