@@ -128,14 +128,35 @@ def _bio_link_from_profile(driver) -> Optional[str]:
 
 class _IGSession:
     """Holds a Playwright browser session. `.page` is the Selenium-driver
-    equivalent the scraper methods drive. `.close()` tears the whole stack down."""
-    def __init__(self, pw, browser, context, page):
+    equivalent the scraper methods drive. `.close()` tears the whole stack down.
+
+    Two flavours: a standalone Playwright launch (we own the Chromium and close
+    everything), or a CDP attach to an AdsPower profile (AdsPower owns the
+    Chrome — we only disconnect Playwright and ask AdsPower to stop the
+    profile, and must NOT close its persistent context)."""
+    def __init__(self, pw, browser, context, page, adspower_profile_id=None):
         self._pw = pw
         self._browser = browser
         self._context = context
         self.page = page
+        self._adspower_profile_id = adspower_profile_id
 
     def close(self) -> None:
+        if self._adspower_profile_id:
+            # AdsPower owns the browser process — let it tear the profile down
+            # (which drops the CDP connection), then stop the Playwright driver.
+            # Closing the persistent context/browser ourselves risks killing
+            # AdsPower's window out from under it.
+            try:
+                from tools.scraper.shared import adspower
+                adspower.stop_profile(self._adspower_profile_id)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._pw.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            return
         for fn in (self._context.close, self._browser.close, self._pw.stop):
             try:
                 fn()
@@ -188,6 +209,40 @@ def _open_ig_playwright(country: str, cookies=None) -> _IGSession:
     page = context.new_page()
     page.set_default_timeout(45000)
     return _IGSession(pw, browser, context, page)
+
+
+def _open_ig_adspower(profile_id: str) -> _IGSession:
+    """Attach Playwright to an AdsPower profile's Chrome over CDP. AdsPower
+    supplies the fingerprint, the residential proxy, and the persisted login
+    cookies — so no proxy dict, no mobile emulation, and no DB cookie injection
+    here (unlike _open_ig_playwright). Used when the account row carries an
+    adspower_profile_id; _open_session falls back to _open_ig_playwright if this
+    raises. The profile is a desktop fingerprint, so pages render as desktop IG
+    (extraction reads UA-agnostic og: tags, but this is the path to smoke-test).
+    """
+    from tools.scraper.shared import adspower
+    from playwright.sync_api import sync_playwright
+    info = adspower.start_profile(profile_id)
+    debugger_address = (info or {}).get('debugger_address', '').strip()
+    if not debugger_address:
+        raise RuntimeError(f'AdsPower profile {profile_id} started without a CDP debug address')
+    pw = sync_playwright().start()
+    try:
+        browser = pw.chromium.connect_over_cdp(f'http://{debugger_address}')
+    except Exception:
+        try:
+            pw.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    # A CDP-attached browser exposes AdsPower's existing persistent context;
+    # new_context() isn't supported on connect_over_cdp, so reuse contexts[0].
+    context = browser.contexts[0] if browser.contexts else None
+    if context is None:
+        raise RuntimeError(f'AdsPower profile {profile_id} exposed no browser context over CDP')
+    page = context.new_page()
+    page.set_default_timeout(45000)
+    return _IGSession(pw, browser, context, page, adspower_profile_id=profile_id)
 
 
 def _dismiss_cookie_modal(page) -> None:
@@ -428,11 +483,23 @@ class InstagramScraper(SocialPlatformScraper):
         return account
 
     def _open_session(self, account: dict) -> '_IGSession':
-        """Open a mobile Playwright session through the account's country
-        residential proxy (native proxy auth — works on Windows, unlike the
-        selenium-wire uc_driver path). Public tag pages need no login; if the
-        account carries a stored cookie jar we seed it as a best-effort
-        logged-in second layer for deeper content."""
+        """Open a browser session for this account.
+
+        Preferred: attach to the account's AdsPower profile over CDP (isolated
+        fingerprint + residential proxy + persisted login — same stack as the
+        Facebook fleet). Fallback: a standalone mobile Playwright launch through
+        the country residential proxy (native proxy auth — works on Windows,
+        unlike the selenium-wire uc_driver path), seeding any stored cookie jar
+        as a best-effort logged-in layer. The fallback keeps scraping working
+        for accounts with no AdsPower profile or when AdsPower is unreachable."""
+        profile_id = (account.get('adspower_profile_id') or '').strip()
+        if profile_id:
+            try:
+                return _open_ig_adspower(profile_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f'WARN: AdsPower profile {profile_id} failed to open '
+                      f'({str(exc)[:120]}); falling back to standalone Playwright.',
+                      file=sys.stderr)
         # The residential proxy is pinned by 2-letter country code (see
         # _proxy_for_country). Use the account's country; fall back to GB if it's
         # missing or not a 2-letter code (IG_PROXY_LOCATION can be a city name,
