@@ -679,14 +679,16 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="ig-location">
                 Location / city <span className="text-on-surface-variant font-normal">(optional)</span>
               </label>
-              <input
+              {/* Searchable city dropdown that also accepts a typed-in city
+                  (allowCustom): IG hashtag search is global, so any city is
+                  valid — pick one for the flag/language hint, or type your own
+                  and press Enter. */}
+              <LocationPicker
                 id="ig-location"
-                type="text"
-                placeholder="London"
                 value={igLocation}
-                onChange={(e) => setIgLocation(e.target.value)}
+                onChange={setIgLocation}
                 disabled={busy}
-                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                allowCustom
               />
             </div>
             <div className="sm:col-span-2 lg:col-span-3">

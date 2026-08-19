@@ -221,9 +221,16 @@ interface Props {
   onChange: (city: string) => void;
   disabled?: boolean;
   id?: string;
+  /**
+   * When true, the operator can type a city that isn't in the curated list
+   * and commit it with Enter (passed straight to Combobox). Off by default so
+   * the Facebook form stays selection-only; Instagram opts in because IG
+   * hashtag search is global and any city is valid.
+   */
+  allowCustom?: boolean;
 }
 
-export default function LocationPicker({ value, onChange, disabled, id }: Props) {
+export default function LocationPicker({ value, onChange, disabled, id, allowCustom }: Props) {
   const options = useMemo<ComboboxOption[]>(
     () =>
       LOCATION_CITIES.map(({ city, country }) => ({
@@ -255,8 +262,9 @@ export default function LocationPicker({ value, onChange, disabled, id }: Props)
         onChange={onChange}
         options={options}
         placeholder="Pick a city"
-        searchPlaceholder="Search cities…"
+        searchPlaceholder={allowCustom ? 'Search or type a city…' : 'Search cities…'}
         disabled={disabled}
+        allowCustom={allowCustom}
         renderValue={(opt) => (
           <span className="flex items-center gap-2 truncate">
             <span aria-hidden className="text-base leading-none">
