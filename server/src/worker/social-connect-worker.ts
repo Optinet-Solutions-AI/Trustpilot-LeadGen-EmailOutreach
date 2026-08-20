@@ -43,6 +43,12 @@ const PROFILES_ROOT = process.env.FB_PROFILES_ROOT ?? 'C:\\fb-profiles';
  */
 const BROWSE_STREAM = (process.env.BROWSE_STREAM ?? 'novnc') as 'novnc' | 'cdp';
 
+// Platforms whose connect/browse requests this worker claims. The fleet box
+// owns both Facebook and Instagram (each account has its own AdsPower profile),
+// so it must poll for both — polling 'facebook' only left Instagram browse
+// requests stuck at connect_status='requested' forever.
+const SOCIAL_CONNECT_PLATFORMS = ['facebook', 'instagram'];
+
 // Locate the PowerShell spawn script. The Node process's cwd depends on
 // where NSSM/npm started it (typically server/ on Windows EC2, repo root
 // on dev machines). The script lives at <repo>/scripts/ regardless. Probe
@@ -844,11 +850,11 @@ async function handleOnboardRequest(row: ConnectRequestRow): Promise<void> {
   });
 }
 
-async function pollOnce(platform: string): Promise<void> {
+async function pollOnce(platforms: string | string[]): Promise<void> {
   if (busy) return;
   busy = true;
   try {
-    const row = await claimPendingConnectRequest(platform);
+    const row = await claimPendingConnectRequest(platforms);
     if (!row) return;
     if (row.connect_mode === 'onboard') {
       await handleOnboardRequest(row);
@@ -876,7 +882,7 @@ async function sweepStuckProvisioning(): Promise<void> {
       connect_status: 'failed',
       connect_error: 'worker restarted mid-session',
     })
-    .eq('platform', 'facebook')
+    .in('platform', SOCIAL_CONNECT_PLATFORMS)
     .eq('connect_status', 'provisioning')
     .lt('connect_expires_at', new Date().toISOString());
   if (error) {
@@ -895,9 +901,9 @@ export function startSocialConnectWorker(): void {
   // Sweep any provisioning rows that survived a previous crash before we enter
   // the poll loop.
   void sweepStuckProvisioning();
-  const timer = setInterval(() => { void pollOnce('facebook'); }, POLL_INTERVAL_MS);
+  const timer = setInterval(() => { void pollOnce(SOCIAL_CONNECT_PLATFORMS); }, POLL_INTERVAL_MS);
   // First tick immediately.
-  void pollOnce('facebook');
+  void pollOnce(SOCIAL_CONNECT_PLATFORMS);
   process.on('SIGTERM', () => { clearInterval(timer); });
   process.on('SIGINT', () => { clearInterval(timer); });
 }

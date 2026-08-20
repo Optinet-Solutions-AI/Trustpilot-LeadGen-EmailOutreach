@@ -95,15 +95,20 @@ export async function getConnectRequestStatus(accountId: string): Promise<Connec
   return data as ConnectStatusView;
 }
 
-// Worker-side: pick the oldest 'requested' row for this platform, atomically
-// transition it to 'provisioning' to prevent double-claim. Returns null when
-// no pending requests exist.
-export async function claimPendingConnectRequest(platform: string): Promise<ConnectRequestRow | null> {
+// Worker-side: pick the oldest 'requested' row across the given platform(s),
+// atomically transition it to 'provisioning' to prevent double-claim. Returns
+// null when no pending requests exist. Accepts a single platform or a list —
+// the fleet box owns both Facebook and Instagram (each with its own AdsPower
+// profile), so it polls for both; a single string keeps older callers working.
+export async function claimPendingConnectRequest(
+  platform: string | string[],
+): Promise<ConnectRequestRow | null> {
   const sb = getSupabase();
+  const platforms = Array.isArray(platform) ? platform : [platform];
   const { data: candidates, error: selectErr } = await sb
     .from('social_accounts')
     .select('id, connect_session_id, connect_status, connect_tunnel_url, connect_started_at, connect_expires_at, connect_error, connect_mode, connect_target_url')
-    .eq('platform', platform)
+    .in('platform', platforms)
     .eq('connect_status', 'requested')
     .order('connect_started_at', { ascending: true })
     .limit(1);

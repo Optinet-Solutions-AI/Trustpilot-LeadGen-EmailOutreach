@@ -46,8 +46,10 @@ function mockSupabaseForClaim(opts: {
   candidates?: any[];
   claimResult?: { data: any; error: any };
 }) {
+  // SELECT path is now `.in('platform', [...]).eq('connect_status','requested')
+  // .order().limit()` — the worker claims across multiple platforms.
   const selectChain = {
-    eq: vi.fn().mockReturnValue({
+    in: vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue({
         order: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue({
