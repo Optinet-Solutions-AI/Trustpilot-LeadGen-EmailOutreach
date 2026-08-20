@@ -47,7 +47,10 @@ describe('resolveLeadAccount', () => {
 
     const res = await resolveLeadAccount('lead-2');
 
-    expect(mockResolvePool).toHaveBeenCalledWith('GB');
+    // Now called with explicit opts that equal the old defaults (platform
+    // facebook, country strictly required) — FB behaviour is unchanged; the
+    // args are just explicit so Instagram can pass platform/requireCountry.
+    expect(mockResolvePool).toHaveBeenCalledWith('GB', { platform: 'facebook', requireCountry: true });
     expect(res).toEqual({ account_id: 'pooled', country: 'GB' });
   });
 
@@ -60,6 +63,22 @@ describe('resolveLeadAccount', () => {
 
     expect(res).toBeNull();
     expect(mockResolvePool).not.toHaveBeenCalled();
+  });
+
+  test('instagram: delegates the country fallback even when the lead has NO country (global)', async () => {
+    mockSupabase.from
+      // 1) presence lookup (platform=instagram) → no bound account
+      .mockReturnValueOnce(chain({ data: [], error: null }))
+      // 2) leads.country lookup → null (IG hashtag leads are usually country-less)
+      .mockReturnValueOnce(chain({ data: { country: null }, error: null }));
+    mockResolvePool.mockResolvedValue({ account_id: 'ig-pool', country: 'GB' });
+
+    const res = await resolveLeadAccount('lead-ig', 'instagram');
+
+    // Unlike Facebook (which returns null on a null country), Instagram still
+    // delegates with requireCountry:false so a global lead resolves the IG account.
+    expect(mockResolvePool).toHaveBeenCalledWith(null, { platform: 'instagram', requireCountry: false });
+    expect(res).toEqual({ account_id: 'ig-pool', country: 'GB' });
   });
 });
 
@@ -154,6 +173,29 @@ describe('validateAccountForLead', () => {
       .mockReturnValueOnce(chain({ data: { id: 'acct-1', country: 'GB', status: 'active', platform: 'facebook' }, error: null }));
 
     const res = await validateAccountForLead('acct-1', 'lead-1');
+
+    expect(res.ok).toBe(false);
+  });
+
+  test('instagram: accepts an active IG account regardless of country', async () => {
+    mockSupabase.from
+      // lead has no country (global IG lead) ...
+      .mockReturnValueOnce(chain({ data: { country: null }, error: null }))
+      // ... and the chosen account is an active IG account in GB
+      .mockReturnValueOnce(chain({ data: { id: 'ig-1', country: 'GB', status: 'active', platform: 'instagram' }, error: null }));
+
+    const res = await validateAccountForLead('ig-1', 'lead-ig', 'instagram');
+
+    // No country gate for Instagram — an active IG account is valid.
+    expect(res).toEqual({ ok: true, account_id: 'ig-1', country: 'GB' });
+  });
+
+  test('instagram: still rejects a non-instagram or inactive account', async () => {
+    mockSupabase.from
+      .mockReturnValueOnce(chain({ data: { country: null }, error: null }))
+      .mockReturnValueOnce(chain({ data: { id: 'fb-1', country: 'GB', status: 'active', platform: 'facebook' }, error: null }));
+
+    const res = await validateAccountForLead('fb-1', 'lead-ig', 'instagram');
 
     expect(res.ok).toBe(false);
   });

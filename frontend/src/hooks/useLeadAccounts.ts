@@ -36,11 +36,12 @@ export function useLeadAccounts() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAccounts = useCallback(async (leadId: string): Promise<LeadAccountsResult> => {
+  const fetchAccounts = useCallback(async (leadId: string, platform?: string): Promise<LeadAccountsResult> => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get(`/leads/${leadId}/accounts`);
+      const qs = platform ? `?platform=${encodeURIComponent(platform)}` : '';
+      const res = await api.get(`/leads/${leadId}/accounts${qs}`);
       return res.data.data as LeadAccountsResult;
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })

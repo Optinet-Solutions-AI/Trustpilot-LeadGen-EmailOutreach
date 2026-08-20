@@ -527,7 +527,13 @@ router.post('/:id/open-local', (req: Request, res: Response) => {
 // credential fields (encrypted_cookies etc.) are ever selected/returned.
 router.get('/:id/accounts', async (req: Request, res: Response) => {
   try {
-    const data = await listActiveAccountsForLead(param(req.params.id));
+    // Platform of the lead's social presence (facebook default for back-compat).
+    // Instagram leads resolve IG accounts; the country gate is relaxed for them
+    // inside listActiveAccountsForLead.
+    const platform = typeof req.query.platform === 'string' && req.query.platform.trim()
+      ? (req.query.platform as string).toLowerCase()
+      : 'facebook';
+    const data = await listActiveAccountsForLead(param(req.params.id), platform);
     res.json({ success: true, data });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -540,22 +546,27 @@ router.get('/:id/accounts', async (req: Request, res: Response) => {
 // country) and enqueue a browse session pointed at the lead's post URL.
 router.post('/:id/browse', async (req: Request, res: Response) => {
   try {
-    const { targetUrl, requestedBy, accountId } = req.body as {
+    const { targetUrl, requestedBy, accountId, platform: platformRaw } = req.body as {
       targetUrl?: string | null;
       requestedBy?: string;
       accountId?: string;
+      platform?: string;
     };
     if (!requestedBy) {
       res.status(400).json({ success: false, error: 'requestedBy is required' });
       return;
     }
+    // Platform of the lead's social presence (facebook default for back-compat).
+    const platform = typeof platformRaw === 'string' && platformRaw.trim()
+      ? platformRaw.toLowerCase()
+      : 'facebook';
 
     const leadId = param(req.params.id);
     let resolved: { account_id: string; country: string | null } | null;
     let wasChosen = false;
 
     if (accountId) {
-      const validated = await validateAccountForLead(accountId, leadId);
+      const validated = await validateAccountForLead(accountId, leadId, platform);
       if (!validated.ok) {
         res.status(400).json({ success: false, error: validated.reason });
         return;
@@ -563,7 +574,7 @@ router.post('/:id/browse', async (req: Request, res: Response) => {
       resolved = { account_id: validated.account_id, country: validated.country };
       wasChosen = true;
     } else {
-      resolved = await resolveLeadAccount(leadId);
+      resolved = await resolveLeadAccount(leadId, platform);
     }
 
     if (!resolved) {
@@ -576,7 +587,7 @@ router.post('/:id/browse', async (req: Request, res: Response) => {
       const country = (leadRow as { country?: string | null } | null)?.country ?? 'unknown';
       res.status(409).json({
         success: false,
-        error: `No active Facebook account pinned to this lead's country (${country})`,
+        error: `No active ${platform} account available for this lead${platform === 'facebook' ? ` (country ${country})` : ''}`,
       });
       return;
     }

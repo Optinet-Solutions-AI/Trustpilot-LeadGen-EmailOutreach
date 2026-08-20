@@ -141,7 +141,7 @@ export function useBrowseSession() {
   // resolution logic, unchanged from before this was added.
   const startForLead = useCallback(async (
     leadId: string,
-    opts: { targetUrl?: string | null; requestedBy: string; accountId?: string },
+    opts: { targetUrl?: string | null; requestedBy: string; accountId?: string; platform?: string },
   ): Promise<void> => {
     // Cancel any existing poll before starting a new one.
     if (intervalRef.current !== null) {
@@ -161,6 +161,7 @@ export function useBrowseSession() {
         targetUrl: opts.targetUrl ?? null,
         requestedBy: opts.requestedBy,
         ...(opts.accountId ? { accountId: opts.accountId } : {}),
+        ...(opts.platform ? { platform: opts.platform } : {}),
       });
       accountId = (res.data.data as { account_id: string }).account_id;
     } catch (err) {

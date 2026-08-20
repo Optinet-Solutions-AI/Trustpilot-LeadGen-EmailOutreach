@@ -51,27 +51,45 @@ export function effectiveCommentCap(
 }
 
 export async function resolvePoolAccountForCountry(
-  country: string,
-  opts: { excludeBusy?: boolean } = {},
+  country: string | null,
+  opts: { excludeBusy?: boolean; platform?: string; requireCountry?: boolean } = {},
 ): Promise<ResolvedAccount | null> {
   const excludeBusy = opts.excludeBusy ?? true;
+  const platform = opts.platform ?? 'facebook';
+  // Facebook pins strictly by country (a country-keyed pool, never
+  // cross-country). Instagram (and any future global platform) has a single /
+  // global account and leads are often country-less — so it resolves an active
+  // account with the country as a soft *preference* rather than a hard gate.
+  const requireCountry = opts.requireCountry ?? true;
 
-  const { data, error } = await getSupabase()
+  if (requireCountry && !country) return null;
+
+  let query = getSupabase()
     .from('social_accounts')
     .select('id, country, comment_used_today, connect_status')
-    .eq('platform', 'facebook')
-    .eq('status', 'active')
-    .eq('country', country)
-    .order('comment_used_today', { ascending: true });
+    .eq('platform', platform)
+    .eq('status', 'active');
+  if (requireCountry) {
+    query = query.eq('country', country as string);
+  }
+  const { data, error } = await query.order('comment_used_today', { ascending: true });
 
   if (error) {
     throw new Error(`resolvePoolAccountForCountry lookup: ${(error as { message: string }).message}`);
   }
 
   const candidates = (data ?? []) as PoolCandidate[];
-  const eligible = candidates.find((c) =>
-    excludeBusy ? !BUSY_STATES.includes(c.connect_status ?? '') : true,
-  );
+  const isFree = (c: PoolCandidate) =>
+    excludeBusy ? !BUSY_STATES.includes(c.connect_status ?? '') : true;
+
+  // Soft country preference: when the country isn't strictly required but the
+  // lead has one, take an eligible same-country account first, then any
+  // eligible account of this platform.
+  if (!requireCountry && country) {
+    const same = candidates.find((c) => c.country === country && isFree(c));
+    if (same) return { account_id: same.id, country: same.country };
+  }
+  const eligible = candidates.find(isFree);
 
   if (!eligible) return null;
   return { account_id: eligible.id, country: eligible.country };

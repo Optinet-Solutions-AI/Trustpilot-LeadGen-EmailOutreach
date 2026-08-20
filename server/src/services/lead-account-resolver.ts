@@ -24,15 +24,21 @@ export interface ResolvedAccount {
   country: string | null;
 }
 
-export async function resolveLeadAccount(lead_id: string): Promise<ResolvedAccount | null> {
+export async function resolveLeadAccount(
+  lead_id: string,
+  platform: string = 'facebook',
+): Promise<ResolvedAccount | null> {
   const supabase = getSupabase();
+  // Facebook is country-strict (country-keyed pool). Instagram is global — one
+  // account, leads often country-less — so its country fallback is soft.
+  const strictCountry = platform === 'facebook';
 
   // 1. Check presence row for the lead's own capturing account
   const { data: presences, error: presenceErr } = await supabase
     .from('lead_platform_presences')
     .select('social_account_id')
     .eq('lead_id', lead_id)
-    .eq('platform', 'facebook')
+    .eq('platform', platform)
     .not('social_account_id', 'is', null)
     .limit(1);
   if (presenceErr) throw new Error(`resolveLeadAccount presence lookup: ${presenceErr.message}`);
@@ -62,14 +68,15 @@ export async function resolveLeadAccount(lead_id: string): Promise<ResolvedAccou
 
   const country = (leadRow as { country?: string | null } | null)?.country ?? null;
 
-  // No country on the lead and no capturing account → cannot resolve safely.
-  if (!country) return null;
+  // Facebook cannot resolve without a country (never cross-country). Instagram
+  // can — a country-less IG lead still resolves an active IG account.
+  if (strictCountry && !country) return null;
 
   // Country fallback → delegate to the shared pool resolver so a free,
   // lowest-usage account is picked (skipping accounts busy in a browse session
   // or flipped to checkpoint). With a single account this returns it as before;
-  // with several it spreads load across the country's pool for multiple users.
-  return resolvePoolAccountForCountry(country);
+  // with several it spreads load across the pool for multiple users.
+  return resolvePoolAccountForCountry(country, { platform, requireCountry: strictCountry });
 }
 
 export interface LeadAccountOption {
@@ -95,8 +102,12 @@ export interface LeadAccountsForPicker {
  * resolveLeadAccount. Never selects encrypted_cookies or other FB credential
  * columns — this response shape reaches the frontend.
  */
-export async function listActiveAccountsForLead(lead_id: string): Promise<LeadAccountsForPicker> {
+export async function listActiveAccountsForLead(
+  lead_id: string,
+  platform: string = 'facebook',
+): Promise<LeadAccountsForPicker> {
   const supabase = getSupabase();
+  const strictCountry = platform === 'facebook';
 
   const { data: leadRow, error: leadErr } = await supabase
     .from('leads')
@@ -106,15 +117,19 @@ export async function listActiveAccountsForLead(lead_id: string): Promise<LeadAc
   if (leadErr) throw new Error(`listActiveAccountsForLead lead lookup: ${leadErr.message}`);
 
   const country = (leadRow as { country?: string | null } | null)?.country ?? null;
-  if (!country) return { country: null, accounts: [] };
+  // Facebook requires a country (country-keyed pool); Instagram lists its
+  // active accounts regardless of the lead's (often absent) country.
+  if (strictCountry && !country) return { country: null, accounts: [] };
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('social_accounts')
     .select('id, display_name, handle, country, status, used_today, daily_cap, hourly_cap')
-    .eq('platform', 'facebook')
-    .eq('status', 'active')
-    .eq('country', country)
-    .order('used_today', { ascending: true });
+    .eq('platform', platform)
+    .eq('status', 'active');
+  if (strictCountry) {
+    query = query.eq('country', country as string);
+  }
+  const { data, error } = await query.order('used_today', { ascending: true });
   if (error) throw new Error(`listActiveAccountsForLead accounts lookup: ${error.message}`);
 
   return { country, accounts: (data ?? []) as LeadAccountOption[] };
@@ -129,8 +144,10 @@ export async function listActiveAccountsForLead(lead_id: string): Promise<LeadAc
 export async function validateAccountForLead(
   accountId: string,
   lead_id: string,
+  platform: string = 'facebook',
 ): Promise<{ ok: true; account_id: string; country: string | null } | { ok: false; reason: string }> {
   const supabase = getSupabase();
+  const strictCountry = platform === 'facebook';
 
   const { data: leadRow, error: leadErr } = await supabase
     .from('leads')
@@ -150,13 +167,20 @@ export async function validateAccountForLead(
 
   const account = acct as { id: string; country: string | null; status: string; platform: string } | null;
 
-  if (
-    !account ||
-    account.platform !== 'facebook' ||
-    account.status !== 'active' ||
-    !leadCountry ||
-    account.country !== leadCountry
-  ) {
+  // Platform + active are always required. The country match is enforced only
+  // for Facebook (country-keyed pool); Instagram is global, so any active IG
+  // account is valid for an IG lead regardless of country. Facebook keeps its
+  // original single rejection message (always naming the lead's country) so its
+  // behaviour is byte-for-byte unchanged; Instagram omits the country.
+  if (!account || account.platform !== platform || account.status !== 'active') {
+    return {
+      ok: false,
+      reason: strictCountry
+        ? `Chosen account is not an active Facebook account for this lead's country (${leadCountry ?? 'unknown'})`
+        : `Chosen account is not an active ${platform} account`,
+    };
+  }
+  if (strictCountry && (!leadCountry || account.country !== leadCountry)) {
     return {
       ok: false,
       reason: `Chosen account is not an active Facebook account for this lead's country (${leadCountry ?? 'unknown'})`,

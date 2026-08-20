@@ -381,6 +381,7 @@ export default function LeadsTable({
     targetUrl: string;
     country: string | null;
     accounts: LeadAccountOption[];
+    platform: string;
   } | null>(null);
   // Set only on the 0-accounts case (or a failed accounts lookup) — shown as
   // an inline note under the row's Message button instead of starting a session.
@@ -391,11 +392,11 @@ export default function LeadsTable({
   // Kicks off the actual browse session against a specific account — shared
   // by the auto-picked (exactly 1 account) and manually-picked (>1 accounts,
   // via AccountPickerModal) paths below.
-  const startHostedMessage = (leadId: string, targetUrl: string, accountId: string) => {
-    void hostedStartForLead(leadId, { targetUrl, requestedBy: 'operator', accountId });
+  const startHostedMessage = (leadId: string, targetUrl: string, accountId: string, platform: string = 'facebook') => {
+    void hostedStartForLead(leadId, { targetUrl, requestedBy: 'operator', accountId, platform });
   };
 
-  const openMessageHosted = async (leadId: string, targetUrl: string, kind: 'message' | 'comment' = 'message') => {
+  const openMessageHosted = async (leadId: string, targetUrl: string, kind: 'message' | 'comment' = 'message', platform: string = 'facebook') => {
     hostedTabOpened.current = false;
     setNoAccountError(null);
     setAccountPicker(null);
@@ -422,10 +423,10 @@ export default function LeadsTable({
     setResolvingAccounts(true);
     let result: { country: string | null; accounts: LeadAccountOption[] };
     try {
-      result = await fetchLeadAccounts(leadId);
+      result = await fetchLeadAccounts(leadId, platform);
     } catch (err) {
       hostedWindowRef.current?.close();
-      setNoAccountError(err instanceof Error ? err.message : 'Could not load Facebook accounts for this lead');
+      setNoAccountError(err instanceof Error ? err.message : 'Could not load accounts for this lead');
       return;
     } finally {
       setResolvingAccounts(false);
@@ -435,15 +436,17 @@ export default function LeadsTable({
     if (accounts.length === 0) {
       hostedWindowRef.current?.close();
       setNoAccountError(
-        `No active FB account for this lead's country (${country ?? 'unknown'}) — onboard one on Social Accounts`,
+        platform === 'instagram'
+          ? 'No active Instagram account — connect one on Social Accounts'
+          : `No active FB account for this lead's country (${country ?? 'unknown'}) — onboard one on Social Accounts`,
       );
       return;
     }
     if (accounts.length === 1) {
-      startHostedMessage(leadId, targetUrl, accounts[0].id);
+      startHostedMessage(leadId, targetUrl, accounts[0].id, platform);
       return;
     }
-    setAccountPicker({ leadId, targetUrl, country, accounts });
+    setAccountPicker({ leadId, targetUrl, country, accounts, platform });
   };
 
   useEffect(() => {
@@ -895,14 +898,18 @@ export default function LeadsTable({
         const excerptSearchUrl = excerptQuery
           ? `https://www.facebook.com/search/posts/?q=${encodeURIComponent(excerptQuery)}`
           : null;
+        // The group / excerpt search fallbacks build facebook.com URLs, so they
+        // only apply to Facebook. Instagram (and any other platform) uses the
+        // real post permalink when we have one, else the author's profile.
+        const isFb = p.platform === 'facebook';
         const targetUrl = isRealPostUrl
           ? post!.post_url
-          : (groupSearchUrl ?? excerptSearchUrl ?? p.profile_url);
+          : (isFb ? (groupSearchUrl ?? excerptSearchUrl ?? p.profile_url) : p.profile_url);
         const linkLabel = isRealPostUrl
           ? '📝 View post'
-          : (groupSearchUrl
-              ? '🔎 Find in group'
-              : (excerptSearchUrl ? '🔎 Find post' : '👤 View profile'));
+          : (isFb
+              ? (groupSearchUrl ? '🔎 Find in group' : (excerptSearchUrl ? '🔎 Find post' : '👤 View profile'))
+              : '👤 View profile');
         const excerptDisplay = cleanExcerpt.slice(0, 110);
         // Scope the hosted-Comment button's busy/status to THIS cell (vs the
         // Message cell) via hostedActionKind, so a click here shows feedback here.
@@ -922,17 +929,17 @@ export default function LeadsTable({
               <span className="truncate max-w-[200px]">{linkLabel}</span>
               <span className="material-symbols-outlined text-[12px] shrink-0">open_in_new</span>
             </a>
-            {/* Hosted (Facebook only): stream the fleet's logged-in,
-                country-pinned browser straight onto this post so the VA can
-                comment AS the account — same flow as the Message button, but
-                targeting the post URL instead of the conversation. The plain
-                link above stays as the instant, logged-out peek. */}
-            {p.platform === 'facebook' && (
+            {/* Hosted (Facebook + Instagram): stream the fleet's logged-in,
+                pinned browser straight onto this post so the VA can comment AS
+                the account — same flow as the Message button, but targeting the
+                post URL instead of the conversation. The plain link above stays
+                as the instant, logged-out peek. */}
+            {(p.platform === 'facebook' || p.platform === 'instagram') && (
               <>
                 <button
                   type="button"
                   disabled={commentBusy}
-                  onClick={() => void openMessageHosted(lead.id, targetUrl, 'comment')}
+                  onClick={() => void openMessageHosted(lead.id, targetUrl, 'comment', p.platform)}
                   title="Open this post in the fleet's logged-in browser so you can comment as the pinned account"
                   className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-1.5 py-0.5 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed w-fit"
                 >
@@ -1010,48 +1017,27 @@ export default function LeadsTable({
         const p = lead.lead_platform_presences?.[0];
         if (!p) return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
 
-        // Instagram stays a plain deep-link — the hosted fleet-browser flow
-        // below is Facebook-only (accounts are onboarded/pinned per FB
-        // country; there's no Instagram equivalent yet).
-        if (p.platform === 'instagram') {
-          const dmHref = `https://www.instagram.com/direct/new/?profile_handle=${(p.author_handle || '').replace(/^@/, '')}`;
-          return (
-            <td key={col} className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-              <a
-                href={dmHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Message on Instagram"
-                aria-label="Message on Instagram"
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors"
-              >
-                <span className="material-symbols-outlined text-[13px]">send</span>
-                Message
-              </a>
-            </td>
-          );
-        }
-
-        if (p.platform !== 'facebook') {
+        // Hosted Message for Facebook + Instagram: stream the fleet's
+        // logged-in, pinned browser to the DM entry point instead of a plain
+        // link that would open the operator's OWN logged-out browser. Same
+        // "Open as James (hosted)" flow as LeadDetail.tsx, resolved per-row via
+        // /leads/:id/accounts + /leads/:id/browse. Other platforms have no
+        // hosted equivalent.
+        if (p.platform !== 'facebook' && p.platform !== 'instagram') {
           return <td key={col} className="px-4 py-3 text-xs text-secondary">—</td>;
         }
-
-        // Facebook — instead of a plain facebook.com/m.me link (opens the
-        // OPERATOR's own, logged-out/wrong-account browser), this streams
-        // the fleet's logged-in, country-pinned browser to a new tab —
-        // same "Open as James (hosted)" flow as LeadDetail.tsx, resolved
-        // per-row via /leads/:id/accounts + /leads/:id/browse.
-        //
-        // Land the stream straight on the CONVERSATION when the profile has a
-        // stable numeric id — facebook.com/messages/t/<id> opens the chat with
-        // that person. FB's newer opaque pfbid / vanity profiles don't accept a
-        // direct DM URL, so those open the profile (its Message button is one
-        // click away) rather than a broken /messages/t/ link.
-        const fbNumericId = p.profile_url.includes('/profile.php')
+        // Where the stream lands to start the DM:
+        //  - Facebook: the conversation (facebook.com/messages/t/<id>) when the
+        //    profile has a stable numeric id; opaque pfbid / vanity profiles
+        //    have no direct DM URL, so land on the profile (its Message button
+        //    is one click away).
+        //  - Instagram: the profile (instagram.com/<handle>/) — IG has no
+        //    DM-by-URL, so the VA clicks the profile's Message button to DM.
+        const fbNumericId = p.platform === 'facebook' && p.profile_url.includes('/profile.php')
           ? (p.profile_url.match(/[?&]id=(\d+)/) || [])[1]
           : null;
-        const fbMessageUrl = fbNumericId
-          ? `https://www.facebook.com/messages/t/${fbNumericId}`
+        const messageTarget = p.platform === 'facebook'
+          ? (fbNumericId ? `https://www.facebook.com/messages/t/${fbNumericId}` : p.profile_url)
           : p.profile_url;
         const isBusy = messagingLeadId === lead.id && hostedActionKind === 'message'
           && (resolvingAccounts || hostedStatus === 'starting' || hostedStatus === 'provisioning');
@@ -1060,9 +1046,11 @@ export default function LeadsTable({
             <button
               type="button"
               disabled={isBusy}
-              onClick={() => void openMessageHosted(lead.id, fbMessageUrl, 'message')}
-              title="Open as James (hosted) — streams the fleet's logged-in browser to your tab"
-              aria-label="Message on Facebook"
+              onClick={() => void openMessageHosted(lead.id, messageTarget, 'message', p.platform)}
+              title={p.platform === 'instagram'
+                ? "Open this lead's Instagram profile in the fleet's logged-in browser, then click Message to DM"
+                : "Open as James (hosted) — streams the fleet's logged-in browser to your tab"}
+              aria-label={`Message on ${p.platform === 'instagram' ? 'Instagram' : 'Facebook'}`}
               className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#b0004a] hover:text-white hover:bg-[#b0004a] border border-[#b0004a]/30 hover:border-[#b0004a] px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <span className="material-symbols-outlined text-[13px]">send</span>
@@ -1300,9 +1288,9 @@ export default function LeadsTable({
           accounts={accountPicker.accounts}
           country={accountPicker.country}
           onSelect={(accountId) => {
-            const { leadId, targetUrl } = accountPicker;
+            const { leadId, targetUrl, platform } = accountPicker;
             setAccountPicker(null);
-            startHostedMessage(leadId, targetUrl, accountId);
+            startHostedMessage(leadId, targetUrl, accountId, platform);
           }}
           onClose={() => {
             hostedWindowRef.current?.close();
