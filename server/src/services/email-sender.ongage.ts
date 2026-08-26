@@ -65,28 +65,21 @@ function resolveConnectionId(account: OngageSenderAccount, cfg: ReturnType<typeo
   return entry?.connectionId ?? cfg.defaultConn;
 }
 
-/** The app embeds the lead screenshot as an inline CID attachment for
- *  Gmail/SMTP. Ongage's transactional API takes raw HTML with no attachments,
- *  so swap any cid: reference for the public screenshot URL (screenshots are
- *  stored as public Supabase URLs). No-op when there's no http screenshot. */
-function inlineScreenshotUrl(html: string, screenshotPath?: string): string {
+/** The app's SMTP/Gmail senders APPEND the lead screenshot as an inline CID
+ *  image (the template body itself has no <img>). Ongage's transactional API
+ *  takes raw HTML with no attachments, so append the same image as a normal
+ *  <img> pointing at the public screenshot URL (screenshots are public Supabase
+ *  URLs). Mirrors email-sender.smtp.ts's markup. No-op without an http
+ *  screenshot; also swaps any stray cid: ref for the URL, defensively. */
+function embedScreenshot(html: string, screenshotPath?: string): string {
   if (!screenshotPath || !screenshotPath.startsWith('http')) return html;
-  if (/cid:[^"'\s>]+/i.test(html)) {
-    return html.replace(/cid:[^"'\s>]+/gi, screenshotPath);
+  let out = html;
+  if (/cid:[^"'\s>]+/i.test(out)) out = out.replace(/cid:[^"'\s>]+/gi, screenshotPath);
+  if (!out.includes(screenshotPath)) {
+    out += `\n<br/><img src="${screenshotPath}" alt="Your Trustpilot Profile" ` +
+      `style="width:100%;max-width:550px;height:auto;border:1px solid #e2e8f0;border-radius:8px;display:block;margin-top:12px;" />`;
   }
-  return html;
-}
-
-/** Minimal opt-out footer so wizard sends aren't bare (Gmail/Yahoo penalize
- *  bulk-looking mail with no opt-out). A proper List-Unsubscribe header /
- *  Ongage unsubscribe merge-tag is a follow-on. */
-function withUnsubscribeFooter(html: string, replyTo: string): string {
-  if (/unsubscribe/i.test(html)) return html;
-  const footer =
-    `<p style="margin-top:24px;font-size:11px;color:#888">` +
-    `Not interested? Reply "unsubscribe" to <a href="mailto:${replyTo}?subject=unsubscribe">${replyTo}</a> and we'll remove you.` +
-    `</p>`;
-  return html + footer;
+  return out;
 }
 
 export async function sendEmailOngage(
@@ -106,8 +99,10 @@ export async function sendEmailOngage(
   }
 
   const replyTo = account.ongage_reply_to || account.email;
-  let bodyHtml = inlineScreenshotUrl(html, options.screenshotPath);
-  bodyHtml = withUnsubscribeFooter(bodyHtml, replyTo);
+  // Cold 1:1 service-offer style: no visible unsubscribe footer from our side
+  // (that reads as bulk mail). Opt-out/compliance is handled at the ESP
+  // (List-Unsubscribe) or via reply. Just embed the screenshot.
+  const bodyHtml = embedScreenshot(html, options.screenshotPath);
 
   const url = `${cfg.base}/${cfg.listId}/api/transactional/send_embed_content`;
   const payload = {
