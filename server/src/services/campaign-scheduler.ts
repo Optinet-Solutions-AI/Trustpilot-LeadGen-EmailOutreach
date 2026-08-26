@@ -15,7 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import { config } from '../config.js';
 import { getSupabase } from '../lib/supabase.js';
-import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type SenderAccount } from './email-sender.js';
+import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type OngageSenderAccount, type SenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter, getRampedDailyCap } from './rate-limiter.js';
 import { renderAndSpin } from './template-engine.js';
@@ -195,7 +195,7 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
       .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, daily_cap, hourly_cap, is_cold_sender, warmup_started_at, warmup_target_cap, warmup_ramp_days')
       .eq('status', 'active')
       .eq('is_cold_sender', true)
-      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password']);
+      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password', 'ongage']);
 
     // Filter to specific IDs when the user pinned accounts; otherwise load all active
     if (dbIds.length > 0) {
@@ -234,6 +234,16 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
           gmail: createGmailClientFromCredentials(a.gmail_client_id as string, a.gmail_client_secret as string, a.gmail_refresh_token as string),
           dailyCap, hourlyCap,
         } as AccountWithCaps<GmailSenderAccount>);
+      } else if (a.auth_type === 'ongage') {
+        // Ongage transactional sender. The Ongage sending_connection_id is
+        // resolved per-sender from ONGAGE_SENDERS (by email) inside the sender
+        // module, so the pool entry only needs the from identity + caps.
+        accounts.push({
+          email: a.email as string,
+          fromName: a.from_name as string,
+          auth_type: 'ongage',
+          dailyCap, hourlyCap,
+        } as AccountWithCaps<OngageSenderAccount>);
       }
     }
     return accounts;

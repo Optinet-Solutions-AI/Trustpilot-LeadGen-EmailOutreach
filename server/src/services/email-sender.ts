@@ -11,9 +11,10 @@
 import { config } from '../config.js';
 import type { GmailSenderAccount, SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
 import type { SmtpSenderAccount } from './email-sender.smtp.js';
+import type { OngageSenderAccount } from './email-sender.ongage.js';
 
-export type { GmailSenderAccount, SmtpSenderAccount };
-export type SenderAccount = GmailSenderAccount | SmtpSenderAccount;
+export type { GmailSenderAccount, SmtpSenderAccount, OngageSenderAccount };
+export type SenderAccount = GmailSenderAccount | SmtpSenderAccount | OngageSenderAccount;
 
 export async function sendEmail(
   to: string,
@@ -22,6 +23,12 @@ export async function sendEmail(
   options: SendEmailOptions = {},
   account?: SenderAccount,
 ): Promise<SendEmailResult> {
+  // Route to Ongage transactional sender when the account's auth_type is 'ongage'
+  if (account && 'auth_type' in account && account.auth_type === 'ongage') {
+    const { sendEmailOngage } = await import('./email-sender.ongage.js');
+    return sendEmailOngage(to, subject, html, options, account);
+  }
+
   // Route to SMTP sender when the account's auth_type is 'smtp'
   if (account && 'auth_type' in account && account.auth_type === 'smtp') {
     const { sendEmailSmtp } = await import('./email-sender.smtp.js');
