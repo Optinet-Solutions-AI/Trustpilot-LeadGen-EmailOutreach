@@ -82,6 +82,22 @@ function embedScreenshot(html: string, screenshotPath?: string): string {
   return out;
 }
 
+/** Cold 1:1 service-offer opt-out. We suppress Ongage's default footer (the
+ *  bulky "unsubscribe from this mailing list, please click here" block reads
+ *  as bulk mail) via `disable_unsubscribe` and add our own discreet, reply-based
+ *  opt-out instead. Reply-based — not a link — because it keeps the personal 1:1
+ *  feel and can't render a broken merge tag; the sender's reply address is a
+ *  real monitored mailbox, so opt-outs are actionable. Kept deliberately small
+ *  and grey. Compliance/deliverability note: some opt-out mechanism is retained
+ *  on purpose (CAN-SPAM / Gmail-Yahoo bulk rules), just not a bulk-looking one. */
+const OPT_OUT_LINE =
+  '<p style="font-size:11px;color:#9aa0a6;margin-top:16px;line-height:1.5;">' +
+  'Prefer not to hear from me? Just reply and I’ll take you off my list.</p>';
+
+function appendOptOut(html: string): string {
+  return `${html}\n${OPT_OUT_LINE}`;
+}
+
 export async function sendEmailOngage(
   to: string,
   subject: string,
@@ -99,14 +115,17 @@ export async function sendEmailOngage(
   }
 
   const replyTo = account.ongage_reply_to || account.email;
-  // Cold 1:1 service-offer style: no visible unsubscribe footer from our side
-  // (that reads as bulk mail). Opt-out/compliance is handled at the ESP
-  // (List-Unsubscribe) or via reply. Just embed the screenshot.
-  const bodyHtml = embedScreenshot(html, options.screenshotPath);
+  // Cold 1:1 service-offer style: suppress Ongage's default unsubscribe footer
+  // (`disable_unsubscribe`) and add our own discreet reply-based opt-out. Embed
+  // the screenshot the same way the SMTP/Gmail senders do (appended <img>).
+  const bodyHtml = appendOptOut(embedScreenshot(html, options.screenshotPath));
 
   const url = `${cfg.base}/${cfg.listId}/api/transactional/send_embed_content`;
   const payload = {
     sending_connection_id: connectionId,
+    // Suppress the ESP's bulky auto-appended "unsubscribe from this mailing
+    // list" footer; we supply our own discreet opt-out in content_html above.
+    disable_unsubscribe: true,
     recipients: [to],
     message: {
       subject,
