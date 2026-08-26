@@ -56,7 +56,11 @@ function ongageConfig() {
   const listId = (process.env.ONGAGE_LIST_ID || '').trim();
   // parseInt tolerates a trailing inline comment on the env value.
   const defaultConn = parseInt((process.env.ONGAGE_SENDING_CONNECTION_ID || '').trim(), 10) || null;
-  return { base, apiKey, listId, defaultConn, senders: parseSenders() };
+  // Optional: attribute every send to a dedicated transactional campaign so this
+  // project's sends are measured separately from the shared list's default
+  // campaign. When unset, Ongage records them under the list default.
+  const campaignId = parseInt((process.env.ONGAGE_TRANSACTIONAL_CAMPAIGN_ID || '').trim(), 10) || null;
+  return { base, apiKey, listId, defaultConn, campaignId, senders: parseSenders() };
 }
 
 function resolveConnectionId(account: OngageSenderAccount, cfg: ReturnType<typeof ongageConfig>): number | null {
@@ -121,11 +125,14 @@ export async function sendEmailOngage(
   const bodyHtml = appendOptOut(embedScreenshot(html, options.screenshotPath));
 
   const url = `${cfg.base}/${cfg.listId}/api/transactional/send_embed_content`;
-  const payload = {
+  const payload: Record<string, unknown> = {
     sending_connection_id: connectionId,
     // Suppress the ESP's bulky auto-appended "unsubscribe from this mailing
     // list" footer; we supply our own discreet opt-out in content_html above.
     disable_unsubscribe: true,
+    // Group under this project's own transactional campaign when configured, so
+    // reporting is isolated from the shared list's default campaign.
+    ...(cfg.campaignId ? { campaign_id: cfg.campaignId } : {}),
     recipients: [to],
     message: {
       subject,
