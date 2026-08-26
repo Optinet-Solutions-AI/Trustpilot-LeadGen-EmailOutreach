@@ -390,6 +390,15 @@ router.post('/:id/test-flight', async (req: Request, res: Response) => {
               gmail: createGmailClientFromCredentials(acc.gmail_client_id, acc.gmail_client_secret, acc.gmail_refresh_token),
             };
             console.log(`[TestFlight] Using pinned Gmail sender: ${acc.email}`);
+          } else if (acc.auth_type === 'ongage') {
+            // Ongage transactional: connection is resolved per-sender from
+            // ONGAGE_SENDERS (by email) inside the sender module.
+            senderAccount = {
+              email: acc.email,
+              fromName: acc.from_name,
+              auth_type: 'ongage' as const,
+            };
+            console.log(`[TestFlight] Using pinned Ongage sender: ${acc.email}`);
           } else {
             console.warn(`[TestFlight] Pinned account ${acc.email} (${acc.auth_type}) has incomplete credentials — falling back to env account`);
           }

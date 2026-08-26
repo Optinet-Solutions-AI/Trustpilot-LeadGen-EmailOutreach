@@ -23,7 +23,7 @@ router.get('/status', async (_req: Request, res: Response) => {
     const { data: accounts, error } = await supabase
       .from('email_accounts')
       .select('email, from_name, status, auth_type, is_cold_sender, warmup_enabled, warmup_daily_target, warmup_started_at, warmup_target_cap, warmup_ramp_days')
-      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password'])
+      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password', 'ongage'])
       .order('created_at');
 
     if (error) throw new Error(error.message);

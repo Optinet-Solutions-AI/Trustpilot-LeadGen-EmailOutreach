@@ -12,7 +12,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { getRampedDailyCap } from './rate-limiter.js';
 import { config } from '../config.js';
-import type { SenderAccount, GmailSenderAccount, SmtpSenderAccount } from './email-sender.js';
+import type { SenderAccount, GmailSenderAccount, SmtpSenderAccount, OngageSenderAccount } from './email-sender.js';
 
 const SENDER_COLUMNS =
   'id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, ' +
@@ -63,6 +63,18 @@ function mapRow(a: Record<string, unknown>): SenderAccountWithCaps | null {
     } as SenderAccountWithCaps & GmailSenderAccount;
   }
 
+  if (a.auth_type === 'ongage') {
+    // Ongage transactional: sending_connection_id resolved per-sender from
+    // ONGAGE_SENDERS (by email) inside the sender module, so no creds here.
+    return {
+      email: a.email as string,
+      fromName: a.from_name as string,
+      auth_type: 'ongage',
+      dailyCap,
+      hourlyCap,
+    } as SenderAccountWithCaps & OngageSenderAccount;
+  }
+
   return null;
 }
 
@@ -86,7 +98,7 @@ export async function getSenderAccountByEmail(email: string): Promise<SenderAcco
       .eq('status', 'active')
       .eq('is_cold_sender', true)
       .ilike('email', email)
-      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password'])
+      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password', 'ongage'])
       .maybeSingle();
 
     if (error || !data) return null;
@@ -117,7 +129,7 @@ export async function getAccountForUtilitySend(email: string): Promise<SenderAcc
       .from('email_accounts')
       .select(SENDER_COLUMNS)
       .ilike('email', email)
-      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password'])
+      .in('auth_type', ['gmail_oauth', 'smtp', 'app_password', 'ongage'])
       .maybeSingle();
 
     if (error || !data) return null;
