@@ -191,7 +191,20 @@ CONTACT_EXTRACT_JS = r'''() => {
     let blocked = false;
     let blockedReason = null;
 
-    // Source 1: __NEXT_DATA__ consumerAlert object (null when not flagged).
+    // Source 1: __NEXT_DATA__ consumerAlert object.
+    //
+    // The object is ALWAYS present on some verticals, so its mere existence
+    // means nothing. Gambling profiles carry a purely informational notice
+    // ({predefinedType: 'InfoGambling', title: null, content: null}) which
+    // renders as the "Gambling laws vary by location" box — not a sanction.
+    // Blocking on "object has keys" flagged every casino/gambling profile
+    // scraped (790 leads before this fix). A real alert always carries
+    // human-readable copy (title/content) or an authority warning link, and
+    // its predefinedType is never Info-prefixed.
+    //
+    // Note the field is `predefinedType`, not `type` — reading `alert.type`
+    // always yielded undefined, which is why every flagged row stored the
+    // literal fallback string 'consumer alert' instead of a real reason.
     try {
         const el = document.getElementById('__NEXT_DATA__');
         if (el && el.textContent) {
@@ -199,23 +212,40 @@ CONTACT_EXTRACT_JS = r'''() => {
             const pp = data && data.props && data.props.pageProps;
             const alert = pp && (pp.consumerAlert ||
                 (pp.businessUnit && pp.businessUnit.consumerAlert));
-            if (alert && (typeof alert === 'object' ? Object.keys(alert).length > 0 : !!alert)) {
+            if (alert && typeof alert === 'object') {
+                const kind = String(alert.predefinedType || alert.type || '');
+                const informational = /^info/i.test(kind);
+                const copy = alert.title || alert.content || alert.authorityWarningLink;
+                if (!informational && (copy || (kind && kind.toLowerCase() !== 'none'))) {
+                    blocked = true;
+                    blockedReason = String(alert.title || alert.content || kind ||
+                        'consumer alert').slice(0, 200);
+                }
+            } else if (alert) {
                 blocked = true;
-                blockedReason = String(alert.title || alert.type || 'consumer alert').slice(0, 200);
+                blockedReason = 'consumer alert';
             }
         }
     } catch (_e) { /* fall through to text scan */ }
 
-    // Source 2: visible banner text. Phrases are specific to the alert banner
-    // so we don't false-positive on ordinary review/footer copy.
+    // Source 2: visible banner text. Only the page HEAD is scanned — a real
+    // consumer alert banner sits directly under the company name, while the
+    // reviews list further down carries per-REVIEW moderation notices
+    // ("Flagged for review for containing harmful or illegal content") that
+    // say nothing about the business. Scanning the whole body matched those
+    // and blocked 8 otherwise-fine companies, so the two review-moderation
+    // phrasings ('harmful or illegal content', 'flagged for review') are gone
+    // from the pattern as well: company-level sanctions are always phrased as
+    // review manipulation, never as content moderation.
     if (!blocked) {
         const bodyText = (document.body ? document.body.innerText : '') || '';
-        const ALERT_RX = /(consumer alert|we(?:'ve| have) (?:detected|found)[^.]{0,60}(?:fake|misleading|incentivi[sz]ed)|evidence of (?:fake|incentivi[sz]ed) reviews|this (?:company|business|profile) (?:is|has been) (?:misusing|flagged|suspended)|trustpilot has (?:issued|placed|detected)|harmful or illegal content|we(?:'ve| have) placed a (?:warning|notification)|flagged for (?:misleading|fake|review))/i;
-        const m = bodyText.match(ALERT_RX);
+        const headText = bodyText.slice(0, 2500);
+        const ALERT_RX = /(consumer alert|we(?:'ve| have) (?:detected|found)[^.]{0,60}(?:fake|misleading|incentivi[sz]ed)|evidence of (?:fake|incentivi[sz]ed) reviews|this (?:company|business|profile) (?:is|has been) (?:misusing|flagged|suspended)|trustpilot has (?:issued|placed|detected)|we(?:'ve| have) placed a (?:warning|notification))/i;
+        const m = headText.match(ALERT_RX);
         if (m) {
             blocked = true;
             const idx = Math.max(0, m.index - 20);
-            blockedReason = bodyText.slice(idx, idx + 180).replace(/\s+/g, ' ').trim();
+            blockedReason = headText.slice(idx, idx + 180).replace(/\s+/g, ' ').trim();
         }
     }
 
