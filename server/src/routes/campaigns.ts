@@ -1,10 +1,10 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, markCampaignLeadsSkipped, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
-import { upsertManualLeads } from '../db/leads.js';
+import { upsertManualLeads, getLeadById } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
 import { createNote } from '../db/notes.js';
-import { renderAndSpin } from '../services/template-engine.js';
+import { renderAndSpin, KNOWN_TOKENS } from '../services/template-engine.js';
 import { runCampaignSend, cancelCampaign, campaignEvents } from '../services/campaign-sender.js';
 import { applyTestMode } from '../services/test-mode.js';
 import { sendEmail } from '../services/email-sender.js';
@@ -168,6 +168,185 @@ router.get('/preview-recipients', async (req: Request, res: Response) => {
     const category = req.query.category ? String(req.query.category) : undefined;
     const result = await previewRecipientCount({ country, category });
     res.json({ success: true, data: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ── Email preview ────────────────────────────────────────────────────────
+// The exact markup the SMTP / Gmail / Ongage senders append for the embedded
+// screenshot. Kept byte-identical (bar the src) so the preview shows the real
+// thing; the senders use a cid: reference against an inline attachment, which
+// a browser can't resolve, so the preview substitutes the public URL.
+const PREVIEW_SCREENSHOT_IMG = (src: string) =>
+  `\n<br/><img src="${src}" alt="Your Trustpilot Profile" style="width:100%;max-width:550px;height:auto;border:1px solid #e2e8f0;border-radius:8px;display:block;margin-top:12px;" />`;
+
+// Mirrors OPT_OUT_LINE in email-sender.ongage.ts — only Ongage sends append it.
+const PREVIEW_OPT_OUT_LINE =
+  '<p style="font-size:11px;color:#9aa0a6;margin-top:16px;line-height:1.5;">' +
+  'Prefer not to hear from me? Just reply and I’ll take you off my list.</p>';
+
+/** Stand-in lead for previewing a template before any recipient is chosen.
+ *  Deliberately plausible rather than blank, so token fallbacks ("your team",
+ *  "below-average") don't masquerade as real rendering bugs. */
+const PREVIEW_SAMPLE_LEAD: Record<string, unknown> = {
+  company_name:  'Acme Corp',
+  website_url:   'acmecorp.com',
+  star_rating:   2.5,
+  review_count:  47,
+  category:      'Home Services',
+  country:       'US',
+  primary_email: 'contact@acmecorp.com',
+};
+
+// POST /api/campaigns/preview — render a template exactly as it would send.
+//
+// Stateless on purpose: the campaign wizard needs to preview a draft that has
+// no campaigns row yet, so everything comes in on the body. This runs the SAME
+// renderAndSpin the scheduler and test-flight use, which is the whole point —
+// a preview that reimplemented token/spintax/locale resolution would drift and
+// quietly stop matching what recipients actually receive.
+//
+// Must sit before the /:id routes or Express matches "preview" as a campaign id.
+router.post('/preview', async (req: Request, res: Response) => {
+  try {
+    const {
+      subject = '',
+      body = '',
+      leadId,
+      campaignId,
+      includeScreenshot = false,
+      senderAccountId,
+    } = req.body ?? {};
+
+    if (typeof subject !== 'string' || typeof body !== 'string' || (!subject.trim() && !body.trim())) {
+      res.status(400).json({ success: false, error: 'A subject or body is required to preview.' });
+      return;
+    }
+
+    const warnings: string[] = [];
+
+    // ── Resolve the recipient the preview renders against ──
+    // Explicit lead wins; then the campaign's first pending lead; then a
+    // sample. Real lead data is what makes the preview worth trusting.
+    let lead: Record<string, unknown> = PREVIEW_SAMPLE_LEAD;
+    // null when the resolved lead genuinely has no address — the UI says so
+    // plainly rather than rendering a fake one.
+    let recipientEmail: string | null = String(PREVIEW_SAMPLE_LEAD.primary_email);
+    let isSample = true;
+
+    if (leadId && typeof leadId === 'string') {
+      try {
+        const found = await getLeadById(leadId);
+        if (found) {
+          lead = found as Record<string, unknown>;
+          recipientEmail = String(lead.primary_email || lead.website_email || lead.trustpilot_email || '') || null;
+          isSample = false;
+        }
+      } catch {
+        warnings.push('That lead could not be loaded, so the preview uses sample data.');
+      }
+    } else if (campaignId && typeof campaignId === 'string') {
+      try {
+        const campaignLeads = await getCampaignLeads(campaignId);
+        const first = campaignLeads.find((cl: { email_used: string | null }) => cl.email_used)
+          ?? campaignLeads[0];
+        if (first?.leads) {
+          lead = first.leads as Record<string, unknown>;
+          recipientEmail = String(first.email_used || lead.primary_email || '') || null;
+          isSample = false;
+        }
+      } catch {
+        warnings.push('This campaign’s leads could not be loaded, so the preview uses sample data.');
+      }
+    }
+
+    // ── Render through the production path ──
+    // renderAndSpin = tokens → spintax → locale, same as every real send.
+    // Spintax picks randomly per call, so each request is a genuine variant.
+    const renderedSubject = renderAndSpin(subject, lead);
+    let renderedHtml      = renderAndSpin(body, lead);
+
+    // ── Screenshot: only public Storage URLs survive to send time ──
+    const leadScreenshotPath = lead.screenshot_path ? String(lead.screenshot_path) : '';
+    let screenshotUrl: string | undefined;
+    if (includeScreenshot) {
+      if (leadScreenshotPath.startsWith('http')) {
+        screenshotUrl = leadScreenshotPath;
+        renderedHtml += PREVIEW_SCREENSHOT_IMG(screenshotUrl);
+      } else if (leadScreenshotPath) {
+        warnings.push('Screenshot is on an expired local path, not public storage — the real email will send without it.');
+      } else if (isSample) {
+        // The stand-in lead carries no screenshot, so the preview shows none.
+        // Without this the panel looks like the screenshot setting is broken,
+        // which is exactly how it reads to an operator who hasn't picked
+        // recipients yet.
+        warnings.push('Screenshot is on, but no lead is selected — the stand-in has none. Pick recipients to see the real screenshot that gets embedded.');
+      } else {
+        warnings.push('This lead has no screenshot, so the real email will send without one.');
+      }
+    }
+
+    // ── Sender identity + provider-specific footer ──
+    let fromEmail = config.gmail.fromEmail || 'not configured';
+    let fromName  = process.env.EMAIL_FROM_NAME?.trim() || 'OptiRate';
+    if (senderAccountId && typeof senderAccountId === 'string' && senderAccountId !== '__env__') {
+      try {
+        const { data: acc } = await (await import('../lib/supabase.js')).getSupabase()
+          .from('email_accounts')
+          .select('email, from_name, auth_type')
+          .eq('id', senderAccountId)
+          .single();
+        if (acc) {
+          fromEmail = acc.email;
+          if (acc.from_name) fromName = acc.from_name;
+          // Ongage is the only sender that appends its own opt-out line.
+          if (acc.auth_type === 'ongage') renderedHtml += `\n${PREVIEW_OPT_OUT_LINE}`;
+        }
+      } catch {
+        warnings.push('The pinned sending account could not be loaded; the From line is a fallback.');
+      }
+    }
+
+    // Malformed-spintax detection has to look at the SOURCE template, not the
+    // rendered output: resolveSpintax consumes every brace it sees, so a broken
+    // group like "{Hi|Hello {{company_name}}" renders as the literal
+    // "Hi|Hello Acme Corp" with no brace left to find. Unbalanced braces in the
+    // input, or a bare pipe surviving into the output, are the real signals.
+    const braceBalance = (subject + body).split('{').length - (subject + body).split('}').length;
+    if (braceBalance !== 0) {
+      warnings.push('The template has unbalanced { } braces, so spintax will render incorrectly. Regenerate or fix it before sending.');
+    }
+    if (/\w\s*\|\s*\w/.test(renderedHtml) || /\w\s*\|\s*\w/.test(renderedSubject)) {
+      warnings.push('A "|" survived into the rendered email — a spintax group is malformed and recipients would see both options.');
+    }
+    // Unknown tokens must also be caught on the SOURCE. renderTemplate leaves
+    // an unrecognised {{token}} as-is, then resolveSpintax strips its braces,
+    // so by render time "{{websites}}" is just the word "websites".
+    const usedTokens = [...(subject + body).matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]);
+    const unknownTokens = [...new Set(usedTokens.filter((t) => !KNOWN_TOKENS.includes(t)))];
+    if (unknownTokens.length > 0) {
+      warnings.push(
+        `Unknown token${unknownTokens.length > 1 ? 's' : ''} ${unknownTokens.map((t) => `{{${t}}}`).join(', ')} — ` +
+        'these do not resolve and reach the recipient as bare words. Remove or correct them.',
+      );
+    }
+
+    res.json({
+      success: true,
+      data: {
+        subject: renderedSubject,
+        html: renderedHtml,
+        to: recipientEmail,
+        fromEmail,
+        fromName,
+        companyName: String(lead.company_name || 'Unknown'),
+        screenshotUrl: screenshotUrl ?? null,
+        isSample,
+        warnings,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
