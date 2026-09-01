@@ -68,6 +68,10 @@ router.get('/', async (req: Request, res: Response) => {
         : undefined,
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
       blocked: req.query.blocked === 'only' || req.query.blocked === 'exclude' ? req.query.blocked : 'all',
+      // Campaign wizard passes this so already-emailed leads never appear in
+      // the recipient picker. Off everywhere else, so the Leads pages keep
+      // showing the full book.
+      excludeContacted: req.query.excludeContacted === 'true',
     });
     res.json({ success: true, ...result });
   } catch (err) {
@@ -96,6 +100,7 @@ router.get('/ids', async (req: Request, res: Response) => {
         ? (req.query.verificationStatus as 'valid' | 'invalid' | 'catch-all' | 'unknown')
         : undefined,
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
+      excludeContacted: req.query.excludeContacted === 'true',
     });
     res.json({ success: true, data: ids, total: ids.length });
   } catch (err) {

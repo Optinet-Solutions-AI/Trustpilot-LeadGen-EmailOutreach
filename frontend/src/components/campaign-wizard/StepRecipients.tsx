@@ -75,6 +75,9 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
       params.set('limit', String(LIMIT));
       params.set('sortBy', sortBy);
       params.set('sortDir', sortDir);
+      // Never offer a lead that was already emailed — it could only land as
+      // 'skipped'. Done server-side so `total` and the page count stay exact.
+      params.set('excludeContacted', 'true');
       const res = await api.get(`/leads?${params}`);
       setLeads(res.data.data);
       setTotal(res.data.total);
@@ -96,6 +99,14 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   const isInvalid = (l: PickerLead) => l.verification_status === 'invalid';
   const isAlreadyContacted = (l: PickerLead) =>
     l.primary_email != null && contactedEmails.has(l.primary_email.toLowerCase());
+
+  // The server already dropped every lead with a send of its own
+  // (?excludeContacted=true, an anti-join on campaign_leads.lead_id). This
+  // second pass catches the remainder: a DUPLICATE lead row whose address was
+  // emailed under a different lead_id, which the lead_id join can't see.
+  // ~46 rows today, so pages occasionally render slightly short of LIMIT —
+  // preferable to offering someone who can only come back 'skipped'.
+  const visibleLeads = leads.filter((l) => !isAlreadyContacted(l));
 
   const reverifyLead = async (id: string) => {
     setReverifying((prev) => { const n = new Set(prev); n.add(id); return n; });
@@ -139,8 +150,8 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   //     at send time; bulk-adding them just clutters the campaign with
   //     dedup-victim rows.
   // Manual click on any row still works as a conscious override.
-  const pageIds = leads
-    .filter((l) => l.verification_status === 'valid' && !isAlreadyContacted(l))
+  const pageIds = visibleLeads
+    .filter((l) => l.verification_status === 'valid')
     .map((l) => l.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedLeadIds.includes(id));
 
@@ -164,6 +175,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
       if (filterCategory) params.set('category', filterCategory);
       if (debouncedSearch) params.set('search', debouncedSearch);
       params.set('verificationStatus', 'valid');
+      params.set('excludeContacted', 'true');
       const res = await api.get(`/leads/ids?${params}`);
       const rows: Array<{ id: string; primary_email: string | null }> = res.data?.data || [];
       const ids = rows
@@ -221,7 +233,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
           />
         </div>
         <div className="flex items-center gap-2">
-          {leads.length > 0 && (
+          {visibleLeads.length > 0 && (
             <button
               onClick={togglePage}
               className="text-xs font-bold text-[#b0004a] hover:text-[#7a0033] whitespace-nowrap bg-[#ffd9de] px-3 py-2 rounded-lg transition-colors"
@@ -229,7 +241,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
               {allPageSelected ? 'Deselect page' : 'Select page'}
             </button>
           )}
-          {leads.length > 0 && total > LIMIT && (
+          {visibleLeads.length > 0 && total > LIMIT && (
             <button
               onClick={selectAllValid}
               disabled={selectingAll}
@@ -296,7 +308,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {leads.map((lead) => {
+              {visibleLeads.map((lead) => {
                 const isSelected = selectedLeadIds.includes(lead.id);
                 const blocked = isInvalid(lead);
                 const isReverifying = reverifying.has(lead.id);
@@ -385,7 +397,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
                   </tr>
                 );
               })}
-              {leads.length === 0 && (
+              {visibleLeads.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-4 py-12 text-center text-secondary">
                     <span className="material-symbols-outlined text-[28px] text-slate-200 block mb-1">search_off</span>
