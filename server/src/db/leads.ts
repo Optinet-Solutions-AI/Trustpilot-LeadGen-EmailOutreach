@@ -1,6 +1,14 @@
 import { getSupabase } from '../lib/supabase.js';
 import { categoryOrFilter } from '../services/lead-categories.js';
 
+/**
+ * campaign_leads statuses that mean "an email actually went out to this
+ * address". Mirrors getSentEmails() in db/campaigns.ts — keep the two in
+ * step. 'skipped' and 'pending' are deliberately absent: a skipped row is
+ * proof we did NOT send, so it must never hide a lead from the picker.
+ */
+const CONTACTED_STATUSES = ['sent', 'opened', 'replied', 'auto_replied', 'bounced'];
+
 // The legacy leads.screenshot_path is only populated for Trustpilot. Every
 // other platform stores its canonical screenshot on lead_platform_presences.
 // The frontend renders the top-level lead.screenshot_path, so when the legacy
@@ -36,6 +44,20 @@ export interface LeadFilters {
   // just blocked leads (the "how many did we scrape" count), 'exclude' hides
   // them, 'all' (default) shows everything so the matrix surfaces the badge.
   blocked?: 'only' | 'exclude' | 'all';
+  // Hide leads that have ALREADY BEEN SENT a campaign email. Used by the
+  // campaign wizard's recipient picker so operators never pick someone who
+  // would only land as 'skipped' at send time. Implemented as a PostgREST
+  // anti-join (`campaign_leads!left` + `campaign_leads=is.null`) rather than
+  // a `not.in(<addresses>)` filter: there are ~2k contacted addresses and
+  // spelling them into the query string is ~51 KB of URL. The anti-join keeps
+  // the exclusion in Postgres, so `count` and pagination stay exact.
+  //
+  // NOTE this matches on lead_id, so it misses a duplicate lead row that
+  // shares an already-contacted address (46 rows as of 2026-08-28, ~2% of
+  // contacted leads). The picker also runs its email-level check client-side
+  // to catch those; send-time dedup in routes/campaigns.ts is by email and
+  // remains the authoritative gate.
+  excludeContacted?: boolean;
   page?: number;
   limit?: number;
   sortBy?: string;
@@ -54,17 +76,22 @@ export async function getLeads(filters: LeadFilters = {}) {
   // JOIN, and filtering on `lead_platform_presences.platform` constrains
   // the parent rows. This scales: Trustpilot today is 6k+ rows, which
   // would blow the URL length limit if we used `.in('id', […])`.
+  // Embedding campaign_leads is what makes the excludeContacted anti-join
+  // possible — the embed itself returns nothing useful, it exists so the
+  // `campaign_leads=is.null` filter has a relationship to hang off.
+  const contactedEmbed = filters.excludeContacted ? ', campaign_leads!left(id)' : '';
+
   let query = filters.platform
     ? supabase
         .from('leads')
         .select(
-          '*, lead_platform_presences!inner(platform, profile_url, screenshot_path, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)',
+          '*, lead_platform_presences!inner(platform, profile_url, screenshot_path, author_handle, is_business_profile), lead_platform_posts(post_url, content_excerpt, posted_at, scraped_at, group_id, group_name)' + contactedEmbed,
           { count: 'exact' },
         )
         .eq('lead_platform_presences.platform', filters.platform)
     : supabase
         .from('leads')
-        .select('*, lead_platform_presences(platform, screenshot_path)', { count: 'exact' });
+        .select('*, lead_platform_presences(platform, screenshot_path)' + contactedEmbed, { count: 'exact' });
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
   // country uses ILIKE substring match so operator typos and partial typing
@@ -101,6 +128,13 @@ export async function getLeads(filters: LeadFilters = {}) {
     query = query.eq('blocked', true);
   } else if (filters.blocked === 'exclude') {
     query = query.eq('blocked', false);
+  }
+  // Anti-join: constrain the embed to real sends, then keep only parents
+  // whose embed came back empty — i.e. leads never actually emailed.
+  if (filters.excludeContacted) {
+    query = query
+      .in('campaign_leads.status', CONTACTED_STATUSES)
+      .is('campaign_leads', null);
   }
 
   const EMAIL_SORT_COLUMNS = new Set(['primary_email', 'trustpilot_email', 'website_email']);
@@ -150,12 +184,14 @@ export async function getLeadIds(
   const supabase = getSupabase();
   const MAX_IDS = 5000;
 
+  const contactedEmbed = filters.excludeContacted ? ', campaign_leads!left(id)' : '';
+
   let query = filters.platform
     ? supabase
         .from('leads')
-        .select('id, primary_email, lead_platform_presences!inner(platform)')
+        .select('id, primary_email, lead_platform_presences!inner(platform)' + contactedEmbed)
         .eq('lead_platform_presences.platform', filters.platform)
-    : supabase.from('leads').select('id, primary_email');
+    : supabase.from('leads').select('id, primary_email' + contactedEmbed);
 
   if (filters.status) query = query.eq('outreach_status', filters.status);
   // country uses ILIKE substring match so operator typos and partial typing
@@ -184,10 +220,21 @@ export async function getLeadIds(
   // This list feeds campaign recipient selection (wizard "select all") — never
   // hand back blocked leads. They're flagged out of outreach entirely.
   query = query.eq('blocked', false);
+  // Same anti-join as getLeads: "select all valid" must not pull in leads
+  // that were already emailed, or the campaign fills with skipped rows.
+  if (filters.excludeContacted) {
+    query = query
+      .in('campaign_leads.status', CONTACTED_STATUSES)
+      .is('campaign_leads', null);
+  }
 
   const { data, error } = await query.range(0, MAX_IDS - 1);
   if (error) throw new Error(error.message);
-  return (data || []).map((r: { id: string; primary_email: string | null }) => ({
+  // The select string is concatenated at runtime (the optional campaign_leads
+  // embed), so supabase-js can't infer a row type from it and falls back to
+  // GenericStringError. The shape is still exactly what we asked for.
+  const rows = (data || []) as unknown as Array<{ id: string; primary_email: string | null }>;
+  return rows.map((r) => ({
     id: r.id,
     primary_email: r.primary_email ?? null,
   }));
