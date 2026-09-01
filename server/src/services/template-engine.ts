@@ -39,6 +39,13 @@ const TOKEN_MAP: Record<string, (lead: LeadData) => string> = {
   // Sensible generic fallbacks — keep the sentence readable when a field is empty
   company_name: (l) => safeCompanyName(l.company_name),
   website_url:  (l) => l.website_url || 'your website',
+  // Alias. The AI prompt (frontend/src/lib/gemini.ts) advertises {{website}}
+  // to the model in manual and redirect modes, but only {{website_url}} was
+  // ever implemented — so an unresolved {{website}} kept its braces here,
+  // resolveSpintax then stripped them, and the recipient read the bare word
+  // ("Prospects leave website for competitors"). Aliasing is safer than
+  // rewriting the prompt because templates already saved on campaigns use it.
+  website:      (l) => l.website_url || 'your website',
   star_rating:  (l) => l.star_rating != null ? String(l.star_rating) : 'below-average',
   review_count: (l) => l.review_count ? String(l.review_count) : 'your',
   category:     (l) => l.category || 'your industry',
@@ -74,6 +81,15 @@ function stripSenderPlaceholders(text: string): string {
   ];
   return patterns.reduce((acc, re) => acc.replace(re, brand), text);
 }
+
+/**
+ * Token names renderTemplate knows how to resolve. Exported so the preview
+ * endpoint can warn about a typo'd or invented {{token}} BEFORE it sends:
+ * an unknown token survives renderTemplate untouched, and resolveSpintax then
+ * eats its braces, so "{{websites}}" silently reaches the recipient as the
+ * bare word "websites" with no brace left to detect downstream.
+ */
+export const KNOWN_TOKENS: readonly string[] = Object.keys(TOKEN_MAP);
 
 export function renderTemplate(template: string, lead: LeadData): string {
   const withTokens = template.replace(/\{\{(\w+)\}\}/g, (match, token) => {
