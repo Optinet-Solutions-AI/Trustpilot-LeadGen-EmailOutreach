@@ -1,9 +1,11 @@
 'use client';
 
-import { useState } from 'react';
-import type { FollowUpStepInput } from '../../types/campaign';
+import { useState, useEffect, useRef } from 'react';
+import type { FollowUpStepInput, EmailPreview } from '../../types/campaign';
 import { generateEmailTemplate, domainToCompanyName } from '../../lib/gemini';
 import { COUNTRY_LANGUAGE } from './scheduleConfig';
+import EmailPreviewModal, { type PreviewStep } from '../EmailPreviewModal';
+import { fetchEmailPreview } from '../../lib/emailPreview';
 
 interface Props {
   subject: string;
@@ -16,6 +18,9 @@ interface Props {
    *  'trustpilot' in the wizard. */
   filterPlatform: string;
   manualEmails?: string[];
+  /** Leads picked in Step 1 — the preview renders against these real rows
+   *  rather than stand-in data. */
+  selectedLeadIds?: string[];
   followUpSteps: FollowUpStepInput[];
   /** Wizard launched from the Redirected Leads page — switches the AI prompt
    *  to "I noticed your Trustpilot redirects to a different brand…" framing. */
@@ -49,10 +54,12 @@ const PLATFORM_LABELS: Record<string, string> = {
   trustpilot: 'Trustpilot',
   tripadvisor: 'TripAdvisor',
   yelp: 'Yelp',
+  booking: 'Booking.com',
 };
 
 export default function WizardStep2Sequence({
-  subject, body, includeScreenshot, filterCountry, filterCategory, filterPlatform, manualEmails, followUpSteps,
+  subject, body, includeScreenshot, filterCountry, filterCategory, filterPlatform, manualEmails,
+  selectedLeadIds = [], followUpSteps,
   redirectMode, discoveryMode,
   onSubjectChange, onBodyChange, onIncludeScreenshotChange, onFollowUpStepsChange,
 }: Props) {
@@ -60,6 +67,7 @@ export default function WizardStep2Sequence({
   const [previewMode, setPreviewMode] = useState<'raw' | 'preview'>('raw');
   const [generating, setGenerating] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [showFullPreview, setShowFullPreview] = useState(false);
 
   const platformLabel = PLATFORM_LABELS[filterPlatform] ?? 'Trustpilot';
 
@@ -164,7 +172,9 @@ export default function WizardStep2Sequence({
     }
   };
 
-  // Apply preview tokens so the panel shows a realistic sample
+  // Crude local substitution — the fallback shown only until the server
+  // render lands (or if it fails). It cannot resolve {spintax|groups}, which
+  // is exactly why it is not the thing the operator reads.
   const applyPreviewTokens = (text: string) =>
     text
       .replace(/\{\{company_name\}\}/g, previewCompanyName)
@@ -173,8 +183,71 @@ export default function WizardStep2Sequence({
       .replace(/\{\{country\}\}/g, filterCountry || 'US')
       .replace(/\{\{website\}\}/g, firstEmailDomain || 'example.com');
 
-  const bodyPreview = applyPreviewTokens(body).replace(/<[^>]+>/g, '').slice(0, 400);
-  const subjectPreview = applyPreviewTokens(activeSubject);
+  // Live server-rendered preview of the step being edited. Same
+  // POST /api/campaigns/preview -> renderAndSpin the scheduler uses, so what
+  // shows here is what actually goes out: tokens filled from a real lead and
+  // every {a|b} spintax group collapsed to one picked variant. Rendering
+  // client-side would drift from the sender and start lying.
+  const [livePreview, setLivePreview] = useState<EmailPreview | null>(null);
+  const [livePreviewLoading, setLivePreviewLoading] = useState(false);
+  const previewSeq = useRef(0);
+  const previewLeadId = selectedLeadIds[0];
+
+  useEffect(() => {
+    if (!activeSubject.trim() && !activeBody.trim()) {
+      setLivePreview(null);
+      return;
+    }
+    const seq = ++previewSeq.current;
+    setLivePreviewLoading(true);
+    // Debounced so typing doesn't fire a request per keystroke.
+    const timer = setTimeout(async () => {
+      try {
+        const data = await fetchEmailPreview({
+          subject: activeSubject,
+          body: activeBody,
+          leadId: previewLeadId,
+          includeScreenshot,
+        });
+        if (seq === previewSeq.current) setLivePreview(data);
+      } catch {
+        // Non-fatal: fall back to the raw template rather than blanking the
+        // panel. The banner tells the operator the render is stale.
+        if (seq === previewSeq.current) setLivePreview(null);
+      } finally {
+        if (seq === previewSeq.current) setLivePreviewLoading(false);
+      }
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [activeSubject, activeBody, previewLeadId, includeScreenshot]);
+
+  const htmlToText = (html: string) =>
+    html.replace(/<br[/]?>/gi, '\n')
+        .replace(/<[/]p>/gi, '\n\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+  const bodyPreview = livePreview
+    ? htmlToText(livePreview.html).slice(0, 400)
+    : applyPreviewTokens(activeBody).replace(/<[^>]+>/g, '').slice(0, 400);
+  const subjectPreview = livePreview ? livePreview.subject : applyPreviewTokens(activeSubject);
+
+  // Every step of the sequence, so the full-preview modal can page through
+  // the initial email and each follow-up exactly as a lead would receive them.
+  const previewSteps: PreviewStep[] = [
+    { label: 'Initial email', subject, body },
+    ...followUpSteps.map((s, i) => ({
+      label: `Follow-up #${i + 1}`,
+      subject: s.subject,
+      body: s.body,
+    })),
+  ];
+  const previewRecipients = selectedLeadIds.map((id) => ({ id }));
+  const campaignLanguage = filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined;
+  const canPreview = subject.trim().length > 0 || body.trim().length > 0;
 
   return (
     <div className="max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-10">
@@ -369,10 +442,37 @@ export default function WizardStep2Sequence({
                     className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm font-mono border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none resize-none"
                   />
                 ) : (
-                  <div
-                    className="w-full bg-surface-container rounded-xl px-4 py-3 text-sm min-h-[248px] prose prose-sm max-w-none"
-                    dangerouslySetInnerHTML={{ __html: activeBody || '<p class="text-slate-400">Nothing to preview yet.</p>' }}
-                  />
+                  <div className="w-full bg-surface-container rounded-xl min-h-[248px] overflow-hidden">
+                    <div className="flex items-center justify-between px-4 pt-3 pb-2 text-[10px] font-bold uppercase tracking-wider">
+                      {livePreview ? (
+                        <span className="text-emerald-700">
+                          Rendered as sent{livePreview.isSample ? ' (sample lead)' : ` to ${livePreview.companyName}`}
+                        </span>
+                      ) : (
+                        <span className="text-amber-700">
+                          {livePreviewLoading ? 'Rendering…' : 'Raw template — tokens and spintax unresolved'}
+                        </span>
+                      )}
+                      {livePreviewLoading && livePreview && (
+                        <span className="text-secondary normal-case font-normal">updating…</span>
+                      )}
+                    </div>
+                    <div
+                      className="px-4 pb-3 text-sm prose prose-sm max-w-none"
+                      dangerouslySetInnerHTML={{
+                        __html: livePreview?.html
+                          || activeBody
+                          || '<p class="text-slate-400">Nothing to preview yet.</p>',
+                      }}
+                    />
+                    {livePreview && livePreview.warnings.length > 0 && (
+                      <div className="mx-4 mb-3 rounded-lg bg-amber-50 px-3 py-2">
+                        {livePreview.warnings.map((w) => (
+                          <p key={w} className="text-[11px] text-amber-800 leading-relaxed">• {w}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* Token & spintax helpers */}
@@ -444,9 +544,15 @@ export default function WizardStep2Sequence({
               <p className="text-sm font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>
                 Message Preview
               </p>
-              <span className="text-[10px] font-bold text-secondary bg-surface-container px-2.5 py-1 rounded-full uppercase tracking-wider">
-                Sample Data
-              </span>
+              <button
+                onClick={() => setShowFullPreview(true)}
+                disabled={!canPreview}
+                className="flex items-center gap-1.5 text-[10px] font-extrabold text-on-primary primary-gradient px-3 py-1.5 rounded-full uppercase tracking-wider ambient-shadow hover:scale-[1.03] disabled:opacity-40 disabled:hover:scale-100 transition-transform"
+                title="See the fully rendered email, tokens and spintax resolved"
+              >
+                <span className="material-symbols-outlined text-[13px]">visibility</span>
+                See Full Email
+              </button>
             </div>
 
             {/* Lead avatar + info */}
@@ -471,6 +577,23 @@ export default function WizardStep2Sequence({
             <div className="px-4 pb-4 max-h-[180px] overflow-y-auto">
               <p className="text-xs text-secondary leading-relaxed">
                 {bodyPreview || <span className="text-slate-300">No body yet</span>}
+              </p>
+            </div>
+
+            {/* The panel above is a rough sample: HTML stripped, spintax left
+                raw, truncated. "See Full Email" is the authoritative view. */}
+            <div className="px-4 pb-3 -mt-1">
+              <p className="text-[10px] text-secondary leading-relaxed">
+                {livePreview
+                  ? 'Rendered exactly as sent, truncated here. '
+                  : 'Raw template — spintax unresolved. '}
+                <button
+                  onClick={() => setShowFullPreview(true)}
+                  disabled={!canPreview}
+                  className="font-bold text-[#b0004a] hover:underline disabled:opacity-40 disabled:no-underline"
+                >
+                  See the real email
+                </button>
               </p>
             </div>
 
@@ -512,7 +635,11 @@ export default function WizardStep2Sequence({
             <div className="border-t border-slate-100 px-4 py-3 flex gap-2">
               <button
                 type="button"
-                onClick={() => navigator.clipboard?.writeText(`Subject: ${activeSubject}\n\n${activeBody.replace(/<[^>]+>/g, '')}`)}
+                onClick={() => navigator.clipboard?.writeText(
+                  livePreview
+                    ? `Subject: ${livePreview.subject}\n\n${htmlToText(livePreview.html)}`
+                    : `Subject: ${activeSubject}\n\n${activeBody.replace(/<[^>]+>/g, '')}`,
+                )}
                 className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-secondary border border-slate-200 rounded-lg py-2 hover:bg-surface-container transition-colors"
               >
                 <span className="material-symbols-outlined text-[13px]">content_copy</span>
@@ -620,6 +747,16 @@ export default function WizardStep2Sequence({
 
         </div>
       </div>
+
+      {showFullPreview && (
+        <EmailPreviewModal
+          steps={previewSteps}
+          includeScreenshot={includeScreenshot}
+          recipients={previewRecipients}
+          language={campaignLanguage}
+          onClose={() => setShowFullPreview(false)}
+        />
+      )}
     </div>
   );
 }
