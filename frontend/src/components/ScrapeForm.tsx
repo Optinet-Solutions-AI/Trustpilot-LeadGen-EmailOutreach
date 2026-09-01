@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
-import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, FacebookScrapeParams, InstagramScrapeParams } from '../types/scrape';
+import type { ScrapeParams, TripAdvisorScrapeParams, TrustpilotScrapeParams, YelpScrapeParams, BookingScrapeParams, FacebookScrapeParams, InstagramScrapeParams, ForexPeaceArmyScrapeParams } from '../types/scrape';
 import api from '../api/client';
 import CountryPicker from './CountryPicker';
 import LocationPicker, { citiesForCountry } from './LocationPicker';
@@ -128,7 +128,7 @@ const LISTING_TYPE_OPTIONS = [
   { value: 'attractions', label: 'Attractions' },
 ];
 
-type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp' | 'facebook' | 'instagram';
+type SupportedPlatform = 'trustpilot' | 'tripadvisor' | 'yelp' | 'booking' | 'facebook' | 'instagram' | 'forexpeacearmy';
 
 export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [platform, setPlatform] = useState<SupportedPlatform>('trustpilot');
@@ -161,6 +161,24 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   // return nothing until this is on.
   const [yIncludeUnrated, setYIncludeUnrated] = useState(false);
 
+  // Booking.com fields — short-term-rental hosts for property-management
+  // outreach. No category picker: the segmentation that matters here is host
+  // SIZE, and that is derived from the scrape (1-5 properties = owner-host,
+  // 6+ = agency) rather than chosen up front. City is free text because the
+  // actor takes a plain "City, Country" string — no seed table to maintain.
+  const [bkCountry, setBkCountry] = useState('ES');
+  const [bkCity, setBkCity] = useState('Marbella');
+  // Booking scores out of 10, not 5. 8.5 is roughly where Booking stops
+  // badging a listing as well-reviewed.
+  const [bkMaxScore, setBkMaxScore] = useState(8.5);
+  const [bkMinReviewCount, setBkMinReviewCount] = useState(5);
+  const [bkMaxProperties, setBkMaxProperties] = useState(0);
+  const [bkExcludeHotels, setBkExcludeHotels] = useState(false);
+  // ON by default: this actor does not always publish a review score, and a
+  // score filter that quietly dropped every row would return 0 leads from a
+  // paid run.
+  const [bkIncludeUnrated, setBkIncludeUnrated] = useState(true);
+
   // Facebook fields — two modes (consumers/businesses) toggled by leadType.
   // Consumer mode is now group-first: niche + location → discover groups
   // → in-group search. The legacy single-query open-feed path is the
@@ -181,6 +199,54 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [fbGroupUrls, setFbGroupUrls] = useState('');
   const [fbGroupKeyword, setFbGroupKeyword] = useState('recommend');
   const fbParsedGroups = parseGroupUrls(fbGroupUrls);
+  // Groups we already know about are filled in automatically — pasting URLs by
+  // hand was the only way to run a group scrape, so in practice nobody did and
+  // every run fell through to the open keyword feed, which is mostly adverts.
+  // Source is the same vetted set the Discovered Groups page shows.
+  // `fbGroupsTouched` freezes the auto-fill the moment the operator edits the
+  // box, so their choice is never overwritten by a later niche/location change.
+  const [fbGroupsTouched, setFbGroupsTouched] = useState(false);
+  const [fbAutoGroupNote, setFbAutoGroupNote] = useState('');
+
+  useEffect(() => {
+    if (platform !== 'facebook' || fbLeadType !== 'consumers' || fbGroupsTouched) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/social-groups/discovered');
+        const rows: Array<Record<string, string | null>> = res.data?.data || [];
+        const niche = fbNiche.trim().toLowerCase();
+        const loc = fbLocation.trim().toLowerCase();
+        // Joined groups always qualify; otherwise only ones already labelled
+        // consumer-facing, so trade-to-trade groups never get scraped for
+        // "people asking for a service".
+        const usable = rows.filter(
+          (g) => g.status !== 'ignored' && (g.status === 'joined' || g.audience === 'customers'),
+        );
+        const hay = (g: Record<string, string | null>) =>
+          `${g.name ?? ''} ${g.niche ?? ''} ${g.location ?? ''}`.toLowerCase();
+        const byNiche = (g: Record<string, string | null>) => !niche || hay(g).includes(niche);
+        const byLoc = (g: Record<string, string | null>) => !loc || hay(g).includes(loc);
+        // Widen in steps rather than returning nothing: a "Find a Builder -
+        // London" group is still where a Londoner asks for an electrician.
+        let picked = usable.filter((g) => byNiche(g) && byLoc(g));
+        let how = 'matching this niche and location';
+        if (!picked.length) { picked = usable.filter(byLoc); how = 'in this location'; }
+        if (!picked.length) { picked = usable.filter(byNiche); how = 'matching this niche'; }
+        if (cancelled) return;
+        setFbGroupUrls(picked.map((g) => `https://www.facebook.com/groups/${g.group_id}`).join('\n'));
+        setFbAutoGroupNote(
+          picked.length
+            ? `${picked.length} group${picked.length === 1 ? '' : 's'} auto-selected ${how}.`
+            : 'No known groups match — this will search the open Facebook feed instead.',
+        );
+      } catch {
+        // Non-fatal: operator can still paste URLs, or run the open feed.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [platform, fbLeadType, fbNiche, fbLocation, fbGroupsTouched]);
+
   const fbIsGroupScrape = fbParsedGroups.length > 0;
 
   // Active-market gate (Option A). The FB businesses country field is
@@ -213,6 +279,11 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
   const [igQuery, setIgQuery] = useState('');
   const [igLocation, setIgLocation] = useState('London');
   const [igCountry, setIgCountry] = useState('GB');
+  // ForexPeaceArmy complaint feed
+  const [fpaFolders, setFpaFolders] = useState<ForexPeaceArmyScrapeParams['folders']>('live');
+  const [fpaMaxAgeDays, setFpaMaxAgeDays] = useState(14);
+  const [fpaMinUrgency, setFpaMinUrgency] = useState(1);
+  const [fpaIncludeUnclassified, setFpaIncludeUnclassified] = useState(true);
 
   // Keep the IG location in step with the chosen country: when the country
   // changes, default the city to that country's primary curated city (or blank
@@ -265,6 +336,20 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         verify,
         forceRescrape,
       } satisfies YelpScrapeParams;
+    } else if (platform === 'booking') {
+      params = {
+        platform: 'booking',
+        country: bkCountry,
+        city: bkCity,
+        max_review_score: bkMaxScore,
+        min_review_count: bkMinReviewCount,
+        max_properties: bkMaxProperties,
+        exclude_hotels: bkExcludeHotels,
+        include_unrated: bkIncludeUnrated,
+        enrich,
+        verify,
+        forceRescrape,
+      } satisfies BookingScrapeParams;
     } else if (platform === 'facebook') {
       // Consumer mode needs a `query` string for facebook.com/search/posts/?q=
       // The operator-facing form asks for niche + location separately; we
@@ -295,6 +380,19 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
         verify,
         forceRescrape,
       } satisfies FacebookGroupScrapeParams;
+    } else if (platform === 'forexpeacearmy') {
+      // Monitoring feed: no country/category/rating. Flat shape like the
+      // social platforms — the server merges these into filters.
+      params = {
+        platform: 'forexpeacearmy',
+        folders: fpaFolders,
+        max_age_days: fpaMaxAgeDays,
+        min_urgency: fpaMinUrgency,
+        include_unclassified: fpaIncludeUnclassified,
+        enrich,
+        verify,
+        forceRescrape,
+      } satisfies ForexPeaceArmyScrapeParams;
     } else if (platform === 'instagram') {
       // Flat shape (like Facebook): posted as-is via ScrapeContext's `else`
       // branch; the server merges these top-level fields into filters. Strip a
@@ -522,12 +620,17 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                     rows={4}
                     placeholder={'https://www.facebook.com/groups/1572344082987398\nhttps://www.facebook.com/groups/435424147376112'}
                     value={fbGroupUrls}
-                    onChange={(e) => setFbGroupUrls(e.target.value)}
+                    onChange={(e) => { setFbGroupsTouched(true); setFbGroupUrls(e.target.value); }}
                     disabled={busy}
                     className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface font-mono focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
                   />
                   <p className="mt-1 text-[11px] text-on-surface-variant">
                     Full URLs or bare group ids. Leave empty to search Facebook instead.
+                    {!fbGroupsTouched && fbAutoGroupNote ? (
+                      <>
+                        {' '}<span className="text-[#b0004a] font-semibold">{fbAutoGroupNote}</span>
+                      </>
+                    ) : null}
                     {fbGroupUrls.trim() ? (
                       <>
                         {' '}Recognised: <strong>{fbParsedGroups.length}</strong> group
@@ -623,6 +726,73 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
               <p className="text-[11px] text-amber-700 dark:text-amber-400">
                 Requires at least one connected Facebook account. Manage in <a href="/social-accounts" className="underline">Social Accounts</a>.
               </p>
+            </div>
+          </>
+        )}
+
+        {platform === 'forexpeacearmy' && (
+          <>
+            <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-outline-variant bg-surface-variant/40 px-3 py-2 text-sm text-on-surface-variant">
+              Monitoring feed — these are forum complaint threads to answer publicly,
+              not contacts to email. ForexPeaceArmy redacts email addresses at source,
+              so every result lands without one and is excluded from email campaigns.
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fpa-folders">
+                Folders to monitor
+              </label>
+              <select
+                id="fpa-folders"
+                value={fpaFolders}
+                onChange={(e) => setFpaFolders(e.target.value as ForexPeaceArmyScrapeParams['folders'])}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              >
+                <option value="live">Live complaint traffic (recommended)</option>
+                <option value="archives">Scam Alerts + Blacklisted (archive, pre-2024)</option>
+                <option value="resolutions">Resolved cases (reference only)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fpa-age">
+                Only posts from the last <span className="text-on-surface-variant font-normal">(days)</span>
+              </label>
+              <input
+                id="fpa-age"
+                type="number"
+                min={1}
+                max={90}
+                value={fpaMaxAgeDays}
+                onChange={(e) => setFpaMaxAgeDays(Number(e.target.value))}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="fpa-urgency">
+                Minimum urgency <span className="text-on-surface-variant font-normal">(1-5)</span>
+              </label>
+              <input
+                id="fpa-urgency"
+                type="number"
+                min={1}
+                max={5}
+                value={fpaMinUrgency}
+                onChange={(e) => setFpaMinUrgency(Number(e.target.value))}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+            </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="flex items-center gap-2 text-sm text-on-surface">
+                <input
+                  type="checkbox"
+                  checked={fpaIncludeUnclassified}
+                  onChange={(e) => setFpaIncludeUnclassified(e.target.checked)}
+                  disabled={busy}
+                />
+                Keep posts the classifier could not judge (fails the run instead when off)
+              </label>
             </div>
           </>
         )}
@@ -783,6 +953,122 @@ export default function ScrapeForm({ onSubmit, loading }: Props) {
                 disabled={busy}
                 label="Include unrated businesses"
                 description="Keeps listings with no rating at all. Needed outside the US, where most businesses have never been reviewed — the rating and review filters don't apply to them."
+              />
+            </div>
+          </>
+        )}
+
+        {platform === 'booking' && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="booking-country">
+                Country
+              </label>
+              <CountryPicker
+                id="booking-country"
+                value={bkCountry}
+                onChange={setBkCountry}
+                disabled={busy}
+                platform="booking"
+                restrict={OUTREACH_COUNTRY_CODES}
+              />
+              <p className="mt-1 text-[11px] text-on-surface-variant">
+                EU/UK markets yield the most contacts — trader-transparency rules
+                oblige professional hosts there to publish business contact details.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="booking-city">
+                City
+              </label>
+              <input
+                id="booking-city"
+                type="text"
+                value={bkCity}
+                onChange={(e) => setBkCity(e.target.value)}
+                disabled={busy}
+                placeholder="Marbella"
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+              <p className="mt-1 text-[11px] text-on-surface-variant">
+                Separate several cities with commas. Each one is searched in turn.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="booking-max-score">
+                Max review score
+              </label>
+              <input
+                id="booking-max-score"
+                type="number"
+                min={1}
+                max={10}
+                step={0.1}
+                value={bkMaxScore}
+                onChange={(e) => setBkMaxScore(Math.min(10, Math.max(1, parseFloat(e.target.value) || 10)))}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+              <p className="mt-1 text-[11px] text-on-surface-variant">
+                Booking scores out of 10, not 5. Lower scores mean guest complaints
+                about check-in and cleaning — the services being pitched.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="booking-min-reviews">
+                Min review count
+              </label>
+              <input
+                id="booking-min-reviews"
+                type="number"
+                min={0}
+                max={5000}
+                step={1}
+                value={bkMinReviewCount}
+                onChange={(e) => setBkMinReviewCount(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+              <p className="mt-1 text-[11px] text-on-surface-variant">
+                Skips brand-new listings with no trading history
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-on-surface mb-1.5" htmlFor="booking-max-properties">
+                Max properties per host
+              </label>
+              <input
+                id="booking-max-properties"
+                type="number"
+                min={0}
+                max={500}
+                step={1}
+                value={bkMaxProperties}
+                onChange={(e) => setBkMaxProperties(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                disabled={busy}
+                className="w-full rounded-lg border border-outline-variant bg-surface px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+              <p className="mt-1 text-[11px] text-on-surface-variant">
+                0 keeps every host. Set 5 to target owner-hosts only — agencies with
+                more properties usually already have staff.
+              </p>
+            </div>
+            <div className="sm:col-span-2">
+              <Toggle
+                checked={bkExcludeHotels}
+                onChange={(e) => setBkExcludeHotels(e.target.checked)}
+                disabled={busy}
+                label="Exclude hotels, hostels and resorts"
+                description="Keeps apartments and holiday lets only. Skipped for listings whose type Booking didn't publish, so it never silently drops a whole city."
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Toggle
+                checked={bkIncludeUnrated}
+                onChange={(e) => setBkIncludeUnrated(e.target.checked)}
+                disabled={busy}
+                label="Include properties with no review score"
+                description="Leave on unless you know scores are coming through. Booking doesn't publish a score on every listing, and with this off the score filter can drop every result from a paid run."
               />
             </div>
           </>
