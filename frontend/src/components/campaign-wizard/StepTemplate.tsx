@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { generateEmailTemplate } from '../../lib/gemini';
+import { resolveOutreachLanguage } from './scheduleConfig';
 
 const TOKENS = ['{{company_name}}', '{{website_url}}', '{{star_rating}}', '{{category}}', '{{country}}'];
 
@@ -44,6 +45,9 @@ export default function StepTemplate({ subject, body, includeScreenshot, filterC
       const result = await generateEmailTemplate({
         country: filterCountry || undefined,
         category: filterCategory || undefined,
+        // Non-English markets get copy in their own language. Omitting this
+        // silently produced English for every country.
+        language: resolveOutreachLanguage(filterCountry),
       });
       onChange({ subject: result.subject, body: result.body });
     } catch (err) {

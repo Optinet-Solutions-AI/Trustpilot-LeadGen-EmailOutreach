@@ -8,7 +8,7 @@ vi.mock('../lib/supabase.js', () => ({
   getSupabase: () => mockSupabase,
 }));
 
-import { getLeads, getLeadIds } from './leads.js';
+import { getLeads, getLeadIds, getVerificationCounts } from './leads.js';
 
 /**
  * Chainable query-builder mock that records every method call, mirroring the
@@ -17,7 +17,7 @@ import { getLeads, getLeadIds } from './leads.js';
 function makeQueryChain(result: { data: unknown; error: unknown; count?: number | null }) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const chain: Record<string, (...args: unknown[]) => unknown> = {};
-  const linkers = ['select', 'eq', 'neq', 'ilike', 'or', 'gte', 'lte', 'not', 'is', 'order', 'limit', 'range'];
+  const linkers = ['select', 'eq', 'neq', 'ilike', 'or', 'gte', 'lte', 'not', 'is', 'in', 'order', 'limit', 'range'];
 
   for (const m of linkers) {
     chain[m] = (...args: unknown[]) => {
@@ -143,5 +143,124 @@ describe('getLeadIds category filter', () => {
 
     expect(argsFor(calls, 'or')).toEqual([['category.ilike.%plumber%,category.ilike.%plumbing%']]);
     expect(argsFor(calls, 'ilike').filter(([col]) => col === 'category')).toEqual([]);
+  });
+});
+
+// ── Verification filtering (2026-09-02) ────────────────────────────────────
+// "Has Email" was being read as "sendable", campaigns were sized off it, and
+// the launches then died at the invalid-email send gate. These cover the
+// filters and counts that make the real sendable audience visible.
+describe('getLeads verification filter', () => {
+  test("'unverified' means the column IS NULL, not the string 'unverified'", async () => {
+    const { chain, calls } = makeQueryChain({ data: [], error: null, count: 0 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getLeads({ verificationStatus: 'unverified' });
+
+    expect(argsFor(calls, 'is')).toContainEqual(['verification_status', null]);
+    // Must never reach the column as an equality — 'unverified' is not a
+    // stored value and would silently match nothing.
+    expect(argsFor(calls, 'eq').filter(([col]) => col === 'verification_status')).toEqual([]);
+  });
+
+  test('a real verdict still filters by equality', async () => {
+    const { chain, calls } = makeQueryChain({ data: [], error: null, count: 0 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getLeads({ verificationStatus: 'catch-all' });
+
+    expect(argsFor(calls, 'eq')).toContainEqual(['verification_status', 'catch-all']);
+    expect(argsFor(calls, 'is').filter(([col]) => col === 'verification_status')).toEqual([]);
+  });
+});
+
+describe('getLeads ids filter', () => {
+  test('restricts to the given id set', async () => {
+    const { chain, calls } = makeQueryChain({ data: [], error: null, count: 0 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getLeads({ ids: ['a', 'b'] });
+
+    expect(argsFor(calls, 'in')).toContainEqual(['id', ['a', 'b']]);
+  });
+
+  test('an empty id list is ignored rather than matching nothing', async () => {
+    const { chain, calls } = makeQueryChain({ data: [], error: null, count: 0 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getLeads({ ids: [] });
+
+    expect(argsFor(calls, 'in').filter(([col]) => col === 'id')).toEqual([]);
+  });
+});
+
+describe('getVerificationCounts', () => {
+  test('every bucket runs through the same filters as the list query', async () => {
+    // One chain reused across all the head-count queries — we only care that
+    // each carries the caller's filters plus its own verdict.
+    const { chain, calls } = makeQueryChain({ data: null, error: null, count: 7 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    const counts = await getVerificationCounts({ country: 'SE', hasEmail: true });
+
+    // Same country predicate on every bucket, so a chip can never describe a
+    // different population than the rows on screen.
+    const countryFilters = argsFor(calls, 'ilike').filter(([col]) => col === 'country');
+    expect(countryFilters.length).toBeGreaterThanOrEqual(7);
+    expect(countryFilters.every(([, pattern]) => pattern === '%SE%')).toBe(true);
+
+    // The verdict buckets, including NULL for 'unverified'.
+    const verdicts = argsFor(calls, 'eq')
+      .filter(([col]) => col === 'verification_status')
+      .map(([, v]) => v);
+    expect(verdicts).toEqual(expect.arrayContaining(['valid', 'invalid', 'catch-all', 'unknown']));
+    expect(argsFor(calls, 'is')).toContainEqual(['verification_status', null]);
+
+    expect(counts.total).toBe(7);
+    expect(counts.sendable).toBe(7);
+  });
+
+  test('"sendable" requires an address even when hasEmail was off', async () => {
+    const { chain, calls } = makeQueryChain({ data: null, error: null, count: 3 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getVerificationCounts({});
+
+    // The sendable bucket is the only one that adds the not-null email
+    // predicate — that is what makes it answer "can I send today?".
+    expect(argsFor(calls, 'not')).toContainEqual(['primary_email', 'is', null]);
+    expect(
+      argsFor(calls, 'eq').filter(([col, v]) => col === 'verification_status' && v === 'valid').length,
+    ).toBe(2); // once for the 'valid' chip, once for 'sendable'
+  });
+});
+
+describe('getLeads prospect-type filter', () => {
+  test('narrows to the requested types', async () => {
+    const { chain, calls } = makeQueryChain({ data: [], error: null, count: 0 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getLeads({ prospectType: ['operator', 'unclassified'] });
+
+    expect(argsFor(calls, 'in')).toContainEqual(['prospect_type', ['operator', 'unclassified']]);
+  });
+});
+
+describe('getVerificationCounts excludeContacted', () => {
+  test('applies the anti-join, not just the embed', async () => {
+    const { chain, calls } = makeQueryChain({ data: null, error: null, count: 0 });
+    mockSupabase.from.mockReturnValue(chain);
+
+    await getVerificationCounts({ excludeContacted: true });
+
+    // Requesting the embed without filtering on it would over-report the
+    // sendable audience by counting already-emailed leads.
+    const selects = argsFor(calls, 'select').map(([sel]) => String(sel));
+    expect(selects.every((sel) => sel.includes('campaign_leads!left(id)'))).toBe(true);
+    expect(argsFor(calls, 'in')).toContainEqual([
+      'campaign_leads.status',
+      ['sent', 'opened', 'replied', 'auto_replied', 'bounced'],
+    ]);
+    expect(argsFor(calls, 'is')).toContainEqual(['campaign_leads', null]);
   });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import api from '../../api/client';
 import { COUNTRIES, CATEGORIES } from './scheduleConfig';
@@ -42,6 +42,11 @@ function preloadScreenshot(src: string): void {
 interface Props {
   filterCountry: string;
   filterCategory: string;
+  /** Outreach language name ('Swedish'), or '' for "any". Selecting one
+   *  widens the pool to EVERY market that speaks it — the point being that
+   *  one Swedish campaign can cover SE and the Swedish-speaking slice of FI
+   *  without running two campaigns. Supersedes filterCountry when set. */
+  filterLanguage: string;
   /** Platform slug the campaign targets ('trustpilot' / 'tripadvisor' /
    *  'yelp') — always set; the wizard no longer offers "all platforms" and
    *  defaults to 'trustpilot'. Restricts the lead pool to that platform's
@@ -63,6 +68,7 @@ interface Props {
   discoveryMode?: boolean;
   onFilterCountryChange: (v: string) => void;
   onFilterCategoryChange: (v: string) => void;
+  onFilterLanguageChange: (v: string) => void;
   onFilterPlatformChange: (v: string) => void;
   onSelectionChange: (ids: string[]) => void;
   onManualEmailsChange: (emails: string[]) => void;
@@ -76,6 +82,7 @@ const PLATFORM_OPTIONS: Array<{ slug: string; name: string }> = [
   { slug: 'trustpilot',  name: 'Trustpilot' },
   { slug: 'tripadvisor', name: 'TripAdvisor' },
   { slug: 'yelp',        name: 'Yelp' },
+  { slug: 'booking',     name: 'Booking.com' },
 ];
 
 const LIMIT = 50;
@@ -83,14 +90,17 @@ const LIMIT = 50;
 type SourceMode = 'matrix' | 'manual';
 
 export default function WizardStep1Leads({
-  filterCountry, filterCategory, filterPlatform, selectedLeadIds, manualEmails, maxLeads,
+  filterCountry, filterCategory, filterLanguage, filterPlatform, selectedLeadIds, manualEmails, maxLeads,
   redirectMode, discoveryMode,
-  onFilterCountryChange, onFilterCategoryChange, onFilterPlatformChange,
+  onFilterCountryChange, onFilterCategoryChange, onFilterLanguageChange, onFilterPlatformChange,
   onSelectionChange, onManualEmailsChange, onMaxLeadsChange,
 }: Props) {
   const [appMode, setAppMode] = useState<AppMode | null>(null);
   const [dynamicCountries, setDynamicCountries] = useState<string[]>([]);
   const [dynamicCategories, setDynamicCategories] = useState<string[]>([]);
+  const [languageOptions, setLanguageOptions] = useState<
+    Array<{ language: string; countries: string[]; leadCount: number }>
+  >([]);
   const [sourceMode, setSourceMode] = useState<SourceMode>('matrix');
   const [manualInput, setManualInput] = useState(manualEmails.join('\n'));
   const [leads, setLeads]         = useState<PickerLead[]>([]);
@@ -103,6 +113,18 @@ export default function WizardStep1Leads({
   const [sortBy, setSortBy]       = useState('star_rating');
   const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('asc');
   const [rotation, setRotation]   = useState<'oldest' | 'random'>('oldest');
+  // How much of the matching list to actually LIST.
+  //
+  // Defaults to 'sendable' in standard outreach mode, because that is this
+  // screen's whole job: produce a list a campaign can mail. Showing all 402
+  // matching CA leads when 1 was mailable is what made the panel read as a
+  // lie — the operator saw a big number and a table full of rows with no
+  // address (reported 2026-09-02). Redirect and discovery modes default to
+  // 'all': they are scoped populations judged on a different email column,
+  // so a primary-email verdict would wrongly empty the picker.
+  const [reach, setReach] = useState<'sendable' | 'has_email' | 'all'>(
+    redirectMode || discoveryMode ? 'all' : 'sendable',
+  );
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState<string>('');
   const [previewLoaded, setPreviewLoaded] = useState(false);
@@ -120,6 +142,13 @@ export default function WizardStep1Leads({
       if (countries?.length) setDynamicCountries(countries);
       if (categories?.length) setDynamicCategories(categories);
     }).catch(() => { /* fall back to static lists */ });
+
+    // Languages that actually have leads, with live counts. Served from the
+    // API because the language -> countries expansion is the same logic the
+    // filter applies server-side; mirroring it here would let the two drift.
+    api.get('/leads/languages')
+      .then((res) => setLanguageOptions(res.data?.data ?? []))
+      .catch(() => setLanguageOptions([]));
   }, []);
 
   useEffect(() => {
@@ -133,7 +162,14 @@ export default function WizardStep1Leads({
       const p = new URLSearchParams();
       if (filterCountry) p.set('country', filterCountry);
       if (filterCategory) p.set('category', filterCategory);
+      if (filterLanguage) p.set('language', filterLanguage);
       if (filterPlatform) p.set('platform', filterPlatform);
+      // 'sendable' is the pair of conditions the send gate actually enforces:
+      // an address on file AND a valid verdict. Anything less is not mailable
+      // today, so listing it in a recipient picker only invites a launch that
+      // gets blocked.
+      if (reach === 'sendable') { p.set('hasEmail', 'true'); p.set('verificationStatus', 'valid'); }
+      else if (reach === 'has_email') p.set('hasEmail', 'true');
       if (debSearch) p.set('search', debSearch);
       p.set('page', String(page));
       p.set('limit', String(LIMIT));
@@ -160,9 +196,65 @@ export default function WizardStep1Leads({
     } finally {
       setLoading(false);
     }
-  }, [filterCountry, filterCategory, filterPlatform, debSearch, page, sortBy, sortDir, redirectMode, discoveryMode]);
+  }, [filterCountry, filterCategory, filterLanguage, filterPlatform, reach, debSearch, page, sortBy, sortDir, redirectMode, discoveryMode]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
+
+  // ── Hand-off reconciliation ──────────────────────────────────────────
+  // Leads pre-selected elsewhere (the Lead Matrix "Send" button, Redirected
+  // Leads, Prospects) arrive as bare ids. They never passed through this
+  // picker's rules, and they are usually NOT on the page the picker happens
+  // to be showing — so the operator could neither see nor uncheck them. That
+  // is exactly how invalid addresses reached the send gate and killed the
+  // Canada and Australia launches (2026-09-02).
+  //
+  // So: read the handed-over ids back once, drop the ones a campaign can
+  // never send to, and say plainly what was dropped. `?ids=` runs through the
+  // same filter path as the list query, so the verdicts agree.
+  const [handoffNotice, setHandoffNotice] = useState<{ removed: number; unverified: number } | null>(null);
+  const reconciledRef = useRef(false);
+  useEffect(() => {
+    if (reconciledRef.current) return;
+    if (selectedLeadIds.length === 0) return;
+    // Discovery follow-ups are exempt: they send to lead.discovered_email,
+    // the address the recipient's own auto-reply gave us, while
+    // verification_status describes primary_email — which for these leads is
+    // usually the address that already bounced. Judging them on it would
+    // strip exactly the leads this flow exists to rescue. The send gate
+    // applies the discovered_email verdict for these instead.
+    if (discoveryMode) { reconciledRef.current = true; return; }
+    reconciledRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = new URLSearchParams();
+        p.set('ids', selectedLeadIds.join(','));
+        p.set('limit', String(selectedLeadIds.length));
+        p.set('page', '1');
+        const res = await api.get(`/leads?${p}`);
+        const rows: PickerLead[] = res.data?.data ?? [];
+        if (cancelled || rows.length === 0) return;
+        const invalid = rows.filter((l) => l.verification_status === 'invalid').map((l) => l.id);
+        const unverified = rows.filter((l) => l.verification_status == null).length;
+        if (invalid.length > 0) {
+          const invalidSet = new Set(invalid);
+          onSelectionChange(selectedLeadIds.filter((id) => !invalidSet.has(id)));
+        }
+        if (invalid.length > 0 || unverified > 0) {
+          setHandoffNotice({ removed: invalid.length, unverified });
+        }
+      } catch {
+        // Leave the selection untouched — the send gate is still the
+        // authoritative backstop, so a failed read degrades to old behaviour.
+      }
+    })();
+    return () => { cancelled = true; };
+    // Intentionally mount-only: this reconciles the INCOMING selection, not
+    // every later click. reconciledRef guards a StrictMode double-invoke.
+    // discoveryMode is a launch-time mode that never changes for a given
+    // wizard instance, so reading it once here is correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Per-row in-flight tracking for re-verification. Clicking a row whose
   // verification_status is 'invalid' fires ZeroBounce on both source emails
@@ -225,10 +317,49 @@ export default function WizardStep1Leads({
     setPage(1);
   };
 
-  // Health score: % of leads with valid email
-  const healthPct = total > 0
-    ? Math.round((leads.filter((l) => l.primary_email).length / leads.length) * 100)
+  // ── List health, from the real verdict split ──────────────────────────
+  // The old "health score" here was `% of the CURRENT PAGE carrying any
+  // primary_email`, rendered under the label "Verified & Reachable" beside a
+  // hardcoded "cleaned recently, bouncing risk <2%". All three were wrong at
+  // once: it measured one page not the list, it measured "has an address" not
+  // "verified", and the reassurance was a constant string that rendered
+  // identically for a perfect list and an empty one. A CA list showing "402
+  // verified leads available / 2% reachable" was reported on 2026-09-02 —
+  // both numbers were right about different things and every label was wrong.
+  //
+  // Now served by /api/leads/verification-counts, which takes the same query
+  // string as the list itself, so the panel and the rows can never disagree.
+  const [counts, setCounts] = useState<{
+    total: number; valid: number; invalid: number; 'catch-all': number;
+    unknown: number; unverified: number; sendable: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (filterCountry) p.set('country', filterCountry);
+    if (filterCategory) p.set('category', filterCategory);
+    if (filterLanguage) p.set('language', filterLanguage);
+    if (filterPlatform) p.set('platform', filterPlatform);
+    if (debSearch) p.set('search', debSearch);
+    p.set('redirected', redirectMode ? 'only' : 'exclude');
+    if (!redirectMode && !discoveryMode) p.set('status', 'new');
+    let cancelled = false;
+    api.get(`/leads/verification-counts?${p}`)
+      .then((res) => { if (!cancelled) setCounts(res.data?.data ?? null); })
+      .catch(() => { if (!cancelled) setCounts(null); });
+    return () => { cancelled = true; };
+  }, [filterCountry, filterCategory, filterLanguage, filterPlatform, debSearch, redirectMode, discoveryMode]);
+
+  // Share of the matching list that can actually go out today. This is the
+  // number the operator was reading off the old bar.
+  const sendablePct = counts && counts.total > 0
+    ? Math.round((counts.sendable / counts.total) * 100)
     : 0;
+
+  // A discovery follow-up sends to discovered_email, so a verdict on
+  // primary_email says nothing about whether it can be mailed. Don't dress
+  // these counts up as a sendable figure in that mode.
+  const sendableApplies = !discoveryMode;
 
   // Use dynamic lists if loaded, fall back to static
   const countryOptions = dynamicCountries.length > 0
@@ -264,6 +395,33 @@ export default function WizardStep1Leads({
           <p className="text-sm text-amber-700">
             <span className="font-bold">Testing mode active</span> — only manually entered email addresses can be used as recipients. Scraped leads are locked until testing is complete.
           </p>
+        </div>
+      )}
+
+      {/* Hand-off reconciliation notice — what the picker silently fixed, and
+          what the operator still has to decide about. */}
+      {handoffNotice && (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 mb-6">
+          <span className="material-symbols-outlined text-amber-600 text-[20px] shrink-0 mt-0.5">rule</span>
+          <div className="text-sm text-amber-800 space-y-1">
+            {handoffNotice.removed > 0 && (
+              <p>
+                <span className="font-bold">
+                  {handoffNotice.removed} lead{handoffNotice.removed === 1 ? '' : 's'} removed
+                </span>{' '}
+                — the address was verified as invalid, so a campaign can never send to it.
+              </p>
+            )}
+            {handoffNotice.unverified > 0 && (
+              <p>
+                <span className="font-bold">
+                  {handoffNotice.unverified} lead{handoffNotice.unverified === 1 ? ' is' : 's are'} not verified yet
+                </span>{' '}
+                — still selected, but the launch will be held back until you verify or remove them. Run
+                verification from the Lead Matrix first.
+              </p>
+            )}
+          </div>
         </div>
       )}
 
@@ -421,7 +579,9 @@ export default function WizardStep1Leads({
               Configuration: Lead Matrix
             </p>
             <p className="text-xs text-secondary">
-              You currently have {total.toLocaleString()} verified leads available.
+              {counts && sendableApplies
+                ? <>{counts.total.toLocaleString()} leads match your filters &mdash; <strong className={counts.sendable > 0 ? 'text-[#006630]' : 'text-error'}>{counts.sendable.toLocaleString()} can be mailed today</strong>.</>
+                : <>{(counts?.total ?? total).toLocaleString()} leads match your filters.</>}
             </p>
           </div>
         </div>
@@ -433,7 +593,7 @@ export default function WizardStep1Leads({
               <label className="block text-xs font-extrabold text-secondary uppercase tracking-wider mb-2">
                 Select Target List
               </label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <select
                   value={filterPlatform}
                   onChange={(e) => { onFilterPlatformChange(e.target.value); setPage(1); }}
@@ -458,10 +618,41 @@ export default function WizardStep1Leads({
                 >
                   {categoryOptions.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
                 </select>
+                {/* Language — the only filter that spans markets, and the one
+                    that decides what language the AI writes in. */}
+                <select
+                  value={filterLanguage}
+                  onChange={(e) => { onFilterLanguageChange(e.target.value); setPage(1); }}
+                  className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  aria-label="Outreach language"
+                  title="Target every market that shares a language — and write the emails in it"
+                >
+                  <option value="">Language: auto (from country)</option>
+                  {languageOptions.map((o) => (
+                    <option key={o.language} value={o.language}>
+                      {o.language} ({o.leadCount.toLocaleString()})
+                    </option>
+                  ))}
+                </select>
               </div>
+              {filterLanguage && (
+                <p className="text-xs text-[#b0004a] mt-1.5 flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[12px]">translate</span>
+                  Emails will be generated in <strong className="mx-0.5">{filterLanguage}</strong>
+                  {(() => {
+                    const o = languageOptions.find((x) => x.language === filterLanguage);
+                    return o ? ` · ${o.countries.join(', ')}` : '';
+                  })()}
+                </p>
+              )}
               <p className="text-xs text-secondary mt-1.5 flex items-center gap-1">
                 <span className="material-symbols-outlined text-[12px]">filter_alt</span>
-                {listLabel} — {total.toLocaleString()} leads found
+                {listLabel} &mdash; {total.toLocaleString()} shown
+                {counts && counts.total > total && (
+                  <span className="text-secondary">
+                    {' '}of {counts.total.toLocaleString()} matching
+                  </span>
+                )}
               </p>
             </div>
 
@@ -505,28 +696,92 @@ export default function WizardStep1Leads({
             </div>
           </div>
 
-          {/* Right: List Health Insight */}
+          {/* Right: List Health Insight - every figure below is derived, and
+              the wording changes with the data. Nothing here is a constant. */}
           <div className="bg-surface-container rounded-xl p-4">
             <p className="text-xs font-extrabold text-on-surface uppercase tracking-wider mb-4">List Health Insight</p>
-            <div>
-              <div className="flex justify-between text-xs font-semibold mb-1.5">
-                <span className="text-secondary">Verified &amp; Reachable</span>
-                <span className="font-extrabold text-[#006630]">{healthPct}%</span>
+            {counts === null ? (
+              <p className="text-xs text-secondary">Measuring this list&hellip;</p>
+            ) : (
+              <div>
+                <div className="flex justify-between text-xs font-semibold mb-1.5">
+                  <span className="text-secondary">
+                    {sendableApplies ? 'Ready to send' : 'Verified on primary email'}
+                  </span>
+                  <span className={`font-extrabold ${sendablePct >= 50 ? 'text-[#006630]' : sendablePct >= 15 ? 'text-amber-700' : 'text-error'}`}>
+                    {sendablePct}%
+                  </span>
+                </div>
+                <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-700"
+                    style={{
+                      width: `${Math.max(sendablePct, counts.sendable > 0 ? 2 : 0)}%`,
+                      background: sendablePct >= 50
+                        ? 'linear-gradient(90deg, #006630, #00a050)'
+                        : sendablePct >= 15
+                          ? 'linear-gradient(90deg, #b45309, #d97706)'
+                          : 'linear-gradient(90deg, #b0004a, #d81b60)',
+                    }}
+                  />
+                </div>
+                <p className="text-[10px] text-secondary mt-2 leading-relaxed">
+                  {!sendableApplies ? (
+                    <>These leads are mailed at their discovered address, so the verdict on their
+                    primary email does not decide whether they can be contacted.</>
+                  ) : counts.sendable === 0 ? (
+                    <>
+                      <span className="font-bold text-error">Nothing here can be sent yet.</span>{' '}
+                      {counts.unverified > 0
+                        ? <>{counts.unverified.toLocaleString()} still need verifying &mdash; run it from the Lead Matrix first.</>
+                        : <>No address on file has come back valid.</>}
+                    </>
+                  ) : sendablePct < 15 ? (
+                    <>
+                      Only <span className="font-bold text-on-surface">{counts.sendable.toLocaleString()}</span> of{' '}
+                      {counts.total.toLocaleString()} can be mailed today. The rest have no address on file
+                      or no verified verdict &mdash; verify them before counting on them.
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-bold text-on-surface">{counts.sendable.toLocaleString()}</span> of{' '}
+                      {counts.total.toLocaleString()} are verified with an address on file. Bounce risk on those is low.
+                    </>
+                  )}
+                </p>
+
+                {/* The split behind the bar. Without it "2%" is unreadable -
+                    the operator cannot tell a list that needs verifying from
+                    one that has no addresses at all. */}
+                <div className="mt-3 flex flex-wrap gap-1">
+                  {([
+                    { key: 'valid',      label: 'valid',        classes: 'bg-[#8ff9a8]/40 text-[#006630]' },
+                    { key: 'catch-all',  label: 'catch-all',    classes: 'bg-amber-50 text-amber-800' },
+                    { key: 'unknown',    label: 'unknown',      classes: 'bg-slate-100 text-slate-600' },
+                    { key: 'unverified', label: 'not verified', classes: 'bg-slate-100 text-slate-600' },
+                    { key: 'invalid',    label: 'invalid',      classes: 'bg-red-50 text-error' },
+                  ] as const).filter((c) => counts[c.key] > 0).map((c) => (
+                    <span key={c.key} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.classes}`}>
+                      {counts[c.key].toLocaleString()} {c.label}
+                    </span>
+                  ))}
+                </div>
               </div>
-              <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all duration-700"
-                  style={{ width: `${healthPct}%`, background: 'linear-gradient(90deg, #006630, #00a050)' }}
-                />
-              </div>
-              <p className="text-[10px] text-secondary mt-2">
-                This list has been cleaned recently. Bouncing risk is minimal (estimated &lt;2%).
-              </p>
-            </div>
-            <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
+            )}
+            <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-3 gap-2">
               <div className="text-center">
-                <p className="text-xl font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>{total.toLocaleString()}</p>
-                <p className="text-[10px] text-secondary font-semibold uppercase tracking-wider">Total Leads</p>
+                <p className="text-xl font-extrabold text-on-surface" style={{ fontFamily: 'Manrope, sans-serif' }}>{(counts?.total ?? total).toLocaleString()}</p>
+                <p className="text-[10px] text-secondary font-semibold uppercase tracking-wider">Matching</p>
+              </div>
+              <div className="text-center">
+                <p
+                  className={`text-xl font-extrabold ${counts && counts.sendable > 0 ? 'text-[#006630]' : 'text-secondary'}`}
+                  style={{ fontFamily: 'Manrope, sans-serif' }}
+                  title="Verified valid AND has an address on file - the only leads a campaign can actually mail today"
+                >
+                  {sendableApplies ? (counts?.sendable ?? 0).toLocaleString() : '\u2014'}
+                </p>
+                <p className="text-[10px] text-secondary font-semibold uppercase tracking-wider">Sendable</p>
               </div>
               <div className="text-center">
                 <p className="text-xl font-extrabold text-[#b0004a]" style={{ fontFamily: 'Manrope, sans-serif' }}>{selectedLeadIds.length.toLocaleString()}</p>
@@ -552,6 +807,18 @@ export default function WizardStep1Leads({
                 className="bg-white rounded-xl pl-9 pr-4 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none w-56"
               />
             </div>
+            {/* What the table lists. The counts panel always describes the
+                FULL matching set, so narrowing here hides nothing. */}
+            <select
+              value={reach}
+              onChange={(e) => { setReach(e.target.value as typeof reach); setPage(1); }}
+              title="Which of the matching leads to list"
+              className="bg-white rounded-xl px-3 py-2 text-sm border border-slate-100 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+              <option value="sendable">Sendable only ({counts?.sendable?.toLocaleString() ?? '…'})</option>
+              <option value="has_email">Has an address</option>
+              <option value="all">All matching ({counts?.total?.toLocaleString() ?? '…'})</option>
+            </select>
             {selectedLeadIds.length > 0 && (
               <span className="text-xs font-bold bg-[#ffd9de] text-[#b0004a] px-3 py-1.5 rounded-full">
                 {selectedLeadIds.length} selected
@@ -613,9 +880,10 @@ export default function WizardStep1Leads({
                 const sel = selectedLeadIds.includes(lead.id);
                 const blocked = isInvalid(lead);
                 const isReverifying = reverifying.has(lead.id);
-                const isCatchAll = lead.verification_status === 'catch-all';
-                const isUnknown = lead.verification_status === 'unknown';
-                const isNotVerified = lead.verification_status == null;
+                const hasAddress = !!lead.primary_email;
+                const isCatchAll = hasAddress && lead.verification_status === 'catch-all';
+                const isUnknown = hasAddress && lead.verification_status === 'unknown';
+                const isNotVerified = hasAddress && lead.verification_status == null;
                 return (
                   <tr
                     key={lead.id}
@@ -666,6 +934,14 @@ export default function WizardStep1Leads({
                         {isNotVerified && (
                           <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full" title="Not verified yet. Not added by 'Select page'; click the row to include manually, or run Verify on the Leads page first.">
                             <span className="material-symbols-outlined text-[9px]">pending</span>not verified
+                          </span>
+                        )}
+                        {!hasAddress && (
+                          <span
+                            className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full"
+                            title="No email address on file, so there is nothing to verify. Run Enrich on the Lead Matrix to try to find one from the company website."
+                          >
+                            <span className="material-symbols-outlined text-[9px]">mail_off</span>no address
                           </span>
                         )}
                       </div>

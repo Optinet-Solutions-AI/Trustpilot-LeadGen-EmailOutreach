@@ -56,19 +56,42 @@ interface Props {
    *  Redirected Leads page to hand off a chosen set straight into the
    *  recipient picker. */
   initialLeadIds?: string[];
+  /** Seed Step 1's filters from wherever the wizard was launched.
+   *
+   *  These matter far beyond the picker: `initialCountry` / `initialLanguage`
+   *  are what "Generate with AI" reads to decide which language to write in.
+   *  Without them a hand-off from the Lead Matrix landed with an empty
+   *  country, so a Swedish or Spanish audience got English copy — the
+   *  language directive is only added to the Gemini prompt when a language
+   *  is resolved. Reported 2026-09-02. */
+  initialCountry?: string;
+  initialCategory?: string;
+  initialPlatform?: string;
+  /** Human-language name ('Swedish', 'Spanish'). Supersedes the country's
+   *  default language for both the lead pool and the AI copy, so one campaign
+   *  can cover every market that shares a language. */
+  initialLanguage?: string;
 }
 
-export default function CampaignWizard({ onClose, onCreate, redirectMode, discoveryMode, initialLeadIds }: Props) {
+export default function CampaignWizard({
+  onClose, onCreate, redirectMode, discoveryMode, initialLeadIds,
+  initialCountry, initialCategory, initialPlatform, initialLanguage,
+}: Props) {
   const [step, setStep]             = useState(0);
   const [saving, setSaving]         = useState(false);
 
   // Step 1 — Leads
-  const [filterCountry, setFilterCountry]     = useState('');
-  const [filterCategory, setFilterCategory]   = useState('');
+  const [filterCountry, setFilterCountry]     = useState(initialCountry ?? '');
+  const [filterCategory, setFilterCategory]   = useState(initialCategory ?? '');
+  // Outreach language. Empty = derive it from the country (COUNTRY_LANGUAGE).
+  // Set = an explicit choice that spans every market sharing the language, so
+  // one campaign can cover AT+CH+DE in German. Drives BOTH the lead pool and
+  // the AI's writing language.
+  const [filterLanguage, setFilterLanguage]   = useState(initialLanguage ?? '');
   // Every campaign is single-platform (the wizard has no "all platforms"
   // option) so the generated copy can name the right platform. Defaults to
   // 'trustpilot'; switch to 'tripadvisor' / 'yelp' in Step 1.
-  const [filterPlatform, setFilterPlatform]   = useState('trustpilot');
+  const [filterPlatform, setFilterPlatform]   = useState(initialPlatform || 'trustpilot');
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>(initialLeadIds ?? []);
   const [manualEmails, setManualEmails]       = useState<string[]>([]);
   const [maxLeads, setMaxLeads]               = useState(500);
@@ -245,6 +268,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
           <WizardStep1Leads
             filterCountry={filterCountry}
             filterCategory={filterCategory}
+            filterLanguage={filterLanguage}
             filterPlatform={filterPlatform}
             selectedLeadIds={selectedLeadIds}
             manualEmails={manualEmails}
@@ -253,6 +277,7 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             discoveryMode={discoveryMode}
             onFilterCountryChange={handleFilterCountryChange}
             onFilterCategoryChange={setFilterCategory}
+            onFilterLanguageChange={setFilterLanguage}
             onFilterPlatformChange={setFilterPlatform}
             onSelectionChange={setSelectedLeadIds}
             onManualEmailsChange={setManualEmails}
@@ -266,8 +291,10 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             includeScreenshot={includeScreenshot}
             filterCountry={filterCountry}
             filterCategory={filterCategory}
+            filterLanguage={filterLanguage}
             filterPlatform={filterPlatform}
             manualEmails={manualEmails}
+            selectedLeadIds={selectedLeadIds}
             followUpSteps={followUpSteps}
             redirectMode={redirectMode}
             discoveryMode={discoveryMode}
@@ -293,9 +320,12 @@ export default function CampaignWizard({ onClose, onCreate, redirectMode, discov
             includeScreenshot={includeScreenshot}
             filterCountry={filterCountry}
             filterCategory={filterCategory}
+            filterLanguage={filterLanguage}
             filterPlatform={filterPlatform}
             recipientCount={selectedLeadIds.length + manualEmails.length}
             followUpCount={followUpSteps.length}
+            followUpSteps={followUpSteps}
+            selectedLeadIds={selectedLeadIds}
             schedule={schedule}
             saving={saving}
             onSubmit={handleSubmit}

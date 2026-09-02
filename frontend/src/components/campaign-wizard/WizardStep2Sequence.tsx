@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { FollowUpStepInput, EmailPreview } from '../../types/campaign';
 import { generateEmailTemplate, domainToCompanyName } from '../../lib/gemini';
-import { COUNTRY_LANGUAGE } from './scheduleConfig';
+import { resolveOutreachLanguage } from './scheduleConfig';
 import EmailPreviewModal, { type PreviewStep } from '../EmailPreviewModal';
 import { fetchEmailPreview } from '../../lib/emailPreview';
 
@@ -13,6 +13,10 @@ interface Props {
   includeScreenshot: boolean;
   filterCountry: string;
   filterCategory: string;
+  /** Explicit outreach language ('Swedish'), or '' to derive it from
+   *  filterCountry. Set when the campaign targets a language rather than a
+   *  single market. */
+  filterLanguage: string;
   /** Platform this campaign targets (Step 1 picker). Drives the tailored AI
    *  pitch and the platform-name UI strings. Always set — defaults to
    *  'trustpilot' in the wizard. */
@@ -58,7 +62,7 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 export default function WizardStep2Sequence({
-  subject, body, includeScreenshot, filterCountry, filterCategory, filterPlatform, manualEmails,
+  subject, body, includeScreenshot, filterCountry, filterCategory, filterLanguage, filterPlatform, manualEmails,
   selectedLeadIds = [], followUpSteps,
   redirectMode, discoveryMode,
   onSubjectChange, onBodyChange, onIncludeScreenshotChange, onFollowUpStepsChange,
@@ -89,7 +93,7 @@ export default function WizardStep2Sequence({
     // Auto-translate the follow-up via AI when the campaign targets a
     // non-English country, so the sequence stays in the recipient's language
     // without requiring the user to click "Generate with AI" on every step.
-    const targetLanguage = filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined;
+    const targetLanguage = resolveOutreachLanguage(filterCountry, filterLanguage);
     if (!targetLanguage) return;
 
     setGenerating(true);
@@ -159,7 +163,7 @@ export default function WizardStep2Sequence({
         manualMode: !!(manualEmails && manualEmails.length > 0),
         redirectMode: !!redirectMode,
         discoveryMode: !!discoveryMode,
-        language: filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined,
+        language: resolveOutreachLanguage(filterCountry, filterLanguage),
         followUpMode: isFollowUp,
         followUpStepNumber: isFollowUp ? stepNumber : undefined,
       });
@@ -246,7 +250,7 @@ export default function WizardStep2Sequence({
     })),
   ];
   const previewRecipients = selectedLeadIds.map((id) => ({ id }));
-  const campaignLanguage = filterCountry ? COUNTRY_LANGUAGE[filterCountry] : undefined;
+  const campaignLanguage = resolveOutreachLanguage(filterCountry, filterLanguage);
   const canPreview = subject.trim().length > 0 || body.trim().length > 0;
 
   return (
@@ -346,8 +350,8 @@ export default function WizardStep2Sequence({
                     type="button"
                     onClick={handleGenerateWithAI}
                     disabled={generating}
-                    title={filterCountry && COUNTRY_LANGUAGE[filterCountry]
-                      ? `Generate this follow-up in ${COUNTRY_LANGUAGE[filterCountry]}`
+                    title={campaignLanguage
+                      ? `Generate this follow-up in ${campaignLanguage}`
                       : 'Generate this follow-up with AI'}
                     className="flex items-center gap-1.5 bg-[#ffd9de] text-[#b0004a] px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-[#b0004a] hover:text-white transition-colors disabled:opacity-50"
                   >

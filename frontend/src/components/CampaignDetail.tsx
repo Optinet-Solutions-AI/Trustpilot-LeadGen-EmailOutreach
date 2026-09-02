@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { Campaign } from '../types/campaign';
+import EmailPreviewModal, { type PreviewStep } from './EmailPreviewModal';
 
 interface CampaignLead {
   id: string;
@@ -23,6 +24,9 @@ interface CampaignStep {
   step_number: number;
   delay_days: number;
   template_subject: string;
+  /** Needed by the full-email preview so follow-ups render, not just the
+   *  initial email. GET /api/campaigns/:id/steps already returns it. */
+  template_body: string;
 }
 
 interface ThreadMessage {
@@ -62,6 +66,7 @@ const STATUS_CONFIG: Record<string, { label: string; classes: string; icon: stri
 
 const SKIP_REASON_LABEL: Record<string, string> = {
   already_contacted_in_another_campaign: 'already contacted in another campaign',
+  email_invalid: 'email proven invalid — excluded automatically',
 };
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -104,6 +109,7 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
   const [loading, setLoading] = useState(true);
   const [filter, setFilter]   = useState<string>('all');
   const [showTemplate, setShowTemplate] = useState(false);
+  const [showFullPreview, setShowFullPreview] = useState(false);
   const [duplicating, setDuplicating]   = useState(false);
 
   // Message panel
@@ -126,6 +132,20 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
   const totalSent  = (counts.sent || 0) + (counts.opened || 0) + (counts.replied || 0);
   const replyRate  = totalSent > 0 ? ((counts.replied || 0) / totalSent * 100).toFixed(1) : '0';
   const bounceRate = totalSent > 0 ? ((counts.bounced || 0) / (totalSent + (counts.bounced || 0)) * 100).toFixed(1) : '0';
+
+  // Initial email plus every saved follow-up, so the preview walks the whole
+  // sequence the way a lead experiences it.
+  const previewSteps: PreviewStep[] = [
+    { label: 'Initial email', subject: campaign.template_subject || '', body: campaign.template_body || '' },
+    ...steps
+      .slice()
+      .sort((a, b) => a.step_number - b.step_number)
+      .map((st) => ({
+        label: `Follow-up #${st.step_number - 1}`,
+        subject: st.template_subject,
+        body: st.template_body,
+      })),
+  ];
 
   const handleDuplicate = async () => {
     if (!onDuplicate) return;
@@ -235,13 +255,24 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
           {/* Template toggle */}
           {campaign.template_subject && (
             <div className="px-6 pt-4">
-              <button
-                onClick={() => setShowTemplate(!showTemplate)}
-                className="flex items-center gap-1.5 text-xs font-bold text-secondary hover:text-on-surface transition-colors"
-              >
-                <span className="material-symbols-outlined text-[16px]">{showTemplate ? 'expand_less' : 'expand_more'}</span>
-                {showTemplate ? 'Hide Template' : 'View Template'}
-              </button>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={() => setShowTemplate(!showTemplate)}
+                  className="flex items-center gap-1.5 text-xs font-bold text-secondary hover:text-on-surface transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">{showTemplate ? 'expand_less' : 'expand_more'}</span>
+                  {showTemplate ? 'Hide Template' : 'View Template'}
+                </button>
+                {/* The block below is the raw template. This opens the
+                    rendered email a recipient actually receives. */}
+                <button
+                  onClick={() => setShowFullPreview(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-[#b0004a] bg-[#ffd9de]/50 hover:bg-[#ffd9de] transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[15px]">visibility</span>
+                  Preview real email
+                </button>
+              </div>
               {showTemplate && (
                 <div className="mt-3 bg-surface-container rounded-xl p-4 text-sm">
                   <p className="text-xs font-bold text-secondary uppercase tracking-wider mb-1">Subject</p>
@@ -251,6 +282,9 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
                     className="text-secondary text-xs prose prose-sm max-w-none"
                     dangerouslySetInnerHTML={{ __html: campaign.template_body || '' }}
                   />
+                  <p className="text-[10px] text-secondary mt-2 italic">
+                    Raw template — tokens and spintax are still unresolved here.
+                  </p>
                 </div>
               )}
             </div>
@@ -581,6 +615,19 @@ export default function CampaignDetail({ campaign, onClose, fetchLeads, fetchSte
           )}
 
         </div>
+      )}
+
+      {showFullPreview && (
+        <EmailPreviewModal
+          steps={previewSteps}
+          includeScreenshot={campaign.include_screenshot}
+          campaignId={campaign.id}
+          senderAccountId={
+            campaign.sending_schedule?.senderAccountIds?.find((id) => id !== '__env__')
+            ?? campaign.sending_schedule?.senderAccountId
+          }
+          onClose={() => setShowFullPreview(false)}
+        />
       )}
     </div>
   );

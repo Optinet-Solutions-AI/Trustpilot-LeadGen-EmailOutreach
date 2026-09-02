@@ -121,6 +121,38 @@ export interface ExtraColumn {
   sortKey?: string;
 }
 
+/**
+ * Chips for the prospect types worth flagging. 'operator' and 'unclassified'
+ * are deliberately absent — a chip on every row is noise; what Operations
+ * needs is to spot the rows that are NOT a sellable business.
+ */
+const PROSPECT_TYPE_CHIP: Record<string, { label: string; icon: string; hint: string; classes: string } | undefined> = {
+  affiliate: {
+    label: 'Affiliate',
+    icon: 'link',
+    hint: 'Review / comparison site that ranks operators — not a prospect',
+    classes: 'bg-violet-100 text-violet-700',
+  },
+  redirect: {
+    label: 'Redirect',
+    icon: 'alt_route',
+    hint: 'Website redirects off-domain — rebranded, sold, or parked',
+    classes: 'bg-amber-100 text-amber-800',
+  },
+  dead: {
+    label: 'Dead',
+    icon: 'link_off',
+    hint: 'Listing or website is gone',
+    classes: 'bg-slate-200 text-slate-600',
+  },
+  flagged: {
+    label: 'Flagged',
+    icon: 'block',
+    hint: 'Platform consumer alert — not sellable',
+    classes: 'bg-rose-100 text-rose-700',
+  },
+};
+
 interface Props {
   leads: Lead[];
   total: number;
@@ -131,6 +163,10 @@ interface Props {
   onDelete: (id: string) => void;
   selectedIds: string[];
   onSelect: (ids: string[]) => void;
+  /** Which rows may be checked. Defaults to "anything not verified invalid".
+   *  Pass a variant when the view sends to a different address than
+   *  primary_email — see the note at the call site inside. */
+  isSelectable?: (lead: Lead) => boolean;
   onLeadClick: (id: string) => void;
   sortBy: string;
   sortDir: 'asc' | 'desc';
@@ -230,7 +266,8 @@ function loadColOrder(): ColKey[] {
 
 export default function LeadsTable({
   leads, total, page, totalPages,
-  onPageChange, onStatusChange, onDelete, selectedIds, onSelect, onLeadClick,
+  onPageChange, onStatusChange, onDelete, selectedIds, onSelect,
+  isSelectable: isSelectableOverride, onLeadClick,
   sortBy, sortDir, onSortChange,
   onDismissLinkFlag, onEditLinkUrl,
   extraColumns, extraRowActions, hideColumns,
@@ -258,9 +295,23 @@ export default function LeadsTable({
   // otherwise a 25-id page-1 selection makes the page-2 header look
   // checked even though no page-2 row is selected — and clicking it
   // would wipe the page-1 selection.
-  const selectedOnPage = leads.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
-  const allOnPageSelected = leads.length > 0 && selectedOnPage === leads.length;
-  const someOnPageSelected = selectedOnPage > 0 && selectedOnPage < leads.length;
+  // A proven-invalid address can never be emailed — campaigns refuse to send
+  // to it — so it is not selectable here either. Until 2026-09-02 the rule
+  // lived only in the campaign wizard's picker, and selecting from the Lead
+  // Matrix walked straight past it: the leads reached the campaign and the
+  // launch died at the send gate with no way to see which rows caused it.
+  // Enforcing it at the checkbox is what makes the two sources agree.
+  //
+  // Callers can override which address the verdict is read from — Prospects
+  // sends to discovered_email, so judging it on verification_status (which
+  // describes primary_email, usually the address that already bounced) would
+  // disable selection on exactly the leads that view exists to work.
+  const isSelectable = isSelectableOverride ?? ((l: Lead) => l.verification_status !== 'invalid');
+  const selectableOnPage = useMemo(() => leads.filter(isSelectable), [leads, isSelectable]);
+
+  const selectedOnPage = selectableOnPage.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
+  const allOnPageSelected = selectableOnPage.length > 0 && selectedOnPage === selectableOnPage.length;
+  const someOnPageSelected = selectedOnPage > 0 && selectedOnPage < selectableOnPage.length;
 
   const headerCheckboxRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -545,12 +596,14 @@ export default function LeadsTable({
     ACTIONS_COL_WIDTH;
 
   const toggleSelect = (id: string) => {
+    const lead = leads.find((l) => l.id === id);
+    if (lead && !isSelectable(lead)) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
     onSelect([...next]);
   };
   const toggleAll = () => {
-    const pageIds = new Set(leads.map((l) => l.id));
+    const pageIds = new Set(selectableOnPage.map((l) => l.id));
     if (allOnPageSelected) {
       // Remove only current-page IDs; preserve selections from other pages.
       onSelect(selectedIds.filter((id) => !pageIds.has(id)));
@@ -642,6 +695,22 @@ export default function LeadsTable({
                 </a>
               ) : (
                 <span className="font-bold text-on-surface text-sm">{lead.company_name}</span>
+              );
+            })()}
+            {/* What this lead IS (migration 063). Only rendered for the junk
+                types — a chip on every row would be noise, and the whole
+                point is spotting the affiliate / redirect / dead rows that a
+                gambling scrape drags in alongside the real operator. */}
+            {lead.prospect_type && PROSPECT_TYPE_CHIP[lead.prospect_type] && !lead.blocked && (() => {
+              const chip = PROSPECT_TYPE_CHIP[lead.prospect_type]!;
+              return (
+                <span
+                  title={lead.prospect_type_reason || chip.hint}
+                  className={`inline-flex items-center gap-1 mt-0.5 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${chip.classes}`}
+                >
+                  <span className="material-symbols-outlined text-[11px]">{chip.icon}</span>
+                  {chip.label}
+                </span>
               );
             })()}
             {/* Blocked on Trustpilot — consumer-alert flagged (migration 048).
@@ -1182,8 +1251,12 @@ export default function LeadsTable({
                     <input
                       type="checkbox"
                       checked={selected.has(lead.id)}
+                      disabled={!isSelectable(lead)}
                       onChange={() => toggleSelect(lead.id)}
-                      className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                      title={isSelectable(lead)
+                        ? undefined
+                        : 'Email verified as invalid — campaigns cannot send to this address. Re-verify it first.'}
+                      className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a] disabled:opacity-30 disabled:cursor-not-allowed"
                     />
                   </td>
                   {columns.map((col) => renderCell(col, lead))}
@@ -1228,6 +1301,7 @@ export default function LeadsTable({
           leads={leads}
           selectedIds={selectedIds}
           onSelect={onSelect}
+          isSelectable={isSelectableOverride}
           onLeadClick={onLeadClick}
           onStatusChange={onStatusChange}
           onDelete={onDelete}

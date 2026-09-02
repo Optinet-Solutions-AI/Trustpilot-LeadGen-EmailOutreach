@@ -7,6 +7,9 @@ import { useCampaignProgress } from '../hooks/useCampaignProgress';
 import CampaignCard from '../components/CampaignCard';
 import CampaignDetail from '../components/CampaignDetail';
 import CampaignWizard from '../components/campaign-wizard/CampaignWizard';
+import BlockedRecipientsModal from '../components/BlockedRecipientsModal';
+import { blockedRecipientsFrom, type BlockedRecipient, type BlockedSummary } from '../lib/sendBlocked';
+import CampaignEditModal from '../components/CampaignEditModal';
 import TestFlightModal from '../components/TestFlightModal';
 import { Loader2 } from 'lucide-react';
 import type { Campaign } from '../types/campaign';
@@ -17,14 +20,23 @@ import SectionHeader from '../ui/SectionHeader';
 export default function Campaigns() {
   const {
     campaigns, loading, fetchCampaigns, createCampaign, sendCampaign,
-    cancelCampaign, deleteCampaign, getCampaignLeads, getEmailThread, checkReplies,
+    cancelCampaign, updateCampaign, deleteCampaign, getCampaignLeads, getEmailThread, checkReplies,
     getRateLimit, duplicateCampaign, previewRecipients, testFlightSend,
     syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus,
   } = useCampaigns();
   const { status: sendStatus, sent, failed, total, subscribe, reset } = useCampaignProgress();
 
-  // Hand-off from the Redirected Leads page lands here as
-  //   /campaigns?wizard=1&redirectMode=1&leadIds=<csv>
+  // Hand-off from a leads page lands here as
+  //   /campaigns?wizard=1&leadIds=<csv>[&country=SE][&language=Swedish]
+  //             [&category=<slug>][&platform=<slug>][&redirectMode=1]
+  //             [&discoveryMode=1]
+  //
+  // The filter keys matter: they seed the wizard's Step 1 filters, and
+  // country/language are what "Generate with AI" reads to pick the writing
+  // language. When the hand-off carried only leadIds, the wizard opened with
+  // an empty country and generated English copy for Swedish and Spanish
+  // audiences (reported 2026-09-02).
+  //
   // We read the URL via window.location instead of next/navigation's
   // useSearchParams to avoid the Suspense-during-prerender requirement
   // that breaks the Vercel build for client-only views like this one.
@@ -33,6 +45,9 @@ export default function Campaigns() {
   const [redirectModeFromUrl, setRedirectModeFromUrl] = useState(false);
   const [discoveryModeFromUrl, setDiscoveryModeFromUrl] = useState(false);
   const [initialLeadIdsFromUrl, setInitialLeadIdsFromUrl] = useState<string[]>([]);
+  const [handoffFilters, setHandoffFilters] = useState<{
+    country: string; category: string; language: string; platform: string;
+  }>({ country: '', category: '', language: '', platform: '' });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -43,6 +58,12 @@ export default function Campaigns() {
     setDiscoveryModeFromUrl(params.get('discoveryMode') === '1');
     const raw = params.get('leadIds');
     setInitialLeadIdsFromUrl(raw ? raw.split(',').filter(Boolean) : []);
+    setHandoffFilters({
+      country: params.get('country') ?? '',
+      category: params.get('category') ?? '',
+      language: params.get('language') ?? '',
+      platform: params.get('platform') ?? '',
+    });
     if (wantsWizard) setShowWizard(true);
   }, []);
 
@@ -54,6 +75,16 @@ export default function Campaigns() {
   const testFlightCampaign = campaigns.find((c) => c.id === testFlightCampaignId);
   const [testFlightLeadEmails, setTestFlightLeadEmails] = useState<string[]>([]);
 
+  // A refused launch. Held in state so the operator gets a list of the
+  // recipients that blocked it plus remove / verify actions, rather than a
+  // toast they can't act on.
+  const [sendBlock, setSendBlock] = useState<{
+    campaignId: string;
+    campaignName: string;
+    recipients: BlockedRecipient[];
+    summary: BlockedSummary;
+    message: string;
+  } | null>(null);
   const [launchChoiceId, setLaunchChoiceId] = useState<string | null>(null);
   const launchChoiceCampaign = campaigns.find((c) => c.id === launchChoiceId);
 
@@ -119,10 +150,21 @@ export default function Campaigns() {
       const result = await sendCampaign(campaignId, { testMode: false });
       notify('success', result.message);
     } catch (e) {
-      notify('error', e instanceof Error ? e.message : 'Send failed');
       setActiveCampaignId(null);
+      // A send gate refusal is not a generic failure — it names the
+      // recipients at fault and is fixable in two clicks. Route it to the
+      // remediation modal instead of the error toast.
+      const blocked = blockedRecipientsFrom(e);
+      if (blocked) {
+        const name = campaigns.find((c) => c.id === campaignId)?.name ?? 'this campaign';
+        setSendBlock({ campaignId, campaignName: name, ...blocked });
+        return;
+      }
+      notify('error', e instanceof Error ? e.message : 'Send failed');
     }
   };
+
+  const [editCampaign, setEditCampaign] = useState<Campaign | null>(null);
 
   const handleCancel = async () => {
     if (!activeCampaignId) return;
@@ -148,6 +190,26 @@ export default function Campaigns() {
     } finally {
       setDeletingId(null);
     }
+  };
+
+  /** Stop a campaign straight from its card. Distinct from handleCancel,
+   *  which only knows about the campaign currently streaming progress. */
+  const handleStop = async (campaignId: string, name: string) => {
+    if (!confirm(`Stop "${name}"? Emails not yet sent will stay unsent. Already-sent emails cannot be recalled.`)) return;
+    try {
+      await cancelCampaign(campaignId);
+      notify('warning', `"${name}" stopped — pending emails will not send.`);
+      fetchCampaigns();
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Stop failed');
+    }
+  };
+
+  const handleSaveEdit = async (patch: Partial<Campaign>) => {
+    if (!editCampaign) return;
+    await updateCampaign(editCampaign.id, patch);
+    notify('success', 'Campaign updated.');
+    fetchCampaigns();
   };
 
   const handleDuplicate = async (campaignId: string) => {
@@ -212,6 +274,10 @@ export default function Campaigns() {
           redirectMode={redirectModeFromUrl}
           discoveryMode={discoveryModeFromUrl}
           initialLeadIds={initialLeadIdsFromUrl}
+          initialCountry={handoffFilters.country}
+          initialCategory={handoffFilters.category}
+          initialLanguage={handoffFilters.language}
+          initialPlatform={handoffFilters.platform}
         />
       </div>
     );
@@ -388,6 +454,8 @@ export default function Campaigns() {
                 onLaunch={(id) => setLaunchChoiceId(id)}
                 onDuplicate={handleDuplicate}
                 onDelete={handleDelete}
+                onStop={handleStop}
+                onEdit={setEditCampaign}
                 onViewDetail={setDetailCampaign}
                 deletingId={deletingId}
               />
@@ -395,6 +463,14 @@ export default function Campaigns() {
           </div>
         )}
       </div>
+
+      {editCampaign && (
+        <CampaignEditModal
+          campaign={editCampaign}
+          onSave={handleSaveEdit}
+          onClose={() => setEditCampaign(null)}
+        />
+      )}
 
       {/* Launch choice — optional test flight or go live now */}
       {launchChoiceId && launchChoiceCampaign && (
@@ -467,6 +543,19 @@ export default function Campaigns() {
           onTestFlightSend={(email) => handleTestFlightSend(testFlightCampaignId, email)}
           onProceedLive={() => handleLiveSend(testFlightCampaignId)}
           onClose={() => setTestFlightCampaignId(null)}
+        />
+      )}
+
+      {/* Refused launch — who blocked it, and how to clear it */}
+      {sendBlock && (
+        <BlockedRecipientsModal
+          campaignId={sendBlock.campaignId}
+          campaignName={sendBlock.campaignName}
+          recipients={sendBlock.recipients}
+          summary={sendBlock.summary}
+          message={sendBlock.message}
+          onClose={() => setSendBlock(null)}
+          onRemediated={(note) => { notify('success', note); fetchCampaigns(); }}
         />
       )}
     </div>

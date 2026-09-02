@@ -424,6 +424,24 @@ export default function LeadDetail() {
     fetchNotes();
   };
 
+  /**
+   * Record what this lead actually IS (migration 063).
+   *
+   * The classifier only ever writes a type it can evidence, so "is this the
+   * real operator or an affiliate review site?" lands here as a human call —
+   * and stamping source='manual' is what stops the next classifier run from
+   * overwriting it.
+   */
+  const handleProspectTypeChange = async (prospectType: string) => {
+    const res = await api.patch(`/leads/${id}`, {
+      prospect_type: prospectType,
+      prospect_type_source: 'manual',
+      prospect_type_reason: 'set by operator',
+      prospect_type_set_at: new Date().toISOString(),
+    });
+    setLead(res.data.data);
+  };
+
   const handleRecheckClaimed = async () => {
     if (!id || checkingClaimed || claimedJobId) return;
     try {
@@ -684,6 +702,21 @@ export default function LeadDetail() {
                 Send Email
               </button>
             )}
+            <select
+              value={lead.prospect_type ?? 'unclassified'}
+              onChange={(e) => handleProspectTypeChange(e.target.value)}
+              title={lead.prospect_type_reason
+                ? `Prospect type — ${lead.prospect_type_reason}`
+                : 'What this lead is: the real business, or affiliate / redirect / dead junk'}
+              className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none font-semibold"
+            >
+              <option value="unclassified">Type: unclassified</option>
+              <option value="operator">Type: real operator</option>
+              <option value="affiliate">Type: affiliate site</option>
+              <option value="redirect">Type: redirect</option>
+              <option value="dead">Type: dead</option>
+              <option value="flagged">Type: platform-flagged</option>
+            </select>
             <select
               value={lead.outreach_status}
               onChange={(e) => handleStatusChange(e.target.value as LeadStatus)}

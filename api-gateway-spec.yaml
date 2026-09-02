@@ -160,6 +160,20 @@ paths:
       responses:
         "200":
           description: OK
+  /api/leads/languages:
+    get:
+      operationId: listLeadLanguages
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/leads/verification-counts:
+    get:
+      operationId: leadVerificationCounts
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/leads/bulk:
     patch:
       operationId: bulkUpdateLeads
@@ -589,6 +603,17 @@ paths:
           description: OK
     post:
       operationId: addLeadsToCampaign
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: removeCampaignLeads
       security: []
       parameters:
         - in: path

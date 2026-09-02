@@ -37,7 +37,21 @@ export interface LeadFilters {
   minRating?: number;
   maxRating?: number;
   hasEmail?: boolean;
-  verificationStatus?: 'valid' | 'invalid' | 'catch-all' | 'unknown';
+  // Verifier verdict. 'unverified' is NOT a stored value — it means the
+  // column is still NULL (never run through a verifier), which Operations
+  // needs to see separately from 'unknown' (verifier ran, was inconclusive).
+  verificationStatus?: VerificationFilter;
+  // Restrict to an explicit id set. Used by the campaign wizard to re-read
+  // leads handed over from the Lead Matrix so it can re-apply the
+  // invalid-email rule on ids it did not select itself.
+  ids?: string[];
+  // What the lead IS, not whether we can reach it (migration 063):
+  // 'operator' is the sellable business; affiliate / redirect / dead /
+  // flagged are the junk a review-site scrape drags along with it;
+  // 'unclassified' means no signal decided yet. Accepts a comma-joined list
+  // so the UI can say "operator + unclassified" — the practical working set
+  // while classification coverage is still filling in.
+  prospectType?: string[];
   // Per-platform filter — when set, restricts the result to leads that have
   // a row in lead_platform_presences for the given platform name. Used by
   // the per-platform "Trustpilot Leads" / "TripAdvisor Leads" pages.
@@ -76,8 +90,129 @@ export interface LeadFilters {
   sortDir?: 'asc' | 'desc';
 }
 
+/**
+ * Verifier verdicts the UI can filter on. The four real values are stored on
+ * leads.verification_status; 'unverified' is the synthetic bucket for NULL.
+ */
+export const VERIFICATION_FILTERS = ['valid', 'invalid', 'catch-all', 'unknown', 'unverified'] as const;
+export type VerificationFilter = (typeof VERIFICATION_FILTERS)[number];
+
+/** Narrow a raw query-string value to a VerificationFilter, or undefined. */
+export function parseVerificationFilter(raw: unknown): VerificationFilter | undefined {
+  return typeof raw === 'string' && (VERIFICATION_FILTERS as readonly string[]).includes(raw)
+    ? (raw as VerificationFilter)
+    : undefined;
+}
+
+/**
+ * Whether leads.prospect_type exists yet (migration 063).
+ *
+ * WHY THIS PROBE EXISTS: the Lead Matrix filters on prospect_type by default
+ * (it hides affiliate / redirect / dead rows), so if the API ships before the
+ * SQL migration is applied, PostgREST fails the query with "column
+ * leads.prospect_type does not exist" and the whole Lead Matrix 500s. Deploy
+ * order across Cloud Run and the Supabase SQL editor is manual and therefore
+ * not guaranteed, so the filter degrades to a no-op instead of taking the
+ * page down, and starts working the moment the migration lands.
+ *
+ * Cached per process. `null` = not yet probed.
+ */
+let prospectTypeColumnExists: boolean | null = null;
+
+async function hasProspectTypeColumn(): Promise<boolean> {
+  if (prospectTypeColumnExists !== null) return prospectTypeColumnExists;
+  const supabase = getSupabase();
+  const { error } = await supabase.from('leads').select('prospect_type').limit(1);
+  // Only a missing-column error means "not migrated". Anything else (network,
+  // auth) must not latch a false negative that survives for the process's
+  // lifetime, so leave it unprobed and try again next request.
+  if (error) {
+    if (/prospect_type/i.test(error.message)) {
+      prospectTypeColumnExists = false;
+      console.warn(
+        '[leads] leads.prospect_type is missing — apply supabase/migrations/063_lead_prospect_type.sql. ' +
+        'Prospect-type filtering is disabled until then.',
+      );
+      return false;
+    }
+    return false;
+  }
+  prospectTypeColumnExists = true;
+  return true;
+}
+
+/**
+ * Applies every row-level LeadFilters predicate to an already-built PostgREST
+ * query. Extracted so the list query and the verification-count queries can
+ * never drift apart — a count that disagrees with the list it annotates is
+ * worse than no count at all.
+ *
+ * Excluded on purpose: pagination, ordering, and the excludeContacted
+ * anti-join (which needs the campaign_leads embed in the select string, so it
+ * belongs with query construction).
+ */
+function applyLeadFilters<T>(query: T, filters: LeadFilters): T {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let q = query as any;
+  if (filters.status) q = q.eq('outreach_status', filters.status);
+  // country uses ILIKE substring match so operator typos and partial typing
+  // still surface the right leads ("new york" matches "New York, USA").
+  if (filters.country) q = q.ilike('country', `%${filters.country}%`);
+  // category is FAMILY-aware: each scraping platform writes its own taxonomy
+  // string, so one trade ends up stored under several labels (plumber /
+  // plumbers / plumbing). A plain substring match found only some of them.
+  // categoryOrFilter expands the requested value to every label in its family
+  // — source of truth is tools/db/category_canonical.py. Partial typing still
+  // works, because the expansion is a set of ILIKE substring needles rather
+  // than equality ("plumb" -> %plumb%).
+  if (filters.category) {
+    const categoryOr = categoryOrFilter(filters.category);
+    if (categoryOr) q = q.or(categoryOr);
+  }
+  if (filters.minRating) q = q.gte('star_rating', filters.minRating);
+  if (filters.maxRating) q = q.lte('star_rating', filters.maxRating);
+  if (filters.search) {
+    q = q.or(`company_name.ilike.%${filters.search}%,website_url.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%`);
+  }
+  if (filters.hasEmail) {
+    q = q.not('primary_email', 'is', null);
+  }
+  if (filters.verificationStatus === 'unverified') {
+    q = q.is('verification_status', null);
+  } else if (filters.verificationStatus) {
+    q = q.eq('verification_status', filters.verificationStatus);
+  }
+  if (filters.ids && filters.ids.length) {
+    q = q.in('id', filters.ids);
+  }
+  // Gated on `prospectTypeColumnExists` rather than probing here — this
+  // function is sync, and callers resolve the probe before building a query.
+  if (filters.prospectType && filters.prospectType.length && prospectTypeColumnExists !== false) {
+    q = q.in('prospect_type', filters.prospectType);
+  }
+  if (filters.redirected === 'only') {
+    q = q.not('redirects_to', 'is', null);
+  } else if (filters.redirected === 'exclude') {
+    q = q.is('redirects_to', null);
+  }
+  if (filters.blocked === 'only') {
+    q = q.eq('blocked', true);
+  } else if (filters.blocked === 'exclude') {
+    q = q.eq('blocked', false);
+  }
+  if (filters.language) {
+    const codes = countriesForLanguage(filters.language);
+    // Fail closed on an unknown language — see the LeadFilters comment.
+    q = codes.length ? q.in('country', codes) : q.eq('country', NO_LANGUAGE_MATCH);
+  }
+  return q as T;
+}
+
 export async function getLeads(filters: LeadFilters = {}) {
   const supabase = getSupabase();
+  // Resolve the migration-063 probe before any query is built — see
+  // hasProspectTypeColumn().
+  if (filters.prospectType?.length) await hasProspectTypeColumn();
   const page = filters.page || 1;
   const limit = filters.limit || 25;
   const offset = (page - 1) * limit;
@@ -105,47 +240,7 @@ export async function getLeads(filters: LeadFilters = {}) {
         .from('leads')
         .select('*, lead_platform_presences(platform, screenshot_path)' + contactedEmbed, { count: 'exact' });
 
-  if (filters.status) query = query.eq('outreach_status', filters.status);
-  // country uses ILIKE substring match so operator typos and partial typing
-  // still surface the right leads ("new york" matches "New York, USA").
-  if (filters.country) query = query.ilike('country', `%${filters.country}%`);
-  // category is FAMILY-aware: each scraping platform writes its own taxonomy
-  // string, so one trade ends up stored under several labels (plumber /
-  // plumbers / plumbing). A plain substring match found only some of them.
-  // categoryOrFilter expands the requested value to every label in its family
-  // — source of truth is tools/db/category_canonical.py. Partial typing still
-  // works, because the expansion is a set of ILIKE substring needles rather
-  // than equality ("plumb" -> %plumb%).
-  if (filters.category) {
-    const categoryOr = categoryOrFilter(filters.category);
-    if (categoryOr) query = query.or(categoryOr);
-  }
-  if (filters.minRating) query = query.gte('star_rating', filters.minRating);
-  if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
-  if (filters.search) {
-    query = query.or(`company_name.ilike.%${filters.search}%,website_url.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%`);
-  }
-  if (filters.hasEmail) {
-    query = query.not('primary_email', 'is', null);
-  }
-  if (filters.verificationStatus) {
-    query = query.eq('verification_status', filters.verificationStatus);
-  }
-  if (filters.redirected === 'only') {
-    query = query.not('redirects_to', 'is', null);
-  } else if (filters.redirected === 'exclude') {
-    query = query.is('redirects_to', null);
-  }
-  if (filters.blocked === 'only') {
-    query = query.eq('blocked', true);
-  } else if (filters.blocked === 'exclude') {
-    query = query.eq('blocked', false);
-  }
-  if (filters.language) {
-    const codes = countriesForLanguage(filters.language);
-    // Fail closed on an unknown language — see the LeadFilters comment.
-    query = codes.length ? query.in('country', codes) : query.eq('country', NO_LANGUAGE_MATCH);
-  }
+  query = applyLeadFilters(query, filters);
   // Anti-join: constrain the embed to real sends, then keep only parents
   // whose embed came back empty — i.e. leads never actually emailed.
   if (filters.excludeContacted) {
@@ -200,6 +295,7 @@ export async function getLeadIds(
 ): Promise<Array<{ id: string; primary_email: string | null }>> {
   const supabase = getSupabase();
   const MAX_IDS = 5000;
+  if (filters.prospectType?.length) await hasProspectTypeColumn();
 
   const contactedEmbed = filters.excludeContacted ? ', campaign_leads!left(id)' : '';
 
@@ -231,7 +327,15 @@ export async function getLeadIds(
     query = query.or(`company_name.ilike.%${filters.search}%,website_url.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%`);
   }
   if (filters.hasEmail) query = query.not('primary_email', 'is', null);
-  if (filters.verificationStatus) query = query.eq('verification_status', filters.verificationStatus);
+  if (filters.verificationStatus === 'unverified') query = query.is('verification_status', null);
+  else if (filters.verificationStatus) query = query.eq('verification_status', filters.verificationStatus);
+  if (filters.ids && filters.ids.length) query = query.in('id', filters.ids);
+  // Mirrors applyLeadFilters — this list feeds campaign recipient selection,
+  // so a "select all" must respect the same prospect-type narrowing the
+  // operator sees on screen. See hasProspectTypeColumn() for the gate.
+  if (filters.prospectType?.length && prospectTypeColumnExists !== false) {
+    query = query.in('prospect_type', filters.prospectType);
+  }
   if (filters.redirected === 'only') query = query.not('redirects_to', 'is', null);
   else if (filters.redirected === 'exclude') query = query.is('redirects_to', null);
   // This list feeds campaign recipient selection (wizard "select all") — never
@@ -259,6 +363,79 @@ export async function getLeadIds(
     id: r.id,
     primary_email: r.primary_email ?? null,
   }));
+}
+
+/**
+ * Per-verdict lead counts for one filter set — the numbers behind the Lead
+ * Matrix's verification chips.
+ *
+ * WHY THIS EXISTS: the "Has Email" filter counts every row carrying any
+ * address, which Operations read as "sendable". It isn't — an address is only
+ * sendable once a verifier has returned `valid`, and a large slice of the
+ * book is still unverified or came back invalid/catch-all/unknown. Showing
+ * the split next to the toggle makes the real sendable audience visible
+ * instead of implied.
+ *
+ * Implemented as N head-only count queries rather than one big read: PostgREST
+ * returns an exact count without shipping rows, so this stays cheap even on a
+ * 6k-row book, and the numbers are guaranteed to agree with the list query
+ * because they run through the same filter applier.
+ */
+export async function getVerificationCounts(
+  filters: LeadFilters = {},
+): Promise<Record<VerificationFilter | 'total' | 'sendable', number>> {
+  const supabase = getSupabase();
+  // Resolve the migration-063 probe before any query is built — see
+  // hasProspectTypeColumn().
+  if (filters.prospectType?.length) await hasProspectTypeColumn();
+
+  const countFor = async (verification?: VerificationFilter, requireEmail = false): Promise<number> => {
+    const scoped: LeadFilters = {
+      ...filters,
+      verificationStatus: verification,
+      hasEmail: requireEmail ? true : filters.hasEmail,
+      // Counts are about the whole filtered book, not one page of it.
+      page: undefined,
+      limit: undefined,
+    };
+    const contactedEmbed = scoped.excludeContacted ? ', campaign_leads!left(id)' : '';
+    let query = scoped.platform
+      ? supabase
+          .from('leads')
+          .select('id, lead_platform_presences!inner(platform)' + contactedEmbed, { count: 'exact', head: true })
+          .eq('lead_platform_presences.platform', scoped.platform)
+      : supabase.from('leads').select('id' + contactedEmbed, { count: 'exact', head: true });
+    query = applyLeadFilters(query, scoped);
+    // Same anti-join getLeads uses. It lives here rather than in
+    // applyLeadFilters because it depends on the campaign_leads embed being
+    // in the select string, which is a query-construction concern. Without
+    // it the embed would be requested and then ignored, and a count taken
+    // with excludeContacted would silently include already-emailed leads —
+    // i.e. over-report the sendable audience, which is the exact failure
+    // these counts exist to prevent.
+    if (scoped.excludeContacted) {
+      query = query
+        .in('campaign_leads.status', CONTACTED_STATUSES)
+        .is('campaign_leads', null);
+    }
+    const { count, error } = await query;
+    if (error) throw new Error(error.message);
+    return count ?? 0;
+  };
+
+  const [total, valid, invalid, catchAll, unknown, unverified, sendable] = await Promise.all([
+    countFor(undefined),
+    countFor('valid'),
+    countFor('invalid'),
+    countFor('catch-all'),
+    countFor('unknown'),
+    countFor('unverified'),
+    // "Sendable" is the only number that answers Operations' actual question:
+    // how many of these can go out today. Valid verdict AND an address on file.
+    countFor('valid', true),
+  ]);
+
+  return { total, valid, invalid, 'catch-all': catchAll, unknown, unverified, sendable };
 }
 
 export async function getLeadById(id: string) {

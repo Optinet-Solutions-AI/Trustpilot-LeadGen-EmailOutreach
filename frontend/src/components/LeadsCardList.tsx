@@ -7,6 +7,8 @@ interface Props {
   leads: Lead[];
   selectedIds: string[];
   onSelect: (ids: string[]) => void;
+  /** Mirrors LeadsTable's prop of the same name — see the note there. */
+  isSelectable?: (lead: Lead) => boolean;
   onLeadClick: (id: string) => void;
   onStatusChange?: (id: string, status: LeadStatus) => void;
   onDelete?: (id: string) => void;
@@ -27,6 +29,7 @@ export default function LeadsCardList({
   leads,
   selectedIds,
   onSelect,
+  isSelectable: isSelectableOverride,
   onLeadClick,
   onDismissLinkFlag,
   onEditLinkUrl,
@@ -34,7 +37,14 @@ export default function LeadsCardList({
   extraRowActions,
 }: Props) {
   const selected = new Set(selectedIds);
+  // Mirrors LeadsTable: a proven-invalid address can never be emailed, so it
+  // is never selectable. Both list renderers must agree or the rule is only
+  // as strong as the viewport width.
+  const isSelectable = isSelectableOverride ?? ((l: Lead) => l.verification_status !== 'invalid');
+  const selectableOnPage = leads.filter(isSelectable);
   const toggleSelect = (id: string) => {
+    const lead = leads.find((l) => l.id === id);
+    if (lead && !isSelectable(lead)) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -44,10 +54,10 @@ export default function LeadsCardList({
   // Page-scoped select-all: matches LeadsTable's desktop header checkbox so
   // mobile users have the same bulk-select affordance. Toggles only the
   // current page's ids, preserving any selections on other pages.
-  const selectedOnPage = leads.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
-  const allOnPageSelected = leads.length > 0 && selectedOnPage === leads.length;
+  const selectedOnPage = selectableOnPage.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
+  const allOnPageSelected = selectableOnPage.length > 0 && selectedOnPage === selectableOnPage.length;
   const toggleAllOnPage = () => {
-    const pageIds = new Set(leads.map((l) => l.id));
+    const pageIds = new Set(selectableOnPage.map((l) => l.id));
     if (allOnPageSelected) {
       onSelect(selectedIds.filter((id) => !pageIds.has(id)));
     } else {
@@ -114,8 +124,12 @@ export default function LeadsCardList({
               <input
                 type="checkbox"
                 checked={isChecked}
+                disabled={!isSelectable(lead)}
                 onChange={() => toggleSelect(lead.id)}
-                className="w-5 h-5 accent-[#b0004a]"
+                title={isSelectable(lead)
+                  ? undefined
+                  : 'Email verified as invalid — campaigns cannot send to this address.'}
+                className="w-5 h-5 accent-[#b0004a] disabled:opacity-30"
                 aria-label={`Select ${lead.company_name}`}
               />
             </label>

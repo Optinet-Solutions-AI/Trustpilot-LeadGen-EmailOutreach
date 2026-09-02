@@ -25,7 +25,7 @@ This project's work is tracked on an external PMS board ("TrustPilot Dashboard" 
 
 ## Project Overview
 
-A full-stack lead generation and CRM system that scrapes companies from **any platform** — review sites (Trustpilot, Yelp, TripAdvisor — live) and social platforms (Facebook Pages/Groups, Instagram — planned, with post/group keyword search and post-author capture). Each platform is a plugin behind a single `BasePlatformScraper` contract; scraped leads are enriched, verified, managed through a pipeline, and contacted via personalized cold outreach campaigns over multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
+A full-stack lead generation and CRM system that scrapes companies from **any platform** — review sites (Trustpilot, Yelp, TripAdvisor — live), short-term-rental marketplaces (Booking.com — live; Airbnb — not built, see Known Constraints) and social platforms (Facebook Pages/Groups, Instagram — planned, with post/group keyword search and post-author capture). Each platform is a plugin behind a single `BasePlatformScraper` contract; scraped leads are enriched, verified, managed through a pipeline, and contacted via personalized cold outreach campaigns over multiple connected mailbox providers. Built on the WAT framework (Workflows → Agents → Tools).
 
 **Business purpose:** Sell reputation management & lead-gen services to small/mid businesses surfaced from review and social platforms. Brand: **OptiRate** / optiratesolutions.com.
 
@@ -127,7 +127,8 @@ trustpilot-leadgen/
 │       ├── 001_initial_schema.sql     ← 6 core tables
 │       ├── 006_email_platform.sql     ← platform_campaign_id, email_platform on campaigns
 │       ├── 007_campaign_steps.sql     ← follow-up steps table
-│       └── 008_sending_schedule.sql   ← sending_schedule jsonb on campaigns
+│       ├── 008_sending_schedule.sql   ← sending_schedule jsonb on campaigns
+│       └── 063_lead_prospect_type.sql ← leads.prospect_type (+reason/source/set_at)
 │
 ├── tools/                             ← Python scripts (WAT execution layer)
 │   ├── scraper/
@@ -144,11 +145,14 @@ trustpilot-leadgen/
 │   │   │   ├── trustpilot.py
 │   │   │   ├── tripadvisor.py
 │   │   │   ├── yelp.py
+│   │   │   ├── booking.py           ← Booking.com STR hosts (property-management pitch)
+│   │   │   ├── booking_apify.py     ← actor adapter + host collapse + spend guards
 │   │   │   └── _social_base.py        ← SocialPlatformScraper ABC (planned platforms)
 │   │   ├── shared/                    ← shared helpers (scrapingbee, yelp_fusion, etc.)
 │   │   └── data/                      ← seed JSON (tripadvisor_country_geo, yelp_country_cities)
 │   └── db/
 │       ├── supabase_client.py
+│       ├── classify_prospects.py      ← fills leads.prospect_type from stored signals (DRY RUN by default, --apply to write)
 │       └── upsert_leads.py            ← splits Trustpilot legacy path vs _upsert_nontrustpilot_lead
 │
 ├── server/                            ← Express + TypeScript backend
@@ -249,6 +253,14 @@ trustpilot-leadgen/
 | `YELP_APIFY_USE_CACHE` | Opt into the actor's row cache. OFF by default: billing is per returned item rather than per fetch, so the cache buys speed but never money, and cached rows measurably arrive with contact fields empty | `false` |
 | `YELP_APIFY_CACHE_DAYS` | Passed to the actor as `maxCacheAgeDays` — pins how stale a cached row can be while still taking the actor's cache discount | `30` |
 | `YELP_APIFY_MARKETS` | Comma-separated ISO country codes verified against the actor. Others fail fast with `apify_market_unverified` instead of silently returning zero; add a country only after a live single-city probe confirms real rows | `US` |
+| `BOOKING_APIFY_ACTOR` | Cookieless Booking.com professional-host actor. Returns listing AND published contact data (email, phone, company name, registration number) in ONE call, so there is no enrichment stage and no ScrapingBee spend. Input/output keys read from its published build 2.9.1 on 2026-08-24: inputs `cityNames` (["City, Country"]), `maxHotels`, `onlyProHosts`, `deduplicateHosts`, `multiSearch`; outputs `hotel_url`, `hotel_name`, `hotel_email`, `hotel_phone`, `hotel_company_name`, `hotel_website`, `hotel_registration_number`, `hotel_address`, `hotel_city`. Listed at $5.49/1,000 exported rows plus a per-run start charge | `corent1robert/booking-pro-host-scraper` |
+| `BOOKING_APIFY_ONLY_PRO_HOSTS` | Keep only listings where a professional contact was published. This is what makes the results contactable — EU trader-transparency rules oblige registered businesses to publish contact details, and ordinary hosts publish nothing | `true` |
+| `BOOKING_APIFY_DEDUPE_HOSTS` | Hand host dedup back to the actor. OFF by default: the actor's dedup returns one row per host but **no property count**, and the count is what separates an owner-host (1-5) from an agency (6+) — the size tagging the pitch depends on. Turning it on trades that tagging for a smaller billable row count | `false` |
+| `BOOKING_APIFY_MULTI_SEARCH` | 25 extra searches with varied dates and guest counts, to surface hotels Booking hides on a single query. 2-3x more unique hosts for 3-5x runtime and cost | `false` |
+| `BOOKING_APIFY_OVERFETCH` | Multiplier on the per-run ask. Review score, review count and property type are all filtered client-side (the actor exposes no server-side filter for any of them), and collapsing an agency turns N billed rows into one lead | `3` |
+| `BOOKING_APIFY_MAX_HOTELS` | Per-run ceiling on properties requested | `100` |
+| `BOOKING_APIFY_MAX_ITEMS_PER_JOB` | Whole-job spend guard — max billable rows one scrape may fetch. ~$2.20/job at list price. Along with the Yelp guard, the only cap on Apify spend in the system | `400` |
+| `BOOKING_APIFY_MARKETS` | Comma-separated ISO codes. Unset = every market allowed; set it only to deliberately narrow (spend control, or parking a misbehaving market) | unset |
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
@@ -286,7 +298,8 @@ The schema is in a transitional state: a legacy `leads` table (Trustpilot-shaped
 | `star_rating` | real | Denormalized for Trustpilot — platform-specific ratings live on `lead_platform_presences.rating` |
 | `screenshot_path` | text | Denormalized — canonical screenshots live on `lead_platform_presences.screenshot_path` |
 | `email_verified` | boolean | |
-| `verification_status` | text | `valid`/`invalid`/`catch-all`/`unknown` |
+| `verification_status` | text | `valid`/`invalid`/`catch-all`/`unknown`, or **NULL = never verified**. NULL is a distinct state from `unknown` (verifier ran, was inconclusive) and the API exposes it as the synthetic filter value `unverified` |
+| `prospect_type` | text | Migration 063. What the lead **is**: `operator` (sellable) / `affiliate` / `redirect` / `dead` / `flagged` / `unclassified` (default). Written by `tools/db/classify_prospects.py` from stored signals, or by hand from Lead Detail. Paired with `prospect_type_reason`, `prospect_type_set_at`, `prospect_type_source` (`auto`/`manual` — **the classifier never overwrites `manual`**) |
 | `outreach_status` | text | `new`/`contacted`/`replied`/`converted`/`lost` |
 
 ### `lead_platform_presences` (multi-platform identity — migration 032)
@@ -362,6 +375,8 @@ The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not us
 | `/api/leads` | GET | Paginated + filterable |
 | `/api/leads/:id` | GET/PATCH/DELETE | Single lead |
 | `/api/leads/bulk` | PATCH | Bulk update |
+| `/api/leads/verification-counts` | GET | Per-verdict counts for the SAME query string as `/api/leads` → `{total, valid, invalid, catch-all, unknown, unverified, sendable}`. Powers the Lead Matrix verification chips. `sendable` = valid **and** has an address — the only number that answers "how many can go out today". Must stay above `/:id` |
+| `/api/leads/languages` | GET | Outreach languages that actually have leads, each with country codes + live count. Powers the language filters. Must stay above `/:id` |
 | `/api/leads/:id/notes` | GET/POST | Activity timeline |
 | `/api/leads/:id/follow-ups` | GET/POST | Reminders |
 | `/api/follow-ups` | GET | Upcoming (dashboard) |
@@ -369,13 +384,14 @@ The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not us
 | `/api/verify` | POST | Batch email verification |
 | `/api/campaigns` | GET/POST | List + create |
 | `/api/campaigns/:id` | PATCH/DELETE | Update or delete |
-| `/api/campaigns/:id/send` | POST | Launch campaign send via Gmail |
+| `/api/campaigns/:id/send` | POST | Launch campaign send. **Hard-blocks** on recipients whose verdict is `invalid` or NULL (never verified) and returns `{blockedLeads[], blockedSummary}` so the UI can list them and offer remove / re-verify. `{allowUnverified: true}` overrides the NULL case only — there is no override for `invalid` |
+| `/api/campaigns/preview` | POST | Render a template exactly as it would send (body: `{subject, body, leadId?, campaignId?, includeScreenshot?, senderAccountId?}`). Stateless, so the wizard can preview an unsaved draft. Runs the SAME `renderAndSpin` as the scheduler, resolves a real lead, appends the screenshot, and returns deliverability `warnings[]` (unbalanced braces, leaked `\|`, unknown `{{token}}`). Must stay above the `/:id` routes |
 | `/api/campaigns/:id/test-flight` | POST | Mandatory pre-send test (body: `{testEmail}`) |
 | `/api/campaigns/:id/cancel` | POST | Pause/cancel campaign |
 | `/api/campaigns/:id/duplicate` | POST | Clone campaign |
 | `/api/campaigns/:id/sync` | POST | On-demand stats sync from platform |
 | `/api/campaigns/:id/stats` | GET | Sent/opened/replied/bounced |
-| `/api/campaigns/:id/leads` | GET/POST | List or add leads |
+| `/api/campaigns/:id/leads` | GET/POST/DELETE | List, add, or remove recipients. `DELETE` body `{blockedOnly: true}` drops exactly the **pending** recipients the send gate would refuse (server recomputes, so it can't act on a stale list); or pass `{campaignLeadIds[]}` / `{leadIds[]}`. Sent rows are never removable — they're a record of mail that left |
 | `/api/campaigns/:id/steps` | GET | Follow-up steps |
 | `/api/campaigns/platform-status` | GET | Platform health + connected accounts |
 | `/api/campaigns/preview-recipients` | GET | Count leads matching filters |
@@ -425,6 +441,8 @@ See `docs/deployment.md` for complete reference.
 - `EmailPlatformAdapter` interface in `types.ts` — all adapters must implement it exactly
 - `BasePlatformScraper` contract in `tools/scraper/platforms/base.py` — all platform plugins must implement it exactly. Social platforms add the `SocialPlatformScraper` subclass at `_social_base.py`.
 - `lead_platform_presences(platform, profile_url)` unique key — canonical multi-platform lead identity
+- The `invalid` send-block. It is enforced at four layers on purpose (selection, hand-off, campaign insert, send); removing any one of them re-opens the gap that killed the Canada / Australia launches
+- `resolveOutreachLanguage()` as the single source of the AI's writing language — never read `COUNTRY_LANGUAGE[...]` directly at a generation call site
 
 ---
 
@@ -449,6 +467,47 @@ See `docs/deployment.md` for complete reference.
 - **Fallback listing sources** (in rough order of use): `browser` — FREE headed-browser `/search`, owner-local-only (headed Chrome + residential IP; cannot run on Cloud Run/EC2) — this is the code's technical default. `fusion` — paid Yelp API; the trial has expired (`400 TRIAL_EXPIRED`). `relay` — residential proxy + a human-minted DataDome cookie reused in a headed browser; the escape hatch for a withdrawn actor or a market Apify can't reach (operator runbook in `workflows/scrape_yelp.md`). PerimeterX is aggressive on the `browser` path — conservative jittered pacing + hard-block abort (`"Access to this page has been denied"` only; the `perimeterx`/`captcha` SDK strings appear on every successful page, so they are NOT treated as blocks).
 - **Profile enrichment** on the fallback (`browser`/`fusion`/`relay`) paths still uses ScrapingBee `stealth_proxy` on `/biz/<slug>` (75 credits/page) — unchanged.
 - Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
+
+### Booking.com (short-term-rental hosts)
+- **Purpose is different from every other platform here.** These leads are not
+  businesses to sell reputation management to — they are property owners and
+  agencies to sell *property management* to: portal management, check-in/
+  check-out, and turnover cleaning. `frontend/src/lib/gemini.ts` carries a
+  `booking` copy profile so AI-generated templates pitch operations, not reviews.
+- **Contact data exists because the law requires it.** EU trader-transparency
+  rules oblige professional hosts to publish a business email, phone, company
+  name and registration number on every listing. That is also why this is the
+  compliance-defensible segment to cold-email — a published business address,
+  not an individual's personal one. Ordinary (non-professional) hosts publish
+  nothing, and `onlyProHosts` filters them out.
+- **Airbnb is deliberately NOT built.** It publishes no contact details for
+  ordinary hosts, and soliciting through the Airbnb inbox breaches its terms.
+  Reaching Airbnb hosts needs an identity-resolution step (listing -> direct
+  booking site -> email via the existing `scrape_website.py` + Hunter tiers).
+- **Cookieless and browserless** — one Apify HTTP call covers listing AND
+  contact data, so it runs on Cloud Run and the Linux worker, needs no proxy,
+  no account and no ScrapingBee, and `enrich_profiles` is a pass-through.
+- **Hosts are collapsed locally, not by the actor.** An agency with 20 listings
+  returns 20 rows carrying one email; written through unfolded that is 20 leads
+  for one company. `collapse_hosts` folds them into one lead keyed on the
+  contact, keeps the WORST-rated property as the representative (its reviews
+  are the pitch), and counts the portfolio. The count sets `leads.category` to
+  `str-owner-host` (1-5) or `str-pro-operator` (6+), which is what the campaign
+  wizard segments on, and the exact figure goes to
+  `lead_platform_presences.host_property_count` (migration 062).
+- **Scores are out of 10, not 5.** `max_review_score` defaults to 8.5. The raw
+  score goes to `lead_platform_presences.rating`; `leads.star_rating` is left
+  alone so the 10-point scale never pollutes the 5-point column.
+- **Review fields are not guaranteed.** The actor's published dataset schema
+  declares no review score, review count, stars or property type, even though
+  its README shows them. They are read across several spellings and allowed to
+  be absent — `include_unrated` defaults ON, and a run where nothing carried a
+  score says so rather than returning 0 leads from a paid run. Same failure
+  Yelp hit in ratingless markets.
+- **Phone-only leads are kept** as a call list. They land with `phone` set and
+  `primary_email` null, so the existing `hasEmail` recipient filter keeps them
+  out of email campaigns automatically. Hosts with no email, no phone AND no
+  website are dropped outright — unreachable by any channel this CRM has.
 
 ### Social platforms (planned — Facebook, Instagram, FB Groups)
 - **Discovery is cookieless via Apify** (`FB_DISCOVERY=apify`, the default) — no account,
@@ -492,6 +551,49 @@ See `docs/deployment.md` for complete reference.
 - Captcha checkpoints are routine; the in-app social-account recovery UI (planned) is how operators resolve them
 - Lead model includes post authors (DM target) and group admins, not just page owners
 - **Instagram (in build):** runs on the Windows EC2 worker ONLY — set `PLATFORM_FILTER=facebook,instagram` there and add `instagram` to the Linux worker's `PLATFORM_EXCLUDE` (IG/Brave is checkpointed on Linux just like FB). Smoke-tested locally first on the owner's residential IP. Uses the shared `tools/scraper/shared/uc_driver.py` opener with `IG_PROFILE_DIR` + mobile UA + `og:description` caption capture + the shared Gemini consumer-intent classifier.
+
+### Email verdicts — who is actually sendable
+- **`valid`** → send. **`catch-all`** → send cautiously (the domain accepts any
+  address, so a bounce never proves the address was wrong and a spam trap looks
+  identical to a real inbox — small batches, warmed account, watch replies not
+  bounces; never lead a domain's warm-up with these). **`unknown`** → don't
+  (the whole ZB → MV → Hunter waterfall failed to decide; treat as unverified).
+  **NULL / never verified** → don't. **`invalid`** → never.
+- **`invalid` and NULL are hard-blocked at `POST /api/campaigns/:id/send`**,
+  which returns the offending rows as `blockedLeads[]`; the UI lists them with
+  remove / re-verify actions. `{allowUnverified: true}` overrides the NULL case
+  deliberately; nothing overrides `invalid`.
+- **`invalid` is enforced at every layer, not just the wizard.** Checkbox
+  disabled in the Lead Matrix table AND card list, excluded from select-all,
+  stripped (with a notice) when a Lead-Matrix selection is handed to the
+  wizard, and auto-skipped by `addLeadsToCampaign` with
+  `skip_reason='email_invalid'`. Before 2026-09-02 the rule lived only in the
+  wizard picker and Lead-Matrix selections walked straight past it.
+- **Which column holds the verdict depends on the campaign type.** A
+  `discovery_followup` campaign sends to `lead.discovered_email`, so the gate
+  reads `discovered_email_status`, not `verification_status` (which describes
+  `primary_email` — for those leads, usually the address that already bounced).
+  Getting this wrong auto-skips the entire Prospects flow. The Prospects view
+  passes `LeadsTable`'s `isSelectable` override for the same reason.
+- **"Has Email" is not "sendable."** It counts any address on file, verified or
+  not. Size campaigns off the Lead Matrix's verification chips /
+  `GET /api/leads/verification-counts` instead — that's what the failed Canada
+  and Australia launches were sized off (2026-09-02).
+
+### AI copy language
+- **Every AI-generation call site must resolve the language through
+  `resolveOutreachLanguage(country, language)`** in
+  `frontend/src/components/campaign-wizard/scheduleConfig.ts`. Reading
+  `COUNTRY_LANGUAGE[filterCountry]` directly is the bug that shipped English
+  copy to Swedish and Spanish audiences: a Lead-Matrix hand-off carried only
+  `leadIds`, so the wizard opened with an empty country, and `gemini.ts` only
+  adds its language directive when a language actually resolves.
+- The wizard hand-off URL therefore carries the filters, not just the ids:
+  `/campaigns?wizard=1&leadIds=<csv>&country=SE&language=Swedish&category=…&platform=…`.
+- An explicitly chosen **language beats country**, because a German campaign
+  spanning AT + CH + DE has no single country. `COUNTRY_LANGUAGE` deliberately
+  omits English-default markets (US/GB/AU/CA/…) so they fall through to the
+  English prompt.
 
 ### Email
 - ZeroBounce free tier: 100 credits/month; MillionVerifier free: 1000/mo; Hunter free: 50 calls/mo
@@ -615,6 +717,10 @@ Style rules — match the user's preferred voice:
 | Run plugin scraper (TripAdvisor/Yelp) | `.venv/Scripts/python.exe tools/scraper/run.py --platform yelp --action list --filters '{"country":"US","category":"plumbers","max_rating":3.5}'` |
 | Seed TripAdvisor cities | `.venv/Scripts/python.exe tools/scraper/seed_tripadvisor_cities.py --country US` |
 | Run migration 008 | `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sending_schedule jsonb;` (Supabase SQL editor) |
+| Run migration 063 | Paste `supabase/migrations/063_lead_prospect_type.sql` into the Supabase SQL editor. **Required before the Lead Matrix's prospect-type filter does anything** — the API probes for the column and silently disables the filter until it exists, so deploy order is safe either way |
+| Classify prospects (dry run) | `.venv/Scripts/python.exe tools/db/classify_prospects.py` |
+| Classify prospects (write) | `.venv/Scripts/python.exe tools/db/classify_prospects.py --apply` |
+| Run server tests | `cd server && npx vitest run` |
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

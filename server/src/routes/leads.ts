@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import path from 'path';
-import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads, getLeadIds } from '../db/leads.js';
+import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads, getLeadIds, getVerificationCounts, parseVerificationFilter } from '../db/leads.js';
 import { getCampaignLeadsByLead } from '../db/campaigns.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
@@ -26,6 +26,25 @@ const claimedCheckRegistry = createClaimedRegistry();
 
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
+
+// ?ids=a,b,c -> ['a','b','c']. Capped so a hand-crafted URL can't turn into a
+// multi-megabyte `IN (...)`; the wizard never hands over more than a page or
+// two of selections.
+const MAX_ID_FILTER = 2000;
+// ?prospectType=operator,unclassified — narrowed against the migration-063
+// value set so an unknown value can never widen (or silently empty) a query.
+const PROSPECT_TYPES = ['operator', 'affiliate', 'redirect', 'dead', 'flagged', 'unclassified'];
+const parseProspectTypes = (raw: unknown): string[] | undefined => {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const vals = raw.split(',').map((v) => v.trim().toLowerCase()).filter((v) => PROSPECT_TYPES.includes(v));
+  return vals.length ? [...new Set(vals)] : undefined;
+};
+
+const parseIds = (raw: unknown): string[] | undefined => {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const ids = raw.split(',').map((s) => s.trim()).filter(Boolean).slice(0, MAX_ID_FILTER);
+  return ids.length ? ids : undefined;
+};
 
 // GET /api/leads/filters — distinct countries and categories for wizard dropdowns
 router.get('/filters', async (_req: Request, res: Response) => {
@@ -64,9 +83,11 @@ router.get('/', async (req: Request, res: Response) => {
       sortBy: req.query.sortBy as string | undefined,
       sortDir: req.query.sortDir === 'asc' ? 'asc' : 'desc',
       hasEmail: req.query.hasEmail === 'true',
-      verificationStatus: ['valid', 'invalid', 'catch-all', 'unknown'].includes(req.query.verificationStatus as string)
-        ? (req.query.verificationStatus as 'valid' | 'invalid' | 'catch-all' | 'unknown')
-        : undefined,
+      verificationStatus: parseVerificationFilter(req.query.verificationStatus),
+      // ?ids=<csv> — the campaign wizard re-reads a Lead-Matrix hand-off
+      // through the normal filter path so it can re-apply the send rules.
+      ids: parseIds(req.query.ids),
+      prospectType: parseProspectTypes(req.query.prospectType),
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
       blocked: req.query.blocked === 'only' || req.query.blocked === 'exclude' ? req.query.blocked : 'all',
       // Campaign wizard passes this so already-emailed leads never appear in
@@ -100,9 +121,9 @@ router.get('/ids', async (req: Request, res: Response) => {
         ? (req.query.platform as string).toLowerCase()
         : undefined,
       hasEmail: req.query.hasEmail === 'true',
-      verificationStatus: ['valid', 'invalid', 'catch-all', 'unknown'].includes(req.query.verificationStatus as string)
-        ? (req.query.verificationStatus as 'valid' | 'invalid' | 'catch-all' | 'unknown')
-        : undefined,
+      verificationStatus: parseVerificationFilter(req.query.verificationStatus),
+      ids: parseIds(req.query.ids),
+      prospectType: parseProspectTypes(req.query.prospectType),
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
       excludeContacted: req.query.excludeContacted === 'true',
       language: typeof req.query.language === 'string' && req.query.language.trim()
@@ -110,6 +131,48 @@ router.get('/ids', async (req: Request, res: Response) => {
         : undefined,
     });
     res.json({ success: true, data: ids, total: ids.length });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// GET /api/leads/verification-counts — the split behind the Lead Matrix's
+// verification chips: how many of the leads matching the CURRENT filters sit
+// at each verifier verdict, plus how many are actually sendable today.
+//
+// Exists because "Has Email" was being read as "sendable". It is not: it
+// counts every row carrying an address regardless of whether a verifier ever
+// looked at it. Operations sized campaigns off that number and campaigns then
+// failed at the invalid-email send gate.
+//
+// Takes the same query string as GET /api/leads, so the caller can pass its
+// live filter state through unchanged.
+//
+// Declared before /:id, or Express matches "verification-counts" as an id.
+router.get('/verification-counts', async (req: Request, res: Response) => {
+  try {
+    const counts = await getVerificationCounts({
+      status: req.query.status as string,
+      country: req.query.country as string,
+      category: req.query.category as string,
+      search: req.query.search as string,
+      platform: typeof req.query.platform === 'string' && req.query.platform.trim()
+        ? (req.query.platform as string).toLowerCase()
+        : undefined,
+      // NOTE: hasEmail is deliberately honoured here. With the toggle on, the
+      // chips describe the has-an-address subset; with it off, the whole book.
+      hasEmail: req.query.hasEmail === 'true',
+      ids: parseIds(req.query.ids),
+      prospectType: parseProspectTypes(req.query.prospectType),
+      redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
+      blocked: req.query.blocked === 'only' || req.query.blocked === 'exclude' ? req.query.blocked : 'all',
+      excludeContacted: req.query.excludeContacted === 'true',
+      language: typeof req.query.language === 'string' && req.query.language.trim()
+        ? req.query.language.trim()
+        : undefined,
+    });
+    res.json({ success: true, data: counts });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

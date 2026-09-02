@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Send, Plus, ImageIcon, Users, Sparkles } from 'lucide-react';
 import { generateEmailTemplate } from '../lib/gemini';
+import { resolveOutreachLanguage } from './campaign-wizard/scheduleConfig';
 
 const TOKENS = ['{{company_name}}', '{{website_url}}', '{{star_rating}}', '{{category}}', '{{country}}'];
 
@@ -91,6 +92,9 @@ export default function CampaignBuilder({ onSubmit }: Props) {
       const result = await generateEmailTemplate({
         country: filterCountry || undefined,
         category: filterCategory || undefined,
+        // Non-English markets get copy in their own language. Omitting this
+        // silently produced English for every country.
+        language: resolveOutreachLanguage(filterCountry),
       });
       setBody(result.body);
     } catch (err) {

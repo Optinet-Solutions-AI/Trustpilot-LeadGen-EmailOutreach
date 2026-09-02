@@ -1,7 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { COUNTRIES, CATEGORIES, TIMEZONES, DAY_LABELS, type SendingSchedule } from './scheduleConfig';
+import { COUNTRIES, CATEGORIES, TIMEZONES, DAY_LABELS, resolveOutreachLanguage, type SendingSchedule } from './scheduleConfig';
+import EmailPreviewModal, { type PreviewStep } from '../EmailPreviewModal';
+import type { FollowUpStepInput } from '../../types/campaign';
 
 interface Props {
   name: string;
@@ -10,6 +13,8 @@ interface Props {
   includeScreenshot: boolean;
   filterCountry: string;
   filterCategory: string;
+  /** Explicit outreach language, or '' to derive from filterCountry. */
+  filterLanguage: string;
   /** Platform this campaign targets — always a slug ('trustpilot' |
    *  'tripadvisor' | 'yelp'); the wizard no longer offers "all platforms".
    *  Shown in the recipient summary so the operator sees "Yelp · US ·
@@ -17,6 +22,11 @@ interface Props {
   filterPlatform?: string;
   recipientCount: number;
   followUpCount: number;
+  /** Full follow-up bodies, so the final review can preview the whole
+   *  sequence rather than just the count. */
+  followUpSteps?: FollowUpStepInput[];
+  /** Leads picked in Step 1 — the preview renders against real rows. */
+  selectedLeadIds?: string[];
   schedule: SendingSchedule;
   saving: boolean;
   onSubmit: () => void;
@@ -26,14 +36,16 @@ const PLATFORM_LABELS: Record<string, string> = {
   trustpilot: 'Trustpilot',
   tripadvisor: 'TripAdvisor',
   yelp: 'Yelp',
+  booking: 'Booking.com',
 };
 
 export default function WizardStep4Launch({
   name, subject, body, includeScreenshot,
-  filterCountry, filterCategory, filterPlatform,
-  recipientCount, followUpCount, schedule,
+  filterCountry, filterCategory, filterLanguage, filterPlatform,
+  recipientCount, followUpCount, followUpSteps = [], selectedLeadIds = [], schedule,
   saving, onSubmit,
 }: Props) {
+  const [showFullPreview, setShowFullPreview] = useState(false);
   const countryName  = COUNTRIES.find((c) => c.code === filterCountry)?.name  || 'All Countries';
   const categoryName = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
   const platformName = filterPlatform ? (PLATFORM_LABELS[filterPlatform] ?? filterPlatform) : '';
@@ -42,6 +54,14 @@ export default function WizardStep4Launch({
   const bodyPreview  = body.replace(/<[^>]+>/g, '').slice(0, 200).trim();
 
   const senderCount = (schedule.senderAccountIds?.length ?? 0) || (schedule.senderAccountId ? 1 : 0);
+
+  // Last chance to read the real email before the campaign is created.
+  const previewSteps: PreviewStep[] = [
+    { label: 'Initial email', subject, body },
+    ...followUpSteps.map((s, i) => ({ label: `Follow-up #${i + 1}`, subject: s.subject, body: s.body })),
+  ];
+  const pinnedSenderId = schedule.senderAccountIds?.find((id) => id !== '__env__') ?? schedule.senderAccountId;
+  const canPreview = subject.trim().length > 0 || body.trim().length > 0;
 
   const checks = [
     { ok: name.trim().length > 0,         label: 'Campaign name set',                  icon: 'badge' },
@@ -125,6 +145,14 @@ export default function WizardStep4Launch({
                       ? (bodyPreview + (body.length > 200 ? '…' : ''))
                       : <span className="text-slate-300 italic">Not set</span>}
                   </p>
+                  <button
+                    onClick={() => setShowFullPreview(true)}
+                    disabled={!canPreview}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-[#b0004a] bg-[#ffd9de]/50 hover:bg-[#ffd9de] disabled:opacity-40 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">visibility</span>
+                    Preview the real email
+                  </button>
                 </div>
               </div>
               {followUpCount > 0 && (
@@ -235,6 +263,17 @@ export default function WizardStep4Launch({
 
         </div>
       </div>
+
+      {showFullPreview && (
+        <EmailPreviewModal
+          steps={previewSteps}
+          includeScreenshot={includeScreenshot}
+          recipients={selectedLeadIds.map((id) => ({ id }))}
+          senderAccountId={pinnedSenderId}
+          language={resolveOutreachLanguage(filterCountry, filterLanguage)}
+          onClose={() => setShowFullPreview(false)}
+        />
+      )}
     </div>
   );
 }

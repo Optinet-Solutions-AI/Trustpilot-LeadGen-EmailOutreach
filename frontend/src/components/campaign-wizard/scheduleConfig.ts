@@ -272,3 +272,26 @@ export const DEFAULT_SCHEDULE: SendingSchedule = {
   days: [1, 2, 3, 4, 5],
   dailyLimit: 50,
 };
+
+/**
+ * The single answer to "what language does this campaign write in?".
+ *
+ * An explicitly chosen language always wins — that is the point of the
+ * language filter: a German campaign spanning AT + CH + DE has no single
+ * country, so the country map can't answer for it. Otherwise fall back to the
+ * country's default language, and finally to undefined, which callers read as
+ * "write in English" (gemini.ts omits the language directive entirely).
+ *
+ * Every AI-generation call site must go through this. Reading
+ * COUNTRY_LANGUAGE[filterCountry] directly is what produced English copy for
+ * a Swedish audience when the country arrived empty (reported 2026-09-02).
+ */
+export function resolveOutreachLanguage(
+  country?: string,
+  language?: string,
+): string | undefined {
+  const explicit = language?.trim();
+  if (explicit) return explicit;
+  const code = country?.trim().toUpperCase();
+  return code ? COUNTRY_LANGUAGE[code] : undefined;
+}

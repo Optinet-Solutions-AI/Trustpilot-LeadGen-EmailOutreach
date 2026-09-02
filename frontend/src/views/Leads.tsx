@@ -73,6 +73,29 @@ export default function Leads() {
   const [countryFilter, setCountryFilter] = useState(() => searchParams?.get('country') ?? '');
   const [categoryFilter, setCategoryFilter] = useState(() => searchParams?.get('category') ?? '');
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
+  // Verifier verdict filter. 'unverified' is the synthetic bucket for leads
+  // no verifier has looked at yet — distinct from 'unknown', which means a
+  // verifier ran and couldn't decide.
+  //
+  // WHY: "Has Email" counts every row carrying an address, which was being
+  // read as "sendable". It isn't, and campaigns sized off that number kept
+  // failing at the invalid-email send gate (Operations, 2026-09-02). This
+  // filter plus the count chips make the real sendable audience visible.
+  const [verificationFilter, setVerificationFilter] = useState('');
+  // What the lead IS (migration 063), as a comma-joined list. The default
+  // 'operator,unclassified' is the practical working set: the confirmed
+  // sellable businesses plus everything not yet ruled out. Affiliates,
+  // redirects, dead listings and flagged accounts are hidden by default
+  // because they are the noise that made ~100 "leads with emails" convert
+  // like ~5 (Operations, 2026-09-02) — they're one dropdown pick away.
+  const [prospectFilter, setProspectFilter] = useState('operator,unclassified');
+  // Outreach language — expands server-side to every country that speaks it,
+  // so one filter covers AT + CH + DE for German. Carried into the campaign
+  // wizard on hand-off, where it also decides the AI's writing language.
+  const [languageFilter, setLanguageFilter] = useState('');
+  const [languageOptions, setLanguageOptions] = useState<
+    Array<{ language: string; countries: string[]; leadCount: number }>
+  >([]);
   // When on, show ONLY Trustpilot-flagged (blocked) leads — lets the operator
   // see and count how many blocked accounts were scraped (migration 048).
   const [blockedFilter, setBlockedFilter] = useState(false);
@@ -114,6 +137,9 @@ export default function Leads() {
     (categoryFilter ? 1 : 0) +
     (statusFilter ? 1 : 0) +
     (hasEmailFilter ? 1 : 0) +
+    (verificationFilter ? 1 : 0) +
+    (prospectFilter !== 'operator,unclassified' ? 1 : 0) +
+    (languageFilter ? 1 : 0) +
     (blockedFilter ? 1 : 0) +
     (search ? 1 : 0);
   const [sortBy, setSortBy] = useState('scraped_at');
@@ -135,6 +161,9 @@ export default function Leads() {
     if (countryFilter) filters.country = countryFilter;
     if (categoryFilter) filters.category = categoryFilter;
     if (hasEmailFilter) (filters as any).hasEmail = 'true';
+    if (verificationFilter) (filters as any).verificationStatus = verificationFilter;
+    if (prospectFilter) (filters as any).prospectType = prospectFilter;
+    if (languageFilter) (filters as any).language = languageFilter;
     if (blockedFilter) (filters as any).blocked = 'only';
     if (search) filters.search = search;
     if (platformFilter) filters.platform = platformFilter;
@@ -145,7 +174,7 @@ export default function Leads() {
     // never accidentally pulls in misattributed leads.
     (filters as any).redirected = 'exclude';
     fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
-  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, blockedFilter, search, platformFilter, view, sortBy, sortDir, fetchLeads]);
+  }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, verificationFilter, prospectFilter, languageFilter, blockedFilter, search, platformFilter, view, sortBy, sortDir, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);
 
@@ -166,6 +195,8 @@ export default function Leads() {
     if (countryFilter) params.set('country', countryFilter);
     if (categoryFilter) params.set('category', categoryFilter);
     if (hasEmailFilter) params.set('hasEmail', 'true');
+    if (verificationFilter) params.set('verificationStatus', verificationFilter);
+    if (languageFilter) params.set('language', languageFilter);
     if (search) params.set('search', search);
     if (platformFilter) params.set('platform', platformFilter);
     let cancelled = false;
@@ -173,7 +204,66 @@ export default function Leads() {
       .then((res) => { if (!cancelled) setHiddenRedirectCount(res.data?.total ?? 0); })
       .catch(() => { if (!cancelled) setHiddenRedirectCount(0); });
     return () => { cancelled = true; };
-  }, [statusFilter, countryFilter, categoryFilter, hasEmailFilter, search, platformFilter]);
+  }, [statusFilter, countryFilter, categoryFilter, hasEmailFilter, verificationFilter, languageFilter, search, platformFilter]);
+
+  // Languages that actually have leads, with counts. Loaded once — the set
+  // only changes when new markets get scraped.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/leads/languages')
+      .then((res) => { if (!cancelled) setLanguageOptions(res.data?.data ?? []); })
+      .catch(() => { if (!cancelled) setLanguageOptions([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Verification split for the CURRENT filter set ─────────────────────
+  // The number Operations actually needs: of the leads on screen, how many
+  // can go out today. Deliberately ignores `verificationFilter` itself —
+  // narrowing to "valid only" shouldn't make the other chips read zero, or
+  // the chips stop being a way to navigate between buckets.
+  const [verificationCounts, setVerificationCounts] = useState<{
+    total: number; valid: number; invalid: number; 'catch-all': number;
+    unknown: number; unverified: number; sendable: number;
+  } | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (statusFilter) params.set('status', statusFilter);
+    if (countryFilter) params.set('country', countryFilter);
+    if (categoryFilter) params.set('category', categoryFilter);
+    if (hasEmailFilter) params.set('hasEmail', 'true');
+    if (languageFilter) params.set('language', languageFilter);
+    if (prospectFilter) params.set('prospectType', prospectFilter);
+    if (blockedFilter) params.set('blocked', 'only');
+    if (search) params.set('search', search);
+    if (platformFilter) params.set('platform', platformFilter);
+    params.set('redirected', 'exclude');
+    let cancelled = false;
+    api.get(`/leads/verification-counts?${params}`)
+      .then((res) => { if (!cancelled) setVerificationCounts(res.data?.data ?? null); })
+      .catch(() => { if (!cancelled) setVerificationCounts(null); });
+    return () => { cancelled = true; };
+  }, [statusFilter, countryFilter, categoryFilter, hasEmailFilter, languageFilter, prospectFilter, blockedFilter, search, platformFilter]);
+
+  /**
+   * Hand-off URL for the campaign wizard.
+   *
+   * Carries the ACTIVE FILTERS, not just the selected ids. The wizard reads
+   * country/language to decide what language "Generate with AI" writes in —
+   * without them a Swedish or Spanish audience got English copy, because the
+   * Gemini prompt only gets a language directive when a language resolves
+   * (reported 2026-09-02). Platform and category go along so the generated
+   * copy names the right review site and trade.
+   */
+  const wizardHandoffUrl = useCallback((ids: string[]) => {
+    const params = new URLSearchParams();
+    params.set('wizard', '1');
+    params.set('leadIds', ids.join(','));
+    if (countryFilter) params.set('country', countryFilter);
+    if (categoryFilter) params.set('category', categoryFilter);
+    if (languageFilter) params.set('language', languageFilter);
+    if (platformFilter) params.set('platform', platformFilter);
+    return `/campaigns?${params.toString()}`;
+  }, [countryFilter, categoryFilter, languageFilter, platformFilter]);
 
   const handleViewChange = (v: View) => {
     setView(v);
@@ -721,9 +811,20 @@ export default function Leads() {
                   <option value="all">All</option>
                 </select>
               </div>
+              {/* NOT gated on the running-job flags, unlike every other button
+                  in this bar. Those four (enrich / links / claimed / verify)
+                  are mutually exclusive because each spawns server-side
+                  Python/browser work through a shared registry, and
+                  overlapping them wedges the box. Send spawns nothing — it is
+                  a client-side router.push into the wizard — and the job id
+                  lives in localStorage, so navigating away neither cancels
+                  nor detaches the run. Gating it just locked the operator out
+                  of campaign building for the length of an enrichment
+                  (reported at 49 minutes, 2026-09-02). Delete stays gated: it
+                  mutates the rows the running job is writing to. */}
               <button
-                onClick={() => router.push(`/campaigns?wizard=1&leadIds=${encodeURIComponent(selectedIds.join(','))}`)}
-                disabled={verifying || enriching || checkingLinks || checkingClaimed || selectedIds.length === 0}
+                onClick={() => router.push(wizardHandoffUrl(selectedIds))}
+                disabled={selectedIds.length === 0}
                 title={`Open the Campaign Wizard with ${selectedIds.length} lead${selectedIds.length === 1 ? '' : 's'} pre-selected`}
                 className="p-2 rounded-full text-[#b0004a] hover:bg-[#ffd9de]/40 disabled:opacity-50 transition-colors"
               >
@@ -851,8 +952,55 @@ export default function Leads() {
             <option value="converted">Converted</option>
             <option value="lost">Lost</option>
           </select>
+          {/* Prospect type — what the lead IS. Defaults to hiding affiliates,
+              redirects and dead listings, which is the noise that made a
+              100-lead campaign convert like 5. */}
+          <select
+            value={prospectFilter}
+            onChange={(e) => { setProspectFilter(e.target.value); setPage(1); }}
+            title="Filter out affiliate review sites, redirects and dead listings"
+            className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          >
+            <option value="operator,unclassified">Prospects (exc. affiliates)</option>
+            <option value="operator">Confirmed operators only</option>
+            <option value="unclassified">Unclassified only</option>
+            <option value="affiliate">Affiliates only</option>
+            <option value="redirect">Redirects only</option>
+            <option value="dead">Dead listings only</option>
+            <option value="flagged">Platform-flagged only</option>
+            <option value="operator,affiliate,redirect,dead,flagged,unclassified">Everything</option>
+          </select>
+          {/* Language — one filter across every market that shares it. Also
+              carried into the wizard, where it sets the AI's writing language. */}
+          <select
+            value={languageFilter}
+            onChange={(e) => { setLanguageFilter(e.target.value); setPage(1); }}
+            title="Target every market that shares a language (German = AT + CH + DE)"
+            className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          >
+            <option value="">All languages</option>
+            {languageOptions.map((o) => (
+              <option key={o.language} value={o.language}>{o.language} ({o.leadCount.toLocaleString()})</option>
+            ))}
+          </select>
+          {/* Verification verdict — the difference between "has an address"
+              and "can actually be emailed". */}
+          <select
+            value={verificationFilter}
+            onChange={(e) => { setVerificationFilter(e.target.value); setPage(1); }}
+            title="Filter by email verification verdict"
+            className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+          >
+            <option value="">Any verification</option>
+            <option value="valid">Valid only — safe to send</option>
+            <option value="catch-all">Catch-all — send cautiously</option>
+            <option value="unknown">Unknown — not advisable</option>
+            <option value="unverified">Not verified yet</option>
+            <option value="invalid">Invalid — cannot send</option>
+          </select>
           <button
             onClick={() => { setHasEmailFilter(v => !v); setPage(1); }}
+            title="Any address on file — NOT the same as verified. Use the verification filter for a sendable list."
             className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
               hasEmailFilter
                 ? 'bg-[#006630] text-white border-[#006630]'
@@ -936,6 +1084,51 @@ export default function Leads() {
               <option value="lost">Lost</option>
             </select>
           </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Prospect type</label>
+            <select
+              value={prospectFilter}
+              onChange={(e) => { setProspectFilter(e.target.value); setPage(1); }}
+              className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+            <option value="operator,unclassified">Prospects (exc. affiliates)</option>
+            <option value="operator">Confirmed operators only</option>
+            <option value="unclassified">Unclassified only</option>
+            <option value="affiliate">Affiliates only</option>
+            <option value="redirect">Redirects only</option>
+            <option value="dead">Dead listings only</option>
+            <option value="flagged">Platform-flagged only</option>
+            <option value="operator,affiliate,redirect,dead,flagged,unclassified">Everything</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Language</label>
+            <select
+              value={languageFilter}
+              onChange={(e) => { setLanguageFilter(e.target.value); setPage(1); }}
+              className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+              <option value="">All languages</option>
+              {languageOptions.map((o) => (
+                <option key={o.language} value={o.language}>{o.language} ({o.leadCount.toLocaleString()})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-secondary block mb-1.5">Verification</label>
+            <select
+              value={verificationFilter}
+              onChange={(e) => { setVerificationFilter(e.target.value); setPage(1); }}
+              className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+            >
+              <option value="">Any verification</option>
+              <option value="valid">Valid only — safe to send</option>
+              <option value="catch-all">Catch-all — send cautiously</option>
+              <option value="unknown">Unknown — not advisable</option>
+              <option value="unverified">Not verified yet</option>
+              <option value="invalid">Invalid — cannot send</option>
+            </select>
+          </div>
           <button
             onClick={() => { setHasEmailFilter(v => !v); setPage(1); }}
             className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
@@ -966,6 +1159,52 @@ export default function Leads() {
           </button>
         </div>
       </MobileBottomSheet>
+
+      {/* ── Verification split ────────────────────────────────────────────
+          The honest answer to "how many of these can I email today?".
+          "Has Email" only ever meant "an address is on file"; Operations read
+          it as "sendable", sized campaigns off it, and the launches then died
+          at the invalid-email send gate. Each chip is also a filter shortcut,
+          so the split doubles as navigation. */}
+      {verificationCounts && verificationCounts.total > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-surface-container-lowest px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary mr-1">
+              Of {verificationCounts.total.toLocaleString()} matching leads
+            </span>
+            {([
+              { key: 'valid',      label: 'Valid',        hint: 'Verified deliverable — safe to send',              classes: 'bg-[#8ff9a8]/40 text-[#006630] border-[#8ff9a8]' },
+              { key: 'catch-all',  label: 'Catch-all',    hint: 'Domain accepts anything — send cautiously, low volume', classes: 'bg-amber-50 text-amber-800 border-amber-200' },
+              { key: 'unknown',    label: 'Unknown',      hint: 'Verifier could not decide — not advisable to send', classes: 'bg-slate-100 text-slate-700 border-slate-200' },
+              { key: 'unverified', label: 'Not verified', hint: 'No verifier has looked at these — verify before sending', classes: 'bg-slate-100 text-slate-700 border-slate-200' },
+              { key: 'invalid',    label: 'Invalid',      hint: 'Proven undeliverable — campaigns refuse to send to these', classes: 'bg-red-50 text-error border-red-200' },
+            ] as const).map((chip) => {
+              const n = verificationCounts[chip.key];
+              const active = verificationFilter === chip.key;
+              return (
+                <button
+                  key={chip.key}
+                  type="button"
+                  title={chip.hint}
+                  onClick={() => { setVerificationFilter(active ? '' : chip.key); setPage(1); }}
+                  className={`px-2.5 py-1 rounded-full border text-[11px] font-bold transition-all ${chip.classes} ${
+                    active ? 'ring-2 ring-[#b0004a]/40' : 'hover:brightness-95'
+                  }`}
+                >
+                  {chip.label} {n.toLocaleString()}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-secondary mt-2 flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-[14px] text-[#006630]">send</span>
+            <span>
+              <strong className="text-on-surface">{verificationCounts.sendable.toLocaleString()} sendable today</strong>
+              {' '}— verified valid and has an address on file. &ldquo;Has Email&rdquo; counts addresses, not verdicts.
+            </span>
+          </p>
+        </div>
+      )}
 
       {/* Notice — explains why the Lead Matrix total can be lower than what
           a scrape job claims to have saved. The Lead Matrix hides leads whose
@@ -1132,9 +1371,11 @@ export default function Leads() {
                 {verifying ? 'progress_activity' : 'verified_user'}
               </span>
             </button>
+            {/* See the desktop Send button for why this one alone isn't
+                gated on the running-job flags. */}
             <button
-              onClick={() => router.push(`/campaigns?wizard=1&leadIds=${encodeURIComponent(selectedIds.join(','))}`)}
-              disabled={verifying || enriching || checkingLinks || checkingClaimed || selectedIds.length === 0}
+              onClick={() => router.push(wizardHandoffUrl(selectedIds))}
+              disabled={selectedIds.length === 0}
               aria-label={`Open Campaign Wizard with ${selectedIds.length} selected`}
               className="p-2 rounded-full text-[#b0004a] disabled:opacity-50 flex-shrink-0"
             >

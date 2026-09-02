@@ -530,6 +530,11 @@ export default function Prospects() {
             onDelete={() => undefined /* deletion in this view isn't useful — Dismiss does the right thing */}
             selectedIds={selectedLeadIds}
             onSelect={setSelectedLeadIds}
+            // This view sends to discovered_email, so that is the verdict
+            // that decides selectability. verification_status describes
+            // primary_email — for a discovered contact, usually the address
+            // that bounced and produced the auto-reply in the first place.
+            isSelectable={(l) => l.discovered_email_status !== 'invalid'}
             onLeadClick={(id) => router.push(`/leads/${id}`)}
             sortBy={sortBy}
             sortDir={sortDir}

@@ -182,7 +182,7 @@ export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) 
 
   const { data: leads, error: leadsError } = await supabase
     .from('leads')
-    .select('id, primary_email, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status')
+    .select('id, primary_email, trustpilot_email, website_email, discovered_email, affiliate_email, trustpilot_email_status, website_email_status, discovered_email_status, affiliate_email_status, verification_status')
     .in('id', leadIds)
     // Never add Trustpilot-flagged (blocked) leads to a campaign, even if the
     // caller hands their IDs in explicitly (migration 048).
@@ -202,13 +202,37 @@ export async function addLeadsToCampaign(campaignId: string, leadIds: string[]) 
       const emailUsed = isDiscoveryFollowup
         ? lead.discovered_email ?? null
         : (resolvePrimaryEmail(lead) ?? lead.primary_email);
-      const isSkipped = emailUsed != null && alreadySent.has(emailUsed.toLowerCase());
+      // A proven-invalid address is auto-excluded here rather than at send
+      // time. This is the single choke point every recipient passes through —
+      // the wizard picker, the Lead Matrix hand-off, "add by filter", and the
+      // API all land here — so enforcing it once closes the gap Operations
+      // found where Lead-Matrix selections skipped the picker's own rule
+      // (2026-09-02). Recorded as 'skipped' with a reason, not dropped
+      // silently, so the campaign's recipient list explains itself.
+      //
+      // Note this covers `invalid` only. Never-verified leads are held back
+      // by the send gate instead, which surfaces them for remove-or-verify —
+      // auto-skipping those would hide a whole campaign's worth of
+      // recipients behind a status pill.
+      // A discovery follow-up targets discovered_email, so the verdict that
+      // matters is that column's — verification_status describes
+      // primary_email, which for these leads is usually the address that
+      // already bounced. Gating on it would auto-skip the entire flow.
+      const isInvalid = isDiscoveryFollowup
+        ? lead.discovered_email_status === 'invalid'
+        : lead.verification_status === 'invalid';
+      const isDuplicate = !isInvalid && emailUsed != null && alreadySent.has(emailUsed.toLowerCase());
+      const isSkipped = isInvalid || isDuplicate;
       return {
         campaign_id: campaignId,
         lead_id: lead.id,
         email_used: emailUsed,
         status: isSkipped ? 'skipped' : 'pending',
-        skip_reason: isSkipped ? 'already_contacted_in_another_campaign' : null,
+        skip_reason: isInvalid
+          ? 'email_invalid'
+          : isDuplicate
+            ? 'already_contacted_in_another_campaign'
+            : null,
       };
     })
     // Drop rows the discovery follow-up can't actually target — a lead with
@@ -230,6 +254,45 @@ export async function getCampaignLeads(campaignId: string) {
     .eq('campaign_id', campaignId);
   if (error) throw new Error(error.message);
   return data || [];
+}
+
+/**
+ * Removes campaign memberships. Used by the campaign send-block remediation
+ * flow: when the send gate refuses because some recipients are proven
+ * undeliverable, the operator needs a one-click way to drop exactly those
+ * rows and launch, rather than deleting the campaign and rebuilding it.
+ *
+ * Only `pending` rows are removable — a row that has already been sent is a
+ * record of an email that left the building, and deleting it would corrupt
+ * both the dedup set and the campaign's own counts.
+ *
+ * Accepts campaign_lead ids (what the send-block payload hands back) and/or
+ * lead ids (what the UI has when the operator picks rows off a list).
+ */
+export async function removeCampaignLeads(
+  campaignId: string,
+  opts: { campaignLeadIds?: string[]; leadIds?: string[] },
+): Promise<number> {
+  const supabase = getSupabase();
+  const byRow = (opts.campaignLeadIds ?? []).filter(Boolean);
+  const byLead = (opts.leadIds ?? []).filter(Boolean);
+  if (byRow.length === 0 && byLead.length === 0) return 0;
+
+  let removed = 0;
+  // Two statements rather than one `.or()`: PostgREST's or() with in-lists
+  // gets unwieldy and this path runs at most twice per request.
+  for (const [column, ids] of [['id', byRow], ['lead_id', byLead]] as const) {
+    if (!ids.length) continue;
+    const { error, count } = await supabase
+      .from('campaign_leads')
+      .delete({ count: 'exact' })
+      .eq('campaign_id', campaignId)
+      .eq('status', 'pending')
+      .in(column, ids);
+    if (error) throw new Error(error.message);
+    removed += count || 0;
+  }
+  return removed;
 }
 
 /**

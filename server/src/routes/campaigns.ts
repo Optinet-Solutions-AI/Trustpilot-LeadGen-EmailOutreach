@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
-import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, markCampaignLeadsSkipped, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
+import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, markCampaignLeadsSkipped, removeCampaignLeads, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
 import { upsertManualLeads, getLeadById } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
 import { createNote } from '../db/notes.js';
@@ -703,7 +703,7 @@ router.get('/platform-status', async (_req: Request, res: Response) => {
 router.post('/:id/send', async (req: Request, res: Response) => {
   try {
     const campaignId = param(req.params.id);
-    const { testMode, testEmail, limit } = req.body;
+    const { testMode, testEmail, limit, allowUnverified } = req.body;
 
     const campaignLeads = await getCampaignLeads(campaignId);
     if (campaignLeads.length === 0) {
@@ -761,21 +761,70 @@ router.post('/:id/send', async (req: Request, res: Response) => {
       return;
     }
 
-    // ─── Send-gating: refuse to dispatch to addresses proven invalid ─────
-    // Mirrors the verifier's verdict ladder. Catch-all and unknown leads
-    // pass (UI shows a warning chip); only `invalid` is hard-blocked.
-    const invalidLeads = pendingLeads.filter((cl: { leads?: { verification_status?: string | null } }) =>
-      cl.leads?.verification_status === 'invalid'
-    );
-    if (invalidLeads.length > 0) {
-      const sample = invalidLeads
-        .slice(0, 3)
-        .map((cl: { email_used: string | null }) => cl.email_used)
-        .filter(Boolean)
-        .join(', ');
+    // ─── Send-gating: refuse to dispatch to addresses we can't stand behind ──
+    // Two hard-blocked buckets, both of which used to reach the SMTP layer
+    // and bounce:
+    //   invalid    — a verifier proved the mailbox does not exist.
+    //   unverified — no verifier ever looked at it. Sending blind is how a
+    //                warmed domain gets torched; Operations hit exactly this
+    //                on the Canada and Australia campaigns (2026-09-02).
+    // catch-all and unknown still pass: the domain accepts everything or the
+    // verifier was inconclusive, which is a judgement call, not a proven bad
+    // address. The UI shows a caution chip for those.
+    //
+    // `allowUnverified: true` in the request body is the deliberate override
+    // for an operator who has decided to send blind anyway. There is no
+    // override for `invalid` — that one is never a judgement call.
+    // Which verdict applies depends on which address this campaign actually
+    // sends to. A discovery follow-up targets lead.discovered_email — the
+    // address the recipient's own auto-reply handed us — so gating it on
+    // verification_status (which describes primary_email) would block exactly
+    // the leads that flow exists to rescue: the ones whose primary bounced.
+    const isDiscoveryFollowup = campaign.campaign_type === 'discovery_followup';
+    const verdictFor = (leads?: { verification_status?: string | null; discovered_email_status?: string | null }) =>
+      (isDiscoveryFollowup ? leads?.discovered_email_status : leads?.verification_status) ?? null;
+
+    const blockedRows = pendingLeads.filter((cl: {
+      leads?: { verification_status?: string | null; discovered_email_status?: string | null };
+    }) => {
+      const v = verdictFor(cl.leads);
+      if (v === 'invalid') return true;
+      return v === null && !allowUnverified;
+    });
+    if (blockedRows.length > 0) {
+      // Structured payload so the campaign UI can list the offending
+      // recipients and offer remove / re-verify, instead of showing a dead-end
+      // error string the operator can't act on.
+      const blockedLeads = blockedRows.map((cl: {
+        id: string;
+        lead_id: string;
+        email_used: string | null;
+        leads?: {
+          company_name?: string | null;
+          verification_status?: string | null;
+          discovered_email_status?: string | null;
+        };
+      }) => {
+        const v = verdictFor(cl.leads);
+        return {
+          campaignLeadId: cl.id,
+          leadId: cl.lead_id,
+          email: cl.email_used,
+          companyName: cl.leads?.company_name ?? null,
+          verificationStatus: v,
+          reason: v === 'invalid' ? 'invalid' : 'unverified',
+        };
+      });
+      const invalidCount = blockedLeads.filter((b) => b.reason === 'invalid').length;
+      const unverifiedCount = blockedLeads.length - invalidCount;
+      const parts: string[] = [];
+      if (invalidCount) parts.push(`${invalidCount} proven invalid`);
+      if (unverifiedCount) parts.push(`${unverifiedCount} never verified`);
       res.status(400).json({
         success: false,
-        error: `Send blocked: ${invalidLeads.length} lead${invalidLeads.length === 1 ? ' has' : 's have'} verification_status='invalid' (proven undeliverable). Examples: ${sample}. Remove these from the campaign or re-verify before sending.`,
+        error: `Send blocked: ${blockedLeads.length} recipient${blockedLeads.length === 1 ? '' : 's'} cannot be sent to (${parts.join(', ')}). Remove them or run verification, then send again.`,
+        blockedLeads,
+        blockedSummary: { invalid: invalidCount, unverified: unverifiedCount, total: blockedLeads.length },
       });
       return;
     }
@@ -945,6 +994,61 @@ router.get('/:id/leads', async (req: Request, res: Response) => {
   try {
     const leads = await getCampaignLeads(param(req.params.id));
     res.json({ success: true, data: leads });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+// DELETE /api/campaigns/:id/leads — drop recipients from a campaign that has
+// not gone out yet. This is the remediation half of the send gate: when a
+// launch is refused because some recipients are undeliverable, the operator
+// removes exactly those and launches, instead of rebuilding the campaign.
+//
+// Body: { campaignLeadIds?: string[], leadIds?: string[], blockedOnly?: true }
+// `blockedOnly` is the one-click path — the server recomputes which pending
+// recipients the send gate would refuse (invalid verdict, or never verified)
+// and removes those, so the UI never has to keep a stale id list in sync.
+// Only pending rows are ever removed; a sent row is a historical record.
+router.delete('/:id/leads', async (req: Request, res: Response) => {
+  try {
+    const campaignId = param(req.params.id);
+    const { campaignLeadIds, leadIds, blockedOnly } = req.body ?? {};
+
+    let rowIds: string[] = Array.isArray(campaignLeadIds) ? campaignLeadIds : [];
+    const explicitLeadIds: string[] = Array.isArray(leadIds) ? leadIds : [];
+
+    if (blockedOnly) {
+      // Recompute with the SAME rule the send gate uses, including which
+      // address this campaign type actually targets — otherwise "remove the
+      // blocked ones" could remove a different set than the one that was
+      // blocked.
+      const campaigns = await getCampaigns();
+      const campaign = campaigns.find((c: { id: string }) => c.id === campaignId);
+      const isDiscoveryFollowup = campaign?.campaign_type === 'discovery_followup';
+      const campaignLeads = await getCampaignLeads(campaignId);
+      rowIds = campaignLeads
+        .filter((cl: {
+          status: string;
+          leads?: { verification_status?: string | null; discovered_email_status?: string | null };
+        }) => {
+          if (cl.status !== 'pending') return false;
+          const v = (isDiscoveryFollowup ? cl.leads?.discovered_email_status : cl.leads?.verification_status) ?? null;
+          return v === 'invalid' || v === null;
+        })
+        .map((cl: { id: string }) => cl.id);
+    }
+
+    if (rowIds.length === 0 && explicitLeadIds.length === 0) {
+      res.json({ success: true, data: { removed: 0 } });
+      return;
+    }
+
+    const removed = await removeCampaignLeads(campaignId, {
+      campaignLeadIds: rowIds,
+      leadIds: explicitLeadIds,
+    });
+    res.json({ success: true, data: { removed } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

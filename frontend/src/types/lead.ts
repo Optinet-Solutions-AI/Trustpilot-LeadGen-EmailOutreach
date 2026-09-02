@@ -10,6 +10,14 @@ export type SmtpProbeResult =
   | 'skipped_no_mx'
   | 'error';
 
+export type ProspectType =
+  | 'operator'
+  | 'affiliate'
+  | 'redirect'
+  | 'dead'
+  | 'flagged'
+  | 'unclassified';
+
 export interface Lead {
   id: string;
   company_name: string;
@@ -29,6 +37,12 @@ export interface Lead {
   email_verified: boolean;
   verification_status: VerificationStatus;
   trustpilot_email_status: VerificationStatus | null;
+  /** Email surfaced by the auto-reply discovery flow (migration 028) — the
+   *  address a discovery follow-up campaign actually sends to. Its own
+   *  verdict, separate from verification_status, which describes
+   *  primary_email. */
+  discovered_email?: string | null;
+  discovered_email_status?: VerificationStatus | null;
   website_email_status: VerificationStatus | null;
   affiliate_email_status: VerificationStatus | null;
   // Per-stage breakdown — populated by the layered validator (Stage 1–5).
@@ -39,6 +53,14 @@ export interface Lead {
   verify_zerobounce_result: VerificationStatus | null;
   verified_at: string | null;
   outreach_status: LeadStatus;
+  /** What the lead IS, not whether we can reach it (migration 063).
+   *  'operator' is the sellable business; affiliate / redirect / dead /
+   *  flagged are the junk a review-site scrape drags along with it. */
+  prospect_type?: ProspectType | null;
+  /** Why the classifier landed on that type — shown as the chip's tooltip. */
+  prospect_type_reason?: string | null;
+  /** 'manual' means a human decided; the classifier never overwrites those. */
+  prospect_type_source?: 'auto' | 'manual' | null;
   link_status: LinkStatus;
   last_validated_at: string | null;
   link_validation_error: string | null;
