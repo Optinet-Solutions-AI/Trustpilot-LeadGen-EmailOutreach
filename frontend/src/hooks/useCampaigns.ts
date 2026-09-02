@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import api from '../api/client';
 import type { Campaign, CampaignStep as CampaignStepType } from '../types/campaign';
+import { fetchEmailPreview, type EmailPreviewInput } from '../lib/emailPreview';
 
 export function useCampaigns() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -57,7 +58,29 @@ export function useCampaigns() {
 
   const cancelCampaign = useCallback(async (campaignId: string) => {
     await api.post(`/campaigns/${campaignId}/cancel`);
+    // Reflect the stop locally instead of waiting for the next poll — the
+    // card's Launch button is gated on status, so a stale 'sending' leaves
+    // the user staring at a campaign they just stopped.
+    setCampaigns((prev) => prev.map((c) => c.id === campaignId ? { ...c, status: 'draft' as const } : c));
   }, []);
+
+  /** Patch an existing campaign (name / template / screenshot / schedule). */
+  const updateCampaign = useCallback(async (campaignId: string, patch: Partial<Campaign>) => {
+    const res = await api.patch(`/campaigns/${campaignId}`, patch);
+    const updated = res.data.data as Campaign;
+    setCampaigns((prev) => prev.map((c) => c.id === campaignId ? { ...c, ...updated } : c));
+    return updated;
+  }, []);
+
+  /**
+   * Render a template exactly as it would send. Server-side on purpose: it
+   * runs the same renderAndSpin the scheduler uses, so the preview can't
+   * drift from reality the way a re-implemented client renderer would.
+   */
+  const previewEmail = useCallback(
+    (input: EmailPreviewInput) => fetchEmailPreview(input),
+    [],
+  );
 
   const deleteCampaign = useCallback(async (campaignId: string) => {
     await api.delete(`/campaigns/${campaignId}`);
@@ -170,5 +193,5 @@ export function useCampaigns() {
     return res.data.data as CampaignStepType[];
   }, []);
 
-  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, deleteCampaign, addLeads, getCampaignLeads, getEmailThread, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus };
+  return { campaigns, loading, error, fetchCampaigns, createCampaign, sendCampaign, cancelCampaign, updateCampaign, previewEmail, deleteCampaign, addLeads, getCampaignLeads, getEmailThread, checkReplies, getRateLimit, duplicateCampaign, previewRecipients, testFlightSend, syncStats, getPlatformStatus, getCampaignSteps, getWarmupStatus };
 }
