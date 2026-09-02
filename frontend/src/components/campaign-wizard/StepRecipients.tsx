@@ -36,6 +36,30 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
   // auto_replied/bounced in ANY campaign. Lowercased server-side. Used to
   // badge rows in this picker and exclude them from bulk-select. The server
   // also dedupes at insert and send time as belt-and-suspenders.
+  // Language filter — lets one campaign cover every market that shares a
+  // language (Italian = IT + CH, English = US/GB/CA/AU/IE/...) instead of
+  // forcing one country per campaign. Options come from the API with live
+  // counts; the language -> countries expansion happens server-side, so the
+  // picker only ever sends a language name.
+  const [language, setLanguage] = useState('');
+  const onLanguageChange = (v: string) => { setLanguage(v); setPage(1); };
+  const [languageOptions, setLanguageOptions] = useState<
+    Array<{ language: string; countries: string[]; leadCount: number }>
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/leads/languages');
+        if (!cancelled) setLanguageOptions(res.data?.data || []);
+      } catch {
+        // Non-fatal: the dropdown just stays empty and country filtering
+        // behaves as before.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const [contactedEmails, setContactedEmails] = useState<Set<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +92,10 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (filterCountry) params.set('country', filterCountry);
+      // A chosen language supersedes the wizard's single country: the point is
+      // to reach every market speaking it.
+      if (language) params.set('language', language);
+      else if (filterCountry) params.set('country', filterCountry);
       if (filterCategory) params.set('category', filterCategory);
       if (debouncedSearch) params.set('search', debouncedSearch);
       params.set('page', String(page));
@@ -87,7 +114,7 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
     } finally {
       setLoading(false);
     }
-  }, [filterCountry, filterCategory, debouncedSearch, page, sortBy, sortDir]);
+  }, [language, filterCountry, filterCategory, debouncedSearch, page, sortBy, sortDir]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
@@ -171,7 +198,10 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
     setSelectingAll(true);
     try {
       const params = new URLSearchParams();
-      if (filterCountry) params.set('country', filterCountry);
+      // A chosen language supersedes the wizard's single country: the point is
+      // to reach every market speaking it.
+      if (language) params.set('language', language);
+      else if (filterCountry) params.set('country', filterCountry);
       if (filterCategory) params.set('category', filterCategory);
       if (debouncedSearch) params.set('search', debouncedSearch);
       params.set('verificationStatus', 'valid');
@@ -232,6 +262,19 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
             className="w-full bg-surface-container rounded-xl pl-10 pr-4 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           />
         </div>
+        <select
+          value={language}
+          onChange={(e) => onLanguageChange(e.target.value)}
+          title="Target every market that shares a language"
+          className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none max-w-[210px]"
+        >
+          <option value="">All languages</option>
+          {languageOptions.map((o) => (
+            <option key={o.language} value={o.language}>
+              {o.language} ({o.leadCount})
+            </option>
+          ))}
+        </select>
         <div className="flex items-center gap-2">
           {visibleLeads.length > 0 && (
             <button
@@ -266,6 +309,16 @@ export default function StepRecipients({ filterCountry, filterCategory, selected
             </button>
           )}
         </div>
+      {language && (
+        <p className="text-[11px] text-secondary -mt-1">
+          Showing <strong>{language}</strong>-speaking markets
+          {(() => {
+            const o = languageOptions.find((x) => x.language === language);
+            return o ? ` (${o.countries.join(", ")})` : "";
+          })()}
+          {filterCountry ? ` — overrides the ${filterCountry} country filter.` : "."}
+        </p>
+      )}
       </div>
 
       {/* Table */}

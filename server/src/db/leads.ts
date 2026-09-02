@@ -1,5 +1,6 @@
 import { getSupabase } from '../lib/supabase.js';
 import { categoryOrFilter } from '../services/lead-categories.js';
+import { countriesForLanguage } from '../services/lead-languages.js';
 
 /**
  * campaign_leads statuses that mean "an email actually went out to this
@@ -8,6 +9,11 @@ import { categoryOrFilter } from '../services/lead-categories.js';
  * proof we did NOT send, so it must never hide a lead from the picker.
  */
 const CONTACTED_STATUSES = ['sent', 'opened', 'replied', 'auto_replied', 'bounced'];
+
+// Sentinel for "language matched no countries" - a value no country column
+// can hold, so the filter returns zero rows instead of silently returning
+// every lead.
+const NO_LANGUAGE_MATCH = '__no_language_match__';
 
 // The legacy leads.screenshot_path is only populated for Trustpilot. Every
 // other platform stores its canonical screenshot on lead_platform_presences.
@@ -44,6 +50,12 @@ export interface LeadFilters {
   // just blocked leads (the "how many did we scrape" count), 'exclude' hides
   // them, 'all' (default) shows everything so the matrix surfaces the badge.
   blocked?: 'only' | 'exclude' | 'all';
+  // Outreach language — expands to every country code that speaks it, so a
+  // campaign can target one language across several markets (Italian =
+  // IT + CH, English = US/GB/CA/AU/IE/...). Combines with `country` if
+  // both are given. An unrecognised language matches NOTHING rather than
+  // everything, so a typo can never silently widen the recipient set.
+  language?: string;
   // Hide leads that have ALREADY BEEN SENT a campaign email. Used by the
   // campaign wizard's recipient picker so operators never pick someone who
   // would only land as 'skipped' at send time. Implemented as a PostgREST
@@ -128,6 +140,11 @@ export async function getLeads(filters: LeadFilters = {}) {
     query = query.eq('blocked', true);
   } else if (filters.blocked === 'exclude') {
     query = query.eq('blocked', false);
+  }
+  if (filters.language) {
+    const codes = countriesForLanguage(filters.language);
+    // Fail closed on an unknown language — see the LeadFilters comment.
+    query = codes.length ? query.in('country', codes) : query.eq('country', NO_LANGUAGE_MATCH);
   }
   // Anti-join: constrain the embed to real sends, then keep only parents
   // whose embed came back empty — i.e. leads never actually emailed.
@@ -220,6 +237,10 @@ export async function getLeadIds(
   // This list feeds campaign recipient selection (wizard "select all") — never
   // hand back blocked leads. They're flagged out of outreach entirely.
   query = query.eq('blocked', false);
+  if (filters.language) {
+    const codes = countriesForLanguage(filters.language);
+    query = codes.length ? query.in('country', codes) : query.eq('country', NO_LANGUAGE_MATCH);
+  }
   // Same anti-join as getLeads: "select all valid" must not pull in leads
   // that were already emailed, or the campaign fills with skipped rows.
   if (filters.excludeContacted) {
