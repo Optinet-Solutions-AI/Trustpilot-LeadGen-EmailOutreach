@@ -44,6 +44,28 @@ export interface YelpScrapeParams {
   forceRescrape: boolean;
 }
 
+export interface BookingScrapeParams {
+  platform: 'booking';
+  country: string;
+  /** One or more city names, comma-separated. The Python side splits them
+   *  and the actor takes each as "City, Country" — no city seed table. */
+  city: string;
+  /** Booking scores out of 10, not 5 — deliberately a different scale from
+   *  every other platform's rating filter. */
+  max_review_score: number;
+  min_review_count: number;
+  /** 0 = no limit. Caps host portfolio size, so an operator can target only
+   *  self-managing owner-hosts. */
+  max_properties: number;
+  exclude_hotels: boolean;
+  /** Defaults on: the actor does not always publish a review score, and a
+   *  filter that drops every row would return 0 leads from a paid run. */
+  include_unrated: boolean;
+  enrich: boolean;
+  verify: boolean;
+  forceRescrape: boolean;
+}
+
 export interface FacebookScrapeParams {
   platform: 'facebook';
   lead_type: 'consumers' | 'businesses';
@@ -84,7 +106,23 @@ export interface InstagramScrapeParams {
   forceRescrape: boolean;
 }
 
-export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams | FacebookScrapeParams | InstagramScrapeParams;
+// ForexPeaceArmy is a MONITORING feed, not an outreach source. It yields
+// forum complaint threads to answer publicly; FPA redacts emails at source,
+// so these leads never carry one and are excluded from email campaigns by
+// the wizard's existing hasEmail filter. Hence no `verify` flag here —
+// there is never an address to verify.
+export interface ForexPeaceArmyScrapeParams {
+  platform: 'forexpeacearmy';
+  folders: 'live' | 'archives' | 'resolutions';
+  max_age_days: number;
+  min_urgency: number;
+  include_unclassified: boolean;
+  enrich: boolean;
+  verify: boolean;
+  forceRescrape: boolean;
+}
+
+export type ScrapeParams = TrustpilotScrapeParams | TripAdvisorScrapeParams | YelpScrapeParams | BookingScrapeParams | FacebookScrapeParams | InstagramScrapeParams | ForexPeaceArmyScrapeParams;
 
 export interface ScrapeJob {
   id: string;

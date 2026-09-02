@@ -35,7 +35,33 @@ export interface Campaign {
     endHour: string;
     days: number[];
     dailyLimit: number;
+    /** Accounts to rotate through ('__env__' = primary env account). */
+    senderAccountIds?: string[];
+    /** @deprecated superseded by senderAccountIds; still present on older rows. */
+    senderAccountId?: string;
   } | null;
+}
+
+/**
+ * A template rendered exactly as it would send, returned by
+ * POST /api/campaigns/preview. Produced by the server's own renderAndSpin,
+ * so `html` is the real message body — spintax already collapsed to one
+ * variant, tokens filled from the resolved lead, screenshot appended.
+ */
+export interface EmailPreview {
+  subject: string;
+  /** Full HTML body, screenshot <img> and provider opt-out line included. */
+  html: string;
+  /** Resolved recipient, or null when the lead carries no address. */
+  to: string | null;
+  fromEmail: string;
+  fromName: string;
+  companyName: string;
+  screenshotUrl: string | null;
+  /** True when no real lead was resolved and stand-in data was used. */
+  isSample: boolean;
+  /** Deliverability problems worth surfacing before the user sends. */
+  warnings: string[];
 }
 
 export interface CampaignLead {

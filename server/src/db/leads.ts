@@ -248,6 +248,18 @@ export async function getLeads(filters: LeadFilters = {}) {
       .in('campaign_leads.status', CONTACTED_STATUSES)
       .is('campaign_leads', null);
   }
+  if (filters.language) {
+    const codes = countriesForLanguage(filters.language);
+    // Fail closed on an unknown language — see the LeadFilters comment.
+    query = codes.length ? query.in('country', codes) : query.eq('country', NO_LANGUAGE_MATCH);
+  }
+  // Anti-join: constrain the embed to real sends, then keep only parents
+  // whose embed came back empty — i.e. leads never actually emailed.
+  if (filters.excludeContacted) {
+    query = query
+      .in('campaign_leads.status', CONTACTED_STATUSES)
+      .is('campaign_leads', null);
+  }
 
   const EMAIL_SORT_COLUMNS = new Set(['primary_email', 'trustpilot_email', 'website_email']);
   const ALLOWED_SORT_COLUMNS = new Set([
