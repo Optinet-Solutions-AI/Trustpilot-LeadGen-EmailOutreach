@@ -10,6 +10,9 @@ interface Props {
   onLaunch: (campaignId: string) => void;
   onDuplicate: (campaignId: string) => Promise<void>;
   onDelete: (campaignId: string, name: string) => Promise<void>;
+  /** Stop a running campaign — pending emails stay unsent. */
+  onStop: (campaignId: string, name: string) => Promise<void>;
+  onEdit: (campaign: Campaign) => void;
   onViewDetail: (campaign: Campaign) => void;
   deletingId: string | null;
 }
@@ -26,10 +29,11 @@ const STATUS_CONFIG: Record<string, { label: string; classes: string; dot: strin
 
 export default function CampaignCard({
   campaign: c, isSending, sendProgress, onLaunch,
-  onDuplicate, onDelete, onViewDetail, deletingId,
+  onDuplicate, onDelete, onStop, onEdit, onViewDetail, deletingId,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+  const [stopping, setStopping] = useState(false);
   // Anchor + viewport position for the portal-rendered overflow menu. We have
   // to render in a portal because the card sets overflow-hidden to keep
   // long template bodies from blowing out the grid; an absolutely-positioned
@@ -70,6 +74,17 @@ export default function CampaignCard({
     setMenuOpen(false);
     try { await onDuplicate(c.id); } finally { setDuplicating(false); }
   };
+
+  const handleStop = async () => {
+    setStopping(true);
+    setMenuOpen(false);
+    try { await onStop(c.id, c.name); } finally { setStopping(false); }
+  };
+
+  // A campaign that has finished sending has nothing left to stop; only an
+  // in-flight one does. Editing a finished campaign is still allowed (the
+  // copy carries into a duplicate), so the two gates differ.
+  const canStop = c.status === 'sending' || c.status === 'active';
 
   return (
     <div
@@ -196,9 +211,21 @@ export default function CampaignCard({
         )}
 
         {isThisSending && (
-          <span className="text-sm font-bold text-blue-600 flex items-center gap-1.5">
-            <Loader2 size={13} className="animate-spin" /> Sending…
-          </span>
+          <>
+            <span className="text-sm font-bold text-blue-600 flex items-center gap-1.5">
+              <Loader2 size={13} className="animate-spin" /> Sending…
+            </span>
+            {/* Stop is surfaced inline, not buried in the overflow menu —
+                when a send is going wrong the operator needs it immediately. */}
+            <button
+              onClick={handleStop}
+              disabled={stopping}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold text-[#b0004a] bg-[#ffd9de] hover:bg-[#ffc2cb] disabled:opacity-50 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">stop_circle</span>
+              {stopping ? 'Stopping…' : 'Stop'}
+            </button>
+          </>
         )}
 
         {(c.status === 'sent' || c.status === 'completed') && (
@@ -241,6 +268,23 @@ export default function CampaignCard({
               <span className="material-symbols-outlined text-[16px] text-secondary">open_in_new</span>
               View Details
             </button>
+            <button
+              onClick={() => { onEdit(c); setMenuOpen(false); }}
+              className="w-full text-left px-4 py-2 text-sm font-semibold text-on-surface hover:bg-surface-container flex items-center gap-2 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px] text-secondary">edit</span>
+              Edit Campaign
+            </button>
+            {canStop && (
+              <button
+                onClick={handleStop}
+                disabled={stopping}
+                className="w-full text-left px-4 py-2 text-sm font-bold text-[#b0004a] hover:bg-[#ffd9de]/40 flex items-center gap-2 disabled:opacity-50 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">stop_circle</span>
+                {stopping ? 'Stopping…' : 'Stop Campaign'}
+              </button>
+            )}
             <button
               onClick={handleDuplicate}
               disabled={duplicating}
