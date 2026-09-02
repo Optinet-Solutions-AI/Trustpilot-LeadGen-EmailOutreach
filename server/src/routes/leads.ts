@@ -17,6 +17,7 @@ import { launchBrowser, TIER_CONFIGS } from '../services/scrapers/browser-launch
 import { enqueueBrowseSession, AccountInUseError } from '../db/social-connect-requests.js';
 import { resolveLeadAccount, listActiveAccountsForLead, validateAccountForLead } from '../services/lead-account-resolver.js';
 import { config } from '../config.js';
+import { languageForCountry } from '../services/lead-languages.js';
 
 // Shared per-process registry — survives across requests so the SSE stream
 // can attach to a job that was kicked off by an earlier POST.
@@ -72,6 +73,9 @@ router.get('/', async (req: Request, res: Response) => {
       // the recipient picker. Off everywhere else, so the Leads pages keep
       // showing the full book.
       excludeContacted: req.query.excludeContacted === 'true',
+      language: typeof req.query.language === 'string' && req.query.language.trim()
+        ? req.query.language.trim()
+        : undefined,
     });
     res.json({ success: true, ...result });
   } catch (err) {
@@ -101,6 +105,9 @@ router.get('/ids', async (req: Request, res: Response) => {
         : undefined,
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
       excludeContacted: req.query.excludeContacted === 'true',
+      language: typeof req.query.language === 'string' && req.query.language.trim()
+        ? req.query.language.trim()
+        : undefined,
     });
     res.json({ success: true, data: ids, total: ids.length });
   } catch (err) {
@@ -108,6 +115,59 @@ router.get('/ids', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: message });
   }
 });
+
+// GET /api/leads/languages - outreach languages that actually have leads,
+// each with its country codes and a live count. Powers the campaign wizard's
+// language filter, so one campaign can cover every market sharing a language.
+// Served from the API rather than mirrored in the frontend because the
+// language -> countries expansion is the same logic the filter applies.
+//
+// Declared before /:id, or Express matches "languages" as an id.
+router.get('/languages', async (_req: Request, res: Response) => {
+  try {
+    const { getSupabase } = await import('../lib/supabase.js');
+    const supabase = getSupabase();
+    // One pass over the country column, aggregated in memory. Cheaper than a
+    // count query per language (~30 round trips) and the column is tiny.
+    const counts = new Map<string, number>();
+    const PAGE = 1000;
+    for (let offset = 0; ; offset += PAGE) {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('country')
+        .range(offset, offset + PAGE - 1);
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) {
+        const c = (row as { country: string | null }).country;
+        if (!c) continue;
+        const key = c.trim().toUpperCase();
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      if (!data || data.length < PAGE) break;
+    }
+
+    const byLanguage = new Map<string, { countries: string[]; leadCount: number }>();
+    for (const [code, n] of counts) {
+      const lang = languageForCountry(code);
+      if (!lang) continue;
+      const entry = byLanguage.get(lang) ?? { countries: [], leadCount: 0 };
+      entry.countries.push(code);
+      entry.leadCount += n;
+      byLanguage.set(lang, entry);
+    }
+
+    // Biggest pools first - that is the order an operator picks in.
+    const payload = [...byLanguage.entries()]
+      .map(([language, v]) => ({ language, countries: v.countries.sort(), leadCount: v.leadCount }))
+      .sort((a, b) => b.leadCount - a.leadCount || a.language.localeCompare(b.language));
+
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 
 // GET /api/leads/:id/campaign-leads — this lead's campaign memberships, so the
 // Activity timeline can deep-link notes (campaign_id) to the right inbox thread
