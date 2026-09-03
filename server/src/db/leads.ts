@@ -123,9 +123,34 @@ export function parseVerificationFilter(raw: unknown): VerificationFilter | unde
  * Cached per process. `null` = not yet probed.
  */
 let prospectTypeColumnExists: boolean | null = null;
+/**
+ * When the last negative probe happened.
+ *
+ * A "column missing" answer must NOT be cached for the life of the process.
+ * Cloud Run keeps several instances alive; any that started before migration
+ * 063 was applied latched `false` and then SILENTLY SKIPPED the prospect-type
+ * filter, so the same request returned 14,405 or 14,638 depending on which
+ * instance answered it — "Prospects (exc. affiliates)" quietly including
+ * affiliates on a third of requests (observed 2026-09-03, right after the
+ * migration was applied without a redeploy).
+ *
+ * A positive result is still cached forever: a column does not un-exist.
+ * A negative is re-probed after this interval, so applying the migration
+ * takes effect on its own rather than needing every instance restarted.
+ */
+let prospectTypeProbedAt = 0;
+const PROSPECT_TYPE_REPROBE_MS = 60_000;
 
 async function hasProspectTypeColumn(): Promise<boolean> {
-  if (prospectTypeColumnExists !== null) return prospectTypeColumnExists;
+  // Positive: trust it forever. Negative: only until the re-probe window
+  // expires, so a migration applied under a running instance is picked up.
+  if (prospectTypeColumnExists === true) return true;
+  if (
+    prospectTypeColumnExists === false &&
+    Date.now() - prospectTypeProbedAt < PROSPECT_TYPE_REPROBE_MS
+  ) {
+    return false;
+  }
   const supabase = getSupabase();
   const { error } = await supabase.from('leads').select('prospect_type').limit(1);
   // Only a missing-column error means "not migrated". Anything else (network,
@@ -134,6 +159,7 @@ async function hasProspectTypeColumn(): Promise<boolean> {
   if (error) {
     if (/prospect_type/i.test(error.message)) {
       prospectTypeColumnExists = false;
+      prospectTypeProbedAt = Date.now();
       console.warn(
         '[leads] leads.prospect_type is missing — apply supabase/migrations/063_lead_prospect_type.sql. ' +
         'Prospect-type filtering is disabled until then.',
