@@ -140,9 +140,19 @@ async function processDueSends(): Promise<void> {
   for (let i = 0; i < actionable.length; i++) {
     const cl = actionable[i];
 
-    const picked = pickSender(senderPool, sentThisTick, includeEnv, sentCounts);
+    // Per-row, not per-tick: a single tick can span campaigns, and each one
+    // carries its own per-account figure.
+    const rowSchedule = (cl.campaigns as { sending_schedule?: { dailyLimit?: number } } | undefined)?.sending_schedule;
+    const rowPerAccountLimit = typeof rowSchedule?.dailyLimit === 'number' && rowSchedule.dailyLimit > 0
+      ? rowSchedule.dailyLimit
+      : undefined;
+
+    const picked = pickSender(senderPool, sentThisTick, includeEnv, sentCounts, rowPerAccountLimit);
     if (picked === undefined) {
-      console.log('[CampaignScheduler] All sender accounts at cap — deferring remaining sends to next tick');
+      console.log(
+        `[CampaignScheduler] All sender accounts at cap (per-account daily limit: ` +
+        `${rowPerAccountLimit ?? 'account warmup ramp'}) — deferring remaining sends to next tick`,
+      );
       break;
     }
     const senderAccount: SenderAccount | undefined = picked === 'env' ? undefined : picked;
@@ -283,6 +293,19 @@ function pickSender(
   index: number,
   includeEnv: boolean,
   sentCounts: Record<string, { daily: number; hourly: number }>,
+  /**
+   * Per-account daily ceiling from the campaign's own sending_schedule.
+   *
+   * When set it OVERRIDES the account's warmup ramp, because the operator's
+   * figure is meant to be authoritative ("10 each" must mean 10 even while an
+   * account's ramp would allow 20). Undefined falls back to the ramped cap.
+   *
+   * Note the counts it is measured against are per ACCOUNT and global across
+   * campaigns, so two campaigns both asking for 10/account share one budget of
+   * 10 rather than sending 20 — which is the whole point of making the figure
+   * per-account instead of per-campaign.
+   */
+  perAccountDailyLimit?: number,
 ): AccountWithCaps<SenderAccount> | undefined | 'env' {
   const total = pool.length + (includeEnv ? 1 : 0);
   if (total === 0) return undefined;
@@ -296,7 +319,8 @@ function pickSender(
     if (!account) continue;
     const key = account.email.toLowerCase();
     const used = sentCounts[key] ?? { daily: 0, hourly: 0 };
-    if (used.daily >= account.dailyCap)   continue;
+    const dailyCeiling = perAccountDailyLimit ?? account.dailyCap;
+    if (used.daily >= dailyCeiling)       continue;
     if (used.hourly >= account.hourlyCap) continue;
     return account;
   }

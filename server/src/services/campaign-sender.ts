@@ -54,6 +54,30 @@ function emitProgress(campaignId: string, data: Record<string, unknown>) {
   campaignEvents.emit('progress', { campaignId, ...data });
 }
 
+/**
+ * How many mailboxes will share this campaign's sends.
+ *
+ * dailyLimit is per account, so the scheduler needs this to work out a day's
+ * capacity. Uses the operator's pinned selection when there is one; otherwise
+ * counts the accounts buildSenderPool() would load, so the plan matches what
+ * the sender will actually do.
+ */
+async function resolveSenderCount(schedule: SendingSchedule | null | undefined): Promise<number> {
+  const pinned = (schedule as { senderAccountIds?: string[]; senderAccountId?: string } | null | undefined);
+  const ids = pinned?.senderAccountIds ?? (pinned?.senderAccountId ? [pinned.senderAccountId] : []);
+  if (ids.length > 0) return ids.length;
+  try {
+    const { count } = await getSupabase()
+      .from('email_accounts')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .eq('is_cold_sender', true);
+    return Math.max(1, count ?? 1);
+  } catch {
+    return 1;
+  }
+}
+
 export async function runCampaignSend(params: CampaignSendParams): Promise<void> {
   const { campaignId, campaignName, emails, sendingSchedule, testMode, testEmailOverride } = params;
   const supabase = getSupabase();
@@ -167,7 +191,12 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
     // ── LIVE MODE: save scheduled times to DB, let campaign-scheduler handle sending ────
     let scheduledTimes: Date[];
     try {
-      scheduledTimes = assignScheduledTimes(total, sendingSchedule);
+      scheduledTimes = assignScheduledTimes(
+        total,
+        sendingSchedule,
+        new Date(),
+        await resolveSenderCount(sendingSchedule),
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Campaign] Schedule error for "${campaignName}" (${campaignId}): ${msg}`);

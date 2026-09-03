@@ -3,6 +3,8 @@ import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, markCampaignLeadsSkipped, removeCampaignLeads, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
 import { upsertManualLeads, getLeadById } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
+import { assignScheduledTimes, type SendingSchedule } from '../services/schedule-engine.js';
+import { getSupabase } from '../lib/supabase.js';
 import { createNote } from '../db/notes.js';
 import { renderAndSpin, KNOWN_TOKENS } from '../services/template-engine.js';
 import { runCampaignSend, cancelCampaign, campaignEvents } from '../services/campaign-sender.js';
@@ -381,13 +383,90 @@ router.get('/warmup-status', (_req: Request, res: Response) => {
 // PATCH /api/campaigns/:id
 router.patch('/:id', async (req: Request, res: Response) => {
   try {
-    const campaign = await updateCampaign(param(req.params.id), req.body);
-    res.json({ success: true, data: campaign });
+    const campaignId = param(req.params.id);
+    const campaign = await updateCampaign(campaignId, req.body);
+
+    // ── Re-apply the schedule to recipients that have not gone out yet ────
+    //
+    // Editing the sending window used to change NOTHING for a live campaign:
+    // every pending recipient keeps the scheduled_at stamped at launch, so
+    // lowering the daily limit, narrowing the hours or dropping a weekday had
+    // no effect on the queue it was supposed to govern. The operator's
+    // reasonable expectation is that an edit applies to whatever is still
+    // pending, so that is what it now does.
+    //
+    // Sent rows are never touched -- those emails have left. Only rows still
+    // at status='pending' with a scheduled_at are re-planned, and they keep
+    // their existing order so the queue is re-paced rather than reshuffled.
+    let rescheduled = 0;
+    if (req.body?.sending_schedule) {
+      try {
+        rescheduled = await reschedulePendingLeads(campaignId, req.body.sending_schedule);
+      } catch (e) {
+        // An edit that saved but could not re-plan must not look like a
+        // failure -- report it instead of throwing the whole PATCH away.
+        console.warn('[Campaigns] Reschedule after edit failed:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    res.json({ success: true, data: campaign, rescheduled });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
   }
 });
+
+/**
+ * Re-plan every still-pending recipient of a campaign against a new schedule.
+ * Returns how many rows were moved. Order is preserved (oldest scheduled_at
+ * first) so re-pacing does not shuffle who gets contacted first.
+ */
+async function reschedulePendingLeads(
+  campaignId: string,
+  schedule: SendingSchedule,
+): Promise<number> {
+  const supabase = getSupabase();
+
+  const { data: pending, error } = await supabase
+    .from('campaign_leads')
+    .select('id, scheduled_at')
+    .eq('campaign_id', campaignId)
+    .eq('status', 'pending')
+    .eq('channel', 'email')
+    .not('scheduled_at', 'is', null)
+    .order('scheduled_at', { ascending: true });
+  if (error) throw new Error(error.message);
+  if (!pending || pending.length === 0) return 0;
+
+  // dailyLimit is per account, so the plan needs the mailbox count -- the same
+  // resolution the launch path uses.
+  const pinned = (schedule as unknown as { senderAccountIds?: string[]; senderAccountId?: string });
+  const ids = pinned?.senderAccountIds ?? (pinned?.senderAccountId ? [pinned.senderAccountId] : []);
+  let senderCount = ids.length;
+  if (senderCount === 0) {
+    const { count } = await supabase
+      .from('email_accounts')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .eq('is_cold_sender', true);
+    senderCount = Math.max(1, count ?? 1);
+  }
+
+  const times = assignScheduledTimes(pending.length, schedule, new Date(), senderCount);
+
+  const writes = pending.map((row: { id: string }, i: number) => {
+    const t = times[i];
+    if (!t) return Promise.resolve();
+    return supabase
+      .from('campaign_leads')
+      .update({ scheduled_at: t.toISOString() })
+      .eq('id', row.id)
+      // Guard against a race with the scheduler claiming the row mid-edit.
+      .eq('status', 'pending');
+  });
+  await Promise.allSettled(writes);
+  return Math.min(pending.length, times.length);
+}
 
 // DELETE /api/campaigns/:id — remove campaign and all its leads
 router.delete('/:id', async (req: Request, res: Response) => {

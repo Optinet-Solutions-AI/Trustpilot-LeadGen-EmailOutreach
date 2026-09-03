@@ -21,6 +21,7 @@ import { Loader2 } from 'lucide-react';
 import type { Campaign } from '../types/campaign';
 import { TIMEZONES, HOURS, DAY_LABELS, type SendingSchedule } from './campaign-wizard/scheduleConfig';
 import EmailPreviewModal, { type PreviewStep } from './EmailPreviewModal';
+import api from '../api/client';
 
 interface Props {
   campaign: Campaign;
@@ -48,6 +49,54 @@ export default function CampaignEditModal({ campaign, onSave, onClose }: Props) 
   const [saving, setSaving]   = useState(false);
   const [error, setError]     = useState('');
   const [showPreview, setShowPreview] = useState(false);
+
+  // ── Recipients ─────────────────────────────────────────────────────────
+  // This modal used to edit only the campaign's own fields, so there was no
+  // way to see or change WHO a live campaign was about to email without
+  // deleting it and starting again.
+  //
+  // Sent rows are deliberately read-only: those emails have left, and
+  // removing the row would corrupt both the global dedup set and the
+  // campaign's counts.
+  const [recipients, setRecipients] = useState<Array<{
+    id: string;
+    status: string;
+    email_used: string | null;
+    skip_reason: string | null;
+    leads?: { company_name?: string | null; verification_status?: string | null } | null;
+  }> | null>(null);
+  const [recipientBusy, setRecipientBusy] = useState(false);
+  const [recipientNote, setRecipientNote] = useState('');
+  const [selectedRecipients, setSelectedRecipients] = useState<string[]>([]);
+
+  const loadRecipients = async () => {
+    try {
+      const res = await api.get(`/campaigns/${campaign.id}/leads`);
+      setRecipients(res.data?.data ?? []);
+    } catch {
+      setRecipients([]);
+    }
+  };
+  useEffect(() => { void loadRecipients(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [campaign.id]);
+
+  const pending = (recipients ?? []).filter((r) => r.status === 'pending');
+  const sentAlready = (recipients ?? []).filter((r) => r.status !== 'pending');
+
+  const removeRecipients = async (body: Record<string, unknown>, label: string) => {
+    setRecipientBusy(true);
+    setRecipientNote('');
+    try {
+      const res = await api.delete(`/campaigns/${campaign.id}/leads`, { data: body });
+      const removed = res.data?.data?.removed ?? 0;
+      setRecipientNote(`Removed ${removed} ${label}.`);
+      setSelectedRecipients([]);
+      await loadRecipients();
+    } catch (e) {
+      setRecipientNote(e instanceof Error ? e.message : 'Could not remove those recipients.');
+    } finally {
+      setRecipientBusy(false);
+    }
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) onClose(); };
@@ -93,6 +142,11 @@ export default function CampaignEditModal({ campaign, onSave, onClose }: Props) 
       setSaving(false);
     }
   };
+
+  // dailyLimit is per account, so the total depends on how many mailboxes
+  // this campaign is pinned to.
+  const senderCount = (schedule.senderAccountIds
+    ?? (schedule.senderAccountId ? [schedule.senderAccountId] : [])).length;
 
   const previewSteps: PreviewStep[] = [{ label: 'Initial email', subject, body }];
 
@@ -206,7 +260,9 @@ export default function CampaignEditModal({ campaign, onSave, onClose }: Props) 
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-secondary mb-1.5">Daily Limit</label>
+                <label className="block text-[10px] font-bold text-secondary mb-1.5">
+                  Daily Limit <span className="text-[#b0004a]">per account</span>
+                </label>
                 <input
                   type="number"
                   min={1}
@@ -214,6 +270,12 @@ export default function CampaignEditModal({ campaign, onSave, onClose }: Props) 
                   onChange={(e) => setSchedule({ ...schedule, dailyLimit: Math.max(1, Number(e.target.value) || 1) })}
                   className="w-full bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
                 />
+                {/* Per MAILBOX, not per campaign — spell the total out. */}
+                <p className="text-[10px] text-secondary mt-1">
+                  {senderCount > 0
+                    ? `× ${senderCount} account${senderCount === 1 ? '' : 's'} = ${(schedule.dailyLimit * senderCount).toLocaleString()}/day total`
+                    : 'per sending account'}
+                </p>
               </div>
               <div>
                 <label className="block text-[10px] font-bold text-secondary mb-1.5">Start Hour</label>
@@ -260,6 +322,107 @@ export default function CampaignEditModal({ campaign, onSave, onClose }: Props) 
                 </p>
               )}
             </div>
+            <p className="text-[10px] text-secondary mt-3 flex items-start gap-1.5">
+              <span className="material-symbols-outlined text-[13px] text-[#b0004a] mt-px">event_repeat</span>
+              <span>
+                Saving re-paces every recipient that hasn&apos;t been emailed yet.
+                Already-sent emails are untouched.
+              </span>
+            </p>
+          </div>
+
+          {/* ── Recipients ──────────────────────────────────────────────── */}
+          <div className="border border-slate-100 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-xs font-extrabold text-secondary uppercase tracking-wider">Recipients</p>
+              {recipients !== null && (
+                <p className="text-[11px] text-secondary tabular-nums">
+                  <strong className="text-on-surface">{pending.length.toLocaleString()}</strong> still to send
+                  {sentAlready.length > 0 && <> · {sentAlready.length.toLocaleString()} already handled</>}
+                </p>
+              )}
+            </div>
+
+            {recipients === null ? (
+              <p className="text-xs text-secondary">Loading recipients…</p>
+            ) : pending.length === 0 ? (
+              <p className="text-xs text-secondary">
+                Nothing left to send. {sentAlready.length > 0
+                  ? 'Every recipient has already been emailed or skipped.'
+                  : 'This campaign has no recipients.'}
+              </p>
+            ) : (
+              <>
+                <div className="rounded-xl border border-slate-100 divide-y divide-slate-50 max-h-52 overflow-y-auto">
+                  {pending.map((r) => {
+                    const checked = selectedRecipients.includes(r.id);
+                    const verdict = r.leads?.verification_status ?? null;
+                    return (
+                      <label
+                        key={r.id}
+                        className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-surface-container-low"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => setSelectedRecipients((prev) =>
+                            checked ? prev.filter((x) => x !== r.id) : [...prev, r.id])}
+                          className="rounded border-slate-300 w-3.5 h-3.5 accent-[#b0004a]"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-semibold text-on-surface truncate">
+                            {r.leads?.company_name || 'Unnamed lead'}
+                          </span>
+                          <span className="block text-[11px] text-secondary truncate">{r.email_used || 'no address'}</span>
+                        </span>
+                        {/* The two verdicts the send gate refuses, flagged
+                            here so they can be cleared before launching
+                            rather than discovered by a blocked send. */}
+                        {(verdict === 'invalid' || verdict === null) && (
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${
+                            verdict === 'invalid' ? 'bg-red-50 text-error' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {verdict === 'invalid' ? 'invalid' : 'not verified'}
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={recipientBusy || selectedRecipients.length === 0}
+                    onClick={() => removeRecipients(
+                      { campaignLeadIds: selectedRecipients },
+                      `recipient${selectedRecipients.length === 1 ? '' : 's'}`,
+                    )}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-surface-container text-on-surface hover:bg-surface-container-high disabled:opacity-40 transition-colors"
+                  >
+                    {recipientBusy
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <span className="material-symbols-outlined text-[13px]">person_remove</span>}
+                    Remove selected{selectedRecipients.length > 0 ? ` (${selectedRecipients.length})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={recipientBusy}
+                    title="Drops exactly the pending recipients the send gate would refuse — invalid or never verified"
+                    onClick={() => removeRecipients({ blockedOnly: true }, 'unsendable recipients')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-surface-container text-[#b0004a] hover:bg-[#ffd9de]/50 disabled:opacity-40 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">playlist_remove</span>
+                    Remove unsendable
+                  </button>
+                  {recipientNote && <span className="text-[11px] text-secondary">{recipientNote}</span>}
+                </div>
+                <p className="text-[10px] text-secondary">
+                  Removals apply immediately — they don&apos;t wait for Save. Sent recipients
+                  aren&apos;t listed because those emails have already gone out.
+                </p>
+              </>
+            )}
           </div>
 
           {error && (

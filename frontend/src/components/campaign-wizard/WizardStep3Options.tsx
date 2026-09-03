@@ -66,7 +66,15 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
   };
   const windowMinutes = Math.max(0, toMinutes(schedule.endHour) - toMinutes(schedule.startHour));
   const hoursPerDay   = windowMinutes / 60;
-  const estimatedPerDay = Math.min(schedule.dailyLimit, Math.max(1, Math.floor(hoursPerDay * 3)));
+  // dailyLimit is per account, so capacity is it times the selected mailboxes.
+  const selectedSenderCount = Math.max(
+    1,
+    (schedule.senderAccountIds ?? (schedule.senderAccountId ? [schedule.senderAccountId] : [])).length,
+  );
+  const estimatedPerDay = Math.min(
+    schedule.dailyLimit * selectedSenderCount,
+    Math.max(1, Math.floor(hoursPerDay * 3) * selectedSenderCount),
+  );
   const is247 =
     schedule.startHour === '00:00' &&
     schedule.endHour   === '23:59' &&
@@ -282,22 +290,42 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-xs font-extrabold text-secondary uppercase tracking-wider">
-                    Daily Email Limit
+                    Daily Limit Per Account
                   </label>
                   <span className="text-sm font-extrabold text-[#b0004a]">{schedule.dailyLimit}</span>
                 </div>
                 <input
                   type="range"
                   min={5}
-                  max={300}
+                  max={100}
                   step={5}
                   value={schedule.dailyLimit}
                   onChange={(e) => set('dailyLimit', Number(e.target.value))}
                   className="w-full accent-[#b0004a] h-1.5"
                 />
+                {/* The total is the number that actually matters, and it is
+                    the one an operator gets wrong: this figure is PER
+                    MAILBOX, so the campaign's real daily volume is it times
+                    the number of senders selected above. Every campaign
+                    shares the same per-account budget, so a second campaign
+                    queues behind this one rather than adding to it. */}
+                <p className="text-[11px] text-secondary mt-2">
+                  {selectedIds.length > 0 ? (
+                    <>
+                      <strong className="text-on-surface">
+                        {schedule.dailyLimit} per account &times; {selectedIds.length}{' '}
+                        account{selectedIds.length === 1 ? '' : 's'} ={' '}
+                        {(schedule.dailyLimit * selectedIds.length).toLocaleString()} emails/day
+                      </strong>{' '}
+                      in total.
+                    </>
+                  ) : (
+                    <>Select at least one sending account above to see the daily total.</>
+                  )}
+                </p>
                 <div className="flex justify-between text-[10px] text-secondary mt-1">
-                  <span>5 / day</span>
-                  <span>300 / day</span>
+                  <span>5 / account</span>
+                  <span>100 / account</span>
                 </div>
                 <p className="text-xs text-secondary mt-2">
                   Recommended: start at 50/day during warmup and increase gradually.
@@ -362,7 +390,14 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-secondary font-semibold">Daily cap</span>
-                    <span className="font-bold text-[#b0004a]">{schedule.dailyLimit} emails</span>
+                    <span className="font-bold text-[#b0004a]">
+                      {schedule.dailyLimit}/account
+                      {selectedIds.length > 0 && (
+                        <span className="text-secondary font-semibold">
+                          {' '}({(schedule.dailyLimit * selectedIds.length).toLocaleString()} total)
+                        </span>
+                      )}
+                    </span>
                   </div>
                   <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between text-xs">
                     <span className="text-secondary font-semibold">Est. per active day</span>

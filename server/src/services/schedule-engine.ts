@@ -14,7 +14,16 @@ export interface SendingSchedule {
   startHour: string;  // "09:00"
   endHour: string;    // "17:00"
   days: number[];     // 0=Sun, 1=Mon … 6=Sat
-  dailyLimit: number; // max emails per day
+  /**
+   * Max emails per day PER SENDING ACCOUNT.
+   *
+   * Was a whole-campaign total, which meant two live campaigns at 30 each
+   * quietly sent 60/day from the same three mailboxes. Per-account is what the
+   * operator actually reasons about ("10 each across three accounts"), and it
+   * makes the figure composable: every campaign shares one per-account budget,
+   * so launching a second campaign can never double the volume.
+   */
+  dailyLimit: number;
   /** DB email_accounts.id to pin to one sender, or '__env__' for primary env account */
   senderAccountId?: string;
 }
@@ -88,6 +97,12 @@ export function assignScheduledTimes(
   count: number,
   schedule: SendingSchedule,
   fromNow: Date = new Date(),
+  /**
+   * How many sending accounts share this campaign. Per-day capacity is
+   * `dailyLimit * senderCount`, because dailyLimit is per account. Defaults
+   * to 1 so a caller that doesn't know its pool behaves as before.
+   */
+  senderCount = 1,
 ): Date[] {
   const { timezone, startHour, endHour, days, dailyLimit } = schedule;
 
@@ -105,6 +120,10 @@ export function assignScheduledTimes(
   if (windowMinutes <= 0) throw new Error(`Invalid sending window: startHour=${startHour} endHour=${endHour}`);
   if (days.length === 0)  throw new Error('sendingSchedule.days must include at least one day');
   if (dailyLimit <= 0)    throw new Error('sendingSchedule.dailyLimit must be > 0');
+
+  // dailyLimit is PER ACCOUNT, so a day's capacity is it multiplied by the
+  // number of mailboxes sharing the campaign.
+  const perDayCapacity = dailyLimit * Math.max(1, Math.floor(senderCount));
 
   const results: Date[] = [];
   let remaining = count;
@@ -148,7 +167,7 @@ export function assignScheduledTimes(
     // today instead of spilling a week out.
     const IDEAL_GAP_MINUTES = 20;
     const MIN_ACCEPTABLE_GAP_MINUTES = 2;
-    const rawBatchSize = Math.min(remaining, dailyLimit);
+    const rawBatchSize = Math.min(remaining, perDayCapacity);
 
     let batchSize: number;
     let gapMinutes: number;
