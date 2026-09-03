@@ -183,7 +183,19 @@ function applyLeadFilters<T>(query: T, filters: LeadFilters): T {
     q = q.not('primary_email', 'is', null);
   }
   if (filters.withoutEmail) {
-    q = q.is('primary_email', null);
+    // "No address on file" must mean no address ANYWHERE, not just an empty
+    // primary_email. primary_email is a denormalised cache; the address a
+    // campaign actually sends to is resolved from the source columns by
+    // resolvePrimaryEmail(). Checking only the cache surfaced leads that
+    // plainly showed a Trustpilot or site address in the table -- reported
+    // 2026-09-02 with register@casinomedvisa.com sitting under a "No
+    // address" filter.
+    q = q
+      .is('primary_email', null)
+      .is('trustpilot_email', null)
+      .is('website_email', null)
+      .is('discovered_email', null)
+      .is('affiliate_email', null);
   }
   if (filters.verificationStatus === 'unverified') {
     q = q.is('verification_status', null);
