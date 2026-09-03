@@ -83,6 +83,7 @@ router.get('/', async (req: Request, res: Response) => {
       sortBy: req.query.sortBy as string | undefined,
       sortDir: req.query.sortDir === 'asc' ? 'asc' : 'desc',
       hasEmail: req.query.hasEmail === 'true',
+      withoutEmail: req.query.noEmail === 'true',
       verificationStatus: parseVerificationFilter(req.query.verificationStatus),
       // ?ids=<csv> — the campaign wizard re-reads a Lead-Matrix hand-off
       // through the normal filter path so it can re-apply the send rules.
@@ -121,6 +122,7 @@ router.get('/ids', async (req: Request, res: Response) => {
         ? (req.query.platform as string).toLowerCase()
         : undefined,
       hasEmail: req.query.hasEmail === 'true',
+      withoutEmail: req.query.noEmail === 'true',
       verificationStatus: parseVerificationFilter(req.query.verificationStatus),
       ids: parseIds(req.query.ids),
       prospectType: parseProspectTypes(req.query.prospectType),
@@ -163,6 +165,7 @@ router.get('/verification-counts', async (req: Request, res: Response) => {
       // NOTE: hasEmail is deliberately honoured here. With the toggle on, the
       // chips describe the has-an-address subset; with it off, the whole book.
       hasEmail: req.query.hasEmail === 'true',
+      withoutEmail: req.query.noEmail === 'true',
       ids: parseIds(req.query.ids),
       prospectType: parseProspectTypes(req.query.prospectType),
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',

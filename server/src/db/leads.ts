@@ -417,7 +417,7 @@ export async function getVerificationCounts(
       ...filters,
       verificationStatus: verification,
       hasEmail: mode === 'require-email' ? true : filters.hasEmail,
-      withoutEmail: mode === 'no-email',
+      withoutEmail: mode === 'no-email' ? true : filters.withoutEmail,
       // Counts are about the whole filtered book, not one page of it.
       page: undefined,
       limit: undefined,

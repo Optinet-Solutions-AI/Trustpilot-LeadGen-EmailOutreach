@@ -152,7 +152,12 @@ export default function Leads() {
     if (countryFilter) filters.country = countryFilter;
     if (categoryFilter) filters.category = categoryFilter;
     if (hasEmailFilter) (filters as any).hasEmail = 'true';
-    if (verificationFilter) (filters as any).verificationStatus = verificationFilter;
+    // 'no_email' is a data-completeness bucket, not a verifier verdict, so it
+    // travels as its own parameter. Sending it as verificationStatus would
+    // hit the route's value allowlist and be silently dropped, leaving the
+    // chip looking active while the table ignored it.
+    if (verificationFilter === 'no_email') (filters as any).noEmail = 'true';
+    else if (verificationFilter) (filters as any).verificationStatus = verificationFilter;
     if (prospectFilter) (filters as any).prospectType = prospectFilter;
     if (languageFilter) (filters as any).language = languageFilter;
     if (blockedFilter) (filters as any).blocked = 'only';
@@ -186,7 +191,8 @@ export default function Leads() {
     if (countryFilter) params.set('country', countryFilter);
     if (categoryFilter) params.set('category', categoryFilter);
     if (hasEmailFilter) params.set('hasEmail', 'true');
-    if (verificationFilter) params.set('verificationStatus', verificationFilter);
+    if (verificationFilter === 'no_email') params.set('noEmail', 'true');
+    else if (verificationFilter) params.set('verificationStatus', verificationFilter);
     if (languageFilter) params.set('language', languageFilter);
     if (search) params.set('search', search);
     if (platformFilter) params.set('platform', platformFilter);
@@ -196,6 +202,24 @@ export default function Leads() {
       .catch(() => { if (!cancelled) setHiddenRedirectCount(0); });
     return () => { cancelled = true; };
   }, [statusFilter, countryFilter, categoryFilter, hasEmailFilter, verificationFilter, languageFilter, search, platformFilter]);
+
+  // Size of the pool the operator's filters narrow: same platform, same
+  // structural exclusions, no user filters. Refetched when the structural
+  // scope changes, not on every keystroke.
+  const [poolTotal, setPoolTotal] = useState<number | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    params.set('redirected', 'exclude');
+    if (platformFilter) params.set('platform', platformFilter);
+    if (prospectFilter) params.set('prospectType', prospectFilter);
+    params.set('page', '1');
+    params.set('limit', '1');
+    let cancelled = false;
+    api.get(`/leads?${params}`)
+      .then((res) => { if (!cancelled) setPoolTotal(res.data?.total ?? null); })
+      .catch(() => { if (!cancelled) setPoolTotal(null); });
+    return () => { cancelled = true; };
+  }, [platformFilter, prospectFilter]);
 
   // Languages that actually have leads, with counts. Loaded once — the set
   // only changes when new markets get scraped.
@@ -739,7 +763,13 @@ export default function Leads() {
         <SectionHeader
           title="Lead"
           accent="Matrix"
-          subtitle={total > 0 ? `${total} leads — manage your outreach pipeline.` : 'No leads yet — manage your outreach pipeline.'}
+          subtitle={total > 0
+            ? `${total.toLocaleString()} leads${
+                poolTotal !== null && poolTotal > 0 && total < poolTotal
+                  ? ` · ${pctOf(total, poolTotal)} of ${poolTotal.toLocaleString()}`
+                  : ''
+              } — manage your outreach pipeline.`
+            : 'No leads yet — manage your outreach pipeline.'}
           className="w-full lg:w-auto"
         />
         <div className="flex flex-wrap items-center gap-3 justify-end max-w-full">
@@ -991,6 +1021,7 @@ export default function Leads() {
             <option value="unknown">Unknown — not advisable</option>
             <option value="unverified">Not verified yet</option>
             <option value="invalid">Invalid — cannot send</option>
+            <option value="no_email">No address on file — needs Enrich</option>
           </select>
           <button
             onClick={() => { setHasEmailFilter(v => !v); setPage(1); }}
@@ -1121,6 +1152,7 @@ export default function Leads() {
               <option value="unknown">Unknown — not advisable</option>
               <option value="unverified">Not verified yet</option>
               <option value="invalid">Invalid — cannot send</option>
+              <option value="no_email">No address on file — needs Enrich</option>
             </select>
           </div>
           <button
@@ -1165,6 +1197,14 @@ export default function Leads() {
           <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-secondary mr-1">
               Of {verificationCounts.total.toLocaleString()} matching leads
+              {/* The total is itself a share — of the pool these filters
+                  narrow (this platform, minus what the page structurally
+                  hides). Without it, "322" has no scale. */}
+              {poolTotal !== null && poolTotal > 0 && verificationCounts.total < poolTotal && (
+                <span className="font-semibold normal-case tracking-normal opacity-70">
+                  {' '}· {pctOf(verificationCounts.total, poolTotal)} of {poolTotal.toLocaleString()}
+                </span>
+              )}
             </span>
             {([
               { key: 'valid',      label: 'Valid',        hint: 'Verified deliverable — safe to send',              classes: 'bg-[#8ff9a8]/40 text-[#006630] border-[#8ff9a8]' },
@@ -1175,30 +1215,28 @@ export default function Leads() {
               // Not a verdict. There was never anything here to verify, so the
               // remedy is Enrich, not Verify -- which is why it needs its own
               // bucket rather than hiding inside "not verified".
-              { key: 'no_email',   label: 'No address',   hint: 'No email on file at all — run Enrich to try to find one from the company website', classes: 'bg-slate-100 text-slate-500 border-slate-200' },
+              { key: 'no_email',   label: 'No address',   hint: 'No email on file at all, so there is nothing to verify — select these and run Enrich to find addresses from their websites', classes: 'bg-slate-100 text-slate-600 border-slate-300' },
             ] as const).map((chip) => {
               // Coalesced because the frontend can be live BEFORE the API
               // that returns the field. Vercel and Cloud Run deploy
               // separately, so every new count must degrade to 0 rather than
               // throwing on undefined.toLocaleString() and blanking the
               // whole Lead Matrix.
+              // Coalesced because the frontend can be live BEFORE the API
+              // that returns the field. Vercel and Cloud Run deploy
+              // separately, so every new count must degrade to 0 rather than
+              // throwing on undefined.toLocaleString().
               const n = verificationCounts[chip.key] ?? 0;
               const pct = pctOf(n, verificationCounts.total);
-              // 'no_email' is a data-completeness bucket, not a verdict, so
-              // it has no matching value in the verification filter.
-              const filterable = chip.key !== 'no_email';
-              const active = filterable && verificationFilter === chip.key;
+              const active = verificationFilter === chip.key;
               return (
                 <button
                   key={chip.key}
                   type="button"
-                  title={`${chip.hint}${filterable ? '' : ' (not a verification verdict, so not a filter)'}`}
-                  disabled={!filterable}
-                  onClick={filterable
-                    ? () => { setVerificationFilter(active ? '' : chip.key); setPage(1); }
-                    : undefined}
+                  title={`${chip.hint} — click to show only these`}
+                  onClick={() => { setVerificationFilter(active ? '' : chip.key); setPage(1); }}
                   className={`px-2.5 py-1 rounded-full border text-[11px] font-bold transition-all tabular-nums ${chip.classes} ${
-                    active ? 'ring-2 ring-[#b0004a]/40' : filterable ? 'hover:brightness-95' : 'cursor-default'
+                    active ? 'ring-2 ring-[#b0004a]/40' : 'hover:brightness-95'
                   }`}
                 >
                   {chip.label} {n.toLocaleString()}
