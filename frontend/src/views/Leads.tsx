@@ -147,20 +147,24 @@ export default function Leads() {
   };
 
   const loadLeads = useCallback(() => {
-    const filters: Record<string, string | number> = { page, limit: view === 'pipeline' ? 200 : 25 };
-    if (statusFilter) filters.status = statusFilter;
+    // Typed deliberately, NOT as Record<string, …> plus `as any` casts: the
+    // casts silently dropped five filters that the hook's allowlist did not
+    // name. Keep this typed so adding a filter here fails to compile until
+    // the hook forwards it.
+    const filters: Parameters<typeof fetchLeads>[0] = { page, limit: view === 'pipeline' ? 200 : 25 };
+    if (statusFilter) filters.status = statusFilter as typeof filters.status;
     if (countryFilter) filters.country = countryFilter;
     if (categoryFilter) filters.category = categoryFilter;
-    if (hasEmailFilter) (filters as any).hasEmail = 'true';
+    if (hasEmailFilter) filters.hasEmail = 'true';
     // 'no_email' is a data-completeness bucket, not a verifier verdict, so it
     // travels as its own parameter. Sending it as verificationStatus would
     // hit the route's value allowlist and be silently dropped, leaving the
     // chip looking active while the table ignored it.
-    if (verificationFilter === 'no_email') (filters as any).noEmail = 'true';
-    else if (verificationFilter) (filters as any).verificationStatus = verificationFilter;
-    if (prospectFilter) (filters as any).prospectType = prospectFilter;
-    if (languageFilter) (filters as any).language = languageFilter;
-    if (blockedFilter) (filters as any).blocked = 'only';
+    if (verificationFilter === 'no_email') filters.noEmail = 'true';
+    else if (verificationFilter) filters.verificationStatus = verificationFilter;
+    if (prospectFilter) filters.prospectType = prospectFilter;
+    if (languageFilter) filters.language = languageFilter;
+    if (blockedFilter) filters.blocked = 'only';
     if (search) filters.search = search;
     if (platformFilter) filters.platform = platformFilter;
     filters.sortBy = sortBy;
@@ -168,8 +172,8 @@ export default function Leads() {
     // Hide leads whose websites redirect off-domain — those have their own
     // dedicated page (/redirected-leads) so the regular outreach pipeline
     // never accidentally pulls in misattributed leads.
-    (filters as any).redirected = 'exclude';
-    fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
+    filters.redirected = 'exclude';
+    fetchLeads(filters);
   }, [page, statusFilter, countryFilter, categoryFilter, hasEmailFilter, verificationFilter, prospectFilter, languageFilter, blockedFilter, search, platformFilter, view, sortBy, sortDir, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);

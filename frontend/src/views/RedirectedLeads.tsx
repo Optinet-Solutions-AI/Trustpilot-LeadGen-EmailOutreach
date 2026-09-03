@@ -35,15 +35,19 @@ export default function RedirectedLeads() {
   const [activeLead, setActiveLead] = useState<Lead | null>(null);
 
   const loadLeads = useCallback(() => {
-    const filters: Record<string, string | number> = {
+    // Typed, not cast: an untyped filter bag let five filters silently
+    // vanish on the Lead Matrix because the hook's allowlist never named
+    // them. Keep this shape so a new filter fails to compile until the hook
+    // forwards it.
+    const filters: Parameters<typeof fetchLeads>[0] = {
       page,
       limit: 25,
       sortBy: 'scraped_at',
       sortDir: 'desc',
+      redirected: 'only',
     };
     if (search) filters.search = search;
-    (filters as Record<string, unknown>).redirected = 'only';
-    fetchLeads(filters as Parameters<typeof fetchLeads>[0]);
+    fetchLeads(filters);
   }, [page, search, fetchLeads]);
 
   useEffect(() => { loadLeads(); }, [loadLeads]);

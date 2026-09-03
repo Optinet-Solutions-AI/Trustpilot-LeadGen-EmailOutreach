@@ -2,6 +2,20 @@ import { useState, useCallback } from 'react';
 import api from '../api/client';
 import type { Lead, LeadStatus } from '../types/lead';
 
+/**
+ * Every filter this hook forwards to GET /api/leads.
+ *
+ * THIS IS AN ALLOWLIST, and the query builder below only sets the keys named
+ * here. A caller passing anything else gets it silently dropped -- the
+ * request succeeds, the response looks plausible, and the filter simply does
+ * not apply. That failure mode cost us the verification, language,
+ * prospect-type and blocked filters, all of which appeared to work in the UI
+ * while the server never saw them (found 2026-09-02 when a "No address on
+ * file" filter returned leads with addresses).
+ *
+ * So: when you add a filter to the Lead Matrix, add it HERE too, and never
+ * reach the hook through an `as any` cast -- the cast is what hid this.
+ */
 interface LeadFilters {
   status?: LeadStatus;
   country?: string;
@@ -16,6 +30,15 @@ interface LeadFilters {
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   hasEmail?: string;
+  /** Inverse of hasEmail: only leads with no address on any source column. */
+  noEmail?: string;
+  /** 'valid' | 'invalid' | 'catch-all' | 'unknown' | 'unverified' (NULL verdict). */
+  verificationStatus?: string;
+  /** Outreach language name; expands server-side to every country that speaks it. */
+  language?: string;
+  /** Comma-joined prospect types (migration 063), e.g. 'operator,unclassified'. */
+  prospectType?: string;
+  blocked?: 'only' | 'exclude' | 'all';
   redirected?: 'only' | 'exclude' | 'all';
 }
 
@@ -41,6 +64,11 @@ export function useLeads() {
       if (filters.sortBy) params.set('sortBy', filters.sortBy);
       if (filters.sortDir) params.set('sortDir', filters.sortDir);
       if (filters.hasEmail) params.set('hasEmail', filters.hasEmail);
+      if (filters.noEmail) params.set('noEmail', filters.noEmail);
+      if (filters.verificationStatus) params.set('verificationStatus', filters.verificationStatus);
+      if (filters.language) params.set('language', filters.language);
+      if (filters.prospectType) params.set('prospectType', filters.prospectType);
+      if (filters.blocked && filters.blocked !== 'all') params.set('blocked', filters.blocked);
       if (filters.redirected && filters.redirected !== 'all') params.set('redirected', filters.redirected);
 
       const res = await api.get(`/leads?${params}`);
