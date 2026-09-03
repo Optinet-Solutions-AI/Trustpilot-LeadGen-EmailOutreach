@@ -55,20 +55,55 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from tools.db.supabase_client import table  # noqa: E402
 
+# The operator runs this from a Windows console whose codepage is cp1252, and
+# a decorative character in a progress line must never abort a job that is
+# part-way through writing classifications.
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 PAGE_SIZE = 1000
 
-# Substrings that mark a domain as an affiliate / comparison property rather
-# than an operator. Kept narrow on purpose — a false 'affiliate' hides a real
-# prospect, which is worse than leaving it unclassified.
-AFFILIATE_DOMAIN_TOKENS = (
-    'casinoguru', 'askgamblers', 'casinomeister', 'bonus', 'freespins',
-    'nodeposit', 'topcasino', 'bestcasino', 'casinoreview', 'casinoranking',
-    'casinolist', 'compare', 'comparison', 'affiliate', 'review',
-    'guide', 'tips', 'odds', 'bettingsites', 'casinosites', 'slotsites',
+# ─────────────────────────────────────────────────────────────────────────────
+# Affiliate domain heuristics, in two tiers.
+#
+# The first version of this used one flat token list and produced exactly the
+# failure the module docstring forbids: it labelled REAL OPERATORS as
+# affiliates. `odds` matched oddset.dk (Danske Spil, the Danish state gambling
+# monopoly), oddsking.com (Petfre, i.e. Betfred) and oddsmaker.ag; `review`
+# matched inside "amazonp-review"; `guide` and `tips` caught a Costa Rican
+# dental directory and a health-tips blog. Every one of those would have been
+# hidden from the Lead Matrix by default.
+#
+# Hence the split. A miss costs a human glance at an unclassified row; a false
+# positive silently deletes a sellable prospect from view.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Tier A: words that essentially only occur in affiliate/comparison property
+# names. Matched anywhere in the domain, no further evidence needed.
+AFFILIATE_STRONG_TOKENS = (
+    'casinoguru', 'askgamblers', 'casinomeister', 'oddschecker',
+    'bonus', 'freespins', 'nodeposit', 'freespin',
+    'topcasino', 'bestcasino', 'casinoreview', 'casinoranking', 'casinolist',
+    'bettingsites', 'casinosites', 'slotsites', 'affiliate',
+)
+
+# Tier B: generic words that appear in affiliate names AND in plenty of
+# unrelated businesses. Only counted when the domain or company name ALSO
+# carries a gambling word, so the token is read in context.
+AFFILIATE_WEAK_TOKENS = (
+    'review', 'guide', 'tips', 'tipster', 'compare', 'comparison', 'ranking',
+)
+
+# What makes a weak token's context gambling rather than dentistry.
+GAMBLING_CONTEXT_TOKENS = (
+    'casino', 'slot', 'bet', 'gambl', 'lotto', 'lottery', 'bingo', 'poker',
+    'spin', 'wager', 'roulette', 'blackjack', 'sportsbook',
 )
 
 # Tokens that look affiliate-ish but routinely appear in genuine operator
-# domains — checked first so they veto the match above.
+# domains -- checked first so they veto a match outright.
 OPERATOR_DOMAIN_EXCEPTIONS = (
     'casinoroyale', 'reviewer', 'guidehouse',
 )
@@ -82,14 +117,32 @@ def registered_domain(url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
-def looks_like_affiliate_domain(domain: str | None) -> str | None:
-    """Return the matching token, or None. See the module docstring for why
-    this stays conservative."""
+def looks_like_affiliate_domain(
+    domain: str | None,
+    company_name: str | None = None,
+) -> str | None:
+    """Return the matching token, or None.
+
+    Tier A matches on its own. Tier B needs a gambling word alongside it, in
+    either the domain or the company name -- that is what separates
+    "casinoguide.dk" (affiliate) from "costaricadentalguide.com" (not a
+    gambling lead at all), and what stops "amazonpreview" being read as a
+    review site.
+    """
     if not domain:
         return None
     if any(exc in domain for exc in OPERATOR_DOMAIN_EXCEPTIONS):
         return None
-    for token in AFFILIATE_DOMAIN_TOKENS:
+
+    for token in AFFILIATE_STRONG_TOKENS:
+        if token in domain:
+            return token
+
+    haystack = f'{domain} {company_name or ""}'.lower()
+    has_gambling_context = any(g in haystack for g in GAMBLING_CONTEXT_TOKENS)
+    if not has_gambling_context:
+        return None
+    for token in AFFILIATE_WEAK_TOKENS:
         if token in domain:
             return token
     return None
@@ -150,7 +203,7 @@ def classify(lead: dict, tracked: dict[str, str]) -> tuple[str, str] | None:
     if domain and domain in tracked:
         return 'affiliate', f'domain matches tracked affiliate: {tracked[domain]}'
 
-    token = looks_like_affiliate_domain(domain)
+    token = looks_like_affiliate_domain(domain, lead.get('company_name'))
     if token:
         return 'affiliate', f'domain reads as a review/comparison site ("{token}")'
 
@@ -199,7 +252,7 @@ def main() -> int:
 
     counts = Counter(t for _, t, _ in planned)
     print()
-    print('── Plan ────────────────────────────────────────────')
+    print('-- Plan --------------------------------------------')
     for kind in ('flagged', 'redirect', 'dead', 'affiliate'):
         if counts.get(kind):
             print(f'  {kind:<10} {counts[kind]:>6}')
@@ -216,7 +269,7 @@ def main() -> int:
 
     if not args.apply:
         print()
-        print('DRY RUN — nothing written. Re-run with --apply to commit.')
+        print('DRY RUN -- nothing written. Re-run with --apply to commit.')
         return 0
 
     now = datetime.now(timezone.utc).isoformat()
@@ -230,7 +283,7 @@ def main() -> int:
         }).eq('id', lead_id).execute()
         written += 1
         if written % 250 == 0:
-            print(f'  … {written}/{len(planned)}')
+            print(f'  ... {written}/{len(planned)}')
 
     print()
     print(f'Wrote {written} classification(s).')
