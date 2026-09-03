@@ -75,4 +75,19 @@ export const config = {
    *  the Inbox UI. Email candidates are queued either way. Defaults to false
    *  to keep Cloud Run free of unsolicited Chromium spawns. */
   autoQueueUrlsFromReplies: process.env.AUTO_QUEUE_URLS_FROM_REPLIES === 'true',
+
+  /** Recontact cutoff (ISO date, e.g. '2026-08-07'). Mail sent BEFORE this
+   *  date stops counting as "already contacted", so those addresses become
+   *  eligible for a fresh approach. Set it when the sending domain changes —
+   *  a send from a retired domain is not a reason to withhold outreach from
+   *  the new one, and without this the address-based dedupe in
+   *  getSentEmails() blocks the whole back catalogue forever.
+   *
+   *  Deliberately date-based rather than a rolling day count: this expresses
+   *  a specific one-time event, it is auditable, and it cannot quietly turn
+   *  the entire book re-mailable again next quarter.
+   *
+   *  'bounced' and 'replied' are NEVER date-scoped — see getSentEmails().
+   *  Unset (the default) = no cutoff, every past send blocks as before. */
+  sendDedupeSince: process.env.SEND_DEDUPE_SINCE || '',
 };

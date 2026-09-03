@@ -1,4 +1,5 @@
 import { getSupabase } from '../lib/supabase.js';
+import { config } from '../config.js';
 import { resolvePrimaryEmail } from '../services/email/resolve-primary-email.js';
 import { categoryFamily } from '../services/lead-categories.js';
 
@@ -124,28 +125,61 @@ export async function deleteCampaign(id: string) {
   if (error) throw new Error(error.message);
 }
 
+/** PostgREST caps a response at 1000 rows, so this read MUST paginate. */
+const SENT_PAGE_SIZE = 1000;
+
+/** Send outcomes that block a re-send FOREVER, whatever `sendDedupeSince`
+ *  says. A mailbox that hard-bounced is still dead after a domain change,
+ *  and a lead mid-conversation must never get a cold approach on top of it. */
+const PERMANENT_BLOCK_STATUSES = ['replied', 'bounced'];
+
+/** Send outcomes that only mean "we already reached out". These are the ones
+ *  `sendDedupeSince` re-opens. auto_replied sits here rather than above
+ *  because an unmonitored support inbox is not a conversation. */
+const RECONTACTABLE_STATUSES = ['sent', 'opened', 'auto_replied'];
+
 /**
  * Returns a Set of email addresses that should NOT receive another campaign email.
- * Includes: previously sent/opened/replied/auto_replied (already contacted) +
- * bounced (permanently failed). auto_replied is in here because the original
- * support inbox is unmonitored — re-emailing it just produces another
- * auto-reply. This prevents re-sending to hard-bounced addresses and
- * double-emailing active conversations.
+ *
+ * Two shapes, depending on `config.sendDedupeSince`:
+ *   unset  — every past send blocks, as it always did.
+ *   set    — 'replied'/'bounced' still block at any date, while
+ *            'sent'/'opened'/'auto_replied' block only from the cutoff
+ *            forward. That is what lets a domain switch start a clean slate
+ *            without resurrecting dead mailboxes or trampling live threads.
  *
  * All entries are lowercased so callers can do case-insensitive lookups
  * without worrying about how the address was capitalised at scrape/insert time.
+ *
+ * NOTE the pagination. This used to be one unbounded `.select()`, and
+ * PostgREST silently truncates at 1000 rows — with 2,031 real sends on file
+ * it returned the first 1000, so 1,031 already-emailed addresses were never
+ * blocked and the "never double-email" guarantee only held for small books
+ * (measured live 2026-09-03).
  */
 export async function getSentEmails(): Promise<Set<string>> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('campaign_leads')
-    .select('email_used')
-    .in('status', ['sent', 'opened', 'replied', 'auto_replied', 'bounced']);
-  if (error) throw new Error(error.message);
+  const cutoff = config.sendDedupeSince;
   const out = new Set<string>();
-  for (const r of (data || []) as Array<{ email_used: string | null }>) {
-    if (r.email_used) out.add(r.email_used.toLowerCase());
+
+  const collect = async (statuses: string[], since?: string): Promise<void> => {
+    for (let from = 0; ; from += SENT_PAGE_SIZE) {
+      let q = supabase.from('campaign_leads').select('email_used').in('status', statuses);
+      if (since) q = q.gte('sent_at', since);
+      const { data, error } = await q.range(from, from + SENT_PAGE_SIZE - 1);
+      if (error) throw new Error(error.message);
+      const rows = (data || []) as Array<{ email_used: string | null }>;
+      for (const r of rows) if (r.email_used) out.add(r.email_used.toLowerCase());
+      if (rows.length < SENT_PAGE_SIZE) return;
+    }
+  };
+
+  if (!cutoff) {
+    await collect([...PERMANENT_BLOCK_STATUSES, ...RECONTACTABLE_STATUSES]);
+    return out;
   }
+  await collect(PERMANENT_BLOCK_STATUSES);
+  await collect(RECONTACTABLE_STATUSES, cutoff);
   return out;
 }
 
