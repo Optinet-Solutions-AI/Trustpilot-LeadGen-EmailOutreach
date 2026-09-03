@@ -214,7 +214,10 @@ export default function Leads() {
   // the chips stop being a way to navigate between buckets.
   const [verificationCounts, setVerificationCounts] = useState<{
     total: number; valid: number; invalid: number; 'catch-all': number;
-    unknown: number; unverified: number; sendable: number; no_email: number;
+    unknown: number; unverified: number; sendable: number;
+    // Added after the chips shipped — optional so an older API response
+    // still renders. See the coalesce at the chip render.
+    no_email?: number;
   } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams();
@@ -1174,7 +1177,12 @@ export default function Leads() {
               // bucket rather than hiding inside "not verified".
               { key: 'no_email',   label: 'No address',   hint: 'No email on file at all — run Enrich to try to find one from the company website', classes: 'bg-slate-100 text-slate-500 border-slate-200' },
             ] as const).map((chip) => {
-              const n = verificationCounts[chip.key];
+              // Coalesced because the frontend can be live BEFORE the API
+              // that returns the field. Vercel and Cloud Run deploy
+              // separately, so every new count must degrade to 0 rather than
+              // throwing on undefined.toLocaleString() and blanking the
+              // whole Lead Matrix.
+              const n = verificationCounts[chip.key] ?? 0;
               const pct = pctOf(n, verificationCounts.total);
               // 'no_email' is a data-completeness bucket, not a verdict, so
               // it has no matching value in the verification filter.

@@ -338,7 +338,9 @@ export default function WizardStep1Leads({
   // string as the list itself, so the panel and the rows can never disagree.
   const [counts, setCounts] = useState<{
     total: number; valid: number; invalid: number; 'catch-all': number;
-    unknown: number; unverified: number; sendable: number; no_email: number;
+    unknown: number; unverified: number; sendable: number;
+    // Optional: the frontend can go live before the API that returns it.
+    no_email?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -750,8 +752,8 @@ export default function WizardStep1Leads({
                   ) : counts.sendable === 0 ? (
                     <>
                       <span className="font-bold text-error">Nothing here can be sent yet.</span>{' '}
-                      {counts.no_email > 0 && counts.no_email >= counts.unverified
-                        ? <>{counts.no_email.toLocaleString()} have no address on file at all &mdash; run Enrich from the Lead Matrix first, then Verify.</>
+                      {(counts.no_email ?? 0) > 0 && (counts.no_email ?? 0) >= counts.unverified
+                        ? <>{(counts.no_email ?? 0).toLocaleString()} have no address on file at all &mdash; run Enrich from the Lead Matrix first, then Verify.</>
                         : counts.unverified > 0
                           ? <>{counts.unverified.toLocaleString()} still need verifying &mdash; run it from the Lead Matrix first.</>
                           : <>No address on file has come back valid.</>}
@@ -784,14 +786,14 @@ export default function WizardStep1Leads({
                     // a list that needs Enrich is distinguishable from one
                     // that needs Verify.
                     { key: 'no_email',   label: 'no address',   classes: 'bg-slate-100 text-slate-500' },
-                  ] as const).filter((c) => counts[c.key] > 0).map((c) => (
+                  ] as const).filter((c) => (counts[c.key] ?? 0) > 0).map((c) => (
                     <span
                       key={c.key}
-                      title={`${counts[c.key].toLocaleString()} of ${counts.total.toLocaleString()} matching leads`}
+                      title={`${(counts[c.key] ?? 0).toLocaleString()} of ${counts.total.toLocaleString()} matching leads`}
                       className={`px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums ${c.classes}`}
                     >
-                      {counts[c.key].toLocaleString()} {c.label}
-                      <span className="font-semibold opacity-70"> · {pctOf(counts[c.key], counts.total)}</span>
+                      {(counts[c.key] ?? 0).toLocaleString()} {c.label}
+                      <span className="font-semibold opacity-70"> · {pctOf(counts[c.key] ?? 0, counts.total)}</span>
                     </span>
                   ))}
                 </div>
