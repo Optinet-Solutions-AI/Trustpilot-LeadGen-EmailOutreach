@@ -37,6 +37,11 @@ export interface LeadFilters {
   minRating?: number;
   maxRating?: number;
   hasEmail?: boolean;
+  // The inverse of hasEmail, and NOT a verification verdict: a lead with no
+  // address was never a candidate for verification at all. Broken out because
+  // "not verified" and "no address on file" have completely different
+  // remedies -- run the verifier, or run enrichment to go find an address.
+  withoutEmail?: boolean;
   // Verifier verdict. 'unverified' is NOT a stored value — it means the
   // column is still NULL (never run through a verifier), which Operations
   // needs to see separately from 'unknown' (verifier ran, was inconclusive).
@@ -176,6 +181,9 @@ function applyLeadFilters<T>(query: T, filters: LeadFilters): T {
   }
   if (filters.hasEmail) {
     q = q.not('primary_email', 'is', null);
+  }
+  if (filters.withoutEmail) {
+    q = q.is('primary_email', null);
   }
   if (filters.verificationStatus === 'unverified') {
     q = q.is('verification_status', null);
@@ -395,17 +403,21 @@ export async function getLeadIds(
  */
 export async function getVerificationCounts(
   filters: LeadFilters = {},
-): Promise<Record<VerificationFilter | 'total' | 'sendable', number>> {
+): Promise<Record<VerificationFilter | 'total' | 'sendable' | 'no_email', number>> {
   const supabase = getSupabase();
   // Resolve the migration-063 probe before any query is built — see
   // hasProspectTypeColumn().
   if (filters.prospectType?.length) await hasProspectTypeColumn();
 
-  const countFor = async (verification?: VerificationFilter, requireEmail = false): Promise<number> => {
+  const countFor = async (
+    verification?: VerificationFilter,
+    mode: 'as-filtered' | 'require-email' | 'no-email' = 'as-filtered',
+  ): Promise<number> => {
     const scoped: LeadFilters = {
       ...filters,
       verificationStatus: verification,
-      hasEmail: requireEmail ? true : filters.hasEmail,
+      hasEmail: mode === 'require-email' ? true : filters.hasEmail,
+      withoutEmail: mode === 'no-email',
       // Counts are about the whole filtered book, not one page of it.
       page: undefined,
       limit: undefined,
@@ -435,7 +447,7 @@ export async function getVerificationCounts(
     return count ?? 0;
   };
 
-  const [total, valid, invalid, catchAll, unknown, unverified, sendable] = await Promise.all([
+  const [total, valid, invalid, catchAll, unknown, unverified, sendable, noEmail] = await Promise.all([
     countFor(undefined),
     countFor('valid'),
     countFor('invalid'),
@@ -444,10 +456,14 @@ export async function getVerificationCounts(
     countFor('unverified'),
     // "Sendable" is the only number that answers Operations' actual question:
     // how many of these can go out today. Valid verdict AND an address on file.
-    countFor('valid', true),
+    countFor('valid', 'require-email'),
+    // Leads with no address at all. Reported alongside the verdicts rather
+    // than inside them: there was never anything here for a verifier to
+    // decide, so the remedy is enrichment, not verification.
+    countFor(undefined, 'no-email'),
   ]);
 
-  return { total, valid, invalid, 'catch-all': catchAll, unknown, unverified, sendable };
+  return { total, valid, invalid, 'catch-all': catchAll, unknown, unverified, sendable, no_email: noEmail };
 }
 
 export async function getLeadById(id: string) {

@@ -114,8 +114,91 @@ export function categoryFilterPatterns(value: string | null | undefined): string
  * Needles are `[a-z0-9_]` only (slugified), so none of them can inject a comma
  * or paren into the or-expression.
  */
+/**
+ * ── UI-only selection roll-ups ───────────────────────────────────────────
+ *
+ * These are NOT normalisation, and deliberately live apart from
+ * CANONICAL_FAMILIES. The Python source of truth keeps the gambling cluster
+ * fragmented on purpose ("a land-based casino, an online bookmaker, a bingo
+ * hall and a gambling instructor are different businesses"), a test enforces
+ * that every one of those labels canonicalises to ITSELF, and scraping
+ * depends on the platform's own taxonomy staying intact. None of that
+ * changes here.
+ *
+ * What changes is the OPERATOR's side. In the Lead Matrix and the campaign
+ * wizard, "Gambling (all)" was a substring match on the literal word
+ * "gambling", so it returned ~1,712 leads and silently missed the 2,594
+ * casinos, 474 betting agencies and 214 sports-betting rows -- about
+ * two-thirds of the book. Selecting each sub-category by hand meant running
+ * the same campaign a dozen times.
+ *
+ * So a group slug expands to every member of the roll-up, while each
+ * sub-category stays independently selectable exactly as before. Scraping
+ * never resolves a group; only the lead filters do.
+ *
+ * Membership was decided by the operator on 2026-09-02 against live counts
+ * and a sample of real company names:
+ *   - `gaming` / `gaming_service_provider` are IN. The category is a genuine
+ *     mix (TenoBet live-dealer platform sits beside Gamers247 and a game
+ *     server host); the operator chose reach over precision.
+ *   - lottery is IN.
+ *   - `game_store` / `video_game_store` are OUT -- those are unambiguously
+ *     retail (GameStop UK, Ubisoft, The Works), and a casino
+ *     reputation-management pitch has no business landing there. They get
+ *     their own `video_games` roll-up instead.
+ */
+export const CATEGORY_GROUPS: Record<string, readonly string[]> = {
+  gambling: [
+    'casino', 'online_casino_or_bookmaker',
+    'gambling', 'gambling_house', 'gambling_service', 'gambling_instructor',
+    'betting_agency', 'bookmaker', 'online_sports_betting', 'off_track_betting_shop',
+    'bingo_hall',
+    'gaming', 'gaming_service_provider',
+    'lottery_vendor', 'lottery_retailer', 'lottery_shop', 'online_lottery_ticket_vendor',
+  ],
+  // Retail, not gambling. Kept as its own roll-up so the two can never be
+  // confused again.
+  video_games: ['game_store', 'video_game_store'],
+};
+
+/** True when `value` names a roll-up rather than a single category. */
+export function isCategoryGroup(value: string | null | undefined): boolean {
+  const slug = slugifyCategory(value);
+  return slug !== null && Object.prototype.hasOwnProperty.call(CATEGORY_GROUPS, slug);
+}
+
+/**
+ * Every ILIKE needle a group should match, with each member first expanded
+ * through its own canonical family (so `casinos` is caught alongside
+ * `casino`), then reduced the same way categoryFilterPatterns reduces: a
+ * needle that CONTAINS another needle is dropped, because the shorter one's
+ * %substring% match already covers it.
+ *
+ * The reduction only ever runs among the group's own members, so it can never
+ * produce a needle broad enough to pull in a label the group excludes -- the
+ * `game_store` case this roll-up exists to keep out.
+ */
+export function categoryGroupPatterns(value: string | null | undefined): string[] {
+  const slug = slugifyCategory(value);
+  if (slug === null) return [];
+  const members = CATEGORY_GROUPS[slug];
+  if (!members) return [];
+  const expanded = new Set<string>();
+  for (const member of members) {
+    for (const label of categoryFamily(member)) expanded.add(label);
+  }
+  const unique = [...expanded].sort();
+  return unique
+    .filter((m) => !unique.some((other) => other !== m && m.includes(other)))
+    .sort();
+}
+
 export function categoryOrFilter(value: string | null | undefined): string | null {
-  const needles = categoryFilterPatterns(value);
+  // A roll-up expands to its whole membership; anything else keeps the
+  // existing single-family behaviour.
+  const needles = isCategoryGroup(value)
+    ? categoryGroupPatterns(value)
+    : categoryFilterPatterns(value);
   if (needles.length === 0) return null;
   return needles.map((n) => `category.ilike.%${n}%`).join(',');
 }

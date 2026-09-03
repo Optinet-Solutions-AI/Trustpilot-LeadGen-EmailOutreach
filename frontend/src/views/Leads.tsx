@@ -16,6 +16,9 @@ import { useCheckClaimedJob } from '../hooks/useCheckClaimedJob';
 import Button from '../ui/Button';
 import LoadingState from '../ui/LoadingState';
 import SectionHeader from '../ui/SectionHeader';
+// Shared with the campaign wizard so "Gambling (all)" means the same
+// thing in both places.
+import { CATEGORIES } from '../components/campaign-wizard/scheduleConfig';
 
 type View = 'table' | 'pipeline';
 
@@ -31,33 +34,21 @@ const COUNTRIES = [
   { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
 ];
 
-const CATEGORIES = [
-  { slug: '', name: 'All Categories' },
-  { slug: 'gambling', name: 'Gambling (all)' },
-  { slug: 'casino', name: 'Casino' },
-  { slug: 'online_casino_or_bookmaker', name: 'Online Casino / Bookmaker' },
-  { slug: 'online_sports_betting', name: 'Online Sports Betting' },
-  { slug: 'betting_agency', name: 'Betting Agency' },
-  { slug: 'bookmaker', name: 'Bookmaker' },
-  { slug: 'gambling_service', name: 'Gambling Service' },
-  { slug: 'gambling_house', name: 'Gambling House' },
-  { slug: 'off_track_betting_shop', name: 'Off-Track Betting Shop' },
-  { slug: 'lottery_vendor', name: 'Lottery Vendor' },
-  { slug: 'online_lottery_ticket_vendor', name: 'Online Lottery Vendor' },
-  { slug: 'lottery_retailer', name: 'Lottery Retailer' },
-  { slug: 'lottery_shop', name: 'Lottery Shop' },
-  { slug: 'gambling_instructor', name: 'Gambling Instructor' },
-  { slug: 'gaming', name: 'Gaming (all)' },
-  { slug: 'gaming_service_provider', name: 'Gaming Service Provider' },
-  { slug: 'bingo_hall', name: 'Bingo Hall' },
-  { slug: 'video_game_store', name: 'Video Game Store' },
-  { slug: 'game_store', name: 'Game Store' },
-  { slug: 'bank', name: 'Bank' },
-  { slug: 'insurance_agency', name: 'Insurance Agency' },
-  { slug: 'money_transfer_service', name: 'Money Transfer' },
-  { slug: 'electronics_technology', name: 'Electronics & Technology' },
-  { slug: 'travel_vacation', name: 'Travel & Vacation' },
-];
+
+
+/**
+ * Share of the filtered book, for the verification chips.
+ *
+ * Never rounds a real count down to "0%" -- "0%" printed beside "52 invalid"
+ * reads as a broken number rather than a small one.
+ */
+function pctOf(n: number, total: number): string {
+  if (total <= 0) return '0%';
+  if (n === 0) return '0%';
+  const pct = (n / total) * 100;
+  if (pct < 1) return '<1%';
+  return `${Math.round(pct)}%`;
+}
 
 export default function Leads() {
   const { leads, total, totalPages, loading, fetchLeads, updateLead, deleteLead, bulkDelete } = useLeads();
@@ -223,7 +214,7 @@ export default function Leads() {
   // the chips stop being a way to navigate between buckets.
   const [verificationCounts, setVerificationCounts] = useState<{
     total: number; valid: number; invalid: number; 'catch-all': number;
-    unknown: number; unverified: number; sendable: number;
+    unknown: number; unverified: number; sendable: number; no_email: number;
   } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams();
@@ -1176,22 +1167,34 @@ export default function Leads() {
               { key: 'valid',      label: 'Valid',        hint: 'Verified deliverable — safe to send',              classes: 'bg-[#8ff9a8]/40 text-[#006630] border-[#8ff9a8]' },
               { key: 'catch-all',  label: 'Catch-all',    hint: 'Domain accepts anything — send cautiously, low volume', classes: 'bg-amber-50 text-amber-800 border-amber-200' },
               { key: 'unknown',    label: 'Unknown',      hint: 'Verifier could not decide — not advisable to send', classes: 'bg-slate-100 text-slate-700 border-slate-200' },
-              { key: 'unverified', label: 'Not verified', hint: 'No verifier has looked at these — verify before sending', classes: 'bg-slate-100 text-slate-700 border-slate-200' },
+              { key: 'unverified', label: 'Not verified', hint: 'Has an address, but no verifier has looked at it yet — run Verify', classes: 'bg-slate-100 text-slate-700 border-slate-200' },
               { key: 'invalid',    label: 'Invalid',      hint: 'Proven undeliverable — campaigns refuse to send to these', classes: 'bg-red-50 text-error border-red-200' },
+              // Not a verdict. There was never anything here to verify, so the
+              // remedy is Enrich, not Verify -- which is why it needs its own
+              // bucket rather than hiding inside "not verified".
+              { key: 'no_email',   label: 'No address',   hint: 'No email on file at all — run Enrich to try to find one from the company website', classes: 'bg-slate-100 text-slate-500 border-slate-200' },
             ] as const).map((chip) => {
               const n = verificationCounts[chip.key];
-              const active = verificationFilter === chip.key;
+              const pct = pctOf(n, verificationCounts.total);
+              // 'no_email' is a data-completeness bucket, not a verdict, so
+              // it has no matching value in the verification filter.
+              const filterable = chip.key !== 'no_email';
+              const active = filterable && verificationFilter === chip.key;
               return (
                 <button
                   key={chip.key}
                   type="button"
-                  title={chip.hint}
-                  onClick={() => { setVerificationFilter(active ? '' : chip.key); setPage(1); }}
-                  className={`px-2.5 py-1 rounded-full border text-[11px] font-bold transition-all ${chip.classes} ${
-                    active ? 'ring-2 ring-[#b0004a]/40' : 'hover:brightness-95'
+                  title={`${chip.hint}${filterable ? '' : ' (not a verification verdict, so not a filter)'}`}
+                  disabled={!filterable}
+                  onClick={filterable
+                    ? () => { setVerificationFilter(active ? '' : chip.key); setPage(1); }
+                    : undefined}
+                  className={`px-2.5 py-1 rounded-full border text-[11px] font-bold transition-all tabular-nums ${chip.classes} ${
+                    active ? 'ring-2 ring-[#b0004a]/40' : filterable ? 'hover:brightness-95' : 'cursor-default'
                   }`}
                 >
                   {chip.label} {n.toLocaleString()}
+                  <span className="font-semibold opacity-70"> · {pct}</span>
                 </button>
               );
             })}
@@ -1199,7 +1202,10 @@ export default function Leads() {
           <p className="text-xs text-secondary mt-2 flex items-center gap-1.5">
             <span className="material-symbols-outlined text-[14px] text-[#006630]">send</span>
             <span>
-              <strong className="text-on-surface">{verificationCounts.sendable.toLocaleString()} sendable today</strong>
+              <strong className="text-on-surface">
+                {verificationCounts.sendable.toLocaleString()} sendable today
+                {' '}({pctOf(verificationCounts.sendable, verificationCounts.total)} of {verificationCounts.total.toLocaleString()})
+              </strong>
               {' '}— verified valid and has an address on file. &ldquo;Has Email&rdquo; counts addresses, not verdicts.
             </span>
           </p>

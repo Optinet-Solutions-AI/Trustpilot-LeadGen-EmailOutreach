@@ -10,9 +10,25 @@ export const COUNTRIES = [
   { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
 ];
 
+// Category picker for the Lead Matrix and the campaign wizard.
+//
+// The two entries suffixed "(all)" are ROLL-UPS resolved server-side by
+// CATEGORY_GROUPS in server/src/services/lead-categories.ts -- selecting one
+// selects every sub-category beneath it, so a gambling campaign is built once
+// instead of a dozen times. Every sub-category also stays independently
+// selectable, which is the other half of the requirement.
+//
+// "Gambling (all)" deliberately includes `gaming` (a genuinely mixed
+// category) and lottery, and deliberately EXCLUDES game_store /
+// video_game_store -- those are retail (GameStop, Ubisoft) and have their own
+// roll-up. Decided against live counts on 2026-09-02.
+//
+// Scraping is untouched by any of this: it keeps following the platform's own
+// Trustpilot categories.
 export const CATEGORIES = [
   { slug: '', name: 'All Categories' },
-  { slug: 'gambling', name: 'Gambling (all)' },
+  // ── Gambling ──
+  { slug: 'gambling', name: 'Gambling (all)', group: true },
   { slug: 'casino', name: 'Casino' },
   { slug: 'online_casino_or_bookmaker', name: 'Online Casino / Bookmaker' },
   { slug: 'online_sports_betting', name: 'Online Sports Betting' },
@@ -20,17 +36,20 @@ export const CATEGORIES = [
   { slug: 'bookmaker', name: 'Bookmaker' },
   { slug: 'gambling_service', name: 'Gambling Service' },
   { slug: 'gambling_house', name: 'Gambling House' },
+  { slug: 'gambling_instructor', name: 'Gambling Instructor' },
   { slug: 'off_track_betting_shop', name: 'Off-Track Betting Shop' },
+  { slug: 'bingo_hall', name: 'Bingo Hall' },
+  { slug: 'gaming', name: 'Gaming / iGaming' },
+  { slug: 'gaming_service_provider', name: 'Gaming Service Provider' },
   { slug: 'lottery_vendor', name: 'Lottery Vendor' },
   { slug: 'online_lottery_ticket_vendor', name: 'Online Lottery Vendor' },
   { slug: 'lottery_retailer', name: 'Lottery Retailer' },
   { slug: 'lottery_shop', name: 'Lottery Shop' },
-  { slug: 'gambling_instructor', name: 'Gambling Instructor' },
-  { slug: 'gaming', name: 'Gaming (all)' },
-  { slug: 'gaming_service_provider', name: 'Gaming Service Provider' },
-  { slug: 'bingo_hall', name: 'Bingo Hall' },
+  // ── Video-game retail (NOT gambling) ──
+  { slug: 'video_games', name: 'Video Games / Game Stores (all)', group: true },
   { slug: 'video_game_store', name: 'Video Game Store' },
   { slug: 'game_store', name: 'Game Store' },
+  // ── Other sectors ──
   { slug: 'bank', name: 'Bank' },
   { slug: 'insurance_agency', name: 'Insurance Agency' },
   { slug: 'money_transfer_service', name: 'Money Transfer' },

@@ -87,6 +87,13 @@ const PLATFORM_OPTIONS: Array<{ slug: string; name: string }> = [
 
 const LIMIT = 50;
 
+/** Share of the matching list. Never rounds a real count down to "0%". */
+function pctOf(n: number, total: number): string {
+  if (total <= 0 || n === 0) return '0%';
+  const pct = (n / total) * 100;
+  return pct < 1 ? '<1%' : `${Math.round(pct)}%`;
+}
+
 type SourceMode = 'matrix' | 'manual';
 
 export default function WizardStep1Leads({
@@ -331,7 +338,7 @@ export default function WizardStep1Leads({
   // string as the list itself, so the panel and the rows can never disagree.
   const [counts, setCounts] = useState<{
     total: number; valid: number; invalid: number; 'catch-all': number;
-    unknown: number; unverified: number; sendable: number;
+    unknown: number; unverified: number; sendable: number; no_email: number;
   } | null>(null);
 
   useEffect(() => {
@@ -365,9 +372,20 @@ export default function WizardStep1Leads({
   const countryOptions = dynamicCountries.length > 0
     ? [{ code: '', name: 'All Countries' }, ...dynamicCountries.map((c) => ({ code: c, name: c }))]
     : COUNTRIES;
-  const categoryOptions = dynamicCategories.length > 0
-    ? [{ slug: '', name: 'All Categories' }, ...dynamicCategories.map((c) => ({ slug: c, name: c }))]
-    : CATEGORIES;
+  // The curated list FIRST, so the "(all)" roll-ups are actually offered here.
+  // This dropdown used to be built purely from the distinct raw values in the
+  // database, which meant the wizard showed `online_casino_or_bookmaker` and
+  // friends as separate entries and never offered "Gambling (all)" at all --
+  // so a gambling campaign had to be built once per sub-category. Any stored
+  // category the curated list doesn't know about is still appended, so
+  // nothing in the book becomes unreachable.
+  const categoryOptions = (() => {
+    const known = new Set(CATEGORIES.map((c) => c.slug));
+    const extras = dynamicCategories
+      .filter((c) => !known.has(c))
+      .map((c) => ({ slug: c, name: c }));
+    return [...CATEGORIES, ...extras];
+  })();
 
   const categoryLabel = categoryOptions.find((c) => c.slug === filterCategory)?.name || 'All Categories';
   const countryLabel  = countryOptions.find((c) => c.code === filterCountry)?.name  || 'All Countries';
@@ -732,9 +750,11 @@ export default function WizardStep1Leads({
                   ) : counts.sendable === 0 ? (
                     <>
                       <span className="font-bold text-error">Nothing here can be sent yet.</span>{' '}
-                      {counts.unverified > 0
-                        ? <>{counts.unverified.toLocaleString()} still need verifying &mdash; run it from the Lead Matrix first.</>
-                        : <>No address on file has come back valid.</>}
+                      {counts.no_email > 0 && counts.no_email >= counts.unverified
+                        ? <>{counts.no_email.toLocaleString()} have no address on file at all &mdash; run Enrich from the Lead Matrix first, then Verify.</>
+                        : counts.unverified > 0
+                          ? <>{counts.unverified.toLocaleString()} still need verifying &mdash; run it from the Lead Matrix first.</>
+                          : <>No address on file has come back valid.</>}
                     </>
                   ) : sendablePct < 15 ? (
                     <>
@@ -760,9 +780,18 @@ export default function WizardStep1Leads({
                     { key: 'unknown',    label: 'unknown',      classes: 'bg-slate-100 text-slate-600' },
                     { key: 'unverified', label: 'not verified', classes: 'bg-slate-100 text-slate-600' },
                     { key: 'invalid',    label: 'invalid',      classes: 'bg-red-50 text-error' },
+                    // Not a verdict — nothing was ever checked. Shown here so
+                    // a list that needs Enrich is distinguishable from one
+                    // that needs Verify.
+                    { key: 'no_email',   label: 'no address',   classes: 'bg-slate-100 text-slate-500' },
                   ] as const).filter((c) => counts[c.key] > 0).map((c) => (
-                    <span key={c.key} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.classes}`}>
+                    <span
+                      key={c.key}
+                      title={`${counts[c.key].toLocaleString()} of ${counts.total.toLocaleString()} matching leads`}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums ${c.classes}`}
+                    >
                       {counts[c.key].toLocaleString()} {c.label}
+                      <span className="font-semibold opacity-70"> · {pctOf(counts[c.key], counts.total)}</span>
                     </span>
                   ))}
                 </div>
