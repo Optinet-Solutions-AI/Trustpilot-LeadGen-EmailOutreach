@@ -78,7 +78,15 @@ interface Props {
 // Platforms the user can pick from in the wizard. Mirrors the
 // PLATFORM_MANIFESTS list on the backend; keep in sync when adding a
 // new scraping platform.
+//
+// '' (All Platforms) is deliberately FIRST and is the only option that does
+// not narrow. Every other value inner-joins `lead_platform_presences`, so a
+// lead with no presence row is invisible under it — and 529 of the 648
+// valid+mailable+new leads are exactly that (Trustpilot leads whose presence
+// row was never written). Without an "all" option the wizard could only ever
+// show 86 of them, with no way to widen (reported 2026-09-03).
 const PLATFORM_OPTIONS: Array<{ slug: string; name: string }> = [
+  { slug: '',            name: 'All Platforms' },
   { slug: 'trustpilot',  name: 'Trustpilot' },
   { slug: 'tripadvisor', name: 'TripAdvisor' },
   { slug: 'yelp',        name: 'Yelp' },

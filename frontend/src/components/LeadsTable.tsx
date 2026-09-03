@@ -219,6 +219,10 @@ const COL_WIDTHS: Record<ColKey, number> = {
 const CHECKBOX_COL_WIDTH = 44;
 const ACTIONS_COL_WIDTH = 56;
 
+/** How many numbered page buttons the desktop pager shows at once. The strip
+ *  is a sliding window around the current page — see `pageWindow`. */
+const PAGE_WINDOW = 7;
+
 function buildScreenshotSrc(path: string): string {
   if (path.startsWith('http')) return path;
   const filename = path.split(/[/\\]/).pop() || '';
@@ -308,6 +312,16 @@ export default function LeadsTable({
   // disable selection on exactly the leads that view exists to work.
   const isSelectable = isSelectableOverride ?? ((l: Lead) => l.verification_status !== 'invalid');
   const selectableOnPage = useMemo(() => leads.filter(isSelectable), [leads, isSelectable]);
+
+  // Up to PAGE_WINDOW numbered buttons that follow the current page, rather
+  // than a fixed 1..10 strip. Clamped at both ends so the window is always
+  // full width when the list is long enough to fill it.
+  const pageWindow = useMemo(() => {
+    if (totalPages <= 1) return [1];
+    const start = Math.max(1, Math.min(page - Math.floor(PAGE_WINDOW / 2), totalPages - PAGE_WINDOW + 1));
+    const end = Math.min(totalPages, start + PAGE_WINDOW - 1);
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  }, [page, totalPages]);
 
   const selectedOnPage = selectableOnPage.reduce((n, l) => (selected.has(l.id) ? n + 1 : n), 0);
   const allOnPageSelected = selectableOnPage.length > 0 && selectedOnPage === selectableOnPage.length;
@@ -1400,9 +1414,34 @@ export default function LeadsTable({
               <span className="material-symbols-outlined text-[16px]">chevron_right</span>
             </button>
           </div>
-          {/* Desktop: numbered pages */}
-          <div className="hidden sm:flex gap-1">
-            {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => i + 1).map((p) => (
+          {/* Desktop: numbered pages.
+              The strip used to render `Math.min(totalPages, 10)` buttons and
+              nothing else — the prev/next pair above it is `sm:hidden`, so on
+              a desktop browser pages 11+ had NO control of any kind. A
+              valid-only filter returning 648 leads is 26 pages at 25/row, and
+              398 of those leads could not be reached or selected at all
+              (reported 2026-09-03). The strip is now a window that follows the
+              current page, with explicit first/prev/next/last, so every page
+              is reachable however long the list is. */}
+          <div className="hidden sm:flex items-center gap-1">
+            <button
+              onClick={() => onPageChange(1)}
+              disabled={page === 1}
+              title="First page"
+              className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-secondary hover:bg-surface-container disabled:opacity-40 disabled:hover:bg-white"
+            >
+              <span className="material-symbols-outlined text-[16px] align-middle">first_page</span>
+            </button>
+            <button
+              onClick={() => onPageChange(Math.max(1, page - 1))}
+              disabled={page === 1}
+              title="Previous page"
+              className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-secondary hover:bg-surface-container disabled:opacity-40 disabled:hover:bg-white"
+            >
+              <span className="material-symbols-outlined text-[16px] align-middle">chevron_left</span>
+            </button>
+            {pageWindow[0] > 1 && <span className="px-1 text-xs font-bold text-secondary">…</span>}
+            {pageWindow.map((p) => (
               <button
                 key={p}
                 onClick={() => onPageChange(p)}
@@ -1415,6 +1454,28 @@ export default function LeadsTable({
                 {p}
               </button>
             ))}
+            {pageWindow[pageWindow.length - 1] < totalPages && (
+              <span className="px-1 text-xs font-bold text-secondary">…</span>
+            )}
+            <button
+              onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+              disabled={page === totalPages}
+              title="Next page"
+              className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-secondary hover:bg-surface-container disabled:opacity-40 disabled:hover:bg-white"
+            >
+              <span className="material-symbols-outlined text-[16px] align-middle">chevron_right</span>
+            </button>
+            <button
+              onClick={() => onPageChange(totalPages)}
+              disabled={page === totalPages}
+              title={`Last page (${totalPages})`}
+              className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-secondary hover:bg-surface-container disabled:opacity-40 disabled:hover:bg-white"
+            >
+              <span className="material-symbols-outlined text-[16px] align-middle">last_page</span>
+            </button>
+            <span className="ml-1 text-xs font-semibold text-secondary whitespace-nowrap">
+              of {totalPages}
+            </span>
           </div>
         </div>
       )}
