@@ -1266,6 +1266,12 @@ export default function Leads() {
           <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-secondary mr-1">
               Of {verificationCounts.total.toLocaleString()} matching leads
+              {/* With a verdict filter active the chips still describe the
+                  whole set (that is what makes them navigable), so say
+                  plainly how many rows the table is actually showing. */}
+              {total !== verificationCounts.total && (
+                <span className="text-[#b0004a]"> · showing {total.toLocaleString()}</span>
+              )}
               {/* The total is itself a share — of the pool these filters
                   narrow (this platform, minus what the page structurally
                   hides). Without it, "322" has no scale. */}
@@ -1320,7 +1326,7 @@ export default function Leads() {
             <button
               type="button"
               onClick={selectAllMatching}
-              disabled={selectingAll || verificationCounts.total === 0}
+              disabled={selectingAll || total === 0}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-[#ffd9de]/50 text-[#b0004a] hover:bg-[#ffd9de] disabled:opacity-40 transition-colors"
             >
               <span className={`material-symbols-outlined text-[14px] ${selectingAll ? 'animate-spin' : ''}`}>
@@ -1328,7 +1334,7 @@ export default function Leads() {
               </span>
               {selectingAll
                 ? 'Selecting…'
-                : `Select all ${verificationCounts.total.toLocaleString()} matching`}
+                : `Select all ${total.toLocaleString()} matching`}
             </button>
             {selectedIds.length > 0 && (
               <>
