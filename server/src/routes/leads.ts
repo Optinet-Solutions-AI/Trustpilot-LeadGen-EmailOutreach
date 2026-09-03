@@ -128,6 +128,11 @@ router.get('/ids', async (req: Request, res: Response) => {
       prospectType: parseProspectTypes(req.query.prospectType),
       redirected: req.query.redirected === 'only' || req.query.redirected === 'exclude' ? req.query.redirected : 'all',
       excludeContacted: req.query.excludeContacted === 'true',
+      blocked: req.query.blocked === 'only' || req.query.blocked === 'exclude' ? req.query.blocked : 'all',
+      // Opt-in: the Lead Matrix shows blocked leads, so its select-all
+      // must be able to return them. Campaign pickers omit this and keep
+      // the safe default.
+      includeBlocked: req.query.includeBlocked === 'true',
       language: typeof req.query.language === 'string' && req.query.language.trim()
         ? req.query.language.trim()
         : undefined,

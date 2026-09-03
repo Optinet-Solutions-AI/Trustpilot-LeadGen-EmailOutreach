@@ -323,60 +323,42 @@ export async function getLeads(filters: LeadFilters = {}) {
  * leads client-side against the global sent-set without a second round-trip.
  */
 export async function getLeadIds(
-  filters: LeadFilters = {},
-): Promise<Array<{ id: string; primary_email: string | null }>> {
+  filters: LeadFilters & { includeBlocked?: boolean } = {},
+): Promise<Array<{ id: string; primary_email: string | null; verification_status: string | null }>> {
   const supabase = getSupabase();
   const MAX_IDS = 5000;
   if (filters.prospectType?.length) await hasProspectTypeColumn();
 
   const contactedEmbed = filters.excludeContacted ? ', campaign_leads!left(id)' : '';
 
+  // verification_status comes back so the caller can apply the
+  // invalid-is-not-selectable rule itself. Doing it here would need an
+  // or-expression that collides with the category and search or-filters, and
+  // a `not.eq.invalid` would silently drop the NULL (never-verified) rows,
+  // which ARE selectable.
+  const cols = 'id, primary_email, verification_status';
+
   let query = filters.platform
     ? supabase
         .from('leads')
-        .select('id, primary_email, lead_platform_presences!inner(platform)' + contactedEmbed)
+        .select(`${cols}, lead_platform_presences!inner(platform)` + contactedEmbed)
         .eq('lead_platform_presences.platform', filters.platform)
-    : supabase.from('leads').select('id, primary_email' + contactedEmbed);
+    : supabase.from('leads').select(cols + contactedEmbed);
 
-  if (filters.status) query = query.eq('outreach_status', filters.status);
-  // country uses ILIKE substring match so operator typos and partial typing
-  // still surface the right leads ("new york" matches "New York, USA").
-  if (filters.country) query = query.ilike('country', `%${filters.country}%`);
-  // category is FAMILY-aware: each scraping platform writes its own taxonomy
-  // string, so one trade ends up stored under several labels (plumber /
-  // plumbers / plumbing). A plain substring match found only some of them.
-  // categoryOrFilter expands the requested value to every label in its family
-  // — source of truth is tools/db/category_canonical.py. Partial typing still
-  // works, because the expansion is a set of ILIKE substring needles rather
-  // than equality ("plumb" -> %plumb%).
-  if (filters.category) {
-    const categoryOr = categoryOrFilter(filters.category);
-    if (categoryOr) query = query.or(categoryOr);
-  }
-  if (filters.minRating) query = query.gte('star_rating', filters.minRating);
-  if (filters.maxRating) query = query.lte('star_rating', filters.maxRating);
-  if (filters.search) {
-    query = query.or(`company_name.ilike.%${filters.search}%,website_url.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%`);
-  }
-  if (filters.hasEmail) query = query.not('primary_email', 'is', null);
-  if (filters.verificationStatus === 'unverified') query = query.is('verification_status', null);
-  else if (filters.verificationStatus) query = query.eq('verification_status', filters.verificationStatus);
-  if (filters.ids && filters.ids.length) query = query.in('id', filters.ids);
-  // Mirrors applyLeadFilters — this list feeds campaign recipient selection,
-  // so a "select all" must respect the same prospect-type narrowing the
-  // operator sees on screen. See hasProspectTypeColumn() for the gate.
-  if (filters.prospectType?.length && prospectTypeColumnExists !== false) {
-    query = query.in('prospect_type', filters.prospectType);
-  }
-  if (filters.redirected === 'only') query = query.not('redirects_to', 'is', null);
-  else if (filters.redirected === 'exclude') query = query.is('redirects_to', null);
-  // This list feeds campaign recipient selection (wizard "select all") — never
-  // hand back blocked leads. They're flagged out of outreach entirely.
-  query = query.eq('blocked', false);
-  if (filters.language) {
-    const codes = countriesForLanguage(filters.language);
-    query = codes.length ? query.in('country', codes) : query.eq('country', NO_LANGUAGE_MATCH);
-  }
+  // The SHARED applier, not a private copy. This function used to carry its
+  // own duplicate of the filter chain and had already fallen behind by one
+  // filter (withoutEmail), which would have made "select all matching"
+  // select a different set than the table displayed -- the worst kind of
+  // bug, because nothing on screen would look wrong.
+  query = applyLeadFilters(query, filters);
+
+  // Blocked leads are flagged out of outreach entirely, so campaign
+  // recipient selection must never receive them. `includeBlocked` is the
+  // Lead Matrix's opt-out: that view SHOWS blocked leads with a badge, so a
+  // select-all there has to match what is on screen. Only honoured when the
+  // caller asks; every existing caller keeps the safe default.
+  if (!filters.includeBlocked) query = query.eq('blocked', false);
+
   // Same anti-join as getLeads: "select all valid" must not pull in leads
   // that were already emailed, or the campaign fills with skipped rows.
   if (filters.excludeContacted) {
@@ -390,10 +372,13 @@ export async function getLeadIds(
   // The select string is concatenated at runtime (the optional campaign_leads
   // embed), so supabase-js can't infer a row type from it and falls back to
   // GenericStringError. The shape is still exactly what we asked for.
-  const rows = (data || []) as unknown as Array<{ id: string; primary_email: string | null }>;
+  const rows = (data || []) as unknown as Array<{
+    id: string; primary_email: string | null; verification_status: string | null;
+  }>;
   return rows.map((r) => ({
     id: r.id,
     primary_email: r.primary_email ?? null,
+    verification_status: r.verification_status ?? null,
   }));
 }
 

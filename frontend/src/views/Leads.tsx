@@ -287,6 +287,71 @@ export default function Leads() {
     return `/campaigns?${params.toString()}`;
   }, [countryFilter, categoryFilter, languageFilter, platformFilter]);
 
+  // ── Select every lead matching the current filters ────────────────────
+  // The header checkbox is page-scoped by design (25 rows), which is fine
+  // when you are eyeballing rows but useless once the filters have already
+  // narrowed the book to the set you want -- you would have to page through
+  // it. This pulls the whole matching id list in one request.
+  //
+  // Goes through the SAME filter applier as the table (getLeadIds shares
+  // applyLeadFilters), so the selection cannot quietly differ from what is
+  // on screen. `includeBlocked` keeps it matching this view, which shows
+  // blocked leads with a badge rather than hiding them.
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [selectAllNote, setSelectAllNote] = useState<string | null>(null);
+
+  const selectAllMatching = useCallback(async () => {
+    setSelectingAll(true);
+    setSelectAllNote(null);
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set('status', statusFilter);
+      if (countryFilter) params.set('country', countryFilter);
+      if (categoryFilter) params.set('category', categoryFilter);
+      if (hasEmailFilter) params.set('hasEmail', 'true');
+      if (verificationFilter === 'no_email') params.set('noEmail', 'true');
+      else if (verificationFilter) params.set('verificationStatus', verificationFilter);
+      if (languageFilter) params.set('language', languageFilter);
+      if (prospectFilter) params.set('prospectType', prospectFilter);
+      if (blockedFilter) params.set('blocked', 'only');
+      if (search) params.set('search', search);
+      if (platformFilter) params.set('platform', platformFilter);
+      params.set('redirected', 'exclude');
+      params.set('includeBlocked', 'true');
+
+      const res = await api.get(`/leads/ids?${params}`);
+      const rows: Array<{ id: string; verification_status: string | null }> = res.data?.data ?? [];
+
+      // Same rule as the checkboxes: an address proven invalid can never be
+      // emailed, so it is never selectable. Enforced here too, or "select
+      // all" would be the one way back around it.
+      const usable = rows.filter((r) => r.verification_status !== 'invalid');
+      const skipped = rows.length - usable.length;
+      setSelectedIds(usable.map((r) => r.id));
+
+      const notes: string[] = [`Selected ${usable.length.toLocaleString()}.`];
+      if (skipped > 0) {
+        notes.push(`${skipped.toLocaleString()} skipped — address proven invalid.`);
+      }
+      // getLeadIds is hard-capped at 5000 rows.
+      if (rows.length >= 5000) {
+        notes.push('Capped at the first 5,000 — narrow the filters to reach the rest.');
+      }
+      setSelectAllNote(notes.join(' '));
+    } catch (e) {
+      setSelectAllNote(e instanceof Error ? e.message : 'Could not select all matching leads.');
+    } finally {
+      setSelectingAll(false);
+    }
+  }, [statusFilter, countryFilter, categoryFilter, hasEmailFilter, verificationFilter,
+      languageFilter, prospectFilter, blockedFilter, search, platformFilter]);
+
+  // A filter change invalidates whatever "all matching" meant a moment ago.
+  useEffect(() => { setSelectAllNote(null); }, [
+    statusFilter, countryFilter, categoryFilter, hasEmailFilter, verificationFilter,
+    languageFilter, prospectFilter, blockedFilter, search, platformFilter,
+  ]);
+
   const handleViewChange = (v: View) => {
     setView(v);
     localStorage.setItem('leads_view', v);
@@ -1248,6 +1313,40 @@ export default function Leads() {
                 </button>
               );
             })}
+          </div>
+          {/* Select-all lives with the counts, because the count is what the
+              operator is deciding against. */}
+          <div className="flex flex-wrap items-center gap-2 mt-2.5 pt-2.5 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={selectAllMatching}
+              disabled={selectingAll || verificationCounts.total === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-[#ffd9de]/50 text-[#b0004a] hover:bg-[#ffd9de] disabled:opacity-40 transition-colors"
+            >
+              <span className={`material-symbols-outlined text-[14px] ${selectingAll ? 'animate-spin' : ''}`}>
+                {selectingAll ? 'progress_activity' : 'done_all'}
+              </span>
+              {selectingAll
+                ? 'Selecting…'
+                : `Select all ${verificationCounts.total.toLocaleString()} matching`}
+            </button>
+            {selectedIds.length > 0 && (
+              <>
+                <span className="text-[11px] font-bold text-on-surface tabular-nums">
+                  {selectedIds.length.toLocaleString()} selected
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setSelectedIds([]); setSelectAllNote(null); }}
+                  className="text-[11px] font-bold text-secondary hover:text-on-surface transition-colors"
+                >
+                  Clear
+                </button>
+              </>
+            )}
+            {selectAllNote && (
+              <span className="text-[11px] text-secondary">{selectAllNote}</span>
+            )}
           </div>
           <p className="text-xs text-secondary mt-2 flex items-center gap-1.5">
             <span className="material-symbols-outlined text-[14px] text-[#006630]">send</span>

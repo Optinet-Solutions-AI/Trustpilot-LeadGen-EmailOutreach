@@ -48,10 +48,10 @@ interface Props {
    *  without running two campaigns. Supersedes filterCountry when set. */
   filterLanguage: string;
   /** Platform slug the campaign targets ('trustpilot' / 'tripadvisor' /
-   *  'yelp') — always set; the wizard no longer offers "all platforms" and
-   *  defaults to 'trustpilot'. Restricts the lead pool to that platform's
-   *  leads; the backend /leads route filters via the lead_platform_presences
-   *  join. */
+   *  'yelp' / 'booking'), or '' for every platform. Defaults to 'trustpilot'.
+   *  When set it restricts the lead pool to that platform's leads via the
+   *  backend's lead_platform_presences INNER join — which is why '' matters:
+   *  a lead with no presence row is invisible under any named platform. */
   filterPlatform: string;
   selectedLeadIds: string[];
   manualEmails: string[];
@@ -324,6 +324,54 @@ export default function WizardStep1Leads({
   const togglePage = () => {
     if (allPageSelected) onSelectionChange(selectedLeadIds.filter((id) => !pageIds.includes(id)));
     else onSelectionChange([...selectedLeadIds, ...pageIds.filter((id) => !selectedLeadIds.includes(id))]);
+  };
+
+  // ── Select every lead matching the current filters ────────────────────
+  // "Select page" only ever reaches 50 rows, so building a campaign from a
+  // filtered market meant paging through it. This takes the whole matching
+  // id list in one request, through the same filter applier the list uses.
+  //
+  // Note there is no `includeBlocked` here, unlike the Lead Matrix: this is
+  // campaign recipient selection, and blocked leads are flagged out of
+  // outreach entirely, so the endpoint's safe default is the right one.
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [selectAllNote, setSelectAllNote] = useState<string | null>(null);
+
+  const selectAllMatching = async () => {
+    setSelectingAll(true);
+    setSelectAllNote(null);
+    try {
+      const p = new URLSearchParams();
+      if (filterCountry) p.set('country', filterCountry);
+      if (filterCategory) p.set('category', filterCategory);
+      if (filterLanguage) p.set('language', filterLanguage);
+      if (filterPlatform) p.set('platform', filterPlatform);
+      if (debSearch) p.set('search', debSearch);
+      p.set('redirected', redirectMode ? 'only' : 'exclude');
+      if (!redirectMode && !discoveryMode) p.set('status', 'new');
+      // Mirror the table's reach selector exactly, or the selection would not
+      // match the rows the operator is looking at.
+      if (reach === 'sendable') { p.set('hasEmail', 'true'); p.set('verificationStatus', 'valid'); }
+      else if (reach === 'has_email') p.set('hasEmail', 'true');
+
+      const res = await api.get(`/leads/ids?${p}`);
+      const rows: Array<{ id: string; verification_status: string | null }> = res.data?.data ?? [];
+
+      // Same rule as the row checkboxes: a proven-invalid address is never
+      // selectable, so select-all must not be a way around it.
+      const usable = rows.filter((r) => r.verification_status !== 'invalid');
+      const skipped = rows.length - usable.length;
+      onSelectionChange(usable.map((r) => r.id));
+
+      const notes: string[] = [`Selected ${usable.length.toLocaleString()}.`];
+      if (skipped > 0) notes.push(`${skipped.toLocaleString()} skipped as invalid.`);
+      if (rows.length >= 5000) notes.push('Capped at 5,000 — narrow the filters for the rest.');
+      setSelectAllNote(notes.join(' '));
+    } catch (e) {
+      setSelectAllNote(e instanceof Error ? e.message : 'Could not select all matching leads.');
+    } finally {
+      setSelectingAll(false);
+    }
   };
 
   const toggleSort = (col: string) => {
@@ -870,6 +918,17 @@ export default function WizardStep1Leads({
                 {allPageSelected ? 'Deselect page' : 'Select page'}
               </button>
             )}
+            {total > leads.length && (
+              <button
+                onClick={selectAllMatching}
+                disabled={selectingAll}
+                title="Select every lead matching the filters above, not just this page"
+                className="flex items-center gap-1 text-xs font-bold text-[#b0004a] hover:underline disabled:opacity-40"
+              >
+                {selectingAll && <Loader2 size={11} className="animate-spin" />}
+                {selectingAll ? 'Selecting…' : `Select all ${total.toLocaleString()}`}
+              </button>
+            )}
             {selectedLeadIds.length > 0 && (
               <button onClick={() => onSelectionChange([])} className="text-xs font-bold text-secondary hover:text-error">
                 Clear all
@@ -877,6 +936,12 @@ export default function WizardStep1Leads({
             )}
           </div>
         </div>
+
+        {selectAllNote && (
+          <p className="px-5 py-2 text-[11px] text-secondary bg-surface-container border-b border-slate-100">
+            {selectAllNote}
+          </p>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center py-12 gap-2 text-secondary">
