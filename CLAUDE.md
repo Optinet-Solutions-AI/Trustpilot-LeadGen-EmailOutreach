@@ -232,6 +232,12 @@ trustpilot-leadgen/
 | `SUPABASE_URL` | Supabase project URL | set |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase server-side key | set |
 | `EMAIL_PLATFORM` | `instantly` / `none` / `mock` | `none` |
+| `ONGAGE_API_BASE` | Ongage API base. Note it is `api.ongage.com`, **not** `.net` | `https://api.ongage.com` |
+| `ONGAGE_API_KEY` | Single API key, sent as the `x-api-key` header (Ongage → API Keys) | set |
+| `ONGAGE_LIST_ID` | List id that prefixes every transactional API path | set |
+| `ONGAGE_TRANSACTIONAL_CAMPAIGN_ID` | Transactional campaign the sends are attributed to | set |
+| `ONGAGE_SENDING_CONNECTION_ID` | Fallback ESP connection (one per sending domain) when a sender isn't in `ONGAGE_SENDERS`. Must be an **ACTIVE** id from `GET /<list_id>/api/esp_connections` | set |
+| `ONGAGE_SENDERS` | Maps each pool address (grace@/ethan@/lily@…) to its Ongage connection id, so per-account rotation and caps pick the sending domain | set |
 | `EMAIL_MODE` | legacy fallback only; real sends resolve per-account from `email_accounts` | — |
 | `GOOGLE_CLIENT_ID` | OAuth2 client ID used for connecting Gmail accounts (NOT a sender) | set |
 | `GOOGLE_CLIENT_SECRET` | OAuth2 client secret used for connecting Gmail accounts | set |
@@ -358,8 +364,13 @@ Same as before — see `supabase/migrations/001_initial_schema.sql`.
 | `gmail_oauth` | Gmail API with stored refresh token | "Connect Gmail" flow |
 | `smtp` | Nodemailer SMTP + IMAP for Sent/replies | One-click Bluehost (Titan), DreamHost, or generic SMTP form |
 | `app_password` | Gmail SMTP via app password | Manual Gmail SMTP entry |
+| `ongage` | Ongage transactional API (fronts InboxRoad / Ongage SMTP) — `email-sender.ongage.ts` | Ongage env vars + `ONGAGE_SENDERS` mapping |
 
-Campaign sends flow: `campaign-scheduler.ts` (polls every 60s) → `buildSenderPool()` pulls active accounts → picks the pinned `senderAccountId` (or rotates) → dispatches via the right sender module (`email-sender.gmail.ts` or `email-sender.smtp.ts`). Each account enforces its own `daily_cap`, `hourly_cap`, and DNS status (MX/SPF/DMARC) — capped accounts are skipped, not blocked. `campaign_leads.sender_email` records which account actually sent.
+**Ongage is the current outbound path and it replaces Titan/Bluehost SMTP** (operator-confirmed 2026-09-04). Only the final dispatch changes — the campaign wizard, spintax, sequences, test flight, caps and reply tracking are untouched. Each rendered email goes out individually via `POST https://api.ongage.com/<list_id>/api/transactional/send_embed_content` with an `x-api-key` header. The sending connection (one per warmed sending domain) resolves per-sender from `ONGAGE_SENDERS` by email address, falling back to `ONGAGE_SENDING_CONNECTION_ID`, so the scheduler's rotation and per-account caps decide which domain sends.
+
+⚠️ **Outreach is NOT ready as of 2026-09-04.** Ongage is connected and delivering, but mail lands in SPAM — the sending domains are still in warm-up. Do not size or launch a campaign on this path until warm-up completes and the domains are confirmed inboxing.
+
+Campaign sends flow: `campaign-scheduler.ts` (polls every 60s) → `buildSenderPool()` pulls active accounts → picks the pinned `senderAccountId` (or rotates) → dispatches via the right sender module (`email-sender.gmail.ts`, `email-sender.smtp.ts`, or `email-sender.ongage.ts`). Each account enforces its own `daily_cap`, `hourly_cap`, and DNS status (MX/SPF/DMARC) — capped accounts are skipped, not blocked. `campaign_leads.sender_email` records which account actually sent.
 
 The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not used in production**.
 
@@ -451,7 +462,42 @@ See `docs/deployment.md` for complete reference.
 ### Trustpilot
 - Aggressive scrapers get rate-limited — use 2-5s randomized delays
 - Pages are JS-rendered — Playwright required (plus playwright-stealth)
+- **AWS WAF now fronts the whole site (measured 2026-09-04).** Every URL —
+  including plain `/review/<slug>` profile pages — returns a 403 "Verifying
+  your connection" interstitial to curl_cffi, so **`tls_fetch.py` is no longer
+  a Trustpilot fallback**; the network-strategy table that lists it for
+  Trustpilot is stale. Only the stealth **headed** browser clears it
+  (`PLAYWRIGHT_HEADLESS=false`), which puts Trustpilot in the same
+  owner-local-only bucket as the TripAdvisor and Yelp `browser` fetchers. The
+  interstitial self-solves in a real browser, so the fix on a blocked page is
+  to wait and re-navigate, not to swap transport.
 - Legacy 3-script chain (`scrape_category.py` → `scrape_profile.py` → `discover_taxonomy.py`); not yet migrated to the plugin pattern
+- **Reverse lookup (brand list → Trustpilot).** The normal flow scrapes a
+  category to discover businesses; `tools/scraper/trustpilot_reverse_lookup.py`
+  runs it backwards for a list we already hold. Trustpilot's `/search` page
+  ships every result in `__NEXT_DATA__` — slug, display name, TrustScore,
+  review count, country **and the published contact email/phone/website** — so
+  ONE search per brand produces the whole report with no per-profile fetch.
+  Search is fuzzy and paginated (10/page); page 1 plus whole-token matching is
+  the signal, the rest is noise (a *betano* query returns `vita.no`). Matching
+  is on whole normalized tokens, never substrings, so `SUPER` cannot claim
+  `superbet.com` and the affiliate `betano-promo.cz` stays `weak`. Hits are
+  graded `exact_br_domain` / `br_domain` / `name_match` / `weak`; only `weak`
+  is withheld from the upsert, and it stays in the CSV for manual promotion.
+  `tools/scraper/trustpilot_reverse_ingest.py` takes the hits, enriches them
+  through the existing profile scraper and writes them via the normal
+  Trustpilot upsert path (dry run by default, `--apply` to write).
+- **A name match is only a name — the ingest also filters on industry.**
+  Whole-token matching stops substring blowups but not exact collisions with
+  unrelated businesses: brand *SUPER* matches Super.com (a hotel/travel
+  fintech, 62k reviews) and *Energia* matches an Irish electricity utility.
+  `industry_verdict()` rejects a hit whose Trustpilot categories are present
+  and all non-gambling. Two exemptions matter: a profile with **no**
+  categories stays `unknown` and is kept (`www.bet365.com` carries none), and
+  an `exact_br_domain` / `br_domain` hit is trusted outright because
+  Trustpilot miscategorises real operators (`ona.bet.br` sits under telecoms,
+  `estrelabet.com` under web hosting). Rejects are always printed, never
+  silently dropped — `--include-off-industry` keeps them.
 
 ### TripAdvisor
 - Direct Playwright is 403'd by Cloudflare — `SCRAPINGBEE_API_KEY` is mandatory, `stealth_proxy` tier only
@@ -551,6 +597,31 @@ See `docs/deployment.md` for complete reference.
 - Captcha checkpoints are routine; the in-app social-account recovery UI (planned) is how operators resolve them
 - Lead model includes post authors (DM target) and group admins, not just page owners
 - **Instagram (in build):** runs on the Windows EC2 worker ONLY — set `PLATFORM_FILTER=facebook,instagram` there and add `instagram` to the Linux worker's `PLATFORM_EXCLUDE` (IG/Brave is checkpointed on Linux just like FB). Smoke-tested locally first on the owner's residential IP. Uses the shared `tools/scraper/shared/uc_driver.py` opener with `IG_PROFILE_DIR` + mobile UA + `og:description` caption capture + the shared Gemini consumer-intent classifier.
+
+### Website enrichment (`POST /api/enrich`)
+- **The work runs IN-PROCESS on Cloud Run**, not on a scraper worker. The
+  `scrape_jobs` row it creates uses the sentinel country/category `_enrich_`
+  purely so status survives an instance restart.
+- **Never treat `/api/enrich/status` as the completion signal.** Measure
+  outcomes: count how many of the chunk's lead ids actually gained
+  `website_email` / `affiliate_email` in `leads`, and treat a plateau as
+  "chunk spent". Before migration 064, a stale heartbeat let
+  `release_stale_scrape_claims` requeue the `_enrich_` row, `ec2-sg-1` claimed
+  it, and the 300s **Python** watchdog stamped it `failed` — with the bogus
+  error `"Watchdog: Python process hung … likely OOM or Playwright freeze"` —
+  while the real Cloud Run enrichment kept running. A poller that believed
+  that status abandoned live jobs and stacked concurrent enrichments. 064
+  closes it; the outcome-based rule is still the safe way to drive it.
+- **Concurrency: 3-4. Never 5.** Cloud Run is 1 vCPU / 2Gi
+  (`cpu-throttling=false`, `minScale=1`, so background work does get CPU). At
+  concurrency 5 the Node event loop starves, the 20s heartbeat `setInterval`
+  stops firing, and the requeue chain above fires. Chunk `leadIds` at ≤150
+  (PostgREST `.in()` URL limit); 50 is comfortable.
+- **Scope it — "enrich everything" is a trap.** ~60% of email-less leads with a
+  website are gambling/casino/betting/forex; they block hard, yield ~0, and
+  each miss walks the whole paid tier ladder (ScrapingBee → ScrapFly → Hunter,
+  ~50s/lead). Enrich the SMB categories and skip the gambling tail.
+- Realistic throughput: **~43s/lead, ~50% yield** on SMB leads.
 
 ### Email verdicts — who is actually sendable
 - **`valid`** → send. **`catch-all`** → send cautiously (the domain accepts any
