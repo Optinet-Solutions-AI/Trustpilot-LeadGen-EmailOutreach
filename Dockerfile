@@ -3,10 +3,20 @@
 # Includes: Node 20 (API) + Python 3.11 + Playwright Chromium
 # ─────────────────────────────────────────────────────────────
 
-FROM node:20-bullseye-slim
+# Debian 12. Was bullseye, moved 2026-09-07: bullseye-security had dropped
+# python3-setuptools 52.0.0-4+deb11u2 from its pool while still listing it in
+# the index, so every build 404'd on it, and bullseye is past end of life.
+FROM node:20-bookworm-slim
 
 # ── System deps: Python + Chromium runtime libraries ──────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# deb.debian.org is a Fastly CDN and its index and pool edges can fall out of
+# step: `apt-get update` fetches an index naming a .deb that another edge has
+# already dropped, and the install 404s. That is what broke this build on
+# 2026-09-07 (python3-setuptools 52.0.0-4+deb11u2, superseded by a security
+# update after the 09-03 build). No-Cache forces a revalidated index so the
+# two agree, and Retries rides out a mid-sync mirror.
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true update \
+ && apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
     python3 \
     python3-pip \
     # Chromium system libraries required by Playwright
@@ -37,7 +47,10 @@ WORKDIR /app
 
 # ── Python: install packages + Playwright browser ─────────────
 COPY requirements.txt ./
-RUN pip3 install --no-cache-dir -r requirements.txt && \
+# PEP 668: bookworm marks the system Python as externally managed and refuses
+# a plain pip install. This container IS the environment, so opt out rather
+# than add a venv indirection the rest of the image would have to know about.
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt && \
     python3 -m playwright install chromium
 
 # ── Node: install dependencies + Playwright Chromium ──────────

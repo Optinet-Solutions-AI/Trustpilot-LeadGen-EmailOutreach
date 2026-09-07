@@ -1,0 +1,56 @@
+# Upload filter for `gcloud run deploy --source .`
+#
+# .dockerignore does NOT apply to the source upload — only to the build that
+# follows it. Without this file gcloud uploads the whole directory, including
+# all three node_modules trees and every loose report/deck in the repo root,
+# on every single deploy.
+#
+# Keep in step with the Dockerfile: it needs requirements.txt,
+# server/package*.json, server/ and tools/. Nothing below may exclude those.
+
+.git/
+.gitignore
+
+# Dependencies — reinstalled inside the container
+node_modules/
+server/node_modules/
+frontend/node_modules/
+
+# Python virtualenv — the container uses system python3
+.venv/
+
+# Build outputs — the container compiles its own
+server/dist/
+frontend/dist/
+frontend/.next/
+
+# Deployed separately to Vercel, and excluded from the image anyway
+frontend/
+
+# Secrets — injected as Cloud Run env vars, never baked in
+.env
+.env.local
+credentials.json
+token.json
+
+# Dev/temp
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.claude/
+
+# Docs and tooling not used at runtime
+docs/
+workflows/
+skills/
+tests/
+*.md
+
+# Loose reports and decks that live in the repo root
+*.pptx
+*.xlsx
+*.numbers
+*.docx
+*.pdf
