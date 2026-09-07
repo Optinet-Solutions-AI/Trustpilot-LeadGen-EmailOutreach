@@ -236,3 +236,66 @@ export function describeSendPlan(times: Date[], timezone: string): string {
 
   return `${times.length} emails over ${days.size} day(s) · first: ${fmt.format(first)} · last: ${fmt.format(last)}`;
 }
+
+// ─── Sending-window queries ──────────────────────────────────────────────────
+//
+// `assignScheduledTimes` plans a whole campaign up front, but the follow-up
+// sender has to answer a different question one row at a time: "is the window
+// open right now, and if not, when does it next open?" Both live here because
+// this module already owns the timezone/DST machinery, and because a second
+// implementation elsewhere is how the window came to be ignored by follow-ups
+// in the first place.
+
+/** Minute-of-day (0-1439) at `at`, in the schedule's timezone. */
+function localMinuteOfDay(at: Date, timezone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(at);
+  const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value ?? '0');
+  // hourCycle h23 keeps midnight at 0, but guard anyway — some ICU builds
+  // still hand back 24 for 00:xx under hour12:false.
+  return (get('hour') % 24) * 60 + get('minute');
+}
+
+function windowBounds(schedule: SendingSchedule) {
+  const [startH, startM] = schedule.startHour.split(':').map(Number);
+  const [endH,   endM  ] = schedule.endHour.split(':').map(Number);
+  const startMinOfDay = startH * 60 + startM;
+  const endMinOfDay   = endH * 60 + endM;
+  return { startH, startM, startMinOfDay, endMinOfDay, crossesMidnight: endMinOfDay <= startMinOfDay };
+}
+
+/** Is `at` inside the schedule's sending window, in the schedule's timezone? */
+export function isWithinSendingWindow(schedule: SendingSchedule, at: Date): boolean {
+  const { startMinOfDay, endMinOfDay, crossesMidnight } = windowBounds(schedule);
+  const local  = getLocalDay(at, schedule.timezone);
+  const minute = localMinuteOfDay(at, schedule.timezone);
+
+  if (!crossesMidnight) {
+    return schedule.days.includes(local.dayOfWeek) && minute >= startMinOfDay && minute < endMinOfDay;
+  }
+  // Overnight window (e.g. 22:00 → 10:00): each entry in `days` is the START
+  // day, so the pre-midnight half belongs to today and the post-midnight half
+  // belongs to yesterday's entry.
+  if (schedule.days.includes(local.dayOfWeek) && minute >= startMinOfDay) return true;
+  const previousDayOfWeek = (local.dayOfWeek + 6) % 7;
+  return schedule.days.includes(previousDayOfWeek) && minute < endMinOfDay;
+}
+
+/**
+ * The next instant at or after `from` when the window is open.
+ * Returns `from` unchanged when it is already inside the window.
+ */
+export function nextWindowOpening(schedule: SendingSchedule, from: Date): Date {
+  if (isWithinSendingWindow(schedule, from)) return from;
+
+  const { startH, startM } = windowBounds(schedule);
+  for (let dayOffset = 0; dayOffset <= 366; dayOffset++) {
+    const candidate = new Date(from.getTime() + dayOffset * 86_400_000);
+    const local = getLocalDay(candidate, schedule.timezone);
+    if (!schedule.days.includes(local.dayOfWeek)) continue;
+    const opening = localToUtc(local.year, local.month, local.day, startH, startM, schedule.timezone);
+    if (opening.getTime() >= from.getTime()) return opening;
+  }
+  throw new Error(`nextWindowOpening: no allowed day within a year for days=[${schedule.days}]`);
+}

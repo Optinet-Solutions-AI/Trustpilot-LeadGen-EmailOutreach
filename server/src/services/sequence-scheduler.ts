@@ -23,6 +23,9 @@ import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
 import { getSenderAccountByEmail } from './sender-loader.js';
 import { isPermanentSendFailure } from './bounce-tracker.js';
+import { decideFollowUpSend } from './follow-up-budget.js';
+import { loadSentCounts, loadAccountCaps, recordSend } from './send-counts.js';
+import type { SendingSchedule } from './schedule-engine.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
 
@@ -77,7 +80,7 @@ async function processDueFollowUps() {
   // follow up if it wasn't delivered" bug.
   const { data: dueLeads, error } = await supabase
     .from('campaign_leads')
-    .select('*, leads(*)')
+    .select('*, leads(*), campaigns(sending_schedule)')
     .lte('next_step_at', new Date().toISOString())
     .eq('sequence_completed', false)
     .eq('sequence_paused', false)
@@ -94,15 +97,74 @@ async function processDueFollowUps() {
 
   console.log(`[SequenceScheduler] ${dueLeads.length} follow-ups due`);
 
+  // Follow-ups draw on the SAME per-account budget as first-touch sends and
+  // obey the same sending window. Loaded once per tick and advanced in memory
+  // after each send, so one tick cannot overspend a mailbox — the old loop
+  // fired its whole batch of 20 at a flat 2s gap with no check at all, which
+  // is how a single mailbox reached 23 sends against a limit of 10.
+  const sentCounts  = await loadSentCounts();
+  const accountCaps = await loadAccountCaps();
+
   for (const cl of dueLeads) {
+    const senderEmail = (cl.sender_email as string | null | undefined) ?? null;
+    const raw = (cl.campaigns as { sending_schedule?: SendingSchedule } | null)?.sending_schedule ?? null;
+    // Only gate on a schedule complete enough to describe a window.
+    const schedule = raw && raw.timezone && raw.startHour && raw.endHour && raw.days?.length ? raw : null;
+    const caps = senderEmail ? accountCaps[senderEmail.toLowerCase()] : undefined;
+
+    const decision = decideFollowUpSend({
+      senderEmail,
+      sentCounts,
+      perAccountDailyLimit:
+        typeof raw?.dailyLimit === 'number' && raw.dailyLimit > 0 ? raw.dailyLimit : undefined,
+      accountDailyCap:  caps?.dailyCap  ?? config.rateLimits.dailyCap,
+      accountHourlyCap: caps?.hourlyCap ?? config.rateLimits.hourlyCap,
+      schedule,
+      now: new Date(),
+    });
+
+    if (decision.action === 'defer') {
+      await deferFollowUp(cl, decision.until, decision.reason);
+      continue;
+    }
+
     try {
       await sendFollowUp(cl);
+      // Count it immediately: the next row in THIS tick must see it.
+      recordSend(sentCounts, senderEmail ?? config.gmail.fromEmail);
     } catch (err) {
       console.error(`[SequenceScheduler] Failed for ${cl.email_used}:`, err instanceof Error ? err.message : err);
     }
 
     // Small delay between sends
     await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+/**
+ * Push a follow-up out to `until` because its sender is at cap or its window
+ * is shut. The update is conditional on the next_step_at we read, so it can
+ * never stomp a claim another tick took in the meantime.
+ */
+async function deferFollowUp(
+  cl: Record<string, unknown>,
+  until: Date,
+  reason: string,
+): Promise<void> {
+  const { data, error } = await getSupabase()
+    .from('campaign_leads')
+    .update({ next_step_at: until.toISOString() })
+    .eq('id', cl.id as string)
+    .eq('next_step_at', cl.next_step_at as string)
+    .select('id');
+  if (error) {
+    console.error(`[SequenceScheduler] Defer failed for ${cl.email_used}:`, error.message);
+    return;
+  }
+  if (data && data.length > 0) {
+    console.log(
+      `[SequenceScheduler] Deferred ${cl.email_used} to ${until.toISOString()} (${reason})`,
+    );
   }
 }
 

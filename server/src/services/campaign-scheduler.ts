@@ -18,6 +18,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type OngageSenderAccount, type SenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter, getRampedDailyCap } from './rate-limiter.js';
+import { loadSentCounts, recordSend } from './send-counts.js';
 import { renderAndSpin } from './template-engine.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { updateLead } from '../db/leads.js';
@@ -166,12 +167,7 @@ async function processDueSends(): Promise<void> {
     try {
       await sendScheduledEmail(cl, senderAccount);
       // Track this send in-tick so picker rotates fairly across multiple mailboxes
-      const key = (senderAccount?.email ?? config.gmail.fromEmail ?? '').toLowerCase();
-      if (key) {
-        if (!sentCounts[key]) sentCounts[key] = { daily: 0, hourly: 0 };
-        sentCounts[key].daily  += 1;
-        sentCounts[key].hourly += 1;
-      }
+      recordSend(sentCounts, senderAccount?.email ?? config.gmail.fromEmail);
       sentThisTick++;
     } catch (err) {
       console.error('[CampaignScheduler] Send failed for', cl.email_used, ':', err instanceof Error ? err.message : err);
@@ -260,30 +256,6 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
   } catch {
     return [];
   }
-}
-
-// Query real per-account send counts for the last 24h / 1h window
-async function loadSentCounts(): Promise<Record<string, { daily: number; hourly: number }>> {
-  const counts: Record<string, { daily: number; hourly: number }> = {};
-  try {
-    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const since1h  = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { data } = await getSupabase()
-      .from('campaign_leads')
-      .select('sender_email, sent_at')
-      .eq('status', 'sent')
-      .gte('sent_at', since24h);
-    for (const row of (data ?? []) as Array<{ sender_email?: string; sent_at?: string }>) {
-      const key = row.sender_email?.toLowerCase();
-      if (!key || !row.sent_at) continue;
-      if (!counts[key]) counts[key] = { daily: 0, hourly: 0 };
-      counts[key].daily += 1;
-      if (row.sent_at >= since1h) counts[key].hourly += 1;
-    }
-  } catch {
-    // sender_email column missing — skip per-account enforcement
-  }
-  return counts;
 }
 
 // Pick the next sender that still has headroom in both hourly and daily caps.
