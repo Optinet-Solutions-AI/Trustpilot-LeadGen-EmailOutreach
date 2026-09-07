@@ -278,6 +278,12 @@ export interface SendingSchedule {
   endHour: string;
   days: number[];
   dailyLimit: number;
+  /**
+   * Calendar date (YYYY-MM-DD) in `timezone` on which sending may begin.
+   * Omitted means "start as soon as the campaign goes live". A past date is
+   * ignored by the server rather than backdating sends.
+   */
+  startDate?: string;
   /** IDs of email accounts to rotate through for this campaign ('__env__' = primary env account, DB uuid = specific account) */
   senderAccountIds?: string[];
   /** @deprecated use senderAccountIds instead — kept for backward compat with saved campaigns */

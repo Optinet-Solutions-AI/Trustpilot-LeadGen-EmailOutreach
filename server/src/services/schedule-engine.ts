@@ -24,6 +24,14 @@ export interface SendingSchedule {
    * so launching a second campaign can never double the volume.
    */
   dailyLimit: number;
+  /**
+   * Calendar date (YYYY-MM-DD) in THIS schedule's timezone on which sending
+   * may begin. Omitted means "start now". A date in the past is ignored
+   * rather than backdating sends. The engine already accepted a start
+   * reference via `assignScheduledTimes(..., fromNow)`; this is what the
+   * operator sets to choose it.
+   */
+  startDate?: string;
   /** DB email_accounts.id to pin to one sender, or '__env__' for primary env account */
   senderAccountId?: string;
 }
@@ -298,4 +306,41 @@ export function nextWindowOpening(schedule: SendingSchedule, from: Date): Date {
     if (opening.getTime() >= from.getTime()) return opening;
   }
   throw new Error(`nextWindowOpening: no allowed day within a year for days=[${schedule.days}]`);
+}
+
+/** Calendar day (YYYY-MM-DD) that `at` falls on, in `timezone`. */
+export function localDayKey(at: Date, timezone: string): string {
+  const d = getLocalDay(at, timezone);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.year}-${pad(d.month)}-${pad(d.day)}`;
+}
+
+/**
+ * When sending may actually begin: the schedule's `startDate` resolved to that
+ * day's window opening in the schedule's timezone, snapped forward to an
+ * allowed day, and never earlier than `now`.
+ *
+ * Pass the result as `assignScheduledTimes`'s `fromNow`. A missing, malformed
+ * or past start date yields `now`, so the default stays "send immediately".
+ */
+export function resolveScheduleStart(schedule: SendingSchedule, now: Date = new Date()): Date {
+  const raw = schedule.startDate;
+  if (!raw) return now;
+
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim());
+  if (!m) return now;
+  const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return now;
+
+  const { startH, startM } = windowBounds(schedule);
+  let opening: Date;
+  try {
+    opening = localToUtc(year, month, day, startH, startM, schedule.timezone);
+    // Honour the day-of-week filter: a start date the campaign never sends on
+    // rolls forward rather than silently sending on a skipped day.
+    opening = nextWindowOpening(schedule, opening);
+  } catch {
+    return now;
+  }
+  return opening.getTime() > now.getTime() ? opening : now;
 }

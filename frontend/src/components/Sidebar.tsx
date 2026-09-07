@@ -30,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/inbox',                                 icon: 'inbox',            label: 'Inbox' },
   { href: '/analytics',                             icon: 'bar_chart',        label: 'Analytics' },
   { href: '/campaigns',                             icon: 'magic_button',     label: 'Campaign Wizard' },
+  { href: '/send-queue',                            icon: 'calendar_month',   label: 'Send Queue' },
   { href: '/email-accounts',                        icon: 'alternate_email',  label: 'Email Accounts' },
   { href: '/social-accounts',                       icon: 'share',            label: 'Social Accounts' },
   { href: '/discovered-groups',                     icon: 'diversity_3',      label: 'Discovered Groups' },

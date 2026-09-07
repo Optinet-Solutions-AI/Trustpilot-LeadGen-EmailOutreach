@@ -16,7 +16,7 @@ import { sendEmail, type GmailSenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
-import { assignScheduledTimes, describeSendPlan, type SendingSchedule } from './schedule-engine.js';
+import { assignScheduledTimes, describeSendPlan, resolveScheduleStart, type SendingSchedule } from './schedule-engine.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { getCampaignSteps } from '../db/campaign-steps.js';
 import { updateLead } from '../db/leads.js';
@@ -194,7 +194,8 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
       scheduledTimes = assignScheduledTimes(
         total,
         sendingSchedule,
-        new Date(),
+        // Honours sendingSchedule.startDate; falls back to now.
+        resolveScheduleStart(sendingSchedule),
         await resolveSenderCount(sendingSchedule),
       );
     } catch (err) {

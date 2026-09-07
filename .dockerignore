@@ -1,13 +1,13 @@
 # Dependencies (reinstalled inside container)
 node_modules/
-api/node_modules/
+server/node_modules/
 frontend/node_modules/
 
 # Python virtual environment (system python3 used inside container)
 .venv/
 
 # Build outputs
-api/dist/
+server/dist/
 frontend/dist/
 
 # Secrets — inject these via Cloud Run env vars, never bake into image

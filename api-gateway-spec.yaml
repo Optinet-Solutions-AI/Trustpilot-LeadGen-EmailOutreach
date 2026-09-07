@@ -637,6 +637,22 @@ paths:
       responses:
         "200":
           description: OK
+  /api/campaigns/calendar:
+    get:
+      operationId: getCampaignCalendar
+      security: []
+      parameters:
+        - in: query
+          name: from
+          required: true
+          type: string
+        - in: query
+          name: to
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/campaigns/rate-limit:
     get:
       operationId: getCampaignRateLimit

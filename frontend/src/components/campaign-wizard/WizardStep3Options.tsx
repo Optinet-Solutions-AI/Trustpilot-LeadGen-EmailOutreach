@@ -262,6 +262,35 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                     {is247 ? '✓ 24/7' : 'Send 24/7'}
                   </button>
                 </div>
+                {/* Start date — the engine already accepted a start reference;
+                    this is what lets the operator choose it. Blank = start now. */}
+                <div className="mb-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-[10px] text-secondary font-semibold">Start date</p>
+                    {schedule.startDate && (
+                      <button
+                        type="button"
+                        onClick={() => set('startDate', undefined)}
+                        className="text-[10px] font-bold text-[#b0004a] hover:underline"
+                      >
+                        Start immediately
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="date"
+                    value={schedule.startDate ?? ''}
+                    min={new Date().toISOString().slice(0, 10)}
+                    onChange={(e) => set('startDate', e.target.value || undefined)}
+                    className="w-full bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-secondary mt-1">
+                    {schedule.startDate
+                      ? `First email goes out ${schedule.startDate} at ${schedule.startHour} ${schedule.timezone}.`
+                      : 'Blank means sending starts as soon as the campaign goes live.'}
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <p className="text-[10px] text-secondary font-semibold mb-1">From</p>
