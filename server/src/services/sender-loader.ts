@@ -10,7 +10,7 @@
 
 import { getSupabase } from '../lib/supabase.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
-import { getRampedDailyCap } from './rate-limiter.js';
+import { getAccountDailyCap } from './rate-limiter.js';
 import { config } from '../config.js';
 import type { SenderAccount, GmailSenderAccount, SmtpSenderAccount, OngageSenderAccount } from './email-sender.js';
 
@@ -22,12 +22,7 @@ const SENDER_COLUMNS =
 export type SenderAccountWithCaps = SenderAccount & { dailyCap: number; hourlyCap: number };
 
 function mapRow(a: Record<string, unknown>): SenderAccountWithCaps | null {
-  const dailyCap = getRampedDailyCap({
-    warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
-    warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
-    warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
-    daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
-  });
+  const dailyCap = getAccountDailyCap({ daily_cap: (a.daily_cap         as number | null | undefined) ?? null });
   const hourlyCap = (a.hourly_cap as number | null | undefined) ?? config.rateLimits.hourlyCap;
 
   if (a.auth_type === 'smtp' && a.smtp_host && a.smtp_user && a.smtp_password) {

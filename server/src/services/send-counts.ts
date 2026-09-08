@@ -11,7 +11,7 @@
 
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
-import { getRampedDailyCap } from './rate-limiter.js';
+import { getAccountDailyCap } from './rate-limiter.js';
 
 export interface SentCount { daily: number; hourly: number }
 export interface AccountCaps { dailyCap: number; hourlyCap: number }
@@ -57,7 +57,7 @@ export function recordSend(counts: Record<string, SentCount>, email: string | nu
 }
 
 /**
- * Ramped daily + hourly caps for every active cold sender, keyed by lowercased
+ * Configured daily + hourly caps for every active sender, keyed by lowercased
  * email. Credential-free, unlike the campaign scheduler's sender pool — the
  * follow-up path resolves its sender by address and only needs the numbers.
  */
@@ -66,18 +66,13 @@ export async function loadAccountCaps(): Promise<Record<string, AccountCaps>> {
   try {
     const { data } = await getSupabase()
       .from('email_accounts')
-      .select('email, daily_cap, hourly_cap, warmup_started_at, warmup_target_cap, warmup_ramp_days')
+      .select('email, daily_cap, hourly_cap')
       .eq('status', 'active');
     for (const a of (data ?? []) as Array<Record<string, unknown>>) {
       const email = (a.email as string | undefined)?.toLowerCase();
       if (!email) continue;
       caps[email] = {
-        dailyCap: getRampedDailyCap({
-          warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
-          warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
-          warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
-          daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
-        }),
+        dailyCap: getAccountDailyCap({ daily_cap: (a.daily_cap         as number | null | undefined) ?? null }),
         hourlyCap: (a.hourly_cap as number | null | undefined) ?? config.rateLimits.hourlyCap,
       };
     }

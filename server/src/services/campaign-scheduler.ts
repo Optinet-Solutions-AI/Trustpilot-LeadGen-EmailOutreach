@@ -17,7 +17,7 @@ import { config } from '../config.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type OngageSenderAccount, type SenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
-import { rateLimiter, getRampedDailyCap } from './rate-limiter.js';
+import { rateLimiter, getAccountDailyCap } from './rate-limiter.js';
 import { loadSentCounts, recordSend } from './send-counts.js';
 import { renderAndSpin } from './template-engine.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
@@ -152,7 +152,7 @@ async function processDueSends(): Promise<void> {
     if (picked === undefined) {
       console.log(
         `[CampaignScheduler] All sender accounts at cap (per-account daily limit: ` +
-        `${rowPerAccountLimit ?? 'account warmup ramp'}) — deferring remaining sends to next tick`,
+        `${rowPerAccountLimit ?? 'mailbox cap'}) — deferring remaining sends to next tick`,
       );
       break;
     }
@@ -198,7 +198,7 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
   try {
     let query = getSupabase()
       .from('email_accounts')
-      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, daily_cap, hourly_cap, is_cold_sender, warmup_started_at, warmup_target_cap, warmup_ramp_days')
+      .select('id, email, from_name, auth_type, gmail_client_id, gmail_client_secret, gmail_refresh_token, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, daily_cap, hourly_cap, is_cold_sender')
       .eq('status', 'active')
       .eq('is_cold_sender', true)
       .in('auth_type', ['gmail_oauth', 'smtp', 'app_password', 'ongage']);
@@ -211,12 +211,7 @@ async function buildSenderPool(pinnedIds: string[] = []): Promise<AccountWithCap
     const { data: dbAccounts } = await query;
     const accounts: AccountWithCaps<SenderAccount>[] = [];
     for (const a of (dbAccounts ?? []) as Array<Record<string, unknown>>) {
-      const dailyCap = getRampedDailyCap({
-        warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
-        warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
-        warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
-        daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
-      });
+      const dailyCap = getAccountDailyCap({ daily_cap: (a.daily_cap         as number | null | undefined) ?? null });
       const hourlyCap = (a.hourly_cap as number | null | undefined) ?? config.rateLimits.hourlyCap;
       if (a.auth_type === 'smtp' && a.smtp_host && a.smtp_user && a.smtp_password) {
         accounts.push({
@@ -268,9 +263,9 @@ function pickSender(
   /**
    * Per-account daily ceiling from the campaign's own sending_schedule.
    *
-   * It can only LOWER the ceiling: "10 each" means 10 even while the ramp
-   * allows 29, but asking for 50 while the ramp allows 29 still yields 29.
-   * Undefined falls back to the ramped cap alone.
+   * It can only LOWER the ceiling: "10 each" means 10 even while the mailbox
+   * allows 50, but asking for 80 while the mailbox allows 50 still yields 50.
+   * Undefined falls back to the mailbox cap alone.
    *
    * Note the counts it is measured against are per ACCOUNT and global across
    * campaigns, so two campaigns both asking for 10/account share one budget of
@@ -291,9 +286,8 @@ function pickSender(
     if (!account) continue;
     const key = account.email.toLowerCase();
     const used = sentCounts[key] ?? { daily: 0, hourly: 0 };
-    // Clamp, never override: a campaign figure can only tighten the account's
-    // warmup ramp, never exceed it. Letting it exceed is how an unwarmed
-    // domain gets pushed past the ramp it exists to enforce.
+    // Clamp, never override: a campaign figure can only tighten the mailbox's
+    // configured cap, never exceed it.
     const dailyCeiling = Math.min(
       perAccountDailyLimit ?? Number.POSITIVE_INFINITY,
       account.dailyCap,

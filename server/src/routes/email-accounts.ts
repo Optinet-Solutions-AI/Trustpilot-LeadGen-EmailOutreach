@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
-import { rateLimiter, getRampedDailyCap } from '../services/rate-limiter.js';
+import { rateLimiter, getAccountDailyCap } from '../services/rate-limiter.js';
 import { verifyDomainDNS } from '../services/dns-checker.js';
 
 const router = Router();
@@ -146,12 +146,7 @@ router.get('/', async (req: Request, res: Response) => {
       const warmupStartedAt = (a.warmup_started_at as string | null | undefined) ?? null;
       const warmupTargetCap = (a.warmup_target_cap as number | null | undefined) ?? 50;
       const warmupRampDays  = (a.warmup_ramp_days  as number | null | undefined) ?? 21;
-      const dailyCap = getRampedDailyCap({
-        warmup_started_at: warmupStartedAt,
-        warmup_target_cap: warmupTargetCap,
-        warmup_ramp_days:  warmupRampDays,
-        daily_cap:         (a.daily_cap as number | null | undefined) ?? null,
-      });
+      const dailyCap = getAccountDailyCap({ daily_cap: (a.daily_cap as number | null | undefined) ?? null });
 
       const warmupDay = warmupStartedAt
         ? Math.max(1, Math.floor((Date.now() - new Date(warmupStartedAt).getTime()) / 86_400_000) + 1)

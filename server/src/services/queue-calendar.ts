@@ -68,17 +68,17 @@ export interface SummarizeOptions {
   /** Active cold-sending mailboxes. Capacity is per-account times this. */
   senderCount: number;
   /**
-   * The strictest warmup ramp across those mailboxes. A campaign figure cannot
-   * exceed it at send time, so the calendar must not display a ceiling above
-   * it either — old campaigns still hold figures like 150 and 200 per account,
-   * which would render a 600/day cap that can never happen.
+   * The strictest per-mailbox daily cap across those mailboxes. A campaign
+   * figure cannot exceed it at send time, so the calendar must not display a
+   * ceiling above it either — old campaigns still hold figures like 150 and
+   * 200 per account, which would render a 600/day cap that can never happen.
    */
-  rampCap?: number | null;
+  accountCap?: number | null;
 }
 
 export function summarizeQueueDays(
   entries: QueueEntry[],
-  { senderCount, rampCap = null }: SummarizeOptions,
+  { senderCount, accountCap = null }: SummarizeOptions,
 ): QueueDay[] {
   const byDay = new Map<string, QueueEntry[]>();
 
@@ -115,7 +115,7 @@ export function summarizeQueueDays(
     }
 
     const total = rows.length;
-    const capacity = resolveDailyCapacity(limits, senderCount, rampCap);
+    const capacity = resolveDailyCapacity(limits, senderCount, accountCap);
     const over = capacity !== null && total > capacity;
 
     days.push({
@@ -152,16 +152,16 @@ export function summarizeQueueDays(
 export function resolveDailyCapacity(
   perAccountLimits: Array<number | undefined>,
   senderCount: number,
-  rampCap: number | null = null,
+  accountCap: number | null = null,
 ): number | null {
   const known = perAccountLimits.filter(
     (n): n is number => typeof n === 'number' && n > 0,
   );
   if (known.length === 0 || senderCount < 1) return null;
-  // The largest figure among the day's campaigns, but never above the warmup
-  // ramp — a campaign cannot buy past the ramp, so neither can the display.
-  const perAccount = rampCap !== null && rampCap > 0
-    ? Math.min(Math.max(...known), rampCap)
+  // The largest figure among the day's campaigns, but never above the mailbox
+  // cap — a campaign cannot exceed it, so neither can the display.
+  const perAccount = accountCap !== null && accountCap > 0
+    ? Math.min(Math.max(...known), accountCap)
     : Math.max(...known);
   return perAccount * senderCount;
 }

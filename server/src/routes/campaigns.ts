@@ -8,7 +8,7 @@ import { summarizeQueueDays, type QueueEntry } from '../services/queue-calendar.
 import { localDayKey } from '../services/schedule-engine.js';
 import { followUpSubject, pickStepTemplate } from '../services/message-preview.js';
 import { repaceQueue } from '../services/queue-repacer.js';
-import { getRampedDailyCap } from '../services/rate-limiter.js';
+import { getAccountDailyCap } from '../services/rate-limiter.js';
 import { getSupabase } from '../lib/supabase.js';
 import { createNote } from '../db/notes.js';
 import { renderAndSpin, KNOWN_TOKENS } from '../services/template-engine.js';
@@ -487,22 +487,17 @@ router.get('/calendar', async (req: Request, res: Response) => {
       .eq('is_cold_sender', true);
     const senderCount = Math.max(1, count ?? 1);
 
-    // The ramp is a hard ceiling on what any campaign figure can achieve, so
-    // the displayed cap has to respect it too.
+    // The mailbox cap is a hard ceiling on what any campaign figure can
+    // achieve, so the displayed cap has to respect it too.
     const { data: rampRows } = await supabase
       .from('email_accounts')
-      .select('daily_cap, warmup_started_at, warmup_target_cap, warmup_ramp_days')
+      .select('daily_cap')
       .eq('status', 'active')
       .eq('is_cold_sender', true);
-    const ramps = (rampRows ?? []).map((a: Record<string, unknown>) => getRampedDailyCap({
-      warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
-      warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
-      warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
-      daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
-    }));
-    const rampCap = ramps.length > 0 ? Math.min(...ramps) : null;
+    const accountCaps = (rampRows ?? []).map((a: Record<string, unknown>) => getAccountDailyCap({ daily_cap: (a.daily_cap         as number | null | undefined) ?? null }));
+    const accountCap = accountCaps.length > 0 ? Math.min(...accountCaps) : null;
 
-    const all = summarizeQueueDays(entries, { senderCount, rampCap });
+    const all = summarizeQueueDays(entries, { senderCount, accountCap });
     // Trim the padding days back off the requested window.
     const days = all.filter((d) => d.date >= from && d.date <= to);
 
@@ -806,19 +801,14 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
 
     const { data: senders } = await supabase
       .from('email_accounts')
-      .select('email, daily_cap, hourly_cap, warmup_started_at, warmup_target_cap, warmup_ramp_days')
+      .select('email, daily_cap, hourly_cap')
       .eq('status', 'active')
       .eq('is_cold_sender', true);
-    const ramps = (senders ?? []).map((a: Record<string, unknown>) => getRampedDailyCap({
-      warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
-      warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
-      warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
-      daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
-    }));
-    const senderCount = Math.max(1, ramps.length);
-    const strictestRamp = ramps.length > 0 ? Math.min(...ramps) : config.rateLimits.dailyCap;
-    const strictestCampaign = limits.length > 0 ? Math.min(...limits) : strictestRamp;
-    const perAccount = Math.min(strictestCampaign, strictestRamp);
+    const senderCaps = (senders ?? []).map((a: Record<string, unknown>) => getAccountDailyCap({ daily_cap: (a.daily_cap         as number | null | undefined) ?? null }));
+    const senderCount = Math.max(1, senderCaps.length);
+    const strictestAccount = senderCaps.length > 0 ? Math.min(...senderCaps) : config.rateLimits.dailyCap;
+    const strictestCampaign = limits.length > 0 ? Math.min(...limits) : strictestAccount;
+    const perAccount = Math.min(strictestCampaign, strictestAccount);
 
     const capacityPerDay = Number.isFinite(override) && override > 0
       ? Math.floor(override)
@@ -860,7 +850,7 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
       data: {
         apply,
         capacityPerDay,
-        basis: { perAccount, senderCount, strictestCampaign, strictestRamp },
+        basis: { perAccount, senderCount, strictestCampaign, strictestAccount },
         planned: plan.length,
         moved: moved.length,
         written,

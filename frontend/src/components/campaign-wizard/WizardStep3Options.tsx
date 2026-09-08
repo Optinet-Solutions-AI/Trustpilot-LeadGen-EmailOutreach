@@ -10,9 +10,9 @@ interface EmailAccount {
   from_name: string;
   status: string;
   source: 'env' | 'db';
-  /** Warmup-ramped daily cap from the server. A hard ceiling, not a default. */
+  /** The mailbox's configured daily cap. A hard ceiling, not a default. */
   dailyCap?: number;
-  warmupStatus?: string;
+  
 }
 
 interface Props {
@@ -74,18 +74,18 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
     1,
     (schedule.senderAccountIds ?? (schedule.senderAccountId ? [schedule.senderAccountId] : [])).length,
   );
-  // A campaign figure can only TIGHTEN the warmup ramp, never exceed it, so
+  // A campaign figure can only TIGHTEN the mailbox cap, never exceed it, so
   // the number shown has to be the clamped one — otherwise the wizard promises
   // volume the sender will refuse to produce.
   const selectedAccounts = accounts.filter((a) => selectedIds.includes(a.id));
-  const rampCaps = selectedAccounts
+  const mailboxCaps = selectedAccounts
     .map((a) => a.dailyCap)
     .filter((n): n is number => typeof n === 'number' && n > 0);
-  const strictestRamp = rampCaps.length > 0 ? Math.min(...rampCaps) : null;
-  const effectivePerAccount = strictestRamp !== null
-    ? Math.min(schedule.dailyLimit, strictestRamp)
+  const strictestCap = mailboxCaps.length > 0 ? Math.min(...mailboxCaps) : null;
+  const effectivePerAccount = strictestCap !== null
+    ? Math.min(schedule.dailyLimit, strictestCap)
     : schedule.dailyLimit;
-  const rampIsBinding = strictestRamp !== null && schedule.dailyLimit > strictestRamp;
+  const capIsBinding = strictestCap !== null && schedule.dailyLimit > strictestCap;
 
   const estimatedPerDay = Math.min(
     effectivePerAccount * selectedSenderCount,
@@ -368,12 +368,12 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                     <>Select at least one sending account above to see the daily total.</>
                   )}
                 </p>
-                {rampIsBinding && (
+                {capIsBinding && (
                   <p className="text-[11px] mt-1.5 px-2 py-1.5 rounded-lg bg-[#b0004a]/[0.07] text-[#b0004a]">
-                    These mailboxes are still warming up and allow{' '}
-                    <strong>{strictestRamp} a day each</strong> right now, so{' '}
-                    {schedule.dailyLimit} will not be reached — the ramp wins. Warmup
-                    caps cannot be raised from here.
+                    These mailboxes are capped at{' '}
+                    <strong>{strictestCap} a day each</strong>, so{' '}
+                    {schedule.dailyLimit} will not be reached. Raise the cap on the
+                    Email Accounts page if you need more.
                   </p>
                 )}
                 <div className="flex justify-between text-[10px] text-secondary mt-1">
@@ -381,9 +381,9 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                   <span>100 / account</span>
                 </div>
                 <p className="text-xs text-secondary mt-2">
-                  Warmup ramps are enforced per mailbox, so a figure above the ramp
-                  is capped rather than applied. Lower this to send less than the
-                  ramp allows; you cannot send more.
+                  Caps are enforced per mailbox, so a figure above a mailbox's cap
+                  is clamped rather than applied. Lower this to send less than the
+                  cap allows; you cannot send more from here.
                 </p>
               </div>
             </div>
