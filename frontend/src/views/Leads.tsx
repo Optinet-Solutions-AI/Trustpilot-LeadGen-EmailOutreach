@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { allCountryOptions } from '../lib/countries';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
 import LeadsTable from '../components/LeadsTable';
@@ -22,17 +23,9 @@ import { CATEGORIES } from '../components/campaign-wizard/scheduleConfig';
 
 type View = 'table' | 'pipeline';
 
-const COUNTRIES = [
-  { code: '', name: 'All Countries' },
-  { code: 'AU', name: 'Australia' }, { code: 'AT', name: 'Austria' },
-  { code: 'BR', name: 'Brazil' }, { code: 'CA', name: 'Canada' },
-  { code: 'DK', name: 'Denmark' }, { code: 'FI', name: 'Finland' },
-  { code: 'FR', name: 'France' }, { code: 'DE', name: 'Germany' },
-  { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' },
-  { code: 'NO', name: 'Norway' }, { code: 'ES', name: 'Spain' },
-  { code: 'SE', name: 'Sweden' }, { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
-];
+// Shared with the campaign wizard so the same filter reads the same way
+// in both places. Was a hardcoded 9-country copy that had drifted.
+const COUNTRIES = allCountryOptions();
 
 
 
@@ -1012,7 +1005,7 @@ export default function Leads() {
             onChange={(e) => { setCountryFilter(e.target.value); writeFilterToUrl('country', e.target.value); setPage(1); }}
             className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           >
-            {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+            {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
           </select>
           <select
             value={categoryFilter}
@@ -1146,7 +1139,7 @@ export default function Leads() {
               onChange={(e) => { setCountryFilter(e.target.value); writeFilterToUrl('country', e.target.value); setPage(1); }}
               className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
-              {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+              {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
             </select>
           </div>
           <div>

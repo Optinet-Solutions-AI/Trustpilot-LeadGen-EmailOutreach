@@ -665,6 +665,13 @@ paths:
       responses:
         "200":
           description: OK
+  /api/campaigns/queue/repace:
+    post:
+      operationId: repaceCampaignQueue
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/campaigns/calendar:
     get:
       operationId: getCampaignCalendar

@@ -40,8 +40,11 @@ export interface FollowUpBudgetInput {
   sentCounts: Record<string, { daily: number; hourly: number }>;
   /**
    * The campaign's own per-account figure (sending_schedule.dailyLimit).
-   * When set it OVERRIDES the account's warmup ramp, matching first-touch
-   * behaviour — the operator's number is authoritative.
+   *
+   * It can only ever LOWER the ceiling. The account's warmup ramp is a hard
+   * limit the campaign cannot buy its way past: a domain still warming up is
+   * protected from an operator typing a bigger number, which is the whole
+   * point of a ramp. The effective ceiling is min(campaign, ramp).
    */
   perAccountDailyLimit: number | undefined;
   /** The account's ramped daily cap, used when the campaign sets no figure. */
@@ -69,7 +72,11 @@ export function decideFollowUpSend(input: FollowUpBudgetInput): FollowUpDecision
   // the reason would hide the real constraint from the logs.
   if (senderEmail) {
     const used = sentCounts[senderEmail.toLowerCase()] ?? { daily: 0, hourly: 0 };
-    const dailyCeiling = perAccountDailyLimit ?? accountDailyCap;
+    // Clamp, never override: the warmup ramp wins whenever it is stricter.
+    const dailyCeiling = Math.min(
+      perAccountDailyLimit ?? Number.POSITIVE_INFINITY,
+      accountDailyCap,
+    );
     if (used.daily >= dailyCeiling) {
       return { action: 'defer', reason: 'daily_cap', until: retryAfterCap(schedule, now) };
     }

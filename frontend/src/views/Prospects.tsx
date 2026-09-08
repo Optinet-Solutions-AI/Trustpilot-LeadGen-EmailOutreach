@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { allCountryOptions } from '../lib/countries';
 import { useRouter } from 'next/navigation';
 import api from '../api/client';
 import LeadsTable, { type ExtraColumn } from '../components/LeadsTable';
@@ -67,17 +68,9 @@ function urlStatusIcon(r: DiscoveredContactWithLead): StatusIcon {
   return { icon: 'remove_circle', color: 'text-slate-400', label: 'Scrape ran but no email found' };
 }
 
-const COUNTRIES = [
-  { code: '', name: 'All Countries' },
-  { code: 'AU', name: 'Australia' }, { code: 'AT', name: 'Austria' },
-  { code: 'BR', name: 'Brazil' }, { code: 'CA', name: 'Canada' },
-  { code: 'DK', name: 'Denmark' }, { code: 'FI', name: 'Finland' },
-  { code: 'FR', name: 'France' }, { code: 'DE', name: 'Germany' },
-  { code: 'IT', name: 'Italy' }, { code: 'NL', name: 'Netherlands' },
-  { code: 'NO', name: 'Norway' }, { code: 'ES', name: 'Spain' },
-  { code: 'SE', name: 'Sweden' }, { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
-];
+// Shared with the campaign wizard so the same filter reads the same way
+// in both places. Was a hardcoded 9-country copy that had drifted.
+const COUNTRIES = allCountryOptions();
 
 // Pick the strongest discovery for a lead from its list of discovered_contacts.
 //
@@ -477,7 +470,7 @@ export default function Prospects() {
           onChange={(e) => { setCountryFilter(e.target.value); setPage(1); }}
           className="w-full sm:w-auto bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
         >
-          {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+          {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
         </select>
         {selectedLeadIds.length > 0 && (
           <button

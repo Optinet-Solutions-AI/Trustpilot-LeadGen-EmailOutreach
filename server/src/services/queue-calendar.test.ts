@@ -197,3 +197,24 @@ describe('resolveScheduleStart', () => {
     expect(resolveScheduleStart(s, NOW).toISOString()).toBe(NOW.toISOString());
   });
 });
+
+describe('capacity never exceeds the warmup ramp', () => {
+  test('an old campaign asking 200 per account is clamped to the ramp', () => {
+    // Real data: campaigns from June still hold 150 and 200 per account from
+    // when the field meant a whole-campaign total. Rendering 600/day would
+    // promise volume the sender clamps away.
+    const days = summarizeQueueDays(
+      [entry({ at: '2026-09-14T10:00:00Z', perAccountLimit: 200 })],
+      { senderCount: 3, rampCap: 29 },
+    );
+    expect(days[0].capacity).toBe(87); // 29 x 3, not 600
+  });
+
+  test('a campaign below the ramp keeps its own stricter figure', () => {
+    const days = summarizeQueueDays(
+      [entry({ at: '2026-09-14T10:00:00Z', perAccountLimit: 10 })],
+      { senderCount: 3, rampCap: 29 },
+    );
+    expect(days[0].capacity).toBe(30);
+  });
+});

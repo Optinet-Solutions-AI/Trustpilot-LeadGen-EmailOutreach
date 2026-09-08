@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import api from '../../api/client';
+import { countryOptions as buildCountryOptions, allCountryOptions } from '../../lib/countries';
 import { COUNTRIES, CATEGORIES } from './scheduleConfig';
 
 interface AppMode {
@@ -427,9 +428,12 @@ export default function WizardStep1Leads({
   const sendableApplies = !discoveryMode;
 
   // Use dynamic lists if loaded, fall back to static
-  const countryOptions = dynamicCountries.length > 0
-    ? [{ code: '', name: 'All Countries' }, ...dynamicCountries.map((c) => ({ code: c, name: c }))]
-    : COUNTRIES;
+  // Options come from the data; the LABEL comes from the shared list, so this
+  // dropdown reads "Australia (AU)" like the Lead Matrix instead of a bare
+  // "AU" — same filter, same words, sorted the same way.
+  const countryOptionList = dynamicCountries.length > 0
+    ? buildCountryOptions(dynamicCountries)
+    : allCountryOptions();
   // The curated list FIRST, so the "(all)" roll-ups are actually offered here.
   // This dropdown used to be built purely from the distinct raw values in the
   // database, which meant the wizard showed `online_casino_or_bookmaker` and
@@ -446,7 +450,7 @@ export default function WizardStep1Leads({
   })();
 
   const categoryLabel = categoryOptions.find((c) => c.slug === filterCategory)?.name || 'All Categories';
-  const countryLabel  = countryOptions.find((c) => c.code === filterCountry)?.name  || 'All Countries';
+  const countryLabel  = countryOptionList.find((c) => c.code === filterCountry)?.label || 'All Countries';
   const listLabel     = [countryLabel !== 'All Countries' ? countryLabel : '', categoryLabel !== 'All Categories' ? categoryLabel : '']
     .filter(Boolean).join(' · ') || 'All Leads';
 
@@ -684,7 +688,7 @@ export default function WizardStep1Leads({
                   className="bg-surface-container rounded-xl px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
                   aria-label="Country"
                 >
-                  {countryOptions.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                  {countryOptionList.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
                 </select>
                 <select
                   value={filterCategory}

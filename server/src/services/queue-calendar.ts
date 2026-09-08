@@ -67,11 +67,18 @@ export interface QueueDay {
 export interface SummarizeOptions {
   /** Active cold-sending mailboxes. Capacity is per-account times this. */
   senderCount: number;
+  /**
+   * The strictest warmup ramp across those mailboxes. A campaign figure cannot
+   * exceed it at send time, so the calendar must not display a ceiling above
+   * it either — old campaigns still hold figures like 150 and 200 per account,
+   * which would render a 600/day cap that can never happen.
+   */
+  rampCap?: number | null;
 }
 
 export function summarizeQueueDays(
   entries: QueueEntry[],
-  { senderCount }: SummarizeOptions,
+  { senderCount, rampCap = null }: SummarizeOptions,
 ): QueueDay[] {
   const byDay = new Map<string, QueueEntry[]>();
 
@@ -108,7 +115,7 @@ export function summarizeQueueDays(
     }
 
     const total = rows.length;
-    const capacity = resolveDailyCapacity(limits, senderCount);
+    const capacity = resolveDailyCapacity(limits, senderCount, rampCap);
     const over = capacity !== null && total > capacity;
 
     days.push({
@@ -145,10 +152,16 @@ export function summarizeQueueDays(
 export function resolveDailyCapacity(
   perAccountLimits: Array<number | undefined>,
   senderCount: number,
+  rampCap: number | null = null,
 ): number | null {
   const known = perAccountLimits.filter(
     (n): n is number => typeof n === 'number' && n > 0,
   );
   if (known.length === 0 || senderCount < 1) return null;
-  return Math.max(...known) * senderCount;
+  // The largest figure among the day's campaigns, but never above the warmup
+  // ramp — a campaign cannot buy past the ramp, so neither can the display.
+  const perAccount = rampCap !== null && rampCap > 0
+    ? Math.min(Math.max(...known), rampCap)
+    : Math.max(...known);
+  return perAccount * senderCount;
 }

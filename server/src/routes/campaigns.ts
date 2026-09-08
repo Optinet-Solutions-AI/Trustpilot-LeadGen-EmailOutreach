@@ -7,6 +7,8 @@ import { assignScheduledTimes, resolveScheduleStart, type SendingSchedule } from
 import { summarizeQueueDays, type QueueEntry } from '../services/queue-calendar.js';
 import { localDayKey } from '../services/schedule-engine.js';
 import { followUpSubject, pickStepTemplate } from '../services/message-preview.js';
+import { repaceQueue } from '../services/queue-repacer.js';
+import { getRampedDailyCap } from '../services/rate-limiter.js';
 import { getSupabase } from '../lib/supabase.js';
 import { createNote } from '../db/notes.js';
 import { renderAndSpin, KNOWN_TOKENS } from '../services/template-engine.js';
@@ -485,7 +487,22 @@ router.get('/calendar', async (req: Request, res: Response) => {
       .eq('is_cold_sender', true);
     const senderCount = Math.max(1, count ?? 1);
 
-    const all = summarizeQueueDays(entries, { senderCount });
+    // The ramp is a hard ceiling on what any campaign figure can achieve, so
+    // the displayed cap has to respect it too.
+    const { data: rampRows } = await supabase
+      .from('email_accounts')
+      .select('daily_cap, warmup_started_at, warmup_target_cap, warmup_ramp_days')
+      .eq('status', 'active')
+      .eq('is_cold_sender', true);
+    const ramps = (rampRows ?? []).map((a: Record<string, unknown>) => getRampedDailyCap({
+      warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
+      warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
+      warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
+      daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
+    }));
+    const rampCap = ramps.length > 0 ? Math.min(...ramps) : null;
+
+    const all = summarizeQueueDays(entries, { senderCount, rampCap });
     // Trim the padding days back off the requested window.
     const days = all.filter((d) => d.date >= from && d.date <= to);
 
@@ -716,6 +733,142 @@ router.get('/calendar/lead/:campaignLeadId', async (req: Request, res: Response)
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'lead preview failed' });
+  }
+});
+
+/**
+ * POST /api/campaigns/queue/repace   body: { apply?: boolean, capacityPerDay?: number }
+ *
+ * Rewrites the stored send times so the queue matches what the cap will
+ * actually allow. Needed because everything queued before the follow-up gate
+ * landed was planned as though follow-ups were free — hence days holding 53
+ * and 64 against a ceiling of 30.
+ *
+ * DRY RUN BY DEFAULT. Pass { apply: true } to write. The dry run returns the
+ * same plan it would apply, so the change can be read before it happens.
+ *
+ * Capacity is the STRICTEST reading: the smallest per-account figure among the
+ * campaigns holding queued work, clamped by the strictest warmup ramp, times
+ * the number of cold-sending mailboxes. Warming domains get the benefit of the
+ * doubt rather than the most generous campaign's number.
+ *
+ * MUST stay above the `/:id` routes.
+ */
+router.post('/queue/repace', async (req: Request, res: Response) => {
+  try {
+    const supabase = getSupabase();
+    const apply = req.body?.apply === true;
+    const override = Number(req.body?.capacityPerDay);
+
+    const { data: campaigns } = await supabase
+      .from('campaigns')
+      .select('id, name, status, sending_schedule');
+    const meta = new Map<string, { name: string; schedule: SendingSchedule; dailyLimit?: number }>();
+    for (const c of (campaigns ?? []) as Array<Record<string, unknown>>) {
+      const raw = (c.sending_schedule ?? {}) as Partial<SendingSchedule>;
+      if (!raw.timezone || !raw.startHour || !raw.endHour || !raw.days?.length) continue;
+      meta.set(c.id as string, {
+        name: (c.name as string) ?? 'Untitled campaign',
+        schedule: raw as SendingSchedule,
+        dailyLimit: typeof raw.dailyLimit === 'number' && raw.dailyLimit > 0 ? raw.dailyLimit : undefined,
+      });
+    }
+
+    // Everything still ahead of the sender: unsent first touches, plus
+    // follow-ups that have not completed or been paused.
+    const { data: pending } = await supabase
+      .from('campaign_leads')
+      .select('id, campaign_id, status, scheduled_at, next_step_at, sequence_completed, sequence_paused')
+      .eq('channel', 'email')
+      .or('and(status.eq.pending,scheduled_at.not.is.null),and(next_step_at.not.is.null,sequence_completed.eq.false,sequence_paused.eq.false)')
+      .limit(20000);
+
+    interface Row { id: string; kind: 'first_touch' | 'follow_up'; at: Date; schedule: SendingSchedule; campaignId: string }
+    const rows: Row[] = [];
+    for (const r of (pending ?? []) as Array<Record<string, unknown>>) {
+      const m = meta.get(r.campaign_id as string);
+      if (!m) continue;
+      if (r.status === 'pending' && r.scheduled_at) {
+        rows.push({ id: r.id as string, kind: 'first_touch', at: new Date(r.scheduled_at as string), schedule: m.schedule, campaignId: r.campaign_id as string });
+      }
+      if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
+        rows.push({ id: r.id as string, kind: 'follow_up', at: new Date(r.next_step_at as string), schedule: m.schedule, campaignId: r.campaign_id as string });
+      }
+    }
+
+    if (rows.length === 0) {
+      return res.json({ success: true, data: { apply, capacityPerDay: null, planned: 0, moved: 0, days: [], note: 'Nothing queued to re-pace.' } });
+    }
+
+    // Strictest campaign figure among campaigns that actually hold queued work.
+    const involved = new Set(rows.map((r) => r.campaignId));
+    const limits = [...involved].map((id) => meta.get(id)?.dailyLimit).filter((n): n is number => typeof n === 'number');
+
+    const { data: senders } = await supabase
+      .from('email_accounts')
+      .select('email, daily_cap, hourly_cap, warmup_started_at, warmup_target_cap, warmup_ramp_days')
+      .eq('status', 'active')
+      .eq('is_cold_sender', true);
+    const ramps = (senders ?? []).map((a: Record<string, unknown>) => getRampedDailyCap({
+      warmup_started_at: (a.warmup_started_at as string | null | undefined) ?? null,
+      warmup_target_cap: (a.warmup_target_cap as number | null | undefined) ?? 50,
+      warmup_ramp_days:  (a.warmup_ramp_days  as number | null | undefined) ?? 21,
+      daily_cap:         (a.daily_cap         as number | null | undefined) ?? null,
+    }));
+    const senderCount = Math.max(1, ramps.length);
+    const strictestRamp = ramps.length > 0 ? Math.min(...ramps) : config.rateLimits.dailyCap;
+    const strictestCampaign = limits.length > 0 ? Math.min(...limits) : strictestRamp;
+    const perAccount = Math.min(strictestCampaign, strictestRamp);
+
+    const capacityPerDay = Number.isFinite(override) && override > 0
+      ? Math.floor(override)
+      : perAccount * senderCount;
+
+    const plan = repaceQueue(
+      rows.map((r) => ({ id: `${r.id}:${r.kind}`, kind: r.kind, at: r.at, schedule: r.schedule })),
+      { capacityPerDay },
+    );
+
+    const moved = plan.filter((p) => p.to.getTime() !== p.from.getTime());
+
+    // Per-day shape after the rewrite, for the response.
+    const byDay = new Map<string, number>();
+    for (const p of plan) {
+      const k = p.to.toISOString().slice(0, 10);
+      byDay.set(k, (byDay.get(k) ?? 0) + 1);
+    }
+    const days = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, count]) => ({ date, count }));
+
+    let written = 0;
+    if (apply) {
+      // Write in small batches; a failure part-way leaves earlier rows correctly
+      // paced rather than rolling everything back to the over-capacity plan.
+      for (const p of moved) {
+        const [id, kind] = p.id.split(':');
+        const patch = kind === 'follow_up'
+          ? { next_step_at: p.to.toISOString() }
+          : { scheduled_at: p.to.toISOString() };
+        const q = supabase.from('campaign_leads').update(patch).eq('id', id);
+        const { error } = kind === 'follow_up' ? await q : await q.eq('status', 'pending');
+        if (!error) written += 1;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        apply,
+        capacityPerDay,
+        basis: { perAccount, senderCount, strictestCampaign, strictestRamp },
+        planned: plan.length,
+        moved: moved.length,
+        written,
+        days,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'repace failed' });
   }
 });
 

@@ -80,11 +80,27 @@ describe('follow-ups share the per-account daily budget', () => {
     expect(at.action).toBe('defer');
   });
 
-  test('the campaign figure overrides a more generous ramp', () => {
-    // Matches first-touch behaviour: the operator's number is authoritative.
+  test('a stricter campaign figure tightens a generous ramp', () => {
+    // The operator can always ask for less than the ramp allows.
     const d = decide({ perAccountDailyLimit: 10, accountDailyCap: 50,
       sentCounts: { [GRACE]: { daily: 10, hourly: 0 } } });
     expect(d.action).toBe('defer');
+  });
+
+  test('a campaign CANNOT buy past the warmup ramp', () => {
+    // The reason this rule exists: a domain still warming up must not be
+    // pushed to 50/day because someone typed 50 into the wizard. Ramp is 29,
+    // campaign asks 50, and 29 sends is already the ceiling.
+    const d = decide({ perAccountDailyLimit: 50, accountDailyCap: 29,
+      sentCounts: { [GRACE]: { daily: 29, hourly: 0 } } });
+    expect(d.action).toBe('defer');
+    if (d.action === 'defer') expect(d.reason).toBe('daily_cap');
+  });
+
+  test('below both limits it still sends', () => {
+    const d = decide({ perAccountDailyLimit: 50, accountDailyCap: 29,
+      sentCounts: { [GRACE]: { daily: 28, hourly: 0 } } });
+    expect(d.action).toBe('send');
   });
 
   test('defers on the hourly cap even with daily headroom', () => {

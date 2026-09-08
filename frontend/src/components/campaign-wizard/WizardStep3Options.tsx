@@ -10,6 +10,9 @@ interface EmailAccount {
   from_name: string;
   status: string;
   source: 'env' | 'db';
+  /** Warmup-ramped daily cap from the server. A hard ceiling, not a default. */
+  dailyCap?: number;
+  warmupStatus?: string;
 }
 
 interface Props {
@@ -71,8 +74,21 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
     1,
     (schedule.senderAccountIds ?? (schedule.senderAccountId ? [schedule.senderAccountId] : [])).length,
   );
+  // A campaign figure can only TIGHTEN the warmup ramp, never exceed it, so
+  // the number shown has to be the clamped one — otherwise the wizard promises
+  // volume the sender will refuse to produce.
+  const selectedAccounts = accounts.filter((a) => selectedIds.includes(a.id));
+  const rampCaps = selectedAccounts
+    .map((a) => a.dailyCap)
+    .filter((n): n is number => typeof n === 'number' && n > 0);
+  const strictestRamp = rampCaps.length > 0 ? Math.min(...rampCaps) : null;
+  const effectivePerAccount = strictestRamp !== null
+    ? Math.min(schedule.dailyLimit, strictestRamp)
+    : schedule.dailyLimit;
+  const rampIsBinding = strictestRamp !== null && schedule.dailyLimit > strictestRamp;
+
   const estimatedPerDay = Math.min(
-    schedule.dailyLimit * selectedSenderCount,
+    effectivePerAccount * selectedSenderCount,
     Math.max(1, Math.floor(hoursPerDay * 3) * selectedSenderCount),
   );
   const is247 =
@@ -342,22 +358,32 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                   {selectedIds.length > 0 ? (
                     <>
                       <strong className="text-on-surface">
-                        {schedule.dailyLimit} per account &times; {selectedIds.length}{' '}
+                        {effectivePerAccount} per account &times; {selectedIds.length}{' '}
                         account{selectedIds.length === 1 ? '' : 's'} ={' '}
-                        {(schedule.dailyLimit * selectedIds.length).toLocaleString()} emails/day
+                        {(effectivePerAccount * selectedIds.length).toLocaleString()} emails/day
                       </strong>{' '}
-                      in total.
+                      in total, follow-ups included.
                     </>
                   ) : (
                     <>Select at least one sending account above to see the daily total.</>
                   )}
                 </p>
+                {rampIsBinding && (
+                  <p className="text-[11px] mt-1.5 px-2 py-1.5 rounded-lg bg-[#b0004a]/[0.07] text-[#b0004a]">
+                    These mailboxes are still warming up and allow{' '}
+                    <strong>{strictestRamp} a day each</strong> right now, so{' '}
+                    {schedule.dailyLimit} will not be reached — the ramp wins. Warmup
+                    caps cannot be raised from here.
+                  </p>
+                )}
                 <div className="flex justify-between text-[10px] text-secondary mt-1">
                   <span>5 / account</span>
                   <span>100 / account</span>
                 </div>
                 <p className="text-xs text-secondary mt-2">
-                  Recommended: start at 50/day during warmup and increase gradually.
+                  Warmup ramps are enforced per mailbox, so a figure above the ramp
+                  is capped rather than applied. Lower this to send less than the
+                  ramp allows; you cannot send more.
                 </p>
               </div>
             </div>
@@ -420,10 +446,10 @@ export default function WizardStep3Options({ name, schedule, onNameChange, onSch
                   <div className="flex justify-between text-xs">
                     <span className="text-secondary font-semibold">Daily cap</span>
                     <span className="font-bold text-[#b0004a]">
-                      {schedule.dailyLimit}/account
+                      {effectivePerAccount}/account
                       {selectedIds.length > 0 && (
                         <span className="text-secondary font-semibold">
-                          {' '}({(schedule.dailyLimit * selectedIds.length).toLocaleString()} total)
+                          {' '}({(effectivePerAccount * selectedIds.length).toLocaleString()} total)
                         </span>
                       )}
                     </span>

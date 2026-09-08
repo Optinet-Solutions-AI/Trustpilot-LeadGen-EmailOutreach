@@ -268,9 +268,9 @@ function pickSender(
   /**
    * Per-account daily ceiling from the campaign's own sending_schedule.
    *
-   * When set it OVERRIDES the account's warmup ramp, because the operator's
-   * figure is meant to be authoritative ("10 each" must mean 10 even while an
-   * account's ramp would allow 20). Undefined falls back to the ramped cap.
+   * It can only LOWER the ceiling: "10 each" means 10 even while the ramp
+   * allows 29, but asking for 50 while the ramp allows 29 still yields 29.
+   * Undefined falls back to the ramped cap alone.
    *
    * Note the counts it is measured against are per ACCOUNT and global across
    * campaigns, so two campaigns both asking for 10/account share one budget of
@@ -291,7 +291,13 @@ function pickSender(
     if (!account) continue;
     const key = account.email.toLowerCase();
     const used = sentCounts[key] ?? { daily: 0, hourly: 0 };
-    const dailyCeiling = perAccountDailyLimit ?? account.dailyCap;
+    // Clamp, never override: a campaign figure can only tighten the account's
+    // warmup ramp, never exceed it. Letting it exceed is how an unwarmed
+    // domain gets pushed past the ramp it exists to enforce.
+    const dailyCeiling = Math.min(
+      perAccountDailyLimit ?? Number.POSITIVE_INFINITY,
+      account.dailyCap,
+    );
     if (used.daily >= dailyCeiling)       continue;
     if (used.hourly >= account.hourlyCap) continue;
     return account;
