@@ -26,6 +26,7 @@ import { isPermanentSendFailure } from './bounce-tracker.js';
 import { decideFollowUpSend } from './follow-up-budget.js';
 import { loadSentCounts, loadAccountCaps, recordSend } from './send-counts.js';
 import type { SendingSchedule } from './schedule-engine.js';
+import { followUpSubject } from './message-preview.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
 
@@ -273,9 +274,8 @@ async function sendFollowUp(cl: Record<string, unknown>) {
   // with In-Reply-To and References — set below). If the operator already
   // wrote "Re:" into the template, leave it alone to avoid "Re: Re: Re:".
   const renderedSubject = renderAndSpin(step.template_subject, lead);
-  const subject = /^re:\s/i.test(renderedSubject)
-    ? renderedSubject
-    : `Re: ${renderedSubject}`;
+  // Shared with the send-queue preview so the two cannot drift.
+  const subject = followUpSubject(renderedSubject);
   const html = renderAndSpin(step.template_body, lead);
 
   // Check for screenshot

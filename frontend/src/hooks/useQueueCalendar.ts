@@ -62,3 +62,81 @@ export function useQueueCalendar(from: string, to: string) {
 
   return { data, loading, error, reload: load };
 }
+
+// ── One day's leads, and one lead's message ──────────────────────────────────
+
+export interface DayLead {
+  id: string;
+  leadId: string;
+  company: string;
+  email: string;
+  campaignId: string;
+  campaignName: string;
+  timezone: string;
+  kind: 'first_touch' | 'follow_up';
+  state: 'sent' | 'scheduled';
+  at: string;
+  /** HH:mm in the campaign's timezone — the time it actually goes out. */
+  localTime: string;
+  stepNumber: number;
+  senderEmail: string | null;
+  country: string | null;
+}
+
+export interface LeadMessage {
+  campaignName: string;
+  company: string | null;
+  to: string | null;
+  country: string | null;
+  senderEmail: string | null;
+  status: string;
+  stepNumber: number;
+  isFollowUp: boolean;
+  includeScreenshot: boolean;
+  schedule: { at: string | null; timezone: string; localTime: string | null };
+  message: { subject: string; body: string } | null;
+  sequenceComplete?: boolean;
+  /** Set when the template carries spintax, so this is one rendering of many. */
+  spintaxWarning: string | null;
+}
+
+export function useDayLeads(date: string | null) {
+  const [leads, setLeads] = useState<DayLead[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!date) { setLeads(null); setError(null); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api.get(`/campaigns/calendar/day?date=${date}`)
+      .then((res) => { if (!cancelled) setLeads(res.data.data.leads); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load the day'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [date]);
+
+  return { leads, loading, error };
+}
+
+export function useLeadMessage(campaignLeadId: string | null, step: number | null) {
+  const [data, setData] = useState<LeadMessage | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!campaignLeadId) { setData(null); setError(null); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const q = step ? `?step=${step}` : '';
+    api.get(`/campaigns/calendar/lead/${campaignLeadId}${q}`)
+      .then((res) => { if (!cancelled) setData(res.data.data); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load the message'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [campaignLeadId, step]);
+
+  return { data, loading, error };
+}

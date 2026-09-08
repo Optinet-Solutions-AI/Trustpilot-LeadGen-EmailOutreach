@@ -5,6 +5,8 @@ import { upsertManualLeads, getLeadById } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
 import { assignScheduledTimes, resolveScheduleStart, type SendingSchedule } from '../services/schedule-engine.js';
 import { summarizeQueueDays, type QueueEntry } from '../services/queue-calendar.js';
+import { localDayKey } from '../services/schedule-engine.js';
+import { followUpSubject, pickStepTemplate } from '../services/message-preview.js';
 import { getSupabase } from '../lib/supabase.js';
 import { createNote } from '../db/notes.js';
 import { renderAndSpin, KNOWN_TOKENS } from '../services/template-engine.js';
@@ -502,6 +504,218 @@ router.get('/calendar', async (req: Request, res: Response) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'calendar failed' });
+  }
+});
+
+/**
+ * GET /api/campaigns/calendar/day?date=YYYY-MM-DD
+ *
+ * The individual leads that make up one calendar day — what the day cell in
+ * the send queue is actually counting. Bucketed with the SAME rule as the
+ * calendar (each campaign's own timezone), or the rows would not add up to
+ * the number the operator clicked on.
+ *
+ * MUST stay above the `/:id` routes.
+ */
+router.get('/calendar/day', async (req: Request, res: Response) => {
+  try {
+    const supabase = getSupabase();
+    const date = typeof req.query.date === 'string' ? req.query.date : null;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ success: false, error: 'date is required (YYYY-MM-DD)' });
+    }
+    // Pad a day either side, then filter by local day — a timezone can shift a
+    // row across the UTC boundary in either direction.
+    const loIso = new Date(new Date(`${date}T00:00:00Z`).getTime() - 86_400_000).toISOString();
+    const hiIso = new Date(new Date(`${date}T23:59:59Z`).getTime() + 86_400_000).toISOString();
+
+    const { data: campaigns } = await supabase
+      .from('campaigns')
+      .select('id, name, sending_schedule');
+    const meta = new Map<string, { name: string; timezone: string }>();
+    for (const c of (campaigns ?? []) as Array<Record<string, unknown>>) {
+      const sched = (c.sending_schedule ?? {}) as { timezone?: string };
+      meta.set(c.id as string, {
+        name: (c.name as string) ?? 'Untitled campaign',
+        timezone: sched.timezone || 'UTC',
+      });
+    }
+
+    const { data: rows } = await supabase
+      .from('campaign_leads')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, scheduled_at, next_step_at, current_step, sequence_completed, sequence_paused, leads(company_name, website_url, country)')
+      .eq('channel', 'email')
+      .or(
+        `and(sent_at.gte.${loIso},sent_at.lte.${hiIso}),` +
+        `and(scheduled_at.gte.${loIso},scheduled_at.lte.${hiIso}),` +
+        `and(next_step_at.gte.${loIso},next_step_at.lte.${hiIso})`,
+      )
+      .limit(5000);
+
+    interface DayLead {
+      id: string; leadId: string; company: string; email: string;
+      campaignId: string; campaignName: string; timezone: string;
+      kind: 'first_touch' | 'follow_up'; state: 'sent' | 'scheduled';
+      at: string; localTime: string; stepNumber: number;
+      senderEmail: string | null; country: string | null;
+    }
+    const out: DayLead[] = [];
+
+    const push = (
+      r: Record<string, unknown>,
+      m: { name: string; timezone: string },
+      at: string,
+      kind: DayLead['kind'],
+      state: DayLead['state'],
+      stepNumber: number,
+    ) => {
+      const when = new Date(at);
+      if (localDayKey(when, m.timezone) !== date) return;
+      const lead = (r.leads ?? {}) as Record<string, unknown>;
+      out.push({
+        id: r.id as string,
+        leadId: r.lead_id as string,
+        company: (lead.company_name as string) ?? '(unknown company)',
+        email: (r.email_used as string) ?? '',
+        campaignId: r.campaign_id as string,
+        campaignName: m.name,
+        timezone: m.timezone,
+        kind,
+        state,
+        at: when.toISOString(),
+        localTime: new Intl.DateTimeFormat('en-GB', {
+          timeZone: m.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+        }).format(when),
+        stepNumber,
+        senderEmail: (r.sender_email as string | null) ?? null,
+        country: (lead.country as string | null) ?? null,
+      });
+    };
+
+    for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+      const m = meta.get(r.campaign_id as string);
+      if (!m) continue;
+      const step = typeof r.current_step === 'number' ? r.current_step : 1;
+
+      if (r.status === 'sent' && r.sent_at) {
+        push(r, m, r.sent_at as string, step > 1 ? 'follow_up' : 'first_touch', 'sent', step);
+      } else if (r.status === 'pending' && r.scheduled_at) {
+        push(r, m, r.scheduled_at as string, 'first_touch', 'scheduled', 1);
+      }
+      if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
+        push(r, m, r.next_step_at as string, 'follow_up', 'scheduled', step + 1);
+      }
+    }
+
+    out.sort((a, b) => a.at.localeCompare(b.at) || a.company.localeCompare(b.company));
+    return res.json({ success: true, data: { date, count: out.length, leads: out } });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'day lookup failed' });
+  }
+});
+
+/**
+ * GET /api/campaigns/calendar/lead/:campaignLeadId?step=N
+ *
+ * The message one queued row is about to send, rendered against the real lead
+ * through the SAME renderAndSpin the scheduler uses, plus when it goes and
+ * from which mailbox.
+ *
+ * `spintaxWarning` is not decoration: templates carry {a|b} alternatives that
+ * are resolved at send time, so this is one valid rendering rather than the
+ * exact words that will land. Saying so is the difference between a preview
+ * and a promise.
+ *
+ * MUST stay above the `/:id` routes.
+ */
+router.get('/calendar/lead/:campaignLeadId', async (req: Request, res: Response) => {
+  try {
+    const supabase = getSupabase();
+    const clId = req.params.campaignLeadId;
+
+    const { data: cl } = await supabase
+      .from('campaign_leads')
+      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, scheduled_at, next_step_at, current_step, leads(*)')
+      .eq('id', clId)
+      .maybeSingle();
+    if (!cl) return res.status(404).json({ success: false, error: 'Queued row not found' });
+
+    const row = cl as Record<string, unknown>;
+    const { data: campaign } = await supabase
+      .from('campaigns')
+      .select('id, name, template_subject, template_body, include_screenshot, sending_schedule')
+      .eq('id', row.campaign_id as string)
+      .maybeSingle();
+    if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+    const c = campaign as Record<string, unknown>;
+    const sched = (c.sending_schedule ?? {}) as { timezone?: string };
+    const timezone = sched.timezone || 'UTC';
+    const steps = await getCampaignSteps(row.campaign_id as string);
+
+    // `step` lets the caller ask for the follow-up specifically, because one
+    // row can appear on the calendar twice: its own send, and its pending
+    // follow-up on a later day.
+    const asked = Number(req.query.step);
+    const currentStep = typeof row.current_step === 'number' ? row.current_step : 1;
+    const basis = Number.isFinite(asked) && asked > 0
+      ? asked - 1
+      : currentStep - (row.status === 'sent' ? 0 : 1);
+
+    const tpl = pickStepTemplate(
+      { template_subject: c.template_subject as string, template_body: c.template_body as string },
+      steps as unknown as Array<{ step_number: number; template_subject: string; template_body: string }>,
+      basis,
+    );
+    if (!tpl) {
+      return res.json({
+        success: true,
+        data: { sequenceComplete: true, campaignName: c.name, message: null },
+      });
+    }
+
+    const lead = (row.leads ?? {}) as Record<string, unknown>;
+    const renderedSubject = renderAndSpin(tpl.subject, lead);
+    const subject = tpl.isFollowUp ? followUpSubject(renderedSubject) : renderedSubject;
+    const body = renderAndSpin(tpl.body, lead);
+
+    const whenIso = tpl.isFollowUp
+      ? (row.next_step_at as string | null)
+      : ((row.sent_at as string | null) ?? (row.scheduled_at as string | null));
+
+    const hasSpintax = /\{[^}]*\|[^}]*\}/.test(String(tpl.subject) + String(tpl.body));
+
+    return res.json({
+      success: true,
+      data: {
+        campaignId: c.id,
+        campaignName: c.name,
+        company: lead.company_name ?? null,
+        to: row.email_used ?? null,
+        country: lead.country ?? null,
+        senderEmail: row.sender_email ?? null,
+        status: row.status,
+        stepNumber: tpl.stepNumber,
+        isFollowUp: tpl.isFollowUp,
+        includeScreenshot: c.include_screenshot === true,
+        schedule: {
+          at: whenIso,
+          timezone,
+          localTime: whenIso
+            ? new Intl.DateTimeFormat('en-GB', {
+                timeZone: timezone, weekday: 'short', day: 'numeric', month: 'short',
+                hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+              }).format(new Date(whenIso))
+            : null,
+        },
+        message: { subject, body },
+        spintaxWarning: hasSpintax
+          ? 'This template uses spintax, so the wording is chosen at send time. This is one valid rendering, not the exact email that will go out.'
+          : null,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'lead preview failed' });
   }
 });
 

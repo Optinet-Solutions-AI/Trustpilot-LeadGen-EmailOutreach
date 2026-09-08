@@ -637,6 +637,34 @@ paths:
       responses:
         "200":
           description: OK
+  /api/campaigns/calendar/day:
+    get:
+      operationId: getCampaignCalendarDay
+      security: []
+      parameters:
+        - in: query
+          name: date
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/campaigns/calendar/lead/{campaignLeadId}:
+    get:
+      operationId: getCampaignCalendarLead
+      security: []
+      parameters:
+        - in: path
+          name: campaignLeadId
+          required: true
+          type: string
+        - in: query
+          name: step
+          required: false
+          type: integer
+      responses:
+        "200":
+          description: OK
   /api/campaigns/calendar:
     get:
       operationId: getCampaignCalendar
