@@ -53,6 +53,10 @@ export interface Lead {
   apollo_contact_name?: string | null;
   apollo_position?: string | null;
   apollo_checked_at?: string | null;
+  // Apollo's free plan returns no email, but does carry a company
+  // switchboard and LinkedIn page — the only contact data it can give.
+  apollo_phone?: string | null;
+  apollo_linkedin?: string | null;
   website_email_status: VerificationStatus | null;
   affiliate_email_status: VerificationStatus | null;
   // Per-stage breakdown — populated by the layered validator (Stage 1–5).

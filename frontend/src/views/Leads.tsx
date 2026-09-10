@@ -129,8 +129,34 @@ export default function Leads() {
         key: 'apollo_contact',
         label: 'Apollo Contact',
         sortKey: 'apollo_email',
-        render: (l) => cell(l.apollo_email, l.apollo_contact_name, l.apollo_position,
-                            l.apollo_checked_at, l.apollo_checked_at ? undefined : 'needs paid plan'),
+        // Apollo's free plan returns NO email on any endpoint, so this column
+        // falls back to the company contact data it does carry: switchboard
+        // and LinkedIn page. The LinkedIn link is the useful half — it is the
+        // free route to a named marketing lead.
+        render: (l) => {
+          if (l.apollo_email) {
+            return cell(l.apollo_email, l.apollo_contact_name, l.apollo_position, l.apollo_checked_at);
+          }
+          if (l.apollo_phone || l.apollo_linkedin) {
+            return (
+              <div className="leading-tight">
+                {l.apollo_phone && (
+                  <a href={`tel:${l.apollo_phone.replace(/\s/g, '')}`}
+                     className="text-[#b0004a] hover:underline whitespace-nowrap"
+                     onClick={(e) => e.stopPropagation()}>{l.apollo_phone}</a>
+                )}
+                {l.apollo_linkedin && (
+                  <div>
+                    <a href={l.apollo_linkedin} target="_blank" rel="noopener noreferrer"
+                       className="text-[11px] text-[#b0004a] hover:underline"
+                       onClick={(e) => e.stopPropagation()}>LinkedIn →</a>
+                  </div>
+                )}
+              </div>
+            );
+          }
+          return <span className="text-[11px] text-slate-400">no company record</span>;
+        },
       },
     ];
   }, [categoryFilter]);
