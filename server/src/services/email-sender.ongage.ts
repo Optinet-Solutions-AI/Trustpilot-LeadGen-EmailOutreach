@@ -18,6 +18,7 @@
  * domain sends. Falls back to ONGAGE_SENDING_CONNECTION_ID.
  */
 import type { SendEmailOptions, SendEmailResult } from './email-sender.gmail.js';
+import { resolveReplyTo } from './ongage-reply-to.js';
 
 export interface OngageSenderAccount {
   email: string;      // from_address, e.g. lily@rp.optiratesolutions.net
@@ -118,7 +119,9 @@ export async function sendEmailOngage(
     return { success: false, error: `No Ongage sending_connection_id for ${account.email} (set ONGAGE_SENDERS or ONGAGE_SENDING_CONNECTION_ID)` };
   }
 
-  const replyTo = account.ongage_reply_to || account.email;
+  // Redirect to a mailbox that is both deliverable and polled — the sender's
+  // own rp.* address is neither. See ongage-reply-to.ts.
+  const replyTo = resolveReplyTo(account.email, account.ongage_reply_to);
   // Cold 1:1 service-offer style: suppress Ongage's default unsubscribe footer
   // (`disable_unsubscribe`) and add our own discreet reply-based opt-out. Embed
   // the screenshot the same way the SMTP/Gmail senders do (appended <img>).
