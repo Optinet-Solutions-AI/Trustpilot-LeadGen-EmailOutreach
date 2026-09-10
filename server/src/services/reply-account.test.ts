@@ -57,3 +57,19 @@ describe('resolveReplyFromAddress', () => {
     expect(resolveReplyFromAddress('carrier_pigeon', 'a@b.com')).toBeNull();
   });
 });
+
+describe('an Ongage sender that has its own SMTP', () => {
+  test('answers as itself rather than handing off', () => {
+    // Once the cPanel credentials are stored, Grace can answer as Grace —
+    // one identity on the thread, which is what the recipient expects.
+    process.env.ONGAGE_REPLY_TO = 'ryan@optiratesolutions.org';
+    expect(resolveReplyFromAddress('ongage', 'grace@rp.rateupdigital.com', true))
+      .toEqual({ email: 'grace@rp.rateupdigital.com', redirected: false });
+  });
+
+  test('still hands off when it has no SMTP of its own', () => {
+    process.env.ONGAGE_REPLY_TO = 'ryan@optiratesolutions.org';
+    expect(resolveReplyFromAddress('ongage', 'grace@rp.rateupdigital.com', false))
+      .toEqual({ email: 'ryan@optiratesolutions.org', redirected: true });
+  });
+});

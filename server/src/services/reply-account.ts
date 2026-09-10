@@ -34,8 +34,15 @@ export interface ReplyFrom {
 export function resolveReplyFromAddress(
   authType: string,
   senderEmail: string,
+  /**
+   * Whether the account carries its own SMTP credentials. An Ongage sender
+   * with SMTP can answer as itself — which is what the recipient expects, and
+   * keeps the thread on one identity. Only a sender with no way to send at
+   * all needs handing off.
+   */
+  hasOwnSmtp = false,
 ): ReplyFrom | null {
-  if (SELF_SERVING.has(authType)) {
+  if (SELF_SERVING.has(authType) || hasOwnSmtp) {
     return { email: senderEmail, redirected: false };
   }
 

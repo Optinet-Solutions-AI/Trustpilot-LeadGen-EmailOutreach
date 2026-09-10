@@ -1245,7 +1245,12 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     // carries no In-Reply-To/References, and those rows hold no SMTP
     // credentials. The reply-to mailbox answers instead — it is the address
     // the prospect actually wrote to. See reply-account.ts.
-    const replyFrom = resolveReplyFromAddress(acc.auth_type as string, acc.email as string);
+    // An Ongage sender that has its own SMTP answers as itself; only one with
+    // no way to send is handed off to the reply mailbox.
+    const accHasSmtp = Boolean(acc.smtp_host && acc.smtp_user && acc.smtp_password);
+    const replyFrom = resolveReplyFromAddress(
+      acc.auth_type as string, acc.email as string, accHasSmtp,
+    );
     if (!replyFrom) {
       res.status(400).json({
         success: false,
@@ -1290,7 +1295,13 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     }
 
     const originalMsgId = (cl.gmail_message_id as string | null) ?? null;
-    const authType = sendingAccount.auth_type as string;
+    // Dispatch on how this mailbox can SEND, not on how the campaign was sent:
+    // an Ongage row with SMTP credentials sends over SMTP like any other.
+    const sendingHasSmtp = Boolean(
+      sendingAccount.smtp_host && sendingAccount.smtp_user && sendingAccount.smtp_password,
+    );
+    const rawAuthType = sendingAccount.auth_type as string;
+    const authType = rawAuthType === 'ongage' && sendingHasSmtp ? 'smtp' : rawAuthType;
     // Both count as us: the address the original went out from, and the one
     // answering now. Either appearing in a thread is not a recipient.
     const ourAddresses = new Set(
