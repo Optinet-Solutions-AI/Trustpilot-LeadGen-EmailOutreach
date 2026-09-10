@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { allCountryOptions } from '../lib/countries';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useLeads } from '../hooks/useLeads';
-import LeadsTable from '../components/LeadsTable';
+import LeadsTable, { type ExtraColumn } from '../components/LeadsTable';
 import LeadPipeline from '../components/LeadPipeline';
 import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
@@ -26,6 +26,9 @@ type View = 'table' | 'pipeline';
 // Shared with the campaign wizard so the same filter reads the same way
 // in both places. Was a hardcoded 9-country copy that had drifted.
 const COUNTRIES = allCountryOptions();
+// Contact discovery has only been run for this segment, so it is the only
+// one that gets the provider columns.
+const CONTACT_DISCOVERY_CATEGORY = 'br_licensed_betting';
 
 
 
@@ -84,6 +87,49 @@ export default function Leads() {
   // Curated entries (with their labels and the "(all)" roll-ups) plus whatever
   // else is actually in the book. Same helper the campaign wizard uses.
   const categoryOptions = buildCategoryOptions(dynamicCategories);
+
+  // Contact-discovery columns. Only the segments we've actually run discovery
+  // on carry these fields, so the columns appear ONLY for that category —
+  // returning [] everywhere else leaves the matrix exactly as it was, including
+  // under "All Categories" and "All Countries".
+  //
+  // Apollo stays visible but empty on purpose: its free plan 403s every people
+  // endpoint, so the column shows the reason rather than looking broken.
+  const contactColumns: ExtraColumn[] = useMemo(() => {
+    if (categoryFilter !== CONTACT_DISCOVERY_CATEGORY) return [];
+    const cell = (email?: string | null, name?: string | null, position?: string | null,
+                  checkedAt?: string | null, blockedNote?: string) => {
+      if (email) {
+        return (
+          <div className="leading-tight">
+            <a href={`mailto:${email}`} className="text-[#b0004a] hover:underline break-all"
+               onClick={(e) => e.stopPropagation()}>{email}</a>
+            {(name || position) && (
+              <div className="text-[11px] text-secondary truncate" title={position ?? undefined}>
+                {[name, position].filter(Boolean).join(' — ')}
+              </div>
+            )}
+          </div>
+        );
+      }
+      if (blockedNote) return <span className="text-[11px] text-secondary italic">{blockedNote}</span>;
+      if (checkedAt) return <span className="text-[11px] text-secondary">no match</span>;
+      return <span className="text-[11px] text-slate-400">not searched</span>;
+    };
+    return [
+      {
+        key: 'snov_contact',
+        label: 'Snov.io Contact',
+        render: (l) => cell(l.snov_email, l.snov_contact_name, l.snov_position, l.snov_checked_at),
+      },
+      {
+        key: 'apollo_contact',
+        label: 'Apollo Contact',
+        render: (l) => cell(l.apollo_email, l.apollo_contact_name, l.apollo_position,
+                            l.apollo_checked_at, l.apollo_checked_at ? undefined : 'needs paid plan'),
+      },
+    ];
+  }, [categoryFilter]);
   // When on, show ONLY Trustpilot-flagged (blocked) leads — lets the operator
   // see and count how many blocked accounts were scraped (migration 048).
   const [blockedFilter, setBlockedFilter] = useState(false);
@@ -1428,6 +1474,7 @@ export default function Leads() {
             onSortChange={toggleSort}
             onDismissLinkFlag={handleDismissLinkFlag}
             onEditLinkUrl={handleEditLinkUrl}
+            extraColumns={contactColumns}
             // Hide platform-irrelevant columns when filtered to a single
             // non-Trustpilot platform:
             //  - trustpilot_email + affiliate_email are Trustpilot-only

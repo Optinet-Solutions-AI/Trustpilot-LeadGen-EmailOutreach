@@ -43,6 +43,16 @@ export interface Lead {
    *  primary_email. */
   discovered_email?: string | null;
   discovered_email_status?: VerificationStatus | null;
+  // Named decision-maker found by a contact-discovery provider (migration 066).
+  // Optional because only the segments we've run discovery on carry them.
+  snov_email?: string | null;
+  snov_contact_name?: string | null;
+  snov_position?: string | null;
+  snov_checked_at?: string | null;
+  apollo_email?: string | null;
+  apollo_contact_name?: string | null;
+  apollo_position?: string | null;
+  apollo_checked_at?: string | null;
   website_email_status: VerificationStatus | null;
   affiliate_email_status: VerificationStatus | null;
   // Per-stage breakdown — populated by the layered validator (Stage 1–5).
