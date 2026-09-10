@@ -1,5 +1,6 @@
 import { getSupabase } from '../lib/supabase.js';
 import { categoryOrFilter } from '../services/lead-categories.js';
+import { buildSortPlan } from './lead-sort.js';
 import { countriesForLanguage } from '../services/lead-languages.js';
 
 /**
@@ -307,26 +308,18 @@ export async function getLeads(filters: LeadFilters = {}) {
       .is('campaign_leads', null);
   }
 
-  const EMAIL_SORT_COLUMNS = new Set(['primary_email', 'trustpilot_email', 'website_email']);
-  const ALLOWED_SORT_COLUMNS = new Set([
-    'company_name', 'star_rating', 'outreach_status',
-    'country', 'category', 'primary_email', 'trustpilot_email', 'website_email',
-    'created_at', 'scraped_at',
-  ]);
-  const sortCol = filters.sortBy && ALLOWED_SORT_COLUMNS.has(filters.sortBy) ? filters.sortBy : 'created_at';
-  const sortAsc = filters.sortDir === 'asc';
-
-  // For any email column: always put nulls last so leads with emails surface at the top
-  const nullsFirst = EMAIL_SORT_COLUMNS.has(sortCol) ? false : undefined;
+  // Order comes from buildSortPlan — see lead-sort.ts for why a
+  // contact-discovery sort deliberately drops the verification pre-sort.
+  const sortPlan = buildSortPlan(filters.sortBy, filters.sortDir);
 
   // Always prioritize email-verification quality FIRST: valid > catch-all >
   // invalid > unknown > null. The user's chosen sort column becomes the
   // tiebreaker within each rank bucket. Backed by `verification_rank`
   // generated column (migration 034) with an index on it, so this is cheap.
-  const { data, error, count } = await query
-    .order('verification_rank', { ascending: true, nullsFirst: false })
-    .order(sortCol, { ascending: sortAsc, nullsFirst })
-    .range(offset, offset + limit - 1);
+  for (const step of sortPlan) {
+    query = query.order(step.column, { ascending: step.ascending, nullsFirst: step.nullsFirst });
+  }
+  const { data, error, count } = await query.range(offset, offset + limit - 1);
 
   if (error) throw new Error(error.message);
 

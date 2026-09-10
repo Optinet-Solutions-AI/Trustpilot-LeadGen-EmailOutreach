@@ -120,11 +120,15 @@ export default function Leads() {
       {
         key: 'snov_contact',
         label: 'Snov.io Contact',
+        // Sorting this column drops the usual verification-rank pre-sort, so
+        // the rows that actually have a contact come first (see lead-sort.ts).
+        sortKey: 'snov_email',
         render: (l) => cell(l.snov_email, l.snov_contact_name, l.snov_position, l.snov_checked_at),
       },
       {
         key: 'apollo_contact',
         label: 'Apollo Contact',
+        sortKey: 'apollo_email',
         render: (l) => cell(l.apollo_email, l.apollo_contact_name, l.apollo_position,
                             l.apollo_checked_at, l.apollo_checked_at ? undefined : 'needs paid plan'),
       },
