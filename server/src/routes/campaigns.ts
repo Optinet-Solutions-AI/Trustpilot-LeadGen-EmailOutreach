@@ -814,9 +814,27 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
       ? Math.floor(override)
       : perAccount * senderCount;
 
+    // What each day has ALREADY sent. Spent budget: placing on top of it is
+    // how a re-pace left 2026-09-10 at 31 against a cap of 30.
+    const sinceIso = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const { data: sentRows } = await supabase
+      .from('campaign_leads')
+      .select('campaign_id, sent_at')
+      .eq('channel', 'email')
+      .eq('status', 'sent')
+      .gte('sent_at', sinceIso)
+      .limit(5000);
+    const alreadySent: Record<string, number> = {};
+    for (const r of (sentRows ?? []) as Array<Record<string, unknown>>) {
+      const m = meta.get(r.campaign_id as string);
+      if (!m || !r.sent_at) continue;
+      const key = localDayKey(new Date(r.sent_at as string), m.schedule.timezone);
+      alreadySent[key] = (alreadySent[key] ?? 0) + 1;
+    }
+
     const plan = repaceQueue(
       rows.map((r) => ({ id: `${r.id}:${r.kind}`, kind: r.kind, at: r.at, schedule: r.schedule })),
-      { capacityPerDay },
+      { capacityPerDay, alreadySent },
     );
 
     const moved = plan.filter((p) => p.to.getTime() !== p.from.getTime());
@@ -832,16 +850,21 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
 
     let written = 0;
     if (apply) {
-      // Write in small batches; a failure part-way leaves earlier rows correctly
-      // paced rather than rolling everything back to the over-capacity plan.
-      for (const p of moved) {
-        const [id, kind] = p.id.split(':');
-        const patch = kind === 'follow_up'
-          ? { next_step_at: p.to.toISOString() }
-          : { scheduled_at: p.to.toISOString() };
-        const q = supabase.from('campaign_leads').update(patch).eq('id', id);
-        const { error } = kind === 'follow_up' ? await q : await q.eq('status', 'pending');
-        if (!error) written += 1;
+      // Batched and parallel: a serial row-by-row loop took long enough that
+      // the API gateway returned 504 mid-write, leaving the queue half-paced.
+      const BATCH = 25;
+      for (let i = 0; i < moved.length; i += BATCH) {
+        const slice = moved.slice(i, i + BATCH);
+        const results = await Promise.all(slice.map(async (p) => {
+          const [id, kind] = p.id.split(':');
+          const patch = kind === 'follow_up'
+            ? { next_step_at: p.to.toISOString() }
+            : { scheduled_at: p.to.toISOString() };
+          const q = supabase.from('campaign_leads').update(patch).eq('id', id);
+          const { error } = kind === 'follow_up' ? await q : await q.eq('status', 'pending');
+          return !error;
+        }));
+        written += results.filter(Boolean).length;
       }
     }
 

@@ -46,13 +46,22 @@ export interface RepaceOptions {
   capacityPerDay: number;
   /** Nothing is placed before this. Defaults to now. */
   from?: Date;
+  /**
+   * What each day has ALREADY sent, keyed by local day (YYYY-MM-DD).
+   *
+   * Without this the placer starts every day at zero and happily fills today
+   * to capacity on top of whatever went out this morning — which is exactly
+   * how a re-pace on 2026-09-10 left the day at 31 against a cap of 30. Sent
+   * mail is spent budget and has to be counted before anything new is placed.
+   */
+  alreadySent?: Record<string, number>;
 }
 
 const DAY_MS = 86_400_000;
 
 export function repaceQueue(
   items: RepaceItem[],
-  { capacityPerDay, from = new Date() }: RepaceOptions,
+  { capacityPerDay, from = new Date(), alreadySent = {} }: RepaceOptions,
 ): RepaceResult[] {
   if (!Number.isFinite(capacityPerDay) || capacityPerDay < 1) {
     throw new Error(`repaceQueue: capacityPerDay must be at least 1, got ${capacityPerDay}`);
@@ -62,8 +71,13 @@ export function repaceQueue(
   // Whatever was due first keeps its priority.
   const ordered = [...items].sort((a, b) => a.at.getTime() - b.at.getTime());
 
-  /** Placements already committed to each day, and where in the window. */
-  const used = new Map<string, number>();
+  /**
+   * Placements committed to each day. Seeded with what the day has already
+   * sent, so spent budget is never handed out twice.
+   */
+  const used = new Map<string, number>(
+    Object.entries(alreadySent).map(([day, n]) => [day, Math.max(0, n)]),
+  );
   const results: RepaceResult[] = [];
 
   for (const item of ordered) {
@@ -91,8 +105,11 @@ export function repaceQueue(
       dayKey = localDayKey(cursor, item.schedule.timezone);
     }
 
-    const index = used.get(dayKey) ?? 0;
-    used.set(dayKey, index + 1);
+    const dayTotal = used.get(dayKey) ?? 0;
+    used.set(dayKey, dayTotal + 1);
+    // Slot position uses the day's running total so prior sends do not get
+    // the same minute, but stays inside the window via the clamp below.
+    const index = dayTotal;
 
     results.push({
       id: item.id,

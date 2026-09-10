@@ -175,3 +175,40 @@ describe('regression: timezones behind UTC with sparse sending days', () => {
     expect(res).toHaveLength(120);
   });
 });
+
+describe('days that have already sent something', () => {
+  test('placements leave room for what already went out that day', () => {
+    // Real failure: re-pacing on 2026-09-10 filled the day to 30 while 5 had
+    // already been sent that morning, leaving the day at 31. The counter has
+    // to start from what the day has already spent, not from zero.
+    const res = repaceQueue(items(40, '2026-09-09T10:00:00Z'), {
+      capacityPerDay: 30,
+      from: FROM,
+      alreadySent: { '2026-09-09': 5 },
+    });
+    expect(perDay(res)).toEqual([['2026-09-09', 25], ['2026-09-10', 15]]);
+  });
+
+  test('a day already at capacity takes nothing more', () => {
+    const res = repaceQueue(items(10, '2026-09-09T10:00:00Z'), {
+      capacityPerDay: 30,
+      from: FROM,
+      alreadySent: { '2026-09-09': 30 },
+    });
+    expect(perDay(res)).toEqual([['2026-09-10', 10]]);
+  });
+
+  test('a day already OVER capacity still takes nothing more', () => {
+    const res = repaceQueue(items(5, '2026-09-09T10:00:00Z'), {
+      capacityPerDay: 30,
+      from: FROM,
+      alreadySent: { '2026-09-09': 43 },
+    });
+    expect(perDay(res)).toEqual([['2026-09-10', 5]]);
+  });
+
+  test('omitting alreadySent behaves as before', () => {
+    const res = repaceQueue(items(40, '2026-09-09T10:00:00Z'), { capacityPerDay: 30, from: FROM });
+    expect(perDay(res)).toEqual([['2026-09-09', 30], ['2026-09-10', 10]]);
+  });
+});
