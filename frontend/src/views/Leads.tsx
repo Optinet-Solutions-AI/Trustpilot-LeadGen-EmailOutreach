@@ -126,6 +126,13 @@ export default function Leads() {
         render: (l) => cell(l.snov_email, l.snov_contact_name, l.snov_position, l.snov_checked_at),
       },
       {
+        key: 'hunter_contact',
+        label: 'Hunter Contact',
+        sortKey: 'hunter_email',
+        render: (l) => cell(l.hunter_email, l.hunter_contact_name, l.hunter_position,
+                            l.hunter_checked_at),
+      },
+      {
         key: 'apollo_contact',
         label: 'Apollo Contact',
         sortKey: 'apollo_email',

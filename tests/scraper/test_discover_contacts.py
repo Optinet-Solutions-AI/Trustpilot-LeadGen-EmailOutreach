@@ -201,3 +201,31 @@ def test_snov_person_survives_missing_name_fields():
     p = normalize_snov_person({'email': 'a@x.com', 'position': 'CMO'})
     assert p['first_name'] is None and p['last_name'] is None
     assert best_contact([p])['name'] is None
+
+
+# --- Hunter payload ----------------------------------------------------------
+# Hunter is the provider we actually have credit on: 1,505 domain searches
+# versus Snov's spent trial. Its people live under data.emails[] with the
+# address in `value`, and its own `department` tagging is sparse — filtering on
+# it server-side returned almost nobody, so everyone is fetched and ranked
+# locally with the same ladder.
+
+from tools.scraper.discover_contacts import normalize_hunter_person  # noqa: E402
+
+
+def test_hunter_value_field_is_mapped_to_email():
+    p = normalize_hunter_person({
+        'value': 'alegria@stake.com', 'position': 'Marketing Manager',
+        'first_name': 'Ana', 'last_name': 'Alegria'})
+    assert p['email'] == 'alegria@stake.com'
+    assert best_contact([p])['name'] == 'Ana Alegria'
+
+
+def test_hunter_person_without_a_position_is_discarded():
+    p = normalize_hunter_person({'value': 'someone@x.com', 'position': None})
+    assert best_contact([p]) is None
+
+
+def test_head_of_crm_is_recognised_as_reputation_leadership():
+    """pixbet.com's only hit. Owns retention comms — a real target."""
+    assert title_rank('Head of CRM') is not None

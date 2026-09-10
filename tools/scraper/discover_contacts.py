@@ -187,6 +187,50 @@ class SnovProvider:
         return best_contact(normalize_snov_person(p) for p in (res.get('emails') or []))
 
 
+def normalize_hunter_person(p: dict[str, Any]) -> dict[str, Any]:
+    """Hunter's domain-search person -> the shape `best_contact` reads.
+
+    Hunter puts the address in `value` and already uses snake_case names.
+    """
+    return {
+        'email': p.get('value'),
+        'position': p.get('position'),
+        'first_name': p.get('first_name'),
+        'last_name': p.get('last_name'),
+    }
+
+
+class HunterProvider:
+    """Hunter.io domain search — the provider we actually hold credit on.
+
+    Deliberately does NOT pass Hunter's `department=marketing` filter: tagging
+    is sparse, and filtering server-side returned 2 people across 10 major
+    operators. Fetching everyone and ranking titles locally found contacts on
+    3 of the same 10. Costs one search credit per domain either way.
+    """
+
+    name = 'hunter'
+
+    def __init__(self, api_key: str):
+        self._key = api_key
+
+    def balance(self) -> int | None:
+        try:
+            res = json.loads(urllib.request.urlopen(
+                'https://api.hunter.io/v2/account?' +
+                urllib.parse.urlencode({'api_key': self._key}), timeout=30).read())
+            return res['data']['requests']['searches']['remaining']
+        except Exception:
+            return None
+
+    def find(self, domain: str) -> dict[str, Any] | None:
+        params = urllib.parse.urlencode({'domain': domain, 'api_key': self._key, 'limit': 100})
+        res = json.loads(urllib.request.urlopen(
+            'https://api.hunter.io/v2/domain-search?' + params, timeout=60).read())
+        people = (res.get('data') or {}).get('emails') or []
+        return best_contact(normalize_hunter_person(p) for p in people)
+
+
 class ApolloProvider:
     """Apollo people search.
 
@@ -242,6 +286,7 @@ def _load_env() -> None:
 
 BASE_COLS = 'id, company_name, website_url, trustpilot_url, star_rating'
 DISCOVERY_COLS = ('snov_email, snov_contact_name, snov_position, snov_checked_at, '
+                  'hunter_email, hunter_contact_name, hunter_position, hunter_checked_at, '
                   'apollo_email, apollo_contact_name, apollo_position, apollo_checked_at')
 
 
@@ -254,7 +299,7 @@ def has_discovery_columns(sb: Any) -> bool:
     cannot run DDL).
     """
     try:
-        sb.table('leads').select('snov_email').limit(1).execute()
+        sb.table('leads').select('snov_email, hunter_email').limit(1).execute()
         return True
     except Exception:
         return False
@@ -336,7 +381,7 @@ def main() -> int:
     p.add_argument('--limit', type=int, default=20, help='Max domains to search (= max credits).')
     p.add_argument('--apply', action='store_true', help='Write results. Without it, dry run.')
     p.add_argument('--redo', action='store_true', help='Re-search domains already checked.')
-    p.add_argument('--providers', default='snov,apollo')
+    p.add_argument('--providers', default='snov,hunter,apollo')
     p.add_argument('--out', default='.tmp/contact_discovery.json',
                    help='Where results are saved. Always written, even on a dry run.')
     p.add_argument('--load-file', dest='load_file',
@@ -359,6 +404,10 @@ def main() -> int:
             print(f'  capping run at {int(bal)} domains — that is the credit balance.')
             args.limit = int(bal)
         providers.append(snov)
+    if 'hunter' in wanted and os.environ.get('HUNTER_API_KEY'):
+        hunter = HunterProvider(os.environ['HUNTER_API_KEY'])
+        print(f'Hunter searches remaining: {hunter.balance()}')
+        providers.append(hunter)
     if 'apollo' in wanted and os.environ.get('APOLLO_API_KEY'):
         providers.append(ApolloProvider(os.environ['APOLLO_API_KEY']))
 
@@ -428,7 +477,7 @@ def main() -> int:
     if not args.apply:
         print('DRY RUN — database not written. Re-run with --apply.')
     elif not columns_ready:
-        print('Database NOT written — migration 066 missing. Apply it, then:')
+        print('Database NOT written — a discovery migration is missing. Apply it, then:')
         print(f'  .venv/Scripts/python.exe -m tools.scraper.discover_contacts --load-file {args.out}')
     return 0
 
@@ -443,7 +492,7 @@ def load_file(path: str) -> int:
     written = 0
     for r in rows:
         patch = {k: v for k, v in r.items()
-                 if k.startswith(('snov_', 'apollo_'))}
+                 if k.startswith(('snov_', 'hunter_', 'apollo_'))}
         if patch:
             sb.table('leads').update(patch).eq('id', r['id']).execute()
             written += 1
