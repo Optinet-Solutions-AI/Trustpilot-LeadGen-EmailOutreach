@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { getLeads, getLeadById, updateLead, bulkUpdateLeads, deleteLead, bulkDeleteLeads, getLeadIds, getVerificationCounts, parseVerificationFilter } from '../db/leads.js';
 import { getCampaignLeadsByLead } from '../db/campaigns.js';
+import { collectFilterOptions, fetchAllFilterRows, type FilterRow } from '../db/lead-filters.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
 import { sanitizeTrustpilotUrl, validateTrustpilotUrl, validateTrustpilotUrlViaPlaywright } from '../services/url-validator.js';
@@ -46,17 +47,29 @@ const parseIds = (raw: unknown): string[] | undefined => {
   return ids.length ? ids : undefined;
 };
 
-// GET /api/leads/filters — distinct countries and categories for wizard dropdowns
+// GET /api/leads/filters — distinct countries and categories for every filter
+// dropdown (Lead Matrix, campaign wizard, job-card links).
+//
+// Reads the whole table in pages: this was one unbounded select, and PostgREST
+// caps those at 1,000 rows, so a category outside that slice was missing from
+// every dropdown with nothing to indicate it had been dropped. It also filtered
+// to leads that already had an email, which hid a freshly scraped category from
+// the Matrix until enrichment found an address. Both scopes are returned now —
+// see collectFilterOptions.
 router.get('/filters', async (_req: Request, res: Response) => {
   try {
     const supabase = getSupabase();
-    const [{ data: countryRows }, { data: categoryRows }] = await Promise.all([
-      supabase.from('leads').select('country').not('primary_email', 'is', null).not('country', 'is', null),
-      supabase.from('leads').select('category').not('primary_email', 'is', null).not('category', 'is', null),
-    ]);
-    const countries = [...new Set((countryRows || []).map((r: { country: string }) => r.country).filter(Boolean))].sort();
-    const categories = [...new Set((categoryRows || []).map((r: { category: string }) => r.category).filter(Boolean))].sort();
-    res.json({ success: true, data: { countries, categories } });
+    const rows = await fetchAllFilterRows(async (from, to) => {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('country, category, primary_email')
+        .range(from, to);
+      if (error) throw error;
+      return (data || []) as FilterRow[];
+    });
+    // `countries`/`categories` stay the full set (Matrix semantics); the wizard
+    // reads the emailable* keys.
+    res.json({ success: true, data: collectFilterOptions(rows) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });

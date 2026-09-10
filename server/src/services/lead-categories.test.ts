@@ -7,6 +7,7 @@ import {
   canonicalizeCategory,
   categoryFamily,
   categoryFilterPatterns,
+  categoryGroupPatterns,
   categoryOrFilter,
   slugifyCategory,
 } from './lead-categories.js';
@@ -232,6 +233,28 @@ describe('drift guard vs tools/db/category_canonical.py', () => {
     // ...and so must every alias list, so a one-word divergence is caught too.
     for (const [canonical, aliases] of Object.entries(pythonFamilies)) {
       expect(CANONICAL_FAMILIES[canonical], `family ${canonical}`).toEqual(aliases);
+    }
+  });
+});
+
+describe('br_licensed_betting segment', () => {
+  // The Brazilian licence-list reverse lookup writes this single category onto
+  // its 138 leads so the batch can be picked as one segment. Tagging replaced
+  // each lead's own Trustpilot category, so unless the roll-up knows the slug
+  // the whole batch silently vanishes from "Gambling (all)" — which is how a
+  // gambling campaign is actually built.
+  test('is inside the Gambling (all) roll-up', () => {
+    const needles = categoryGroupPatterns('gambling');
+    expect(needles.some((n) => 'br_licensed_betting'.includes(n))).toBe(true);
+  });
+
+  test('is still selectable on its own', () => {
+    expect(categoryOrFilter('br_licensed_betting')).toBe('category.ilike.%br_licensed_betting%');
+  });
+
+  test('the roll-up does not drag in unrelated leads via this member', () => {
+    for (const needle of categoryGroupPatterns('gambling')) {
+      expect(needle, needle).toMatch(/^[a-z0-9_]+$/);
     }
   });
 });

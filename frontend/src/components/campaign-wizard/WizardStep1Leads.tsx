@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import api from '../../api/client';
 import { countryOptions as buildCountryOptions, allCountryOptions } from '../../lib/countries';
-import { COUNTRIES, CATEGORIES } from './scheduleConfig';
+import { COUNTRIES, buildCategoryOptions } from './scheduleConfig';
 
 interface AppMode {
   manualLeadsOnly: boolean;
@@ -154,9 +154,13 @@ export default function WizardStep1Leads({
     }).catch(() => { /* ignore — fall back to defaults */ });
 
     api.get('/leads/filters').then((res) => {
-      const { countries, categories } = res.data.data;
-      if (countries?.length) setDynamicCountries(countries);
-      if (categories?.length) setDynamicCategories(categories);
+      // Prefer the emailable scope — this screen builds a mailing list. Fall
+      // back to the full set for an older API that doesn't send it yet.
+      const { countries, categories, emailableCountries, emailableCategories } = res.data.data;
+      const useCountries = emailableCountries ?? countries;
+      const useCategories = emailableCategories ?? categories;
+      if (useCountries?.length) setDynamicCountries(useCountries);
+      if (useCategories?.length) setDynamicCategories(useCategories);
     }).catch(() => { /* fall back to static lists */ });
 
     // Languages that actually have leads, with live counts. Served from the
@@ -441,13 +445,12 @@ export default function WizardStep1Leads({
   // so a gambling campaign had to be built once per sub-category. Any stored
   // category the curated list doesn't know about is still appended, so
   // nothing in the book becomes unreachable.
-  const categoryOptions = (() => {
-    const known = new Set(CATEGORIES.map((c) => c.slug));
-    const extras = dynamicCategories
-      .filter((c) => !known.has(c))
-      .map((c) => ({ slug: c, name: c }));
-    return [...CATEGORIES, ...extras];
-  })();
+  //
+  // Shared with the Lead Matrix via buildCategoryOptions so the two can't
+  // drift. `dynamicCategories` here is the EMAILABLE subset: this screen only
+  // ever produces a mailing list, so a category whose leads carry no address
+  // would just yield an empty recipient list.
+  const categoryOptions = buildCategoryOptions(dynamicCategories);
 
   const categoryLabel = categoryOptions.find((c) => c.slug === filterCategory)?.name || 'All Categories';
   const countryLabel  = countryOptionList.find((c) => c.code === filterCountry)?.label || 'All Countries';

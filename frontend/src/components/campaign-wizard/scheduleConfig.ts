@@ -45,6 +45,10 @@ export const CATEGORIES = [
   { slug: 'online_lottery_ticket_vendor', name: 'Online Lottery Vendor' },
   { slug: 'lottery_retailer', name: 'Lottery Retailer' },
   { slug: 'lottery_shop', name: 'Lottery Shop' },
+  // Provenance, not a trade — the brands from Brazil's 2025 licence list,
+  // tagged as one batch so the segment is selectable in a single click. Sits
+  // inside "Gambling (all)" via CATEGORY_GROUPS on the server.
+  { slug: 'br_licensed_betting', name: 'Brazil Licensed Betting' },
   // ── Video-game retail (NOT gambling) ──
   { slug: 'video_games', name: 'Video Games / Game Stores (all)', group: true },
   { slug: 'video_game_store', name: 'Video Game Store' },
@@ -56,6 +60,45 @@ export const CATEGORIES = [
   { slug: 'electronics_technology', name: 'Electronics & Technology' },
   { slug: 'travel_vacation', name: 'Travel & Vacation' },
 ];
+
+export type CategoryOption = { slug: string; name: string; group?: boolean };
+
+/**
+ * Display name for a category slug the curated list above doesn't know.
+ * `br_licensed_betting` -> `Br Licensed Betting`. Curated entries keep their
+ * hand-written labels; this is only ever a fallback so a newly scraped
+ * category reads like a label instead of a database value.
+ */
+export function prettifyCategorySlug(slug: string): string {
+  return slug
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/**
+ * The category dropdown, for EVERY surface that shows one.
+ *
+ * The curated list comes first so the "(all)" roll-ups are offered and known
+ * slugs keep their proper labels; anything else present in the data is
+ * appended, so a category that appears from a new scrape (or a batch tag like
+ * br_licensed_betting) is immediately selectable everywhere without a code
+ * change. Being auto-listed does NOT put a slug inside a roll-up — nothing can
+ * infer that a new category is gambling, so that stays a deliberate edit to
+ * CATEGORY_GROUPS on the server.
+ *
+ * Lead Matrix passes the full category list; the wizard passes the emailable
+ * subset. Both come from GET /api/leads/filters.
+ */
+export function buildCategoryOptions(dynamicSlugs: readonly string[] = []): CategoryOption[] {
+  const known = new Set(CATEGORIES.map((c) => c.slug));
+  const extras = [...new Set(dynamicSlugs)]
+    .filter((slug) => slug && !known.has(slug))
+    .sort()
+    .map((slug) => ({ slug, name: prettifyCategorySlug(slug) }));
+  return [...CATEGORIES, ...extras];
+}
 
 // Standard IANA timezones supported by the schedule engine
 export const TIMEZONES = [

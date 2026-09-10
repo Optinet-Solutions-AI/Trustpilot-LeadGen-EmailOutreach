@@ -19,7 +19,7 @@ import LoadingState from '../ui/LoadingState';
 import SectionHeader from '../ui/SectionHeader';
 // Shared with the campaign wizard so "Gambling (all)" means the same
 // thing in both places.
-import { CATEGORIES } from '../components/campaign-wizard/scheduleConfig';
+import { buildCategoryOptions } from '../components/campaign-wizard/scheduleConfig';
 
 type View = 'table' | 'pipeline';
 
@@ -80,6 +80,10 @@ export default function Leads() {
   const [languageOptions, setLanguageOptions] = useState<
     Array<{ language: string; countries: string[]; leadCount: number }>
   >([]);
+  const [dynamicCategories, setDynamicCategories] = useState<string[]>([]);
+  // Curated entries (with their labels and the "(all)" roll-ups) plus whatever
+  // else is actually in the book. Same helper the campaign wizard uses.
+  const categoryOptions = buildCategoryOptions(dynamicCategories);
   // When on, show ONLY Trustpilot-flagged (blocked) leads — lets the operator
   // see and count how many blocked accounts were scraped (migration 048).
   const [blockedFilter, setBlockedFilter] = useState(false);
@@ -225,6 +229,18 @@ export default function Leads() {
     api.get('/leads/languages')
       .then((res) => { if (!cancelled) setLanguageOptions(res.data?.data ?? []); })
       .catch(() => { if (!cancelled) setLanguageOptions([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Categories actually present in the book, so a value that arrives from a
+  // new scrape is selectable here without a code change. The FULL set, not the
+  // emailable subset the wizard uses — this view lists every lead, including
+  // the ones enrichment hasn't found an address for yet.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/leads/filters')
+      .then((res) => { if (!cancelled) setDynamicCategories(res.data?.data?.categories ?? []); })
+      .catch(() => { if (!cancelled) setDynamicCategories([]); });
     return () => { cancelled = true; };
   }, []);
 
@@ -1012,7 +1028,7 @@ export default function Leads() {
             onChange={(e) => { setCategoryFilter(e.target.value); writeFilterToUrl('category', e.target.value); setPage(1); }}
             className="bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
           >
-            {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+            {categoryOptions.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
             {/* When the URL carries a category slug that's not in our
              *  Trustpilot-curated list (e.g. Yelp/TA values like 'plumbing'
              *  or 'restaurants' passed in by a job-card click), render an
@@ -1022,7 +1038,7 @@ export default function Leads() {
              *  is wrong. Bug discovered 2026-05-20 when a Yelp AU/plumbing
              *  scrape's job-card "7 found" link took the user to a Lead
              *  Matrix view showing only 5 leads with no obvious filter. */}
-            {categoryFilter && !CATEGORIES.some((c) => c.slug === categoryFilter) && (
+            {categoryFilter && !categoryOptions.some((c) => c.slug === categoryFilter) && (
               <option value={categoryFilter}>{categoryFilter}</option>
             )}
           </select>
@@ -1149,9 +1165,9 @@ export default function Leads() {
               onChange={(e) => { setCategoryFilter(e.target.value); writeFilterToUrl('category', e.target.value); setPage(1); }}
               className="w-full bg-surface-container rounded-lg px-3 py-2.5 text-sm border-0 focus:ring-2 focus:ring-[#b0004a]/20 focus:outline-none"
             >
-              {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+              {categoryOptions.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
               {/* See desktop dropdown above for why this fallback exists. */}
-              {categoryFilter && !CATEGORIES.some((c) => c.slug === categoryFilter) && (
+              {categoryFilter && !categoryOptions.some((c) => c.slug === categoryFilter) && (
                 <option value={categoryFilter}>{categoryFilter}</option>
               )}
             </select>

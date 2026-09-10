@@ -1,4 +1,5 @@
-import { COUNTRIES, CATEGORIES } from './StepSetup';
+import { COUNTRIES } from './StepSetup';
+import { buildCategoryOptions, prettifyCategorySlug } from './scheduleConfig';
 
 interface Props {
   name: string;
@@ -19,7 +20,13 @@ export default function StepReview({
   followUpCount = 0, saving, onSubmit,
 }: Props) {
   const countryName  = COUNTRIES.find((c) => c.code === filterCountry)?.name  || 'All Countries';
-  const categoryName = CATEGORIES.find((c) => c.slug === filterCategory)?.name || 'All Categories';
+  // Resolve against the curated list, then fall back to a prettified slug so a
+  // category discovered from the data still reads as a name here rather than
+  // silently showing 'All Categories' over a filtered campaign.
+  const categoryName = !filterCategory
+    ? 'All Categories'
+    : buildCategoryOptions([filterCategory]).find((c) => c.slug === filterCategory)?.name
+      ?? prettifyCategorySlug(filterCategory);
   const bodyPreview  = body.replace(/<[^>]+>/g, '').slice(0, 180).trim();
 
   const items = [

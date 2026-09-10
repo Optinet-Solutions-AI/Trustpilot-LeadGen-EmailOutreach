@@ -155,6 +155,11 @@ export const CATEGORY_GROUPS: Record<string, readonly string[]> = {
     'bingo_hall',
     'gaming', 'gaming_service_provider',
     'lottery_vendor', 'lottery_retailer', 'lottery_shop', 'online_lottery_ticket_vendor',
+    // Provenance tag, not a trade: the Brazilian licence-list reverse lookup
+    // writes this onto its whole batch so the segment can be picked in one go.
+    // It has to be a member here because tagging REPLACED each lead's own
+    // Trustpilot category — without it the batch drops out of "Gambling (all)".
+    'br_licensed_betting',
   ],
   // Retail, not gambling. Kept as its own roll-up so the two can never be
   // confused again.

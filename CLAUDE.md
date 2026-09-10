@@ -499,6 +499,31 @@ See `docs/deployment.md` for complete reference.
   `estrelabet.com` under web hosting). Rejects are always printed, never
   silently dropped — `--include-off-industry` keeps them.
 
+### Category dropdowns (Lead Matrix, campaign wizard, job-card links)
+- **There is ONE category list: `CATEGORIES` in
+  `frontend/src/components/campaign-wizard/scheduleConfig.ts`.** `StepSetup.tsx`
+  re-exports it rather than keeping a copy — it used to keep its own, and the
+  two drifted so a slug added to one silently vanished from anything reading
+  the other.
+- **Every picker is built with `buildCategoryOptions(dynamicSlugs)`.** Curated
+  entries come first (they carry the labels and the `(all)` roll-ups); any slug
+  present in the data but not curated is appended with a prettified label, so a
+  category that appears from a new scrape is immediately selectable with no
+  code change. Being auto-listed does NOT put a slug in a roll-up — nothing can
+  infer that a new category is gambling, so `CATEGORY_GROUPS` stays a
+  deliberate edit.
+- **`GET /api/leads/filters` must page the whole table.** It was one unbounded
+  select, and PostgREST caps those at 1,000 rows, so "distinct" was computed
+  from an arbitrary slice: measured 2026-09-10, it saw 49 categories out of 58,
+  hiding `handyman`, `locksmith`, `restaurant` and `contractors_consultants`
+  from the wizard entirely. Same 1,000-row trap as the TripAdvisor taxonomy
+  refresh. Logic lives in `server/src/db/lead-filters.ts`.
+- **Two scopes, deliberately.** `countries`/`categories` cover every lead (Lead
+  Matrix, which lists leads with no address yet); `emailableCountries`/
+  `emailableCategories` are restricted to leads that carry an address (campaign
+  wizard, which only ever builds a mailing list). Serving one scope to both is
+  what hid a freshly scraped category from the Matrix until enrichment ran.
+
 ### TripAdvisor
 - Direct Playwright is 403'd by Cloudflare — `SCRAPINGBEE_API_KEY` is mandatory, `stealth_proxy` tier only
 - Parsing leans on JSON-LD `schema.org/LocalBusiness`; DOM-fallback selectors drift over time

@@ -12,33 +12,13 @@ export const COUNTRIES = [
   { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
 ];
 
-export const CATEGORIES = [
-  { slug: '', name: 'All Categories' },
-  { slug: 'gambling', name: 'Gambling (all)' },
-  { slug: 'casino', name: 'Casino' },
-  { slug: 'online_casino_or_bookmaker', name: 'Online Casino / Bookmaker' },
-  { slug: 'online_sports_betting', name: 'Online Sports Betting' },
-  { slug: 'betting_agency', name: 'Betting Agency' },
-  { slug: 'bookmaker', name: 'Bookmaker' },
-  { slug: 'gambling_service', name: 'Gambling Service' },
-  { slug: 'gambling_house', name: 'Gambling House' },
-  { slug: 'off_track_betting_shop', name: 'Off-Track Betting Shop' },
-  { slug: 'lottery_vendor', name: 'Lottery Vendor' },
-  { slug: 'online_lottery_ticket_vendor', name: 'Online Lottery Vendor' },
-  { slug: 'lottery_retailer', name: 'Lottery Retailer' },
-  { slug: 'lottery_shop', name: 'Lottery Shop' },
-  { slug: 'gambling_instructor', name: 'Gambling Instructor' },
-  { slug: 'gaming', name: 'Gaming (all)' },
-  { slug: 'gaming_service_provider', name: 'Gaming Service Provider' },
-  { slug: 'bingo_hall', name: 'Bingo Hall' },
-  { slug: 'video_game_store', name: 'Video Game Store' },
-  { slug: 'game_store', name: 'Game Store' },
-  { slug: 'bank', name: 'Bank' },
-  { slug: 'insurance_agency', name: 'Insurance Agency' },
-  { slug: 'money_transfer_service', name: 'Money Transfer' },
-  { slug: 'electronics_technology', name: 'Electronics & Technology' },
-  { slug: 'travel_vacation', name: 'Travel & Vacation' },
-];
+// Re-exported from scheduleConfig so there is ONE category list in the app.
+// This file used to carry its own copy, which drifted: a slug added to the
+// shared list was missing here, and anything reading this one silently lost
+// the entry. Use buildCategoryOptions() to merge in categories discovered
+// from the data.
+import { CATEGORIES } from './scheduleConfig';
+export { CATEGORIES };
 
 // Only timezones confirmed in Instantly's allowed enum
 export const TIMEZONES = [
