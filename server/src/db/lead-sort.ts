@@ -17,17 +17,17 @@ export const ALLOWED_SORT_COLUMNS = new Set([
   'company_name', 'star_rating', 'outreach_status',
   'country', 'category', 'primary_email', 'trustpilot_email', 'website_email',
   'created_at', 'scraped_at',
-  'snov_email', 'hunter_email', 'apollo_email',
+  'snov_email', 'apollo_email',
 ]);
 
 /** Sorting these must put rows that HAVE a value first, not nulls. */
 export const EMAIL_SORT_COLUMNS = new Set([
   'primary_email', 'trustpilot_email', 'website_email',
-  'snov_email', 'hunter_email', 'apollo_email',
+  'snov_email', 'apollo_email',
 ]);
 
 /** Per-provider contact columns — these bypass the verification pre-sort. */
-export const DISCOVERY_SORT_COLUMNS = new Set(['snov_email', 'hunter_email', 'apollo_email']);
+export const DISCOVERY_SORT_COLUMNS = new Set(['snov_email', 'apollo_email']);
 
 export interface SortStep {
   column: string;

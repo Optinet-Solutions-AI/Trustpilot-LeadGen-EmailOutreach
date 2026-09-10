@@ -49,10 +49,6 @@ export interface Lead {
   snov_contact_name?: string | null;
   snov_position?: string | null;
   snov_checked_at?: string | null;
-  hunter_email?: string | null;
-  hunter_contact_name?: string | null;
-  hunter_position?: string | null;
-  hunter_checked_at?: string | null;
   apollo_email?: string | null;
   apollo_contact_name?: string | null;
   apollo_position?: string | null;
