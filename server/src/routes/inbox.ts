@@ -17,6 +17,7 @@ import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache, dedupB
 import { extractContacts } from '../services/auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 import { renderAndSpin } from '../services/template-engine.js';
+import { resolveReplyFromAddress } from '../services/reply-account.js';
 import { applyTestMode } from '../services/test-mode.js';
 import { createNote } from '../db/notes.js';
 import { getSupabase } from '../lib/supabase.js';
@@ -1240,6 +1241,40 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
       return;
     }
 
+    // Ongage senders cannot answer for themselves: the transactional endpoint
+    // carries no In-Reply-To/References, and those rows hold no SMTP
+    // credentials. The reply-to mailbox answers instead — it is the address
+    // the prospect actually wrote to. See reply-account.ts.
+    const replyFrom = resolveReplyFromAddress(acc.auth_type as string, acc.email as string);
+    if (!replyFrom) {
+      res.status(400).json({
+        success: false,
+        error: (acc.auth_type as string) === 'ongage'
+          ? 'This thread was sent through Ongage, which cannot send replies. Set ONGAGE_REPLY_TO to a mailbox with SMTP credentials and replies will go from there.'
+          : `Unsupported account auth_type: ${acc.auth_type}`,
+      });
+      return;
+    }
+
+    let sendingAccount = acc as Record<string, unknown>;
+    if (replyFrom.redirected) {
+      const { data: via } = await supabase
+        .from('email_accounts')
+        .select('email, status, auth_type, from_name, smtp_host, smtp_port, smtp_user, smtp_password, imap_host, imap_port, imap_user, imap_pass, gmail_client_id, gmail_client_secret, gmail_refresh_token')
+        .ilike('email', replyFrom.email)
+        .limit(1)
+        .maybeSingle();
+      if (!via) {
+        res.status(400).json({ success: false, error: `Reply mailbox ${replyFrom.email} is not in email_accounts — add it there so replies can be sent.` });
+        return;
+      }
+      if (via.status && via.status !== 'active') {
+        res.status(400).json({ success: false, error: `Reply mailbox ${replyFrom.email} is ${via.status}, not active.` });
+        return;
+      }
+      sendingAccount = via as Record<string, unknown>;
+    }
+
     // Subject resolution: prefer explicit override → rendered campaign subject → fallback
     const campaign = (Array.isArray(cl.campaigns) ? cl.campaigns[0] : cl.campaigns) as
       | { template_subject?: string; name?: string }
@@ -1255,7 +1290,13 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     }
 
     const originalMsgId = (cl.gmail_message_id as string | null) ?? null;
-    const authType = acc.auth_type as string;
+    const authType = sendingAccount.auth_type as string;
+    // Both count as us: the address the original went out from, and the one
+    // answering now. Either appearing in a thread is not a recipient.
+    const ourAddresses = new Set(
+      [acc.email as string, (sendingAccount.email as string) ?? '']
+        .filter(Boolean).map((e) => e.toLowerCase()),
+    );
     const senderEmailLower = (acc.email as string).toLowerCase();
 
     // ── Thread-aware reply-chain construction ─────────────────────────────
@@ -1281,13 +1322,16 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     let quotedHtml = '';
 
     if ((authType === 'smtp' || authType === 'app_password') && originalMsgId) {
-      const imapHost = acc.imap_host as string | null;
-      const imapUser = acc.imap_user as string | null;
-      const imapPass = acc.imap_pass as string | null;
+      // Read the thread from the mailbox that actually holds it. For a
+      // redirected Ongage thread that is the answering mailbox — the Ongage
+      // row has no IMAP at all, so using it here skipped threading silently.
+      const imapHost = sendingAccount.imap_host as string | null;
+      const imapUser = sendingAccount.imap_user as string | null;
+      const imapPass = sendingAccount.imap_pass as string | null;
       if (imapHost && imapUser && imapPass) {
         try {
           const thread = await fetchSmtpThread(
-            { imap_host: imapHost, imap_port: (acc.imap_port as number | null) ?? 993, imap_user: imapUser, imap_pass: imapPass },
+            { imap_host: imapHost, imap_port: (sendingAccount.imap_port as number | null) ?? 993, imap_user: imapUser, imap_pass: imapPass },
             originalMsgId,
             acc.email as string,
             cl.email_used as string,
@@ -1311,7 +1355,7 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
             }));
             const inbound = thread.messages.filter((m) => {
               const addr = m.from.match(/<([^>]+)>/)?.[1] ?? m.from;
-              return addr.toLowerCase() !== senderEmailLower;
+              return !ourAddresses.has(addr.toLowerCase());
             });
             const latestInbound = inbound[inbound.length - 1];
             const target = targeted ?? latestInbound;
@@ -1391,7 +1435,7 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
     let result: { success: boolean; messageId?: string; error?: string };
     if (authType === 'smtp' || authType === 'app_password') {
       result = await sendSmtpReply({
-        account: acc as Record<string, unknown>,
+        account: sendingAccount,
         to: testApplied.to,
         subject: testApplied.subject,
         html: testApplied.html,
@@ -1400,7 +1444,7 @@ router.post('/reply/:campaignLeadId', async (req: Request, res: Response) => {
       });
     } else if (authType === 'gmail_oauth') {
       result = await sendGmailReply({
-        account: acc as Record<string, unknown>,
+        account: sendingAccount,
         to: testApplied.to,
         subject: testApplied.subject,
         html: testApplied.html,
