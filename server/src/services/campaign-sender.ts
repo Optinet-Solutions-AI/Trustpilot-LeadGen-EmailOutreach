@@ -17,6 +17,8 @@ import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
 import { assignScheduledTimes, describeSendPlan, resolveScheduleStart, type SendingSchedule } from './schedule-engine.js';
+import { planNextStepAt } from './next-step-planner.js';
+import { loadDayLoad, loadCapacityPerDay, loadCampaignSchedule } from './day-load.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { getCampaignSteps } from '../db/campaign-steps.js';
 import { updateLead } from '../db/leads.js';
@@ -309,7 +311,17 @@ async function finalizeCampaign(
     const steps = await getCampaignSteps(campaignId);
     const nextStep = steps.find(s => s.step_number === 2);
     if (nextStep && sent > 0) {
-      const nextStepAt = new Date(Date.now() + nextStep.delay_days * 24 * 60 * 60 * 1000).toISOString();
+      // Same rule as everywhere else: the delay is a soonest, and the step
+      // lands on the first day from there with room in the window.
+      const idealNext = new Date(Date.now() + nextStep.delay_days * 24 * 60 * 60 * 1000);
+      const schedNext = await loadCampaignSchedule(campaignId);
+      let nextStepAt: string;
+      if (schedNext) {
+        const [load, capacityPerDay] = await Promise.all([loadDayLoad(), loadCapacityPerDay()]);
+        nextStepAt = planNextStepAt({ load, schedule: schedNext, capacityPerDay, earliest: idealNext }).toISOString();
+      } else {
+        nextStepAt = idealNext.toISOString();
+      }
       await supabase
         .from('campaign_leads')
         .update({ current_step: 1, next_step_at: nextStepAt })

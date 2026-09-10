@@ -26,7 +26,10 @@ import { isPermanentSendFailure } from './bounce-tracker.js';
 import { decideFollowUpSend } from './follow-up-budget.js';
 import { loadSentCounts, loadAccountCaps, recordSend } from './send-counts.js';
 import type { SendingSchedule } from './schedule-engine.js';
+import type { DayLoad } from './next-step-planner.js';
 import { followUpSubject } from './message-preview.js';
+import { planNextStepAt } from './next-step-planner.js';
+import { loadDayLoad, loadCapacityPerDay } from './day-load.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
 
@@ -105,6 +108,10 @@ async function processDueFollowUps() {
   // is how a single mailbox reached 23 sends against a limit of 10.
   const sentCounts  = await loadSentCounts();
   const accountCaps = await loadAccountCaps();
+  // One shared day-load for the whole tick, so a batch of follow-ups spreads
+  // across days instead of every one of them landing on the same hour.
+  const dayLoad = await loadDayLoad();
+  const capacityPerDay = await loadCapacityPerDay();
 
   for (const cl of dueLeads) {
     const senderEmail = (cl.sender_email as string | null | undefined) ?? null;
@@ -130,7 +137,7 @@ async function processDueFollowUps() {
     }
 
     try {
-      await sendFollowUp(cl);
+      await sendFollowUp(cl, { load: dayLoad, capacityPerDay, schedule });
       // Count it immediately: the next row in THIS tick must see it.
       recordSend(sentCounts, senderEmail ?? config.gmail.fromEmail);
     } catch (err) {
@@ -169,10 +176,35 @@ async function deferFollowUp(
   }
 }
 
+
+/**
+ * When the step AFTER this one is due. The delay is a soonest, not an exact
+ * date: a flat now+delay_days is what stacked 27 follow-ups on one hour of an
+ * already-full day. Falls back to the flat date only when the campaign has no
+ * usable window to place within.
+ */
+function dueDateFor(
+  delayDays: number,
+  plan?: { load: DayLoad; capacityPerDay: number; schedule: SendingSchedule | null },
+): string {
+  const ideal = new Date(Date.now() + delayDays * 24 * 60 * 60 * 1000);
+  if (!plan?.schedule) return ideal.toISOString();
+  return planNextStepAt({
+    load: plan.load,
+    schedule: plan.schedule,
+    earliest: ideal,
+    capacityPerDay: plan.capacityPerDay,
+  }).toISOString();
+}
+
 /**
  * Send a single follow-up email for a campaign lead.
  */
-async function sendFollowUp(cl: Record<string, unknown>) {
+async function sendFollowUp(
+  cl: Record<string, unknown>,
+  /** Shared across the tick so a batch spreads instead of stacking. */
+  plan?: { load: DayLoad; capacityPerDay: number; schedule: SendingSchedule | null },
+) {
   const supabase = getSupabase();
   const id = cl.id as string;
   const originalNextStepAt = cl.next_step_at as string;
@@ -227,9 +259,7 @@ async function sendFollowUp(cl: Record<string, unknown>) {
     console.warn(`[SequenceScheduler] Refusing duplicate send — note exists for ${cl.email_used} step ${nextStepNumber}; advancing row to clear from queue`);
     const stepsForAdvance = await getCampaignSteps(campaignId);
     const nextNextStep = stepsForAdvance.find((s) => s.step_number === nextStepNumber + 1);
-    const nextStepAt = nextNextStep
-      ? new Date(Date.now() + nextNextStep.delay_days * 24 * 60 * 60 * 1000).toISOString()
-      : null;
+    const nextStepAt = nextNextStep ? dueDateFor(nextNextStep.delay_days, plan) : null;
     await supabase
       .from('campaign_leads')
       .update({
@@ -350,9 +380,7 @@ async function sendFollowUp(cl: Record<string, unknown>) {
 
     // Find the NEXT follow-up step after this one
     const nextNextStep = steps.find((s) => s.step_number === nextStepNumber + 1);
-    const nextStepAt = nextNextStep
-      ? new Date(Date.now() + nextNextStep.delay_days * 24 * 60 * 60 * 1000).toISOString()
-      : null;
+    const nextStepAt = nextNextStep ? dueDateFor(nextNextStep.delay_days, plan) : null;
 
     // Update campaign_lead: advance step, set next due date.
     // Also persist the sender we used (or env default) so future follow-ups

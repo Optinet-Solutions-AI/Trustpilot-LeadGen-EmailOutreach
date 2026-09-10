@@ -291,13 +291,13 @@ const server = app.listen(config.port, async () => {
   // ENABLE_SOCIAL_CONNECT_WORKER=1 so Cloud Run and dev instances no-op.
   startSocialConnectWorker();
 
-  // Reply tracking poll — runs every 10 minutes for BOTH the legacy single
+  // Reply tracking poll — runs every 5 minutes for BOTH the legacy single
   // Gmail OAuth path (reply-tracker.ts, self-gated on EMAIL_MODE=gmail) AND
   // multi-provider SMTP/IMAP accounts like Bluehost Titan or DreamHost
   // (reply-tracker.imap.ts walks every active email_accounts row with
   // auth_type='smtp' and valid IMAP creds). Both trackers no-op cleanly when
   // they have nothing to do, so we don't gate the interval on EMAIL_MODE.
-  const REPLY_CHECK_INTERVAL = 10 * 60 * 1000;
+  const REPLY_CHECK_INTERVAL = 5 * 60 * 1000;
   setInterval(async () => {
     try {
       const { checkForReplies } = await import('./services/reply-tracker.js');
@@ -318,7 +318,7 @@ const server = app.listen(config.port, async () => {
       console.error('[ReplyTracker] IMAP poll error:', e instanceof Error ? e.message : e);
     }
   }, REPLY_CHECK_INTERVAL);
-  console.log('Reply tracker: polling Gmail + IMAP every 10 minutes');
+  console.log('Reply tracker: polling Gmail + IMAP every 5 minutes');
 
   // Discovered-contacts worker — verifies pending email candidates through
   // the existing layered validator, and scrapes pending URL candidates via

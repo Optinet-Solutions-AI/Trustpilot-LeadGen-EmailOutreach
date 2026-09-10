@@ -20,6 +20,8 @@ import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter, getAccountDailyCap } from './rate-limiter.js';
 import { loadSentCounts, recordSend } from './send-counts.js';
 import { renderAndSpin } from './template-engine.js';
+import { planNextStepAt } from './next-step-planner.js';
+import { loadDayLoad, loadCapacityPerDay, loadCampaignSchedule } from './day-load.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { updateLead } from '../db/leads.js';
 import { createNote } from '../db/notes.js';
@@ -552,7 +554,17 @@ async function maybeFinalizeCampaign(campaignId: string): Promise<void> {
     const steps = await getCampaignSteps(campaignId);
     const step2 = steps.find((s) => s.step_number === 2);
     if (step2 && sentCount) {
-      const nextStepAt = new Date(Date.now() + step2.delay_days * 24 * 60 * 60 * 1000).toISOString();
+      // Place step 2 where there is actually room, rather than a flat
+      // now+delay_days that lands the whole batch on one hour of one day.
+      const ideal2 = new Date(Date.now() + step2.delay_days * 24 * 60 * 60 * 1000);
+      const sched2 = await loadCampaignSchedule(campaignId);
+      let nextStepAt: string;
+      if (sched2) {
+        const [load, capacityPerDay] = await Promise.all([loadDayLoad(), loadCapacityPerDay()]);
+        nextStepAt = planNextStepAt({ load, schedule: sched2, capacityPerDay, earliest: ideal2 }).toISOString();
+      } else {
+        nextStepAt = ideal2.toISOString();
+      }
       await supabase
         .from('campaign_leads')
         .update({ current_step: 1, next_step_at: nextStepAt })
