@@ -34,6 +34,7 @@ import { classifyReply, detectOptOut } from './auto-reply-detector.js';
 import { classifyInboundBounce } from './bounce-tracker.js';
 import { extractContacts } from './auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
+import { isPollableForReplies, type PollableAccount } from './pollable-accounts.js';
 
 export interface ImapAccount {
   id: string;
@@ -563,17 +564,22 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
   const supabase = getSupabase();
   const { data: accounts } = await supabase
     .from('email_accounts')
-    .select('id, email, imap_host, imap_port, imap_user, imap_pass')
-    .eq('auth_type', 'smtp')
+    // NOT filtered by auth_type. That used to say `smtp`, which meant any
+    // mailbox sending through a provider API could never be read — the three
+    // Ongage senders included, so every reply to current outreach was missed.
+    // Having IMAP credentials is the only thing that decides readability.
+    .select('id, email, status, auth_type, imap_host, imap_port, imap_user, imap_pass')
     .eq('status', 'active')
     .not('imap_host', 'is', null)
     .not('imap_user', 'is', null)
     .not('imap_pass', 'is', null);
 
-  if (!accounts?.length) return { accountsChecked: 0, repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0 };
+  const pollable = (accounts ?? []).filter((a) =>
+    isPollableForReplies(a as unknown as PollableAccount));
+  if (!pollable.length) return { accountsChecked: 0, repliesFound: 0, autoRepliesFound: 0, bouncesFound: 0 };
 
   const results = await Promise.allSettled(
-    accounts.map((acc) =>
+    pollable.map((acc) =>
       withTimeout(
         checkRepliesImap({
           id: acc.id,
@@ -600,8 +606,8 @@ export async function checkAllImapReplies(): Promise<{ accountsChecked: number; 
       totalBounces += r.value.bouncesFound;
     } else {
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      console.error(`[ImapReplyTracker] ${accounts[i].email} skipped: ${reason}`);
+      console.error(`[ImapReplyTracker] ${pollable[i]?.email ?? 'unknown account'} skipped: ${reason}`);
     }
   }
-  return { accountsChecked: accounts.length, repliesFound: totalReplies, autoRepliesFound: totalAuto, bouncesFound: totalBounces };
+  return { accountsChecked: pollable.length, repliesFound: totalReplies, autoRepliesFound: totalAuto, bouncesFound: totalBounces };
 }
