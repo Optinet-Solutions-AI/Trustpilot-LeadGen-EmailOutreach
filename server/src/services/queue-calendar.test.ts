@@ -9,8 +9,14 @@ import { resolveScheduleStart, localDayKey, type SendingSchedule } from './sched
  *
  * Two rules it has to get right:
  *  - follow-ups are counted, alongside first touches, not hidden
- *  - days are bucketed in each CAMPAIGN's timezone, not UTC, so a Sydney
- *    campaign's single sending day is one row and not two
+ *  - every row is bucketed on ONE timeline, so the day's total can be checked
+ *    against the one shared daily cap
+ *
+ * That second rule was the opposite once: days were bucketed in each
+ * campaign's own timezone. With six campaign timezones live against a single
+ * 60/day pool, the same 24 hours read as two different days and each was
+ * allowed its own 60 — measured 2026-09-14, real days reached 65. A per-
+ * campaign day is not something a shared cap can be checked against.
  */
 
 const schedule: SendingSchedule = {
@@ -84,16 +90,20 @@ describe('summarizeQueueDays', () => {
     expect(summarizeQueueDays(rows, { senderCount: 3 })[0].overCapacity).toBe(false);
   });
 
-  test('buckets each row in its OWN campaign timezone', () => {
-    // Both instants are 2026-09-07 in UTC, but the Sydney campaign's row
-    // belongs to its 8 September. Bucketing everything as UTC would put them
-    // on one day and hide a full day of Sydney sending.
+  test('two campaigns in different timezones share ONE day, and one cap', () => {
+    // Both instants are the same moment. Bucketing them by each campaign's own
+    // timezone put them on different days, and each day then got a full 60 —
+    // so the shared pool quietly issued 120 for one 24-hour period.
     const days = summarizeQueueDays([
       entry({ at: '2026-09-07T22:00:00Z', timezone: 'UTC', campaignId: 'utc', campaignName: 'Casino | Germany' }),
       entry({ at: '2026-09-07T22:00:00Z', timezone: 'Australia/Sydney', campaignId: 'syd', campaignName: 'MIX | Australia' }),
     ], { senderCount: 3 });
 
-    expect(days.map((d) => d.date)).toEqual(['2026-09-07', '2026-09-08']);
+    expect(days.map((d) => d.date)).toEqual(['2026-09-07']);
+    expect(days[0].total).toBe(2);
+    // Both campaigns show up as owners of that day, so the operator can still
+    // see which ones make up the number.
+    expect(days[0].campaigns.map((c) => c.id).sort()).toEqual(['syd', 'utc']);
   });
 
   test('splits sent from still-scheduled so past and future read differently', () => {

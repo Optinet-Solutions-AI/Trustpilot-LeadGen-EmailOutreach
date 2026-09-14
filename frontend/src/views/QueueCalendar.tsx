@@ -67,10 +67,11 @@ export default function QueueCalendar() {
       />
 
       {/* Totals for the month in view */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {[
           { label: 'First emails', value: data?.totals.firstTouch ?? 0, icon: 'outgoing_mail', tone: 'text-on-surface' },
           { label: 'Follow-ups',   value: data?.totals.followUp ?? 0,   icon: 'reply',         tone: 'text-on-surface' },
+          { label: 'Forecast f/u', value: data?.totals.projected ?? 0,  icon: 'schedule',      tone: 'text-on-surface' },
           { label: 'Total',        value: data?.totals.total ?? 0,      icon: 'functions',     tone: 'text-on-surface' },
           { label: 'Days over cap', value: data?.totals.daysOver ?? 0,  icon: 'warning',
             tone: (data?.totals.daysOver ?? 0) > 0 ? 'text-[#ba1a1a]' : 'text-on-surface' },
@@ -160,7 +161,7 @@ export default function QueueCalendar() {
                     onClick={() => { if (!d) return; const next = openDay === cell.date ? null : cell.date; setOpenDay(next); setOpenLead(null); }}
                     aria-label={
                       d
-                        ? `${cell.date}: ${d.firstTouch} first emails, ${d.followUp} follow-ups, ${d.total} total`
+                        ? `${cell.date}: ${d.firstTouch} first emails, ${d.followUp} follow-ups${d.projected > 0 ? ` (${d.projected} forecast)` : ''}, ${d.total} total`
                         : `${cell.date}: nothing scheduled`
                     }
                     className={[
@@ -198,6 +199,14 @@ export default function QueueCalendar() {
                           {d.firstTouch > 0 && <span className="text-[#b0004a] font-bold">{d.firstTouch} new</span>}
                           {d.firstTouch > 0 && d.followUp > 0 && ' · '}
                           {d.followUp > 0 && <span className="text-[#006630] font-bold">{d.followUp} f/u</span>}
+                          {d.projected > 0 && (
+                            <span
+                              className="text-on-surface-variant"
+                              title={`${d.projected} of these follow-ups have no date of their own yet — they are forecast from the first email`}
+                            >
+                              {' '}~{d.projected}
+                            </span>
+                          )}
                         </p>
                         {d.capacity !== null && (
                           <p className="text-[0.62rem] text-on-surface-variant tabular-nums">
@@ -233,12 +242,13 @@ export default function QueueCalendar() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-5">
             {[
               ['First emails', selected.firstTouch],
               ['Follow-ups', selected.followUp],
               ['Already sent', selected.sent],
               ['Still queued', selected.scheduled],
+              ['Forecast', selected.projected],
             ].map(([label, value]) => (
               <div key={label as string}>
                 <p className="text-[0.68rem] uppercase tracking-wider font-bold text-on-surface-variant">{label}</p>
@@ -313,6 +323,14 @@ export default function QueueCalendar() {
                         </span>
                         {l.state === 'sent' && (
                           <span className="text-[0.6rem] font-bold uppercase text-on-surface-variant shrink-0">sent</span>
+                        )}
+                        {l.state === 'projected' && (
+                          <span
+                            className="text-[0.6rem] font-bold uppercase text-on-surface-variant shrink-0"
+                            title="No date yet — this follow-up is timed from the first email, and is fixed when that one sends"
+                          >
+                            forecast
+                          </span>
                         )}
                         <span className={`material-symbols-outlined text-on-surface-variant text-[18px] shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`}>
                           expand_more

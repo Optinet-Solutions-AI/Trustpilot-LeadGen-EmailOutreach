@@ -14,7 +14,8 @@
  */
 
 import {
-  isWithinSendingWindow, nextWindowOpening, localDayKey, type SendingSchedule,
+  isWithinSendingWindow, nextWindowOpening, localDayKey, budgetDayEnd,
+  windowOpeningOnLocalDay, BUDGET_TIMEZONE, type SendingSchedule,
 } from './schedule-engine.js';
 
 /** Emails already booked per local day, keyed YYYY-MM-DD. Mutated on booking. */
@@ -28,6 +29,15 @@ export interface PlanNextStepInput {
   /** Shared daily ceiling across every mailbox and campaign. */
   capacityPerDay: number;
   now?: Date;
+  /**
+   * A SECOND budget the placement must also fit inside: one campaign's own
+   * per-day figure. The shared ceiling stops every campaign together from
+   * over-sending; this stops one campaign from eating the whole day when the
+   * operator configured it to go slower. A slot is only taken on a day that
+   * has room in both. Omitted means the shared ceiling is the only limit.
+   */
+  ownLoad?: DayLoad;
+  ownCapacityPerDay?: number;
 }
 
 const HOUR_MS = 3_600_000;
@@ -39,24 +49,32 @@ const HOUR_MS = 3_600_000;
  */
 export function planNextStepAt({
   load, schedule, earliest, capacityPerDay, now = new Date(),
+  ownLoad, ownCapacityPerDay,
 }: PlanNextStepInput): Date {
+  const isFull = (key: string) =>
+    (load.get(key) ?? 0) >= capacityPerDay ||
+    (ownCapacityPerDay !== undefined && (ownLoad?.get(key) ?? 0) >= ownCapacityPerDay);
+
   const from = new Date(Math.max(earliest.getTime(), now.getTime()));
 
   let cursor = isWithinSendingWindow(schedule, from)
     ? from
     : nextWindowOpening(schedule, from);
 
-  let dayKey = localDayKey(cursor, schedule.timezone);
-  for (let guard = 0; (load.get(dayKey) ?? 0) >= capacityPerDay; guard++) {
+  // The budget is counted on one timeline; the WINDOW still belongs to the
+  // campaign's own timezone, which is why the two keys differ.
+  let dayKey = localDayKey(cursor, BUDGET_TIMEZONE);
+  for (let guard = 0; isFull(dayKey); guard++) {
     if (guard > 400) {
       throw new Error('planNextStepAt: no day with capacity within a year');
     }
     cursor = nextWindowOpening(schedule, nextLocalDayStart(cursor, schedule.timezone));
-    dayKey = localDayKey(cursor, schedule.timezone);
+    dayKey = localDayKey(cursor, BUDGET_TIMEZONE);
   }
 
   const index = load.get(dayKey) ?? 0;
   load.set(dayKey, index + 1);
+  if (ownLoad) ownLoad.set(dayKey, (ownLoad.get(dayKey) ?? 0) + 1);
   return placeInWindow(schedule, cursor, index, capacityPerDay);
 }
 
@@ -96,8 +114,14 @@ function placeInWindow(
   const endMin = endH * 60 + endM;
   const windowMinutes = endMin > startMin ? endMin - startMin : 24 * 60 - startMin + endMin;
 
-  const opening = dayWindowOpening(schedule, cursor);
-  const windowEnd = opening.getTime() + windowMinutes * 60_000;
+  const opening = windowOpeningOnLocalDay(schedule, cursor);
+  // Bounded by the budget day this slot was counted against — a window that
+  // crosses the boundary would otherwise place mail on the following day while
+  // charging it to this one.
+  const windowEnd = Math.min(
+    opening.getTime() + windowMinutes * 60_000,
+    budgetDayEnd(cursor).getTime() + 60_000,
+  );
 
   // Spread across what is LEFT of the window, not the whole of it. When the
   // ideal time lands mid-window, measuring from the opening puts the early
@@ -110,5 +134,5 @@ function placeInWindow(
   const jitter = slot > 2 ? Math.floor(Math.random() * (slot - 1)) : 0;
   const target = effectiveStart + (index * slot + jitter) * 60_000;
 
-  return new Date(Math.min(target, windowEnd - 60_000));
+  return new Date(Math.max(Math.min(target, windowEnd - 60_000), effectiveStart));
 }

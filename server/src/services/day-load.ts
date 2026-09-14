@@ -7,17 +7,35 @@
  */
 
 import { getSupabase } from '../lib/supabase.js';
+import { selectAllRows } from '../lib/paginate.js';
 import { config } from '../config.js';
 import { getAccountDailyCap } from './rate-limiter.js';
-import { localDayKey, type SendingSchedule } from './schedule-engine.js';
+import { localDayKey, BUDGET_TIMEZONE, type SendingSchedule } from './schedule-engine.js';
 import type { DayLoad } from './next-step-planner.js';
+import { planCampaignSendTimes, type FollowUpStep } from './campaign-send-planner.js';
+import {
+  projectFollowUps,
+  type ForecastRow, type ForecastStep, type ProjectedFollowUp,
+} from './queue-forecast.js';
+
+export interface DayLoadOptions {
+  /**
+   * Ignore this campaign's own pending, already-scheduled rows.
+   *
+   * A campaign being (re)planned must not count its current plan against
+   * itself — that is how a re-pace shunts everything a day later every time
+   * it runs. Its SENT rows and its follow-ups still count, because that
+   * capacity really is spent.
+   */
+  excludePendingForCampaign?: string;
+}
 
 /**
  * Everything already booked or sent, bucketed by local day in each owning
  * campaign's timezone — the same bucketing the calendar and re-pacer use, so
  * all three agree on what a day holds.
  */
-export async function loadDayLoad(): Promise<DayLoad> {
+export async function loadDayLoad(options: DayLoadOptions = {}): Promise<DayLoad> {
   const load: DayLoad = new Map();
   const supabase = getSupabase();
 
@@ -35,7 +53,9 @@ export async function loadDayLoad(): Promise<DayLoad> {
   const lo = new Date(Date.now() - 14 * 86_400_000).toISOString();
   const hi = new Date(Date.now() + 60 * 86_400_000).toISOString();
 
-  const { data: rows } = await supabase
+  // Paged: PostgREST caps a response at 1,000 rows whatever limit is asked
+  // for, and a day-load computed from the first thousand is simply wrong.
+  const rows = await selectAllRows<Record<string, unknown>>((from, to) => supabase
     .from('campaign_leads')
     .select('campaign_id, status, sent_at, scheduled_at, next_step_at, sequence_completed, sequence_paused')
     .eq('channel', 'email')
@@ -44,17 +64,23 @@ export async function loadDayLoad(): Promise<DayLoad> {
       `and(scheduled_at.gte.${lo},scheduled_at.lte.${hi}),` +
       `and(next_step_at.gte.${lo},next_step_at.lte.${hi})`,
     )
-    .limit(20000);
+    .order('id', { ascending: true })
+    .range(from, to));
 
-  const bump = (iso: string, zone: string) => {
-    const key = localDayKey(new Date(iso), zone);
+  // Counted on one timeline, so every campaign draws from the same 60 — see
+  // BUDGET_TIMEZONE.
+  const bump = (iso: string, _zone: string) => {
+    const key = localDayKey(new Date(iso), BUDGET_TIMEZONE);
     load.set(key, (load.get(key) ?? 0) + 1);
   };
 
   for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
     const zone = tz.get(r.campaign_id as string) ?? 'UTC';
     if (r.status === 'sent' && r.sent_at) bump(r.sent_at as string, zone);
-    else if (r.status === 'pending' && r.scheduled_at) bump(r.scheduled_at as string, zone);
+    else if (
+      r.status === 'pending' && r.scheduled_at
+      && r.campaign_id !== options.excludePendingForCampaign
+    ) bump(r.scheduled_at as string, zone);
     if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
       bump(r.next_step_at as string, zone);
     }
@@ -107,4 +133,172 @@ export async function loadCampaignSchedule(campaignId: string): Promise<SendingS
   const raw = ((data ?? {}) as { sending_schedule?: Partial<SendingSchedule> }).sending_schedule;
   if (!raw?.timezone || !raw.startHour || !raw.endHour || !raw.days?.length) return null;
   return raw as SendingSchedule;
+}
+
+/**
+ * Where one campaign's first-touch emails go, given everything else already
+ * on the calendar.
+ *
+ * This is the difference between a plan and a wish. Campaigns used to be laid
+ * out one at a time, each filling days to its own limit with no idea what the
+ * others had booked, so twelve launches on one morning all claimed the same
+ * days: the calendar read 99 and 102 against a real ceiling of 60, the tail of
+ * the run sat empty, and the overflow aged into overdue backlog instead of
+ * rolling forward. Planning against the shared load is what makes "it rolls
+ * over when the cap is reached" true.
+ */
+export async function planCampaignQueueTimes({
+  campaignId, count, schedule, senderCount, from,
+}: {
+  campaignId: string;
+  count: number;
+  schedule: SendingSchedule;
+  /** Mailboxes sharing this campaign — `dailyLimit` is per account. */
+  senderCount: number;
+  /** Earliest moment sending may begin (start date, or now). */
+  from: Date;
+}): Promise<Date[]> {
+  const [load, capacityPerDay, followUpSteps] = await Promise.all([
+    loadDayLoad({ excludePendingForCampaign: campaignId }),
+    loadCapacityPerDay(),
+    loadFollowUpSteps(campaignId),
+  ]);
+
+  const ownCapacityPerDay = Math.max(
+    1, schedule.dailyLimit * Math.max(1, Math.floor(senderCount)),
+  );
+
+  return planCampaignSendTimes({
+    count, schedule, load, capacityPerDay, ownCapacityPerDay, followUpSteps, from,
+  });
+}
+
+/**
+ * One campaign's follow-up steps, so a launch can book the days its own
+ * follow-ups will need at the same time as the first emails.
+ */
+export async function loadFollowUpSteps(campaignId: string): Promise<FollowUpStep[]> {
+  const { data } = await getSupabase()
+    .from('campaign_steps')
+    .select('step_number, delay_days')
+    .eq('campaign_id', campaignId)
+    .order('step_number', { ascending: true });
+  return ((data ?? []) as Array<Record<string, unknown>>).map((s) => ({
+    stepNumber: s.step_number as number,
+    delayDays: typeof s.delay_days === 'number' ? s.delay_days : 3,
+  }));
+}
+
+/**
+ * The follow-ups that exist but have no date yet, placed where they will
+ * actually land.
+ *
+ * The horizon is fixed off `now` rather than off whatever window the caller
+ * is displaying, so the calendar and the day drill-down compute the SAME
+ * forecast and their numbers agree. Placing a projection depends on what the
+ * rest of the calendar holds, so a different horizon would quietly give two
+ * different answers for the same day.
+ */
+export async function loadFollowUpForecast(now: Date = new Date()): Promise<{
+  projections: ProjectedFollowUp[];
+  /**
+   * Follow-ups behind mail that has ALREADY been sent and that carry no date.
+   * These are not forecast, because nothing will ever fire them: the sequence
+   * scheduler only selects rows whose next_step_at is set. They are counted
+   * so the operator can be told they are stuck rather than pending.
+   */
+  stalled: number;
+}> {
+  const supabase = getSupabase();
+  const lo = new Date(now.getTime() - 30 * 86_400_000).toISOString();
+  const hi = new Date(now.getTime() + 120 * 86_400_000).toISOString();
+
+  const { data: campaigns } = await supabase
+    .from('campaigns')
+    .select('id, sending_schedule');
+
+  const scheduleByCampaign = new Map<string, SendingSchedule>();
+  const tz = new Map<string, string>();
+  for (const c of (campaigns ?? []) as Array<Record<string, unknown>>) {
+    const s = (c.sending_schedule ?? {}) as Partial<SendingSchedule>;
+    tz.set(c.id as string, s.timezone || 'UTC');
+    if (s.timezone && s.startHour && s.endHour && s.days?.length && s.dailyLimit) {
+      scheduleByCampaign.set(c.id as string, s as SendingSchedule);
+    }
+  }
+
+  const { data: stepRows } = await supabase
+    .from('campaign_steps')
+    .select('campaign_id, step_number, delay_days')
+    .order('step_number', { ascending: true });
+
+  const stepsByCampaign = new Map<string, ForecastStep[]>();
+  for (const s of (stepRows ?? []) as Array<Record<string, unknown>>) {
+    const list = stepsByCampaign.get(s.campaign_id as string) ?? [];
+    list.push({
+      stepNumber: s.step_number as number,
+      delayDays: typeof s.delay_days === 'number' ? s.delay_days : 3,
+    });
+    stepsByCampaign.set(s.campaign_id as string, list);
+  }
+
+  const rows = await selectAllRows<Record<string, unknown>>((from, to) => supabase
+    .from('campaign_leads')
+    .select('id, campaign_id, status, sent_at, scheduled_at, next_step_at, current_step, sequence_completed, sequence_paused')
+    .eq('channel', 'email')
+    .or(
+      `and(sent_at.gte.${lo},sent_at.lte.${hi}),` +
+      `and(scheduled_at.gte.${lo},scheduled_at.lte.${hi}),` +
+      `and(next_step_at.gte.${lo},next_step_at.lte.${hi})`,
+    )
+    .order('id', { ascending: true })
+    .range(from, to));
+
+  // What the days already hold, by the same rules loadDayLoad uses — a
+  // projection has to queue behind real mail, not on top of it.
+  const load: DayLoad = new Map();
+  const bump = (iso: string, _zone: string) => {
+    const key = localDayKey(new Date(iso), BUDGET_TIMEZONE);
+    load.set(key, (load.get(key) ?? 0) + 1);
+  };
+
+  const forecastRows: ForecastRow[] = [];
+  let stalled = 0;
+
+  for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+    const campaignId = r.campaign_id as string;
+    const zone = tz.get(campaignId) ?? 'UTC';
+
+    if (r.status === 'sent' && r.sent_at) bump(r.sent_at as string, zone);
+    else if (r.status === 'pending' && r.scheduled_at) bump(r.scheduled_at as string, zone);
+    if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
+      bump(r.next_step_at as string, zone);
+    }
+
+    if (r.sequence_completed !== false || r.sequence_paused !== false) continue;
+    if (r.next_step_at) continue; // already has a date, already visible
+    const steps = stepsByCampaign.get(campaignId) ?? [];
+    if (steps.length === 0) continue;
+
+    const currentStep = typeof r.current_step === 'number' ? r.current_step : 0;
+
+    if (r.status === 'pending' && r.scheduled_at) {
+      // The first touch is still ahead of us, so every configured step is too.
+      forecastRows.push({
+        campaignId,
+        campaignLeadId: r.id as string,
+        baseAt: new Date(r.scheduled_at as string),
+        currentStep: 0,
+      });
+    } else if ((r.status === 'sent' || r.status === 'opened') && r.sent_at) {
+      stalled += steps.filter((s) => s.stepNumber > Math.max(currentStep, 1)).length;
+    }
+  }
+
+  const capacityPerDay = await loadCapacityPerDay();
+  const projections = projectFollowUps({
+    rows: forecastRows, stepsByCampaign, scheduleByCampaign, load, capacityPerDay, now,
+  });
+
+  return { projections, stalled };
 }

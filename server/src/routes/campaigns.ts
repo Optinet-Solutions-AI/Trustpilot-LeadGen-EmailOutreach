@@ -3,7 +3,9 @@ import path from 'path';
 import { getCampaigns, createCampaign, updateCampaign, deleteCampaign, addLeadsToCampaign, addLeadsByFilter, getCampaignLeads, getCampaignStats, getSentEmails, markCampaignLeadsSkipped, removeCampaignLeads, duplicateCampaign, previewRecipientCount } from '../db/campaigns.js';
 import { upsertManualLeads, getLeadById } from '../db/leads.js';
 import { getCampaignSteps, createCampaignSteps } from '../db/campaign-steps.js';
-import { assignScheduledTimes, resolveScheduleStart, type SendingSchedule } from '../services/schedule-engine.js';
+import { resolveScheduleStart, BUDGET_TIMEZONE, type SendingSchedule } from '../services/schedule-engine.js';
+import { planCampaignQueueTimes, loadFollowUpForecast } from '../services/day-load.js';
+import { selectAllRows } from '../lib/paginate.js';
 import { summarizeQueueDays, type QueueEntry } from '../services/queue-calendar.js';
 import { localDayKey } from '../services/schedule-engine.js';
 import { followUpSubject, pickStepTemplate } from '../services/message-preview.js';
@@ -436,7 +438,10 @@ router.get('/calendar', async (req: Request, res: Response) => {
       });
     }
 
-    const { data: rows } = await supabase
+    // Paged, because PostgREST returns at most 1,000 rows however high the
+    // limit is — a calendar built from the first thousand under-reports every
+    // day beyond them and shows an empty tail that is actually full.
+    const rows = await selectAllRows<Record<string, unknown>>((from, to) => supabase
       .from('campaign_leads')
       .select('campaign_id, status, sent_at, scheduled_at, next_step_at, current_step, sequence_completed, sequence_paused')
       .eq('channel', 'email')
@@ -445,7 +450,8 @@ router.get('/calendar', async (req: Request, res: Response) => {
         `and(scheduled_at.gte.${loPad},scheduled_at.lte.${hiPad}),` +
         `and(next_step_at.gte.${loPad},next_step_at.lte.${hiPad})`,
       )
-      .limit(20000);
+      .order('id', { ascending: true })
+      .range(from, to));
 
     const entries: QueueEntry[] = [];
 
@@ -480,6 +486,24 @@ router.get('/calendar', async (req: Request, res: Response) => {
       }
     }
 
+    // The follow-ups that have no date yet, because the email before them has
+    // not sent. Without these the calendar shows roughly half the real queue
+    // and the far end of a run looks empty when it is fully committed.
+    const { projections, stalled } = await loadFollowUpForecast();
+    for (const proj of projections) {
+      const m = meta.get(proj.campaignId);
+      if (!m) continue;
+      entries.push({
+        campaignId: proj.campaignId,
+        campaignName: m.name,
+        timezone: m.timezone,
+        perAccountLimit: m.dailyLimit,
+        at: proj.at,
+        kind: 'follow_up',
+        state: 'projected',
+      });
+    }
+
     const { count } = await supabase
       .from('email_accounts')
       .select('id', { count: 'exact', head: true })
@@ -509,8 +533,16 @@ router.get('/calendar', async (req: Request, res: Response) => {
         totals: {
           firstTouch: days.reduce((n, d) => n + d.firstTouch, 0),
           followUp:   days.reduce((n, d) => n + d.followUp, 0),
+          projected:  days.reduce((n, d) => n + d.projected, 0),
           total:      days.reduce((n, d) => n + d.total, 0),
           daysOver:   days.filter((d) => d.overCapacity).length,
+          /**
+           * Follow-ups behind mail that already went out but that carry no
+           * date — nothing will ever fire them. Surfaced rather than hidden,
+           * because they are the difference between the queue the operator
+           * counts and the queue that will actually send.
+           */
+          stalledFollowUps: stalled,
         },
       },
     });
@@ -553,7 +585,7 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
       });
     }
 
-    const { data: rows } = await supabase
+    const rows = await selectAllRows<Record<string, unknown>>((from, to) => supabase
       .from('campaign_leads')
       .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, scheduled_at, next_step_at, current_step, sequence_completed, sequence_paused, leads(company_name, website_url, country)')
       .eq('channel', 'email')
@@ -562,12 +594,13 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
         `and(scheduled_at.gte.${loIso},scheduled_at.lte.${hiIso}),` +
         `and(next_step_at.gte.${loIso},next_step_at.lte.${hiIso})`,
       )
-      .limit(5000);
+      .order('id', { ascending: true })
+      .range(from, to));
 
     interface DayLead {
       id: string; leadId: string; company: string; email: string;
       campaignId: string; campaignName: string; timezone: string;
-      kind: 'first_touch' | 'follow_up'; state: 'sent' | 'scheduled';
+      kind: 'first_touch' | 'follow_up'; state: 'sent' | 'scheduled' | 'projected';
       at: string; localTime: string; stepNumber: number;
       senderEmail: string | null; country: string | null;
     }
@@ -582,7 +615,10 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
       stepNumber: number,
     ) => {
       const when = new Date(at);
-      if (localDayKey(when, m.timezone) !== date) return;
+      // Same bucketing as the calendar cell the operator clicked, or the list
+      // would not add up to the number on it. The TIME below is still rendered
+      // in the campaign's own timezone — that is what it will actually send at.
+      if (localDayKey(when, BUDGET_TIMEZONE) !== date) return;
       const lead = (r.leads ?? {}) as Record<string, unknown>;
       out.push({
         id: r.id as string,
@@ -616,6 +652,35 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
       }
       if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
         push(r, m, r.next_step_at as string, 'follow_up', 'scheduled', step + 1);
+      }
+    }
+
+    // Forecast follow-ups land here too, or the list would not add up to the
+    // number on the day cell the operator just clicked.
+    const { projections } = await loadFollowUpForecast();
+    const dueToday = projections.filter((proj) => {
+      const m = meta.get(proj.campaignId);
+      return m ? localDayKey(proj.at, BUDGET_TIMEZONE) === date : false;
+    });
+
+    if (dueToday.length > 0) {
+      const ids = dueToday.map((proj) => proj.campaignLeadId);
+      const detail = new Map<string, Record<string, unknown>>();
+      // PostgREST caps an .in() URL, so ask in chunks rather than one long one.
+      for (let i = 0; i < ids.length; i += 150) {
+        const { data: chunk } = await supabase
+          .from('campaign_leads')
+          .select('id, campaign_id, lead_id, email_used, sender_email, leads(company_name, country)')
+          .in('id', ids.slice(i, i + 150));
+        for (const r of (chunk ?? []) as Array<Record<string, unknown>>) {
+          detail.set(r.id as string, r);
+        }
+      }
+      for (const proj of dueToday) {
+        const m = meta.get(proj.campaignId);
+        const r = detail.get(proj.campaignLeadId);
+        if (!m || !r) continue;
+        push(r, m, proj.at.toISOString(), 'follow_up', 'projected', proj.stepNumber);
       }
     }
 
@@ -755,6 +820,23 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
     const apply = req.body?.apply === true;
     const override = Number(req.body?.capacityPerDay);
 
+    // Each campaign's follow-up steps, so a re-paced first touch also books
+    // the day its follow-up will need instead of letting later first touches
+    // take it.
+    const { data: stepRows } = await supabase
+      .from('campaign_steps')
+      .select('campaign_id, step_number, delay_days')
+      .order('step_number', { ascending: true });
+    const stepsByCampaign = new Map<string, Array<{ stepNumber: number; delayDays: number }>>();
+    for (const s of (stepRows ?? []) as Array<Record<string, unknown>>) {
+      const list = stepsByCampaign.get(s.campaign_id as string) ?? [];
+      list.push({
+        stepNumber: s.step_number as number,
+        delayDays: typeof s.delay_days === 'number' ? s.delay_days : 3,
+      });
+      stepsByCampaign.set(s.campaign_id as string, list);
+    }
+
     const { data: campaigns } = await supabase
       .from('campaigns')
       .select('id, name, status, sending_schedule');
@@ -771,12 +853,16 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
 
     // Everything still ahead of the sender: unsent first touches, plus
     // follow-ups that have not completed or been paused.
-    const { data: pending } = await supabase
+    // Paged. This read decides what gets re-paced, and PostgREST's silent
+    // 1,000-row cap meant a run over 692 queued rows re-paced 11 of them and
+    // reported success.
+    const pending = await selectAllRows<Record<string, unknown>>((from, to) => supabase
       .from('campaign_leads')
       .select('id, campaign_id, status, scheduled_at, next_step_at, sequence_completed, sequence_paused')
       .eq('channel', 'email')
       .or('and(status.eq.pending,scheduled_at.not.is.null),and(next_step_at.not.is.null,sequence_completed.eq.false,sequence_paused.eq.false)')
-      .limit(20000);
+      .order('id', { ascending: true })
+      .range(from, to));
 
     interface Row { id: string; kind: 'first_touch' | 'follow_up'; at: Date; schedule: SendingSchedule; campaignId: string }
     const rows: Row[] = [];
@@ -817,23 +903,30 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
     // What each day has ALREADY sent. Spent budget: placing on top of it is
     // how a re-pace left 2026-09-10 at 31 against a cap of 30.
     const sinceIso = new Date(Date.now() - 2 * 86_400_000).toISOString();
-    const { data: sentRows } = await supabase
+    const sentRows = await selectAllRows<Record<string, unknown>>((from, to) => supabase
       .from('campaign_leads')
       .select('campaign_id, sent_at')
       .eq('channel', 'email')
       .eq('status', 'sent')
       .gte('sent_at', sinceIso)
-      .limit(5000);
+      .order('id', { ascending: true })
+      .range(from, to));
     const alreadySent: Record<string, number> = {};
     for (const r of (sentRows ?? []) as Array<Record<string, unknown>>) {
       const m = meta.get(r.campaign_id as string);
       if (!m || !r.sent_at) continue;
-      const key = localDayKey(new Date(r.sent_at as string), m.schedule.timezone);
+      const key = localDayKey(new Date(r.sent_at as string), BUDGET_TIMEZONE);
       alreadySent[key] = (alreadySent[key] ?? 0) + 1;
     }
 
     const plan = repaceQueue(
-      rows.map((r) => ({ id: `${r.id}:${r.kind}`, kind: r.kind, at: r.at, schedule: r.schedule })),
+      rows.map((r) => ({
+        id: `${r.id}:${r.kind}`,
+        kind: r.kind,
+        at: r.at,
+        schedule: r.schedule,
+        followUpSteps: stepsByCampaign.get(r.campaignId),
+      })),
       { capacityPerDay, alreadySent },
     );
 
@@ -931,16 +1024,18 @@ async function reschedulePendingLeads(
 ): Promise<number> {
   const supabase = getSupabase();
 
-  const { data: pending, error } = await supabase
+  // Paged: a campaign with more than 1,000 pending recipients would otherwise
+  // have only its first thousand re-planned, silently.
+  const pending = await selectAllRows<{ id: string; scheduled_at: string | null }>((from, to) => supabase
     .from('campaign_leads')
     .select('id, scheduled_at')
     .eq('campaign_id', campaignId)
     .eq('status', 'pending')
     .eq('channel', 'email')
     .not('scheduled_at', 'is', null)
-    .order('scheduled_at', { ascending: true });
-  if (error) throw new Error(error.message);
-  if (!pending || pending.length === 0) return 0;
+    .order('scheduled_at', { ascending: true })
+    .range(from, to));
+  if (pending.length === 0) return 0;
 
   // dailyLimit is per account, so the plan needs the mailbox count -- the same
   // resolution the launch path uses.
@@ -956,7 +1051,13 @@ async function reschedulePendingLeads(
     senderCount = Math.max(1, count ?? 1);
   }
 
-  const times = assignScheduledTimes(pending.length, schedule, resolveScheduleStart(schedule), senderCount);
+  const times = await planCampaignQueueTimes({
+    campaignId,
+    count: pending.length,
+    schedule,
+    senderCount,
+    from: resolveScheduleStart(schedule),
+  });
 
   const writes = pending.map((row: { id: string }, i: number) => {
     const t = times[i];

@@ -19,7 +19,8 @@
  */
 
 import {
-  isWithinSendingWindow, nextWindowOpening, localDayKey, type SendingSchedule,
+  isWithinSendingWindow, nextWindowOpening, localDayKey, budgetDayEnd,
+  windowOpeningOnLocalDay, BUDGET_TIMEZONE, type SendingSchedule,
 } from './schedule-engine.js';
 
 export interface RepaceItem {
@@ -29,6 +30,14 @@ export interface RepaceItem {
   at: Date;
   /** The owning campaign's window — placements must land inside it. */
   schedule: SendingSchedule;
+  /**
+   * The campaign's follow-up steps. A first touch placed here also books the
+   * days its own follow-ups will need, so a re-pace cannot pack every day with
+   * first touches and leave the follow-ups nowhere to go but the far end of
+   * the run. The reservations are not returned and never written; they exist
+   * to leave the right gaps behind.
+   */
+  followUpSteps?: Array<{ stepNumber: number; delayDays: number }>;
 }
 
 export interface RepaceResult {
@@ -36,6 +45,13 @@ export interface RepaceResult {
   kind: RepaceItem['kind'];
   from: Date;
   to: Date;
+  /**
+   * The budget day this placement was charged to (YYYY-MM-DD in
+   * BUDGET_TIMEZONE). It must equal the day `to` falls on: when the two
+   * diverge, a day is counted at capacity while more mail actually goes out on
+   * it, which is how a re-paced queue still showed 65 against a cap of 60.
+   */
+  budgetDay: string;
 }
 
 export interface RepaceOptions {
@@ -80,43 +96,64 @@ export function repaceQueue(
   );
   const results: RepaceResult[] = [];
 
-  for (const item of ordered) {
-    // A row may not move earlier than it already was, nor into the past.
-    const earliest = new Date(Math.max(item.at.getTime(), from.getTime()));
-    let cursor = isWithinSendingWindow(item.schedule, earliest)
+  /**
+   * Take the first slot at or after `earliest` that still has room, and
+   * return when it lands. Used both for the row being re-paced and for the
+   * days its follow-ups will need.
+   */
+  const claim = (
+    schedule: SendingSchedule, earliest: Date, label: string,
+  ): { to: Date; dayKey: string } => {
+    let cursor = isWithinSendingWindow(schedule, earliest)
       ? earliest
-      : nextWindowOpening(item.schedule, earliest);
+      : nextWindowOpening(schedule, earliest);
 
     // Walk forward to the first allowed day that still has room.
     let guard = 0;
-    let dayKey = localDayKey(cursor, item.schedule.timezone);
+    // Counted on one timeline — see BUDGET_TIMEZONE. Keying this by the
+    // campaign's own timezone handed every zone a private 60/day.
+    let dayKey = localDayKey(cursor, BUDGET_TIMEZONE);
     while ((used.get(dayKey) ?? 0) >= capacityPerDay) {
       if (++guard > 400) {
-        throw new Error(`repaceQueue: could not place ${item.id} within a year`);
+        throw new Error(`repaceQueue: could not place ${label} within a year`);
       }
       // Step into the next LOCAL day, then forward to its window opening.
       // Monotonic by construction, so a full day can never be revisited.
-      const probe = nextLocalDayStart(cursor, item.schedule.timezone);
-      const advanced = nextWindowOpening(item.schedule, probe);
+      const probe = nextLocalDayStart(cursor, schedule.timezone);
+      const advanced = nextWindowOpening(schedule, probe);
       if (advanced.getTime() <= cursor.getTime()) {
-        throw new Error(`repaceQueue: schedule for ${item.id} does not advance`);
+        throw new Error(`repaceQueue: schedule for ${label} does not advance`);
       }
       cursor = advanced;
-      dayKey = localDayKey(cursor, item.schedule.timezone);
+      dayKey = localDayKey(cursor, BUDGET_TIMEZONE);
     }
 
-    const dayTotal = used.get(dayKey) ?? 0;
-    used.set(dayKey, dayTotal + 1);
     // Slot position uses the day's running total so prior sends do not get
     // the same minute, but stays inside the window via the clamp below.
-    const index = dayTotal;
+    const index = used.get(dayKey) ?? 0;
+    used.set(dayKey, index + 1);
+    return { to: placeInWindow(schedule, cursor, index, capacityPerDay), dayKey };
+  };
 
-    results.push({
-      id: item.id,
-      kind: item.kind,
-      from: item.at,
-      to: placeInWindow(item.schedule, cursor, index, capacityPerDay),
-    });
+  for (const item of ordered) {
+    // A row may not move earlier than it already was, nor into the past.
+    const earliest = new Date(Math.max(item.at.getTime(), from.getTime()));
+    const { to, dayKey } = claim(item.schedule, earliest, item.id);
+    results.push({ id: item.id, kind: item.kind, from: item.at, to, budgetDay: dayKey });
+
+    // Book the days this prospect's own follow-ups will need, now, while they
+    // are still free. Without this a re-pace fills every day with first
+    // touches and every follow-up queues behind the whole run.
+    const steps = [...(item.followUpSteps ?? [])].sort((a, b) => a.stepNumber - b.stepNumber);
+    if (item.kind !== 'first_touch' || steps.length === 0) continue;
+    let cursor = to;
+    for (const step of steps) {
+      cursor = claim(
+        item.schedule,
+        new Date(cursor.getTime() + step.delayDays * DAY_MS),
+        `${item.id} step ${step.stepNumber}`,
+      ).to;
+    }
   }
 
   return results;
@@ -175,18 +212,24 @@ function placeInWindow(
   // Offsets are measured from the DAY'S OPENING, not from the cursor: a row
   // that was already mid-window would otherwise have the slot offset added on
   // top of its existing time and overflow past the window end.
-  const opening = dayWindowOpening(schedule, cursor);
+  const opening = windowOpeningOnLocalDay(schedule, cursor);
   const windowEnd = opening.getTime() + windowMinutes * 60_000;
+
+  // The slot was counted against ONE budget day, so it has to be spent inside
+  // that day. A window can cross the boundary (16:00-23:59 New York closes at
+  // 03:59 UTC the next day), and spilling over it means a day is counted at
+  // capacity while more mail actually goes out on it.
+  const effectiveStart = Math.max(opening.getTime(), cursor.getTime());
+  const effectiveEnd = Math.min(windowEnd, budgetDayEnd(cursor).getTime() + 60_000);
+  const effectiveMinutes = Math.max(1, Math.floor((effectiveEnd - effectiveStart) / 60_000));
 
   // Slot width so a full day's capacity fits, with a little jitter inside the
   // slot — a perfectly even cadence reads as machinery.
-  const slot = Math.max(1, Math.floor(windowMinutes / Math.max(1, capacityPerDay)));
+  const slot = Math.max(1, Math.floor(effectiveMinutes / Math.max(1, capacityPerDay)));
   const jitter = slot > 2 ? Math.floor(Math.random() * (slot - 1)) : 0;
   const offsetMinutes = index * slot + jitter;
 
-  const target = opening.getTime() + offsetMinutes * 60_000;
-  // Never before the cursor (which already respects "not earlier than before"),
-  // and never at or past the window's close.
-  const clamped = Math.min(Math.max(target, cursor.getTime()), windowEnd - 60_000);
-  return new Date(clamped);
+  const target = effectiveStart + offsetMinutes * 60_000;
+  const clamped = Math.min(Math.max(target, cursor.getTime()), effectiveEnd - 60_000);
+  return new Date(Math.max(clamped, effectiveStart));
 }

@@ -14,6 +14,12 @@ export interface QueueDay {
   followUp: number;
   sent: number;
   scheduled: number;
+  /**
+   * Follow-ups that have no date of their own yet, because the email before
+   * them has not gone out. Forecast, not booked — but real work, and included
+   * in `followUp` and `total`.
+   */
+  projected: number;
   total: number;
   capacity: number | null;
   overCapacity: boolean;
@@ -29,8 +35,11 @@ export interface QueueCalendarData {
   totals: {
     firstTouch: number;
     followUp: number;
+    projected: number;
     total: number;
     daysOver: number;
+    /** Follow-ups behind mail already sent that carry no date — stuck, not queued. */
+    stalledFollowUps: number;
   };
 }
 
@@ -74,7 +83,7 @@ export interface DayLead {
   campaignName: string;
   timezone: string;
   kind: 'first_touch' | 'follow_up';
-  state: 'sent' | 'scheduled';
+  state: 'sent' | 'scheduled' | 'projected';
   at: string;
   /** HH:mm in the campaign's timezone — the time it actually goes out. */
   localTime: string;

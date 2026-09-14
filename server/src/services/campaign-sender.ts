@@ -16,9 +16,9 @@ import { sendEmail, type GmailSenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter } from './rate-limiter.js';
 import { applyTestMode } from './test-mode.js';
-import { assignScheduledTimes, describeSendPlan, resolveScheduleStart, type SendingSchedule } from './schedule-engine.js';
+import { describeSendPlan, resolveScheduleStart, type SendingSchedule } from './schedule-engine.js';
 import { planNextStepAt } from './next-step-planner.js';
-import { loadDayLoad, loadCapacityPerDay, loadCampaignSchedule } from './day-load.js';
+import { loadDayLoad, loadCapacityPerDay, loadCampaignSchedule, planCampaignQueueTimes } from './day-load.js';
 import { updateCampaign, updateCampaignLeadGmailIds } from '../db/campaigns.js';
 import { getCampaignSteps } from '../db/campaign-steps.js';
 import { updateLead } from '../db/leads.js';
@@ -193,13 +193,16 @@ export async function runCampaignSend(params: CampaignSendParams): Promise<void>
     // ── LIVE MODE: save scheduled times to DB, let campaign-scheduler handle sending ────
     let scheduledTimes: Date[];
     try {
-      scheduledTimes = assignScheduledTimes(
-        total,
-        sendingSchedule,
+      // Planned against every other campaign's booked days, not this
+      // campaign's alone — see planCampaignQueueTimes.
+      scheduledTimes = await planCampaignQueueTimes({
+        campaignId,
+        count: total,
+        schedule: sendingSchedule,
+        senderCount: await resolveSenderCount(sendingSchedule),
         // Honours sendingSchedule.startDate; falls back to now.
-        resolveScheduleStart(sendingSchedule),
-        await resolveSenderCount(sendingSchedule),
-      );
+        from: resolveScheduleStart(sendingSchedule),
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Campaign] Schedule error for "${campaignName}" (${campaignId}): ${msg}`);

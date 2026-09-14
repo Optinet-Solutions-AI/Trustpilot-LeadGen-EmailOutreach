@@ -137,6 +137,134 @@ describe('repaceQueue', () => {
   });
 });
 
+describe('follow-ups keep their place in the queue', () => {
+    test('re-pacing reserves each first touch\'s follow-up day', () => {
+    // Same rule as a launch: a re-pace that packs every day with first touches
+    // leaves the follow-ups nowhere to go but the far end of the run.
+    const res = repaceQueue(
+      Array.from({ length: 240 }, (_, i) => ({
+        id: `f${i}`, kind: 'first_touch',
+        at: new Date('2026-09-14T09:00:00Z'), schedule,
+        followUpSteps: [{ stepNumber: 2, delayDays: 3 }],
+      })),
+      { capacityPerDay: 60, from: new Date('2026-09-14T08:00:00Z') },
+    );
+
+    const days = perDay(res);
+    expect(days.map(([d]) => d)).toEqual([
+      '2026-09-14', '2026-09-15', '2026-09-16', '2026-09-20',
+    ]);
+    expect(days.every(([, n]) => n === 60)).toBe(true);
+  });
+
+  test('a queue with no follow-up steps packs days as before', () => {
+    const res = repaceQueue(
+      Array.from({ length: 180 }, (_, i) => ({
+        id: `g${i}`, kind: 'first_touch',
+        at: new Date('2026-09-14T09:00:00Z'), schedule,
+      })),
+      { capacityPerDay: 60, from: new Date('2026-09-14T08:00:00Z') },
+    );
+    expect(perDay(res).map(([d]) => d)).toEqual([
+      '2026-09-14', '2026-09-15', '2026-09-16',
+    ]);
+  });
+
+  test('an existing dated follow-up still takes priority over new first touches', () => {
+    // It was promised earlier, and its lead is further along.
+    const res = repaceQueue([
+      { id: 'fu', kind: 'follow_up', at: new Date('2026-09-15T09:00:00Z'), schedule },
+      ...Array.from({ length: 3 }, (_, i) => ({
+        id: `ft${i}`, kind: 'first_touch' as const,
+        at: new Date('2026-09-15T09:00:00Z'), schedule,
+      })),
+    ], { capacityPerDay: 2, from: new Date('2026-09-15T08:00:00Z') });
+
+    const fu = res.find((r) => r.id === 'fu');
+    expect(fu.to.toISOString().slice(0, 10)).toBe('2026-09-15');
+  });
+});
+
+describe('regression: a placement stays on the day it was counted on', () => {
+  test('an evening window in a timezone behind UTC cannot overflow the budget day', () => {
+    // The budget slot was claimed against the WINDOW OPENING's day, but the
+    // placed time is spread across the window and can cross into the next
+    // budget day. A New York campaign sending 16:00-23:59 opens at 20:00 UTC
+    // and closes at 03:59 UTC the NEXT day, so its later slots were counted on
+    // one day and actually sent on another. Measured against live data on
+    // 2026-09-14 that put 65 emails on a day whose cap is 60.
+    const evening: SendingSchedule = {
+      timezone: 'America/New_York',
+      startHour: '16:00', endHour: '23:59',
+      days: [0, 1, 2, 3, 4, 5, 6],
+      dailyLimit: 20,
+    };
+    const res = repaceQueue(
+      Array.from({ length: 120 }, (_, i) => ({
+        id: `e${i}`, kind: 'first_touch',
+        at: new Date('2026-09-15T21:00:00Z'), schedule: evening,
+      })),
+      { capacityPerDay: 20, from: new Date('2026-09-15T12:00:00Z') },
+    );
+
+    expect(res).toHaveLength(120);
+    // Counted in the budget's own timezone — the only timeline the cap means
+    // anything on.
+    const byBudgetDay = new Map();
+    for (const r of res) {
+      const k = r.to.toISOString().slice(0, 10);
+      byBudgetDay.set(k, (byBudgetDay.get(k) ?? 0) + 1);
+    }
+    for (const [day, n] of byBudgetDay) {
+      expect({ day, n }).toEqual({ day, n: expect.any(Number) });
+      expect(n).toBeLessThanOrEqual(20);
+    }
+  });
+
+  test('every placement lands on the day it was charged to', () => {
+    // The two are computed separately — the slot is claimed against the
+    // window's opening, the time is spread across the window — so they can
+    // disagree, and when they do a day is counted full while more mail goes
+    // out on it. Live data on 2026-09-14: 262 of 687 rows disagreed.
+    const paris: SendingSchedule = {
+      timezone: 'Europe/Paris', startHour: '00:00', endHour: '23:59',
+      days: [0, 1, 2, 3, 4, 5, 6], dailyLimit: 20,
+    };
+    const res = repaceQueue(
+      Array.from({ length: 300 }, (_, i) => ({
+        id: `x${i}`, kind: 'first_touch',
+        at: new Date('2026-09-19T23:00:00Z'), schedule: paris,
+      })),
+      { capacityPerDay: 60, from: new Date('2026-09-19T12:00:00Z') },
+    );
+    for (const r of res) {
+      expect(r.budgetDay).toBe(r.to.toISOString().slice(0, 10));
+    }
+  });
+
+  test('the same holds for a window that runs right up to midnight local', () => {
+    const late: SendingSchedule = {
+      timezone: 'Europe/Paris',
+      startHour: '00:00', endHour: '23:59',
+      days: [0, 1, 2, 3, 4, 5, 6],
+      dailyLimit: 20,
+    };
+    const res = repaceQueue(
+      Array.from({ length: 200 }, (_, i) => ({
+        id: `p${i}`, kind: 'first_touch',
+        at: new Date('2026-09-15T08:00:00Z'), schedule: late,
+      })),
+      { capacityPerDay: 60, from: new Date('2026-09-15T06:00:00Z') },
+    );
+    const byBudgetDay = new Map();
+    for (const r of res) {
+      const k = r.to.toISOString().slice(0, 10);
+      byBudgetDay.set(k, (byBudgetDay.get(k) ?? 0) + 1);
+    }
+    for (const [, n] of byBudgetDay) expect(n).toBeLessThanOrEqual(60);
+  });
+});
+
 describe('regression: timezones behind UTC with sparse sending days', () => {
   test('a New York campaign sending one day a week still advances', () => {
     // This combination hung the placer: building UTC midnight from the day key

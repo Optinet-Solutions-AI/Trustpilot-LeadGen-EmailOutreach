@@ -39,15 +39,59 @@ export interface SendingSchedule {
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 /**
+ * Timezone formatters are expensive to construct and pure per timezone, so
+ * they are built once and reused. They used to be constructed inside the
+ * helpers, on every call: placing 600 emails walks the day loop tens of
+ * thousands of times and spent ~14s almost entirely in `new
+ * Intl.DateTimeFormat`. Caching makes the same work take milliseconds, which
+ * is what keeps a launch or a re-pace inside one request.
+ */
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+const clockFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dayFormatter(timezone: string): Intl.DateTimeFormat {
+  let fmt = dayFormatters.get(timezone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      weekday: 'short',
+    });
+    dayFormatters.set(timezone, fmt);
+  }
+  return fmt;
+}
+
+function clockFormatter(timezone: string): Intl.DateTimeFormat {
+  let fmt = clockFormatters.get(timezone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hourCycle: 'h23',
+    });
+    clockFormatters.set(timezone, fmt);
+  }
+  return fmt;
+}
+
+/**
  * Get the UTC offset (in minutes) for a timezone at a specific moment.
  * Handles DST correctly because we compute it at the actual target time.
  */
 function getUtcOffsetMinutes(timezone: string, date: Date): number {
-  const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC' });
-  const tzStr  = date.toLocaleString('en-US', { timeZone: timezone });
-  const utcMs  = new Date(utcStr).getTime();
-  const tzMs   = new Date(tzStr).getTime();
-  return (tzMs - utcMs) / 60_000;
+  const parts = clockFormatter(timezone).formatToParts(date);
+  const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value ?? '0');
+  // The wall-clock reading, re-read as if it were UTC. Its distance from the
+  // real instant (truncated to the second, which is all the parts carry) is
+  // the offset.
+  const wallAsUtc = Date.UTC(
+    get('year'), get('month') - 1, get('day'),
+    get('hour') % 24, get('minute'), get('second'),
+  );
+  const instant = date.getTime() - (date.getTime() % 1000);
+  return (wallAsUtc - instant) / 60_000;
 }
 
 /**
@@ -73,21 +117,17 @@ interface LocalDay {
   dayOfWeek: number; // 0=Sun … 6=Sat
 }
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
 /** Get the local calendar date (year/month/day/dayOfWeek) in the target timezone. */
 function getLocalDay(utcDate: Date, timezone: string): LocalDay {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric', month: 'numeric', day: 'numeric',
-    weekday: 'short',
-  });
-  const parts = fmt.formatToParts(utcDate);
+  const parts = dayFormatter(timezone).formatToParts(utcDate);
   const get = (type: string) => parts.find(p => p.type === type)?.value ?? '0';
-  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   return {
     year:      parseInt(get('year')),
     month:     parseInt(get('month')),
     day:       parseInt(get('day')),
-    dayOfWeek: weekdays.indexOf(get('weekday')),
+    dayOfWeek: WEEKDAYS.indexOf(get('weekday')),
   };
 }
 
@@ -256,9 +296,7 @@ export function describeSendPlan(times: Date[], timezone: string): string {
 
 /** Minute-of-day (0-1439) at `at`, in the schedule's timezone. */
 function localMinuteOfDay(at: Date, timezone: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(at);
+  const parts = clockFormatter(timezone).formatToParts(at);
   const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value ?? '0');
   // hourCycle h23 keeps midnight at 0, but guard anyway — some ICU builds
   // still hand back 24 for 00:xx under hour12:false.
@@ -306,6 +344,78 @@ export function nextWindowOpening(schedule: SendingSchedule, from: Date): Date {
     if (opening.getTime() >= from.getTime()) return opening;
   }
   throw new Error(`nextWindowOpening: no allowed day within a year for days=[${schedule.days}]`);
+}
+
+/**
+ * The one timezone the shared daily budget is counted in.
+ *
+ * Capacity is a single pool — three mailboxes, 20 each, 60 a day between every
+ * campaign — but campaigns carry their own timezones, and live work currently
+ * spans six of them (UTC-4 to UTC+4). Keying the budget by each campaign's own
+ * timezone gives every zone its own private 60, so days genuinely ran to 65
+ * against a cap of 60. "A day" is only well defined on ONE timeline, so the
+ * budget is counted on this one and the calendar is bucketed the same way.
+ *
+ * Local times are still shown in each campaign's own timezone — that is what
+ * the operator schedules against. It is only the COUNTING that is unified.
+ */
+export const BUDGET_TIMEZONE = 'UTC';
+
+/**
+ * The instant the sending window opened on the local day that `at` falls in.
+ *
+ * Both the re-pacer and the follow-up planner had their own copy of this, and
+ * both built it as "UTC midnight of the local date, plus the start hour" —
+ * correct only for UTC. A campaign at 00:00-23:59 Europe/Paris really opens at
+ * 22:00 UTC the previous day; the copies answered 00:00 UTC, two hours late
+ * and on the next budget day. Every placement is spread from this instant, so
+ * getting it wrong pushed mail across the day boundary it had been counted
+ * against: 262 of 687 re-paced rows on 2026-09-14, and a calendar reading 65
+ * against a cap of 60.
+ *
+ * Rolls forward when that local day is not one the campaign sends on.
+ */
+export function windowOpeningOnLocalDay(schedule: SendingSchedule, at: Date): Date {
+  const { startH, startM } = windowBounds(schedule);
+  const local = getLocalDay(at, schedule.timezone);
+  const opening = localToUtc(local.year, local.month, local.day, startH, startM, schedule.timezone);
+  // Already open on this day? Then this is the opening. Otherwise the local
+  // day is not a sending day (or the window has yet to open) and the next
+  // allowed opening is the answer.
+  return opening.getTime() <= at.getTime() && schedule.days.includes(local.dayOfWeek)
+    ? opening
+    : nextWindowOpening(schedule, opening);
+}
+
+/**
+ * The last minute of the budget day that `at` belongs to.
+ *
+ * A placement claims its slot against the budget day of the window's OPENING,
+ * but the time it is finally given is spread across the window — and a window
+ * can cross a budget day. A New York campaign sending 16:00-23:59 opens at
+ * 20:00 UTC and closes at 03:59 the next day, so its later slots were counted
+ * on one day and sent on another: live data on 2026-09-14 put 65 emails on a
+ * day whose ceiling is 60. Placements are bounded by this so the day a slot is
+ * counted on is the day it actually goes out on.
+ */
+export function budgetDayEnd(at: Date): Date {
+  const key = localDayKey(at, BUDGET_TIMEZONE);
+  let t = at.getTime();
+  for (let hour = 0; hour < 48; hour++) {
+    const nextHour = t + 3_600_000;
+    if (localDayKey(new Date(nextHour), BUDGET_TIMEZONE) !== key) {
+      // The boundary is inside this hour — walk it out to the minute.
+      let m = t;
+      for (let minute = 0; minute < 60; minute++) {
+        const cand = m + 60_000;
+        if (localDayKey(new Date(cand), BUDGET_TIMEZONE) !== key) return new Date(m);
+        m = cand;
+      }
+      return new Date(m);
+    }
+    t = nextHour;
+  }
+  return new Date(at.getTime());
 }
 
 /** Calendar day (YYYY-MM-DD) that `at` falls on, in `timezone`. */

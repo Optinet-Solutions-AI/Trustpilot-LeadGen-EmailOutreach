@@ -20,11 +20,17 @@
  *    bucketed with it.
  */
 
-import { localDayKey } from './schedule-engine.js';
+import { localDayKey, BUDGET_TIMEZONE } from './schedule-engine.js';
 
 export type QueueKind = 'first_touch' | 'follow_up';
-/** `sent` already happened; `scheduled` is still ahead of the scheduler. */
-export type QueueState = 'sent' | 'scheduled';
+/**
+ * `sent` already happened; `scheduled` is booked and ahead of the scheduler;
+ * `projected` is a follow-up that has no date yet because the email before it
+ * has not gone out. A projection is a forecast, not a booking — but it is real
+ * work that will consume that day's capacity, so leaving it out is what made
+ * the calendar show half the queue.
+ */
+export type QueueState = 'sent' | 'scheduled' | 'projected';
 
 export interface QueueEntry {
   at: Date;
@@ -55,6 +61,8 @@ export interface QueueDay {
   followUp: number;
   sent: number;
   scheduled: number;
+  /** Forecast follow-ups — counted in `total`, but not yet booked. */
+  projected: number;
   total: number;
   /** Daily ceiling across all mailboxes, or null when it can't be determined. */
   capacity: number | null;
@@ -83,7 +91,12 @@ export function summarizeQueueDays(
   const byDay = new Map<string, QueueEntry[]>();
 
   for (const e of entries) {
-    const key = localDayKey(e.at, e.timezone);
+    // Bucketed on the budget's timeline, not each campaign's own. With six
+    // campaign timezones live and ONE shared 60/day pool, a per-campaign day
+    // is not a thing the cap can be checked against: the same 24 hours read as
+    // two different days and each got its own 60. Local send times are still
+    // shown in the campaign's timezone wherever a row is displayed.
+    const key = localDayKey(e.at, BUDGET_TIMEZONE);
     const bucket = byDay.get(key);
     if (bucket) bucket.push(e);
     else byDay.set(key, [e]);
@@ -98,11 +111,13 @@ export function summarizeQueueDays(
     let followUp = 0;
     let sent = 0;
     let scheduled = 0;
+    let projected = 0;
 
     for (const r of rows) {
       if (r.kind === 'follow_up') followUp += 1;
       else firstTouch += 1;
       if (r.state === 'sent') sent += 1;
+      else if (r.state === 'projected') projected += 1;
       else scheduled += 1;
 
       if (typeof r.perAccountLimit === 'number' && r.perAccountLimit > 0) {
@@ -124,6 +139,7 @@ export function summarizeQueueDays(
       followUp,
       sent,
       scheduled,
+      projected,
       total,
       capacity,
       overCapacity: over,
