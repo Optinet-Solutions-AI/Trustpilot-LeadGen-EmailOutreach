@@ -667,6 +667,15 @@ export async function searchImapThreadByEmail(
   const target = leadEmail.toLowerCase();
   if (!target) return null;
 
+  // Same 60s window fetchSmtpThread uses. This is the path every Ongage row
+  // takes — they carry no Message-ID to anchor on — and it costs a whole IMAP
+  // session, so re-opening a thread the operator just read should not pay for
+  // it twice. The key keeps the account prefix so invalidateThreadCache(account)
+  // still clears it when a reply goes out.
+  const searchCacheKey = `${accountEmail.toLowerCase()}:search:${target}`;
+  const cachedSearch = getCachedThread(searchCacheKey);
+  if (cachedSearch) return cachedSearch;
+
   const client = new ImapFlow({
     host: auth.imap_host,
     port: auth.imap_port,
@@ -769,7 +778,9 @@ export async function searchImapThreadByEmail(
     messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     const dedupedMessages = dedupBurstDuplicates(messages);
 
-    return { threadId: target, messages: dedupedMessages, senderAccount: accountEmail };
+    const result: ThreadResult = { threadId: target, messages: dedupedMessages, senderAccount: accountEmail };
+    setCachedThread(searchCacheKey, result);
+    return result;
   } catch (err) {
     console.error(`[ImapThreadFetcher:search] ${accountEmail} error:`, err instanceof Error ? err.message : err);
     return null;

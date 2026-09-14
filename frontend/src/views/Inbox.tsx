@@ -236,6 +236,9 @@ const STATUS_BADGE: Record<string, { label: string; classes: string }> = {
 // read reply" at a glance — without losing the status label entirely.
 const REPLIED_READ_BADGE = { label: 'Replied', classes: 'bg-slate-100 text-slate-400' };
 
+/** Rows per request. The whole list used to arrive at once. */
+const INBOX_PAGE_SIZE = 100;
+
 export default function Inbox() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -248,6 +251,11 @@ export default function Inbox() {
 
   const [folder, setFolder] = useState<Folder>('replies');
   const [messages, setMessages] = useState<CampaignMessage[]>([]);
+  // The list is paged: opening the inbox used to pull 400 rows with two joins
+  // before a single message could be read.
+  const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   // Campaign-type filter — splits the inbox between cold outreach and the
   // discovery follow-up campaigns (added in migration 028). Persisted to
   // localStorage so the filter sticks across page refreshes.
@@ -565,16 +573,46 @@ export default function Inbox() {
     setThread(null);
     setSelectedMsg(null);
     setSelectedReplyIds(new Set());
-    const params: Record<string, string> = { folder };
+    const params: Record<string, string> = { folder, limit: String(INBOX_PAGE_SIZE), offset: '0' };
     if (campaignTypeFilter !== 'all') params.campaignType = campaignTypeFilter;
     api.get('/inbox/campaign-replies', { params })
-      .then((res) => setMessages(res.data.data ?? []))
+      .then((res) => {
+        setMessages(res.data.data ?? []);
+        setHasMore(Boolean(res.data.pagination?.hasMore));
+        setTotalCount(res.data.pagination?.total ?? null);
+      })
       .catch((err) => {
         setError(err?.response?.data?.error || err.message || 'Failed to load messages');
         setMessages([]);
+        setHasMore(false);
       })
       .finally(() => setLoading(false));
   }, [folder, campaignTypeFilter]);
+
+  /** Fetch the next page and append it. Never clears what is already shown. */
+  const loadMore = useCallback(() => {
+    setLoadingMore(true);
+    const params: Record<string, string> = {
+      folder, limit: String(INBOX_PAGE_SIZE), offset: String(messages.length),
+    };
+    if (campaignTypeFilter !== 'all') params.campaignType = campaignTypeFilter;
+    api.get('/inbox/campaign-replies', { params })
+      .then((res) => {
+        const next: CampaignMessage[] = res.data.data ?? [];
+        // Guard against a row arriving twice if something was written between
+        // the two requests — an offset page is not a stable snapshot.
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          return [...prev, ...next.filter((m) => !seen.has(m.id))];
+        });
+        setHasMore(Boolean(res.data.pagination?.hasMore));
+      })
+      .catch((err) => {
+        setCheckStatus(err?.response?.data?.error || err.message || 'Could not load more');
+        setTimeout(() => setCheckStatus(null), 4000);
+      })
+      .finally(() => setLoadingMore(false));
+  }, [folder, campaignTypeFilter, messages.length]);
 
   const toggleReplySelected = useCallback((id: string) => {
     setSelectedReplyIds((prev) => {
@@ -1109,8 +1147,8 @@ export default function Inbox() {
                 : favoritesOnly
                   ? `${visibleMessages.length} favorite${visibleMessages.length !== 1 ? 's' : ''}`
                   : visibleMessages.length === messages.length
-                    ? `${messages.length} message${messages.length !== 1 ? 's' : ''}`
-                    : `${visibleMessages.length} of ${messages.length} message${messages.length !== 1 ? 's' : ''}`}
+                    ? `${messages.length}${totalCount !== null && totalCount > messages.length ? ` of ${totalCount}` : ''} message${(totalCount ?? messages.length) !== 1 ? 's' : ''}`
+                    : `${visibleMessages.length} of ${totalCount ?? messages.length} message${(totalCount ?? messages.length) !== 1 ? 's' : ''}`}
           </p>
           <div className="flex items-center gap-1 flex-shrink-0">
             {!selectionMode && (
@@ -1408,7 +1446,7 @@ export default function Inbox() {
                           </span>
                         </div>
                       </div>
-                      {msg.status === 'replied' && msg.reply_snippet && (
+                      {(msg.status === 'replied' || msg.status === 'auto_replied') && msg.reply_snippet && (
                         <p className="text-[11px] text-[#006630] truncate mt-1 italic">{msg.reply_snippet}</p>
                       )}
                     </div>
@@ -1416,6 +1454,19 @@ export default function Inbox() {
                 </div>
               );
             })
+          )}
+
+          {hasMore && (
+            <div className="p-3">
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="w-full text-xs font-bold py-2.5 rounded-lg border border-slate-200 text-secondary hover:bg-surface-container transition-colors disabled:opacity-40"
+              >
+                {loadingMore ? 'Loading…' : 'Load older messages'}
+              </button>
+            </div>
           )}
         </div>
       </div>

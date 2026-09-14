@@ -14,6 +14,7 @@ import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { ImapFlow } from 'imapflow';
 import { getGmailClient, createGmailClientFromCredentials } from '../services/gmail-client.js';
 import { fetchSmtpThread, searchImapThreadByEmail, invalidateThreadCache, dedupBurstDuplicates } from '../services/imap-thread-fetcher.js';
+import { readableImapAuth, READABLE_MAILBOX_COLUMNS } from '../services/mailbox-access.js';
 import { extractContacts } from '../services/auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 import { renderAndSpin } from '../services/template-engine.js';
@@ -24,6 +25,26 @@ import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 
 const router = Router();
+
+/**
+ * Wall-clock ceiling on the all-mailbox thread sweep. The client aborts at
+ * 30s; a full pass over every connected mailbox measured 95.8s, so without a
+ * budget the request is guaranteed to be abandoned rather than answered.
+ */
+const SWEEP_BUDGET_MS = 18_000;
+
+/**
+ * Does this row carry a reply the thread should render?
+ *
+ * The inbox list has always shown 'auto_replied' alongside 'replied' — an
+ * out-of-office is still a response worth seeing — but the thread renderer
+ * tested for 'replied' alone, so opening one of those leads showed the
+ * outgoing email and nothing else. That is the "the reply is not reflected"
+ * report: the list said there was a reply and the thread showed none.
+ */
+function hasRecordedReply(status: unknown): boolean {
+  return status === 'replied' || status === 'auto_replied';
+}
 
 interface GmailClientEntry {
   email: string;
@@ -421,13 +442,36 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
   const groupBy = req.query.groupBy as string | undefined;
   const campaignTypeFilter = req.query.campaignType as string | undefined;
 
+  // The list used to fetch a flat 400 rows with two joins on every open —
+  // 259KB and ~2.2s before a single message could be read. A page is 100, and
+  // the client asks for the next one only if the operator scrolls for it.
+  const limit = Math.min(Math.max(Number.parseInt(String(req.query.limit ?? '100'), 10) || 100, 1), 400);
+  const offset = Math.max(Number.parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
+
   try {
-    const { data, error } = await getSupabase()
+    // The campaign_type filter runs in the DATABASE, not over the page after
+    // it arrives. Filtering afterwards would make a page of 100 rows shrink to
+    // whatever happened to match, so "next page" could return nothing while
+    // hundreds of matching rows sat further down the table.
+    const columns = 'id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, is_favorite, opt_out_detected, leads(company_name, country, do_not_contact)';
+
+    let query = getSupabase()
       .from('campaign_leads')
-      .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, replied_at, reply_read_at, reply_snippet, gmail_thread_id, gmail_message_id, current_step, is_favorite, opt_out_detected, campaigns(name, campaign_type), leads(company_name, country, do_not_contact)')
-      .in('status', statusFilter)
+      .select(
+        campaignTypeFilter
+          ? `${columns}, campaigns!inner(name, campaign_type)`
+          : `${columns}, campaigns(name, campaign_type)`,
+        { count: 'exact' },
+      )
+      .in('status', statusFilter);
+
+    if (campaignTypeFilter) {
+      query = query.eq('campaigns.campaign_type', campaignTypeFilter) as typeof query;
+    }
+
+    const { data, error, count: totalCount } = await query
       .order('sent_at', { ascending: false })
-      .limit(400);
+      .range(offset, offset + limit - 1);
 
     if (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -505,11 +549,9 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       };
     });
 
-    // Optional campaign_type filter (e.g. 'outreach' / 'discovery_followup') —
-    // applied after the join so a single endpoint supports both feeds.
-    const filtered = campaignTypeFilter
-      ? messages.filter((m) => m.campaign_type === campaignTypeFilter)
-      : messages;
+    // The campaign_type filter is applied in the query above, so the page is
+    // already what it claims to be.
+    const filtered = messages;
 
     // One row per (campaign, lead) in BOTH folders. Earlier iterations
     // fanned out the Sent folder into per-step rows ("INITIAL", "FOLLOW-UP
@@ -520,6 +562,17 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
     // the current_step value so the chip "3 / 5" still shows where this
     // lead is in its sequence, but the conversation lives in a single
     // thread view that the IMAP fetcher reconstructs end-to-end.
+    // `data` stays the plain array it has always been; the page metadata rides
+    // alongside it, so an older client keeps working unchanged.
+    const pagination = {
+      total: totalCount ?? null,
+      limit,
+      offset,
+      hasMore: totalCount !== null && totalCount !== undefined
+        ? offset + (data?.length ?? 0) < totalCount
+        : (data?.length ?? 0) === limit,
+    };
+
     type Msg = typeof filtered[number];
     type ExpandedMsg = Msg & { campaign_lead_id: string; step_number: number; total_steps: number };
     const expandedMessages: ExpandedMsg[] = filtered.map((msg) => {
@@ -566,11 +619,11 @@ router.get('/campaign-replies', async (req: Request, res: Response) => {
       const sorted = [...groups.values()].sort((a, b) =>
         (b.latest_at ?? '').localeCompare(a.latest_at ?? ''),
       );
-      res.json({ success: true, data: { campaigns: sorted } });
+      res.json({ success: true, data: { campaigns: sorted }, pagination });
       return;
     }
 
-    res.json({ success: true, data: expandedMessages });
+    res.json({ success: true, data: expandedMessages, pagination });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
@@ -621,22 +674,21 @@ router.get('/thread-smtp/:campaignLeadId', async (req: Request, res: Response) =
       res.status(404).json({ success: false, error: `Sender account ${cl.sender_email} not found in email_accounts` });
       return;
     }
-    if (account.auth_type !== 'smtp') {
-      res.status(400).json({ success: false, error: `Account ${cl.sender_email} is not SMTP/IMAP — use /inbox/thread/:threadId` });
+    if (account.auth_type === 'gmail_oauth') {
+      res.status(400).json({ success: false, error: `Account ${cl.sender_email} is a Gmail account — use /inbox/thread/:threadId` });
       return;
     }
-    if (!account.imap_host || !account.imap_user || !account.imap_pass) {
+    // Credentials decide, not auth_type. An Ongage sender's replies arrive in
+    // an ordinary mailbox we hold IMAP credentials for; rejecting it here is
+    // what pushed those threads onto the all-mailbox sweep.
+    const auth = readableImapAuth(account);
+    if (!auth) {
       res.status(400).json({ success: false, error: `Account ${cl.sender_email} has no IMAP credentials configured` });
       return;
     }
 
     const thread = await fetchSmtpThread(
-      {
-        imap_host: account.imap_host,
-        imap_port: account.imap_port ?? 993,
-        imap_user: account.imap_user,
-        imap_pass: account.imap_pass,
-      },
+      auth,
       cl.gmail_message_id,
       account.email,
       (cl.email_used as string | null) ?? undefined,
@@ -694,6 +746,37 @@ router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response)
       return;
     }
 
+    // 0) The mailbox that actually sent this email, first.
+    //
+    // This endpoint used to open with the all-mailbox sweep, which is the
+    // wrong end of the problem: we know which account sent the message, and
+    // the reply is overwhelmingly in that same mailbox. Sweeping first cost
+    // 95.8s of serial IMAP across 20 accounts and — for the Ongage senders
+    // that land here — could not match at any point, because the sweep's own
+    // filter excluded the one mailbox holding the conversation. Asking the
+    // sender's mailbox first answers the common case in ~3s.
+    if (cl.sender_email) {
+      const { data: senderAcct } = await supabase
+        .from('email_accounts')
+        .select(READABLE_MAILBOX_COLUMNS)
+        .ilike('email', cl.sender_email as string)
+        .maybeSingle();
+      const senderAuth = readableImapAuth(senderAcct);
+      if (senderAuth) {
+        try {
+          const thread = await searchImapThreadByEmail(
+            senderAuth, leadEmail, (senderAcct!.email as string),
+          );
+          if (thread && thread.messages.length > 0) {
+            res.json({ success: true, data: thread });
+            return;
+          }
+        } catch (e) {
+          console.warn(`[search-thread] sender mailbox ${cl.sender_email} failed:`, e instanceof Error ? e.message : e);
+        }
+      }
+    }
+
     // 1) Try every connected Gmail account
     const gmailClients = await getAllConnectedGmailClients();
     for (const { email, gmail } of gmailClients) {
@@ -739,32 +822,50 @@ router.get('/search-thread/:campaignLeadId', async (req: Request, res: Response)
     // operator out of reading reply history. Without this, the inbox
     // falls through to the rendered-template stub for any lead whose
     // sender account got paused during the 2026-05 reputation incident.
+    //
+    // Selected on credentials rather than auth_type, so an Ongage mailbox is
+    // scanned like any other. Ordering and budget matter as much as the
+    // filter: each mailbox costs 4-7s, so a full 20-account pass outruns the
+    // client's 30s timeout and the operator watches a spinner die instead of
+    // getting an answer. The sweep stops at SWEEP_BUDGET_MS and reports how
+    // far it got — a bounded answer beats an aborted request.
     const { data: imapAccounts } = await supabase
       .from('email_accounts')
-      .select('email, imap_host, imap_port, imap_user, imap_pass')
-      .eq('auth_type', 'smtp')
+      .select(READABLE_MAILBOX_COLUMNS)
       .not('imap_host', 'is', null)
       .not('imap_user', 'is', null)
       .not('imap_pass', 'is', null);
 
+    const senderLower = (cl.sender_email as string | null)?.toLowerCase() ?? '';
+    const sweepStart = Date.now();
+    let scanned = 0;
+    let exhausted = false;
+
     for (const acc of imapAccounts ?? []) {
-      const thread = await searchImapThreadByEmail(
-        {
-          imap_host: acc.imap_host,
-          imap_port: acc.imap_port ?? 993,
-          imap_user: acc.imap_user,
-          imap_pass: acc.imap_pass,
-        },
-        leadEmail,
-        acc.email,
-      );
-      if (thread && thread.messages.length > 0) {
-        res.json({ success: true, data: thread });
-        return;
+      const auth = readableImapAuth(acc);
+      if (!auth) continue;
+      // Already tried above, before the Gmail loop.
+      if ((acc.email as string).toLowerCase() === senderLower) continue;
+      if (Date.now() - sweepStart > SWEEP_BUDGET_MS) { exhausted = true; break; }
+
+      scanned++;
+      try {
+        const thread = await searchImapThreadByEmail(auth, leadEmail, acc.email as string);
+        if (thread && thread.messages.length > 0) {
+          res.json({ success: true, data: thread });
+          return;
+        }
+      } catch (e) {
+        console.warn(`[search-thread] sweep miss on ${acc.email}:`, e instanceof Error ? e.message : e);
       }
     }
 
-    res.status(404).json({ success: false, error: `No thread found for ${leadEmail} in any connected mailbox` });
+    res.status(404).json({
+      success: false,
+      error: exhausted
+        ? `No thread found for ${leadEmail} in the ${scanned} mailboxes checked before the ${SWEEP_BUDGET_MS / 1000}s search budget ran out`
+        : `No thread found for ${leadEmail} in any connected mailbox`,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
@@ -813,7 +914,7 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
     //
     // Every branch logs WHY it skipped or what it found so the Cloud Run
     // logs make the failure mode obvious instead of silent.
-    if (cl.status === 'replied' && !cl.reply_snippet && cl.sender_email && cl.email_used) {
+    if (hasRecordedReply(cl.status) && !cl.reply_snippet && cl.sender_email && cl.email_used) {
       const logTag = `[rendered-send:${(cl.id as string).slice(0, 8)}]`;
       try {
         const { data: acc } = await supabase
@@ -838,16 +939,12 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
           const authType = (acc.auth_type as string | null) ?? 'unknown';
           const replyAnchor = (cl.replied_at as string | null) ?? (cl.sent_at as string | null) ?? null;
           let snippet: string | null = null;
-          if ((authType === 'smtp' || authType === 'app_password') && acc.imap_host && acc.imap_user && acc.imap_pass) {
+          const imapAuth = readableImapAuth(acc);
+          if (imapAuth) {
             console.log(`${logTag} reply-body fetch: IMAP path for ${cl.sender_email} (auth=${authType})`);
             const { fetchReplyBodyFromImap } = await import('../services/imap-reply-fetcher.js');
             snippet = await fetchReplyBodyFromImap(
-              {
-                imap_host: acc.imap_host as string,
-                imap_port: (acc.imap_port as number | null) ?? 993,
-                imap_user: acc.imap_user as string,
-                imap_pass: acc.imap_pass as string,
-              },
+              imapAuth,
               cl.email_used as string,
               replyAnchor,
             );
@@ -937,8 +1034,8 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
     //       exists even when the tracker didn't store the body. Before
     //       this branch, the thread showed only the outgoing template and
     //       it looked like the "Replied" badge was lying.
-    //   (c) status != 'replied' → no reply row at all.
-    if (cl.status === 'replied' && cl.reply_snippet) {
+    //   (c) no reply recorded → no reply row at all.
+    if (hasRecordedReply(cl.status) && cl.reply_snippet) {
       messages.push({
         id: `rendered:${cl.id}:reply`,
         threadId: cl.id as string,
@@ -952,7 +1049,7 @@ router.get('/rendered-send/:campaignLeadId', async (req: Request, res: Response)
         unread: false,
         labels: ['rendered', 'reply'],
       });
-    } else if (cl.status === 'replied') {
+    } else if (hasRecordedReply(cl.status)) {
       const repliedAt = (cl.replied_at as string) || new Date().toISOString();
       const replyDateLabel = (() => {
         try { return new Date(repliedAt).toLocaleString(); } catch { return repliedAt; }
@@ -2017,14 +2114,12 @@ async function fetchInboundReplyBody(
   }
 
   // ── IMAP path ───────────────────────────────────────────────────────
-  if (account?.auth_type === 'smtp' && account.imap_host && account.imap_user && account.imap_pass) {
+  // Credentials, not auth_type: promoting an Ongage reply to a prospect used
+  // to return nothing here, so the contact extractor never saw the reply that
+  // the inbox was already displaying.
+  const auth = readableImapAuth(account);
+  if (auth) {
     try {
-      const auth = {
-        imap_host: account.imap_host,
-        imap_port: account.imap_port ?? 993,
-        imap_user: account.imap_user,
-        imap_pass: account.imap_pass,
-      };
       let thread = null;
       if (cl.gmail_message_id) {
         thread = await fetchSmtpThread(auth, cl.gmail_message_id, sender, cl.email_used ?? undefined);

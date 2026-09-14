@@ -372,6 +372,8 @@ Same as before — see `supabase/migrations/001_initial_schema.sql`.
 
 Campaign sends flow: `campaign-scheduler.ts` (polls every 60s) → `buildSenderPool()` pulls active accounts → picks the pinned `senderAccountId` (or rotates) → dispatches via the right sender module (`email-sender.gmail.ts`, `email-sender.smtp.ts`, or `email-sender.ongage.ts`). Each account enforces its own `daily_cap`, `hourly_cap`, and DNS status (MX/SPF/DMARC) — capped accounts are skipped, not blocked. `campaign_leads.sender_email` records which account actually sent.
 
+**Reading replies is decided by credentials, not `auth_type`.** Ongage senders receive their replies in an ordinary mailbox the CRM holds IMAP credentials for, and Ongage records no Message-ID at all. Every thread lookup therefore resolves its mailbox through `readableImapAuth()` in `server/src/services/mailbox-access.ts` — any account with host+user+pass is readable, except `gmail_oauth` (read via the Gmail API). Gating on `auth_type === 'smtp'` is what hid the Ongage mailbox from all four read paths and pushed each click onto a 95.8s all-mailbox sweep that could never match. `/inbox/search-thread` asks the SENDER's own mailbox first and bounds the fallback sweep at `SWEEP_BUDGET_MS`, because the client aborts at 30s.
+
 The Instantly.ai adapter (`adapter-instantly.ts`) exists in code but is **not used in production**.
 
 ---
@@ -452,6 +454,7 @@ See `docs/deployment.md` for complete reference.
 - `EmailPlatformAdapter` interface in `types.ts` — all adapters must implement it exactly
 - `BasePlatformScraper` contract in `tools/scraper/platforms/base.py` — all platform plugins must implement it exactly. Social platforms add the `SocialPlatformScraper` subclass at `_social_base.py`.
 - `lead_platform_presences(platform, profile_url)` unique key — canonical multi-platform lead identity
+- `readableImapAuth()` as the single decision for whether a mailbox can be read. Re-introducing an `auth_type === 'smtp'` test on any thread/reply-read path re-hides the Ongage mailboxes
 - The `invalid` send-block. It is enforced at four layers on purpose (selection, hand-off, campaign insert, send); removing any one of them re-opens the gap that killed the Canada / Australia launches
 - `resolveOutreachLanguage()` as the single source of the AI's writing language — never read `COUNTRY_LANGUAGE[...]` directly at a generation call site
 
