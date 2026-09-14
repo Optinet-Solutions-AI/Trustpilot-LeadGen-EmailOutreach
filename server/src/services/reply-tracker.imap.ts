@@ -35,6 +35,7 @@ import { classifyInboundBounce } from './bounce-tracker.js';
 import { extractContacts } from './auto-reply-extractor.js';
 import { insertDiscoveredContact } from '../db/discovered-contacts.js';
 import { isPollableForReplies, type PollableAccount } from './pollable-accounts.js';
+import { assessReplyBody } from './reply-body.js';
 
 export interface ImapAccount {
   id: string;
@@ -133,7 +134,7 @@ export async function checkRepliesImap(
 
       const handleMatch = async (
         lead: LeadRef,
-        msg: FetchMessageObject,
+        uid: number,
         opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy },
       ): Promise<{ matched: boolean; isAuto: boolean; isBounce: boolean }> => {
         // Fetch the body for the matched UID. We deliberately don't carry
@@ -141,8 +142,22 @@ export async function checkRepliesImap(
         // every message in the 7-day window even though most aren't matches.
         // A second per-match fetch costs one extra round-trip but keeps the
         // common case (1–2 matches per poll) cheap.
-        const sourceBuf = await fetchSourceForUid(client, msg.uid!);
+        const sourceBuf = await fetchSourceForUid(client, uid);
         const parsedBody = sourceBuf ? await parseBody(sourceBuf) : { headers: {}, body: '' };
+
+        // A failed fetch is NOT an empty body. Recording the reply now would
+        // store a null snippet, run the bounce and auto-reply classifiers
+        // against nothing, and burn the only chance to read the message --
+        // markReplied matches rows at status='sent', so a flipped row can
+        // never be revisited. Leave it alone and let the next poll retry.
+        const assessed = assessReplyBody(sourceBuf !== null, parsedBody.body);
+        if (!assessed.usable) {
+          console.warn(
+            `[ImapReplyTracker] ${account.email}: body unreadable for uid ${uid} ` +
+            `from ${opts.fromAddr} (${assessed.reason}) — leaving for the next poll`,
+          );
+          return { matched: false, isAuto: false, isBounce: false };
+        }
 
         // Bounce/NDR guard — MUST run before classifyReply. A Mail Delivery
         // Subsystem report quotes the failed message, so its In-Reply-To /
@@ -158,7 +173,6 @@ export async function checkRepliesImap(
         });
         if (bounce.isBounce) {
           const ok = await markBounced(lead, opts, bounce);
-          if (ok) dropLead(lead);
           return { matched: ok, isAuto: false, isBounce: true };
         }
 
@@ -176,17 +190,13 @@ export async function checkRepliesImap(
             classifier: verdict,
             opts,
             body: parsedBody.body,
-            messageId: opts.matchedBy === 'in-reply-to' || opts.matchedBy === 'references'
-              ? `imap:${msg.uid}`
-              : `imap:${msg.uid}`,
+            messageId: `imap:${uid}`,
           });
-          if (ok) dropLead(lead);
           return { matched: ok, isAuto: true, isBounce: false };
         }
 
         const ok = await markReplied(lead, opts, parsedBody.body);
         if (ok) {
-          dropLead(lead);
 
           if (isAuto && !config.autoReplyHandlingEnabled) {
             try {
@@ -311,6 +321,13 @@ export async function checkRepliesImap(
         return true;
       };
 
+      /** Matches found while streaming; processed after the stream closes. */
+      const matches: Array<{
+        lead: LeadRef;
+        uid: number;
+        opts: { fromAddr: string; subject: string; matchedBy: MatchStrategy };
+      }> = [];
+
       // Fetch envelope (From, Subject, Message-ID, In-Reply-To) plus raw References header.
       // References isn't on the envelope so we ask for it explicitly.
       for await (const msg of client.fetch(uids, { envelope: true, uid: true, headers: ['references'] })) {
@@ -354,12 +371,27 @@ export async function checkRepliesImap(
 
         if (!lead || !matchedBy) continue;
 
-        const result = await handleMatch(lead, msg, {
-          fromAddr: fromAddr || '(unknown)',
-          subject,
-          matchedBy,
+        // COLLECT ONLY. Processing here would issue a second client.fetch for
+        // the body, and several DB round-trips, while this fetch stream is
+        // still open. IMAP carries one command at a time per connection, so
+        // that breaks it: the socket times out, the body fetch reports
+        // "Connection not available", and the reply lands with no content.
+        // Matching is pure header work, so it stays in the stream; everything
+        // that talks to the network or the database waits until it closes.
+        matches.push({
+          lead,
+          uid: msg.uid!,
+          opts: { fromAddr: fromAddr || '(unknown)', subject, matchedBy },
         });
+        // Drop immediately so a later message in this same stream cannot
+        // match the same lead again.
+        dropLead(lead);
+      }
 
+      // PHASE B — the stream is closed, so the connection is free. Each body
+      // fetch and its database writes now happen on a quiet connection.
+      for (const m of matches) {
+        const result = await handleMatch(m.lead, m.uid, m.opts);
         if (result.matched) {
           if (result.isBounce) bouncesFound++;
           else if (result.isAuto) autoRepliesFound++;
@@ -438,7 +470,13 @@ async function markAutoReplied(args: {
 
   const { error: updateErr } = await supabase
     .from('campaign_leads')
-    .update({ status: 'auto_replied', replied_at: new Date().toISOString() })
+    .update({
+      status: 'auto_replied',
+      replied_at: new Date().toISOString(),
+      // Was omitted entirely, so even a successfully fetched auto-reply left
+      // the Inbox with nothing to render.
+      reply_snippet: (body || '').trim().slice(0, 4000) || null,
+    })
     .eq('id', lead.id)
     .eq('status', 'sent');
   if (updateErr) return false;
