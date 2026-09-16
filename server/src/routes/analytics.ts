@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
+import { selectAllRows } from '../lib/paginate.js';
+import { summariseDailyActivity } from '../services/daily-activity.js';
 
 const router = Router();
 
@@ -71,6 +73,31 @@ router.get('/', async (req: Request, res: Response) => {
     if (cutoffDate) campaignQuery = campaignQuery.gte('created_at', cutoffDate);
     const { data: campaigns } = await campaignQuery;
 
+    // The stored total_sent counters drift, in both directions: measured
+    // 2026-09-16 they added to 4,864 against 3,765 emails actually sent — one
+    // campaign's counter read 202 against 26 real sends, and three September
+    // campaigns read 0 against 13-25. They are replaced here by a count of the
+    // activity log, which records one row per real send and is never
+    // overwritten, so the KPI card, the reply rate and the bounce rate all
+    // agree with the Daily Activity chart instead of contradicting it.
+    const sentNotes = await selectAllRows<{ metadata: { campaign_id?: string } | null }>(
+      (from, to) => supabase
+        .from('lead_notes')
+        .select('metadata')
+        .eq('type', 'email_sent')
+        .order('id', { ascending: true })
+        .range(from, to),
+    );
+    const realSentByCampaign = new Map<string, number>();
+    for (const n of sentNotes) {
+      const cid = n.metadata?.campaign_id;
+      if (cid) realSentByCampaign.set(cid, (realSentByCampaign.get(cid) ?? 0) + 1);
+    }
+    const campaignsWithRealSends = (campaigns ?? []).map((c: Record<string, unknown>) => ({
+      ...c,
+      total_sent: realSentByCampaign.get(c.id as string) ?? 0,
+    }));
+
     // Recent scrape jobs — filtered by period
     let scrapeQuery = supabase
       .from('scrape_jobs')
@@ -90,7 +117,7 @@ router.get('/', async (req: Request, res: Response) => {
         leadsByStatus,
         leadsByCountry,
         leadsByCategory,
-        campaigns: campaigns || [],
+        campaigns: campaignsWithRealSends,
         recentScrapeJobs: scrapeJobs || [],
         period,
       },
@@ -142,52 +169,38 @@ router.get('/daily', async (req: Request, res: Response) => {
     endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
     const endExclusiveIso = endExclusive.toISOString();
 
-    // Two parallel queries — we only need the timestamp columns, not the rows.
-    const PAGE = 1000;
-    const fetchAll = async (col: 'sent_at' | 'replied_at'): Promise<string[]> => {
-      const all: string[] = [];
-      let from = 0;
-      for (;;) {
-        const { data, error } = await supabase
-          .from('campaign_leads')
-          .select(col)
-          .gte(col, startIso)
-          .lt(col, endExclusiveIso)
-          .not(col, 'is', null)
-          .range(from, from + PAGE - 1);
-        if (error) throw error;
-        const rows = (data ?? []) as Array<Record<string, string | null>>;
-        for (const r of rows) {
-          const v = r[col];
-          if (typeof v === 'string') all.push(v);
-        }
-        if (rows.length < PAGE) break;
-        from += PAGE;
-      }
-      return all;
-    };
+    // Counted from the ACTIVITY LOG, one row per real send, rather than from
+    // campaign_leads.sent_at — which holds a single timestamp per lead and is
+    // overwritten by each later step in the sequence. Bucketing that column
+    // erased a first email from its own day as soon as its follow-up went out:
+    // measured 2026-09-16 over 24 Aug - 16 Sep, 483 emails had really gone out
+    // and this chart showed 310, with five days reading zero that had each
+    // really sent 21 to 30. See services/daily-activity.ts.
+    const fetchEvents = async (noteType: 'email_sent' | 'email_replied'): Promise<string[]> =>
+      (await selectAllRows<{ created_at: string }>((from, to) => supabase
+        .from('lead_notes')
+        .select('created_at')
+        .eq('type', noteType)
+        .gte('created_at', startIso)
+        .lt('created_at', endExclusiveIso)
+        .order('created_at', { ascending: true })
+        .range(from, to)))
+        .map((r) => r.created_at)
+        .filter((t): t is string => typeof t === 'string');
 
-    const [sentRows, repliedRows] = await Promise.all([fetchAll('sent_at'), fetchAll('replied_at')]);
+    const [sentRows, repliedRows] = await Promise.all([
+      fetchEvents('email_sent'),
+      // 'email_replied' is human replies only; auto-responders are logged
+      // separately as 'auto_reply_received' and deliberately not counted here.
+      fetchEvents('email_replied'),
+    ]);
 
-    const sentByDay: Record<string, number> = {};
-    const repliedByDay: Record<string, number> = {};
-    for (const t of sentRows) {
-      const k = utcDayKey(t);
-      sentByDay[k] = (sentByDay[k] || 0) + 1;
-    }
-    for (const t of repliedRows) {
-      const k = utcDayKey(t);
-      repliedByDay[k] = (repliedByDay[k] || 0) + 1;
-    }
-
-    const days: Array<{ date: string; sent: number; replied: number }> = [];
-    for (const date of daysBetween(start, end)) {
-      days.push({
-        date,
-        sent: sentByDay[date] || 0,
-        replied: repliedByDay[date] || 0,
-      });
-    }
+    const { days } = summariseDailyActivity({
+      sends: sentRows,
+      replies: repliedRows,
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+    });
 
     return res.json({
       success: true,
