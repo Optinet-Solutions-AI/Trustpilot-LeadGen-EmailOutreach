@@ -16,6 +16,7 @@
  *                                to 'spawned_lead'.
  */
 
+import { selectAllRows } from '../lib/paginate.js';
 import { getSupabase } from '../lib/supabase.js';
 import { createNote } from './notes.js';
 import {
@@ -464,17 +465,27 @@ export async function countPending(): Promise<number> {
   // Two queries because supabase-js doesn't expose anti-join syntax. Both
   // queries hit indexes (status, score, created_at) and stay cheap. Lead-id
   // sets get diffed in JS.
+  // Paged, not limited. PostgREST caps a response at 1,000 rows however high
+  // the limit is and reports nothing, so `.limit(2000)` quietly returned half
+  // the table once it passed a thousand rows — the same silent truncation that
+  // made the queue re-pacer act on 11 rows out of 692.
   const [pendingRes, actionedRes] = await Promise.all([
-    supabase
+    selectAllRows<{ lead_id: string }>((from, to) => supabase
       .from('discovered_contacts')
       .select('lead_id')
       .eq('status', 'pending_review')
-      .limit(2000),
-    supabase
+      .order('lead_id', { ascending: true })
+      .range(from, to))
+      .then((data) => ({ data, error: null as { message: string } | null }))
+      .catch((e: Error) => ({ data: [] as Array<{ lead_id: string }>, error: { message: e.message } })),
+    selectAllRows<{ lead_id: string }>((from, to) => supabase
       .from('discovered_contacts')
       .select('lead_id')
       .in('status', ['accepted', 'spawned_lead'])
-      .limit(2000),
+      .order('lead_id', { ascending: true })
+      .range(from, to))
+      .then((data) => ({ data, error: null as { message: string } | null }))
+      .catch((e: Error) => ({ data: [] as Array<{ lead_id: string }>, error: { message: e.message } })),
   ]);
 
   if (pendingRes.error) {

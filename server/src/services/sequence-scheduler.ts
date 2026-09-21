@@ -24,7 +24,7 @@ import { applyTestMode } from './test-mode.js';
 import { getSenderAccountByEmail } from './sender-loader.js';
 import { isPermanentSendFailure } from './bounce-tracker.js';
 import { decideFollowUpSend } from './follow-up-budget.js';
-import { loadSentCounts, loadAccountCaps, recordSend } from './send-counts.js';
+import { loadSentCounts, loadAccountCaps, recordSend, decideAgainstLiveCount } from './send-counts.js';
 import type { SendingSchedule } from './schedule-engine.js';
 import type { DayLoad } from './next-step-planner.js';
 import { followUpSubject } from './message-preview.js';
@@ -141,6 +141,21 @@ async function processDueFollowUps() {
 
     if (decision.action === 'defer') {
       await deferFollowUp(cl, decision.until, decision.reason);
+      continue;
+    }
+
+    // Same last check as the first-touch loop: the snapshot cannot see the
+    // other instances, so ask the database in the instant before sending.
+    const ceiling = Math.min(
+      typeof raw?.dailyLimit === 'number' && raw.dailyLimit > 0 ? raw.dailyLimit : Number.POSITIVE_INFINITY,
+      caps?.dailyCap ?? config.rateLimits.dailyCap,
+    );
+    const live = await decideAgainstLiveCount(senderEmail, ceiling);
+    if (!live.send) {
+      console.log(
+        `[SequenceScheduler] ${senderEmail ?? 'unknown sender'} refused by the live cap check ` +
+        `(${live.reason}${'count' in live ? ' at ' + live.count : ''}) — leaving it due`,
+      );
       continue;
     }
 

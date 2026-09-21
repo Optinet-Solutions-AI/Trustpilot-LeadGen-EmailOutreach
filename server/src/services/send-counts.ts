@@ -81,3 +81,58 @@ export async function loadAccountCaps(): Promise<Record<string, AccountCaps>> {
   }
   return caps;
 }
+
+/**
+ * How many emails one mailbox has really sent in the last 24 hours, read
+ * fresh from the database rather than from a tick-start snapshot.
+ */
+export async function liveSentCount(email: string): Promise<number> {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { count, error } = await getSupabase()
+    .from('campaign_leads')
+    .select('id', { count: 'exact', head: true })
+    .ilike('sender_email', email)
+    .gte('sent_at', since);
+  if (error) throw new Error(error.message);
+  return count ?? 0;
+}
+
+export type LiveCapDecision =
+  | { send: true }
+  | { send: false; reason: 'at_cap'; count: number }
+  | { send: false; reason: 'count_unavailable' }
+  | { send: false; reason: 'no_sender' };
+
+/**
+ * The last check before an email leaves.
+ *
+ * The cap used to be judged against a snapshot taken once per tick. That is
+ * safe only while a single tick runs at a time, and this service runs up to
+ * ten instances — each snapshotting separately and each allowing a full cap
+ * on top of the others. On 2026-09-19 two mailboxes reached 25 against a cap
+ * of 20 and 70 emails went out against a ceiling of 60.
+ *
+ * Asking the database in the instant before the send narrows the race from a
+ * whole tick to one send. It is not a distributed lock — two instances can
+ * still both read 19 — but the worst case becomes cap + (instances - 1)
+ * instead of cap x instances.
+ */
+export async function decideAgainstLiveCount(
+  senderEmail: string | null | undefined,
+  ceiling: number,
+  read: (email: string) => Promise<number> = liveSentCount,
+): Promise<LiveCapDecision> {
+  const key = senderEmail?.trim().toLowerCase();
+  if (!key) return { send: false, reason: 'no_sender' };
+
+  let count: number;
+  try {
+    count = await read(key);
+  } catch {
+    // Fail closed. Assuming zero on a failed read turns the cap into a
+    // suggestion for the duration of a database blip.
+    return { send: false, reason: 'count_unavailable' };
+  }
+
+  return count >= ceiling ? { send: false, reason: 'at_cap', count } : { send: true };
+}

@@ -18,7 +18,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type OngageSenderAccount, type SenderAccount } from './email-sender.js';
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter, getAccountDailyCap } from './rate-limiter.js';
-import { loadSentCounts, recordSend } from './send-counts.js';
+import { loadSentCounts, recordSend, decideAgainstLiveCount } from './send-counts.js';
 import { exclusive } from './tick-guard.js';
 import { planFollowUpBatch } from './follow-up-batch.js';
 import { selectAllRows } from '../lib/paginate.js';
@@ -170,6 +170,24 @@ async function processDueSends(): Promise<void> {
     // Env account still uses the global rateLimiter (for warmup/legacy caps)
     if (picked === 'env' && !rateLimiter.canSend()) {
       console.log('[CampaignScheduler] Env account at cap — deferring');
+      break;
+    }
+
+    // Last check before the email leaves. The tick snapshot above cannot see
+    // the other instances this service runs, so the real count is read again
+    // here — see decideAgainstLiveCount.
+    const ceiling = Math.min(
+      rowPerAccountLimit ?? Number.POSITIVE_INFINITY,
+      (senderAccount as { dailyCap?: number } | undefined)?.dailyCap ?? config.rateLimits.dailyCap,
+    );
+    const live = await decideAgainstLiveCount(
+      senderAccount?.email ?? config.gmail.fromEmail, ceiling,
+    );
+    if (!live.send) {
+      console.log(
+        `[CampaignScheduler] ${senderAccount?.email ?? 'env'} refused by the live cap check ` +
+        `(${live.reason}${'count' in live ? ' at ' + live.count : ''}) — deferring`,
+      );
       break;
     }
 
