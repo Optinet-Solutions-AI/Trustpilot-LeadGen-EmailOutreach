@@ -63,40 +63,65 @@ router.get('/', async (req: Request, res: Response) => {
       leadsByCategory[c] = (leadsByCategory[c] || 0) + 1;
     }
 
-    // Campaign stats — filtered by period.
-    // total_replied counts only human replies (campaign_leads.status='replied').
-    // total_auto_replied (added in migration 028) tracks auto-routed contact
-    // info separately so the dashboard reply-rate stays human-only.
-    let campaignQuery = supabase
+    // Every campaign. The period is applied to ACTIVITY below, never to when a
+    // campaign happened to be created: filtering on created_at is what made
+    // "Total Emails Sent — 7 Days" read 0 on 2026-09-21, a week in which no
+    // campaign was created but 344 emails went out.
+    const { data: campaigns } = await supabase
       .from('campaigns')
       .select('id, name, status, campaign_type, total_sent, total_opened, total_replied, total_auto_replied, total_bounced, created_at');
-    if (cutoffDate) campaignQuery = campaignQuery.gte('created_at', cutoffDate);
-    const { data: campaigns } = await campaignQuery;
 
-    // The stored total_sent counters drift, in both directions: measured
-    // 2026-09-16 they added to 4,864 against 3,765 emails actually sent — one
-    // campaign's counter read 202 against 26 real sends, and three September
-    // campaigns read 0 against 13-25. They are replaced here by a count of the
-    // activity log, which records one row per real send and is never
-    // overwritten, so the KPI card, the reply rate and the bounce rate all
-    // agree with the Daily Activity chart instead of contradicting it.
-    const sentNotes = await selectAllRows<{ metadata: { campaign_id?: string } | null }>(
-      (from, to) => supabase
-        .from('lead_notes')
-        .select('metadata')
-        .eq('type', 'email_sent')
-        .order('id', { ascending: true })
-        .range(from, to),
-    );
-    const realSentByCampaign = new Map<string, number>();
-    for (const n of sentNotes) {
-      const cid = n.metadata?.campaign_id;
-      if (cid) realSentByCampaign.set(cid, (realSentByCampaign.get(cid) ?? 0) + 1);
-    }
-    const campaignsWithRealSends = (campaigns ?? []).map((c: Record<string, unknown>) => ({
-      ...c,
-      total_sent: realSentByCampaign.get(c.id as string) ?? 0,
-    }));
+    // Counted from the activity log rather than the stored counters, which
+    // drift in both directions: measured 2026-09-16 they added to 4,864
+    // against 3,765 emails actually sent — one campaign's counter read 202
+    // against 26 real sends, and three September campaigns read 0 against
+    // 13-25. The log records one row per real event and is never overwritten,
+    // so these cards now agree with the Daily Activity chart.
+    const countByCampaign = async (
+      noteType: 'email_sent' | 'email_replied' | 'email_bounced',
+    ): Promise<Map<string, number>> => {
+      const notes = await selectAllRows<{ metadata: { campaign_id?: string } | null }>(
+        (from, to) => {
+          let q = supabase
+            .from('lead_notes')
+            .select('metadata')
+            .eq('type', noteType);
+          if (cutoffDate) q = q.gte('created_at', cutoffDate);
+          return q.order('id', { ascending: true }).range(from, to);
+        },
+      );
+      const counts = new Map<string, number>();
+      for (const n of notes) {
+        const cid = n.metadata?.campaign_id;
+        if (cid) counts.set(cid, (counts.get(cid) ?? 0) + 1);
+      }
+      return counts;
+    };
+
+    // 'email_replied' is human replies only — auto-responders are logged
+    // separately as 'auto_reply_received', keeping the reply rate human.
+    const [sentBy, repliedBy, bouncedBy] = await Promise.all([
+      countByCampaign('email_sent'),
+      countByCampaign('email_replied'),
+      countByCampaign('email_bounced'),
+    ]);
+
+    const campaignsWithRealSends = (campaigns ?? [])
+      .map((c: Record<string, unknown>) => {
+        const id = c.id as string;
+        const sent = sentBy.get(id) ?? 0;
+        const replied = repliedBy.get(id) ?? 0;
+        const bounced = bouncedBy.get(id) ?? 0;
+        return {
+          row: { ...c, total_sent: sent, total_replied: replied, total_bounced: bounced },
+          active: sent + replied + bounced > 0,
+          createdAt: String(c.created_at ?? ''),
+        };
+      })
+      // In a period view a campaign belongs because it DID something in that
+      // period, or was created in it — not merely because it exists.
+      .filter((c) => !cutoffDate || c.active || c.createdAt >= cutoffDate)
+      .map((c) => c.row);
 
     // Recent scrape jobs — filtered by period
     let scrapeQuery = supabase
