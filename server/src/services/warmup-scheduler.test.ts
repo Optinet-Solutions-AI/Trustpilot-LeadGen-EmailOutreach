@@ -13,9 +13,14 @@ afterEach(() => {
 });
 
 describe('isWarmupSchedulerEnabled', () => {
-  test('defaults to true when WARMUP_ENABLED is unset (preserves prod behavior)', () => {
+  test('is OFF when WARMUP_ENABLED is unset — this tool does not run warm-up', () => {
+    // It used to default ON, and the variable was never set on Cloud Run, so
+    // the warm-up loop ran every 10 minutes for months against dead
+    // credentials: 71 failed logins in two hours on 2026-09-21 alone. Warming
+    // happens upstream at the delivery vendor; nothing here should send it,
+    // and an unset variable must never be the thing that turns sending on.
     delete process.env.WARMUP_ENABLED;
-    expect(isWarmupSchedulerEnabled()).toBe(true);
+    expect(isWarmupSchedulerEnabled()).toBe(false);
   });
 
   test('returns false when WARMUP_ENABLED=false', () => {

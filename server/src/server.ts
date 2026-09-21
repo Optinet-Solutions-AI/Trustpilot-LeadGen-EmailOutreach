@@ -215,24 +215,16 @@ const server = app.listen(config.port, async () => {
     console.warn('[Startup] Warmup state load error (non-fatal):', e instanceof Error ? e.message : e);
   }
 
-  // Start email warmup scheduler (send/open/reply cycle every 10 min)
-  try {
-    const { startWarmupScheduler } = await import('./services/warmup-scheduler.js');
-    startWarmupScheduler();
-  } catch (e) {
-    console.warn('[Startup] Warmup scheduler error (non-fatal):', e instanceof Error ? e.message : e);
-  }
-
-  // Colleague-network warmup scheduler — sends neutral admin-style emails from
-  // the 9 is_cold_sender accounts to a fixed list of internal colleagues,
-  // pacing per-sender at 45–50 min Mon–Fri 3pm–10pm Asia/Manila. Cathy gets
-  // ONE daily preview email at the 3pm tick. Gated by COLLEAGUE_WARMUP_ENABLED.
-  try {
-    const { startColleagueWarmupScheduler } = await import('./services/colleague-warmup/scheduler.js');
-    startColleagueWarmupScheduler();
-  } catch (e) {
-    console.warn('[Startup] Colleague warmup scheduler error (non-fatal):', e instanceof Error ? e.message : e);
-  }
+  // NO WARM-UP LOOPS. This tool does not warm mailboxes — warming happens
+  // upstream at the delivery vendor. Both schedulers used to be started here;
+  // the plain one defaulted to ON when WARMUP_ENABLED was unset, which it was
+  // in production, so it ran every 10 minutes indefinitely and spent
+  // 2026-09-21 retrying logins that no longer work (71 failures in two hours).
+  // It also ignored EMAIL_SENDING_PAUSED_UNTIL, so it would have kept sending
+  // straight through an operator pause had the credentials been valid.
+  //
+  // The modules remain for their read-only stats endpoints; nothing starts
+  // them. Do not re-add a start call here.
 
   // Email scheduler gate — set SCHEDULERS_ENABLED=false on the main API
   // service to suppress both the sequence-scheduler and campaign-scheduler

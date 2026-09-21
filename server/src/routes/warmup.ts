@@ -186,15 +186,15 @@ router.post('/:email/target', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/warmup/tick — manually trigger one tick (for testing/debugging)
-router.post('/tick', async (_req: Request, res: Response) => {
-  try {
-    await runWarmupTick();
-    res.json({ success: true, data: { message: 'Warmup tick completed' } });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ success: false, error: message });
-  }
+// POST /api/warmup/tick — retired. Warm-up is not something this tool does;
+// warming happens upstream at the delivery vendor. This endpoint sent real
+// email on demand and bypassed every pause, so it answers 410 rather than
+// remaining a loaded gun behind an unused button.
+router.post('/tick', (_req: Request, res: Response) => {
+  res.status(410).json({
+    success: false,
+    error: 'Warm-up has been removed from this tool. Warming is handled by the delivery vendor.',
+  });
 });
 
 export default router;

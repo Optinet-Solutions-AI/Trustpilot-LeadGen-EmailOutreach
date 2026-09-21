@@ -629,7 +629,9 @@ export async function runWarmupTick(): Promise<void> {
  * Mirrors COLLEAGUE_WARMUP_ENABLED on the colleague-warmup scheduler.
  */
 export function isWarmupSchedulerEnabled(): boolean {
-  return (process.env.WARMUP_ENABLED ?? 'true').toLowerCase() !== 'false';
+  // Opt IN, never opt out. Defaulting this to true meant an unset variable
+  // silently ran the warm-up loop in production for months.
+  return (process.env.WARMUP_ENABLED ?? 'false').toLowerCase() === 'true';
 }
 
 /** Start the background warmup scheduler */
