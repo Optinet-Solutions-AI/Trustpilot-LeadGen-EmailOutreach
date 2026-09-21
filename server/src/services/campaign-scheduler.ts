@@ -20,6 +20,8 @@ import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter, getAccountDailyCap } from './rate-limiter.js';
 import { loadSentCounts, recordSend } from './send-counts.js';
 import { exclusive } from './tick-guard.js';
+import { planFollowUpBatch } from './follow-up-batch.js';
+import { selectAllRows } from '../lib/paginate.js';
 import { renderAndSpin } from './template-engine.js';
 import { planNextStepAt } from './next-step-planner.js';
 import { loadDayLoad, loadCapacityPerDay, loadCampaignSchedule } from './day-load.js';
@@ -559,23 +561,49 @@ async function maybeFinalizeCampaign(campaignId: string): Promise<void> {
     const steps = await getCampaignSteps(campaignId);
     const step2 = steps.find((s) => s.step_number === 2);
     if (step2 && sentCount) {
-      // Place step 2 where there is actually room, rather than a flat
-      // now+delay_days that lands the whole batch on one hour of one day.
+      // EVERY row gets its own slot. This used to compute one date and write
+      // it to the whole batch with a single UPDATE — one slot reserved, N
+      // rows stamped — which put 91 follow-ups on 24 September 2026 across
+      // two timestamps, against a ceiling of 60. See follow-up-batch.ts.
       const ideal2 = new Date(Date.now() + step2.delay_days * 24 * 60 * 60 * 1000);
       const sched2 = await loadCampaignSchedule(campaignId);
-      let nextStepAt: string;
-      if (sched2) {
-        const [load, capacityPerDay] = await Promise.all([loadDayLoad(), loadCapacityPerDay()]);
-        nextStepAt = planNextStepAt({ load, schedule: sched2, capacityPerDay, earliest: ideal2 }).toISOString();
-      } else {
-        nextStepAt = ideal2.toISOString();
-      }
-      await supabase
+
+      const toSchedule = await selectAllRows<{ id: string }>((from, to) => supabase
         .from('campaign_leads')
-        .update({ current_step: 1, next_step_at: nextStepAt })
+        .select('id')
         .eq('campaign_id', campaignId)
-        .eq('status', 'sent');
-      console.log(`[CampaignScheduler] Scheduled ${sentCount} leads for follow-up step 2 in ${step2.delay_days} days`);
+        .eq('status', 'sent')
+        .order('sent_at', { ascending: true })
+        .range(from, to));
+
+      if (sched2 && toSchedule.length > 0) {
+        const [load, capacityPerDay] = await Promise.all([loadDayLoad(), loadCapacityPerDay()]);
+        const plan = planFollowUpBatch({
+          ids: toSchedule.map((r) => r.id),
+          schedule: sched2,
+          load,
+          capacityPerDay,
+          earliest: ideal2,
+        });
+        // Batched and parallel: a serial loop over hundreds of rows runs long
+        // enough for the request to time out and leave the batch half-dated.
+        const entries = [...plan.entries()];
+        const BATCH = 25;
+        for (let i = 0; i < entries.length; i += BATCH) {
+          await Promise.all(entries.slice(i, i + BATCH).map(([rowId, at]) => supabase
+            .from('campaign_leads')
+            .update({ current_step: 1, next_step_at: at })
+            .eq('id', rowId)));
+        }
+      } else {
+        // No usable window to place within — fall back to the flat date.
+        await supabase
+          .from('campaign_leads')
+          .update({ current_step: 1, next_step_at: ideal2.toISOString() })
+          .eq('campaign_id', campaignId)
+          .eq('status', 'sent');
+      }
+      console.log(`[CampaignScheduler] Scheduled ${toSchedule.length} leads for follow-up step 2, spread from ${ideal2.toISOString().slice(0, 10)}`);
     }
   } catch (e) {
     console.warn('[CampaignScheduler] Follow-up schedule failed:', e instanceof Error ? e.message : e);
