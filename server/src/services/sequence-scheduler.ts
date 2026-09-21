@@ -31,9 +31,50 @@ import { followUpSubject } from './message-preview.js';
 import { planNextStepAt } from './next-step-planner.js';
 import { loadDayLoad, loadCapacityPerDay } from './day-load.js';
 import { exclusive } from './tick-guard.js';
+import {
+  acquireSchedulerLock, renewSchedulerLock, releaseSchedulerLock, INSTANCE_ID,
+} from './scheduler-lock.js';
 import { claimFollowUpSend, releaseFollowUpClaim } from './follow-up-claim.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
+
+/**
+ * Run a send tick only if this instance holds the leader lock.
+ *
+ * The in-process guard stops a loop overlapping itself; this stops the ten
+ * instances Cloud Run may run from each sending a full cap's worth. When the
+ * lock table is missing — the migration is applied by hand — the tick runs
+ * anyway on the narrower protection it already had, because a deploy that
+ * silently halted every campaign would be worse than the fault being fixed.
+ */
+async function withSendLock(lockName: string, run: () => Promise<void>): Promise<void> {
+  const supabase = getSupabase();
+  const TTL_MS = 5 * 60_000;
+  const outcome = await acquireSchedulerLock(supabase, lockName, INSTANCE_ID, TTL_MS);
+
+  if (outcome === 'held_by_other') return;
+  if (outcome === 'unavailable') {
+    console.warn(
+      `[${lockName}] leader lock unavailable (is migration 068 applied?) — ` +
+      'running without it; the per-send cap check still applies',
+    );
+    await run();
+    return;
+  }
+
+  // Held. Keep pushing the expiry out so a long tick is not taken over
+  // mid-flight, and always give it back.
+  const renew = setInterval(() => {
+    void renewSchedulerLock(supabase, lockName, INSTANCE_ID, TTL_MS);
+  }, 60_000);
+  try {
+    await run();
+  } finally {
+    clearInterval(renew);
+    await releaseSchedulerLock(supabase, lockName, INSTANCE_ID);
+  }
+}
+
 
 /**
  * Start the sequence scheduler loop.
@@ -53,7 +94,7 @@ export function startSequenceScheduler() {
   // a ceiling of 60.
   const tick = exclusive(async () => {
     try {
-      await processDueFollowUps();
+      await withSendLock('sequence-scheduler', processDueFollowUps);
     } catch (err) {
       console.error('[SequenceScheduler] Error:', err instanceof Error ? err.message : err);
     }
