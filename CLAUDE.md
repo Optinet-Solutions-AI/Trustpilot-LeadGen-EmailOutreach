@@ -370,6 +370,14 @@ Same as before — see `supabase/migrations/001_initial_schema.sql`.
 
 ⚠️ **Outreach is NOT ready as of 2026-09-04.** Ongage is connected and delivering, but mail lands in SPAM — the sending domains are still in warm-up. Do not size or launch a campaign on this path until warm-up completes and the domains are confirmed inboxing.
 
+**Both send loops are guarded against overlapping ticks** (`tick-guard.ts`) and
+follow-ups are **claimed in the database before the email is sent**
+(`follow-up-claim.ts`). Removing either re-opens the 2026-09-19 faults: 70
+emails against a 60/day ceiling, and 208 duplicate follow-ups delivered to 18
+recipients because the unique index was consulted after the send rather than
+before it. The guard covers one process; the service runs up to 10 instances,
+so the database claim is what holds across them.
+
 Campaign sends flow: `campaign-scheduler.ts` (polls every 60s) → `buildSenderPool()` pulls active accounts → picks the pinned `senderAccountId` (or rotates) → dispatches via the right sender module (`email-sender.gmail.ts`, `email-sender.smtp.ts`, or `email-sender.ongage.ts`). Each account enforces its own `daily_cap`, `hourly_cap`, and DNS status (MX/SPF/DMARC) — capped accounts are skipped, not blocked. `campaign_leads.sender_email` records which account actually sent.
 
 **Reading replies is decided by credentials, not `auth_type`.** Ongage senders receive their replies in an ordinary mailbox the CRM holds IMAP credentials for, and Ongage records no Message-ID at all. Every thread lookup therefore resolves its mailbox through `readableImapAuth()` in `server/src/services/mailbox-access.ts` — any account with host+user+pass is readable, except `gmail_oauth` (read via the Gmail API). Gating on `auth_type === 'smtp'` is what hid the Ongage mailbox from all four read paths and pushed each click onto a 95.8s all-mailbox sweep that could never match. `/inbox/search-thread` asks the SENDER's own mailbox first and bounds the fallback sweep at `SWEEP_BUDGET_MS`, because the client aborts at 30s.
@@ -697,7 +705,17 @@ See `docs/deployment.md` for complete reference.
 ### Email
 - ZeroBounce free tier: 100 credits/month; MillionVerifier free: 1000/mo; Hunter free: 50 calls/mo
 - Connected mailbox accounts (Gmail OAuth, Bluehost/Titan SMTP, DreamHost, app-password) are all managed in-app via the `email_accounts` table. Personal-provider addresses (Gmail/Yahoo/Outlook/etc.) should be used only as custom-domain aliases — sending bulk cold mail directly from free Gmail inboxes is a spam trap.
-- Warmup: start at 10–20 emails/day per account, ramp up over 2–4 weeks. Each account has its own `daily_cap`/`hourly_cap` — respect them per-account, not globally.
+- **This tool does NOT warm mailboxes.** Warming is handled upstream at the
+  delivery vendor. Both warm-up schedulers were removed from startup on
+  2026-09-21 and `WARMUP_ENABLED` is now opt-IN. It previously defaulted to
+  TRUE when unset — and it was never set on Cloud Run — so the loop ran every
+  10 minutes for months, latterly retrying dead credentials (71 failed logins
+  in two hours on 21 September). It also ignored `EMAIL_SENDING_PAUSED_UNTIL`
+  by design. `POST /api/warmup/tick` now answers 410; the read-only stats
+  endpoints remain. Do not re-add a start call.
+- Each account has its own `daily_cap`/`hourly_cap` — respect them
+  per-account, not globally. Sizing guidance for a new mailbox is 10–20/day,
+  but the ramping itself happens at the vendor, not here.
 - Deliverability requires MX + SPF + DMARC configured on the sending domain. The Email Accounts page shows per-account DNS badges; fix red badges before sending volume.
 
 ---
