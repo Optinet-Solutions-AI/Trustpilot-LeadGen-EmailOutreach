@@ -19,6 +19,7 @@ import { sendEmail, type GmailSenderAccount, type SmtpSenderAccount, type Ongage
 import { createGmailClientFromCredentials } from './gmail-client.js';
 import { rateLimiter, getAccountDailyCap } from './rate-limiter.js';
 import { loadSentCounts, recordSend } from './send-counts.js';
+import { exclusive } from './tick-guard.js';
 import { renderAndSpin } from './template-engine.js';
 import { planNextStepAt } from './next-step-planner.js';
 import { loadDayLoad, loadCapacityPerDay, loadCampaignSchedule } from './day-load.js';
@@ -62,13 +63,17 @@ export function startCampaignScheduler(): void {
 
   console.log('[CampaignScheduler] Started — polling every 60s for due emails, bounce check every 5 min.');
 
-  setInterval(async () => {
+  // Guarded — see tick-guard.ts. Overlapping ticks each believed the mailbox
+  // had room and sent up to the cap again.
+  const sendTick = exclusive(async () => {
     try {
       await processDueSends();
     } catch (err) {
       console.error('[CampaignScheduler] Tick error:', err instanceof Error ? err.message : err);
     }
-  }, POLL_INTERVAL_MS);
+  }, 'CampaignScheduler');
+
+  setInterval(() => { void sendTick(); }, POLL_INTERVAL_MS);
 }
 
 async function processDueSends(): Promise<void> {

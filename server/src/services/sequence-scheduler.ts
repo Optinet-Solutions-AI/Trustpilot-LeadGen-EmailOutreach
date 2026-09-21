@@ -30,6 +30,8 @@ import type { DayLoad } from './next-step-planner.js';
 import { followUpSubject } from './message-preview.js';
 import { planNextStepAt } from './next-step-planner.js';
 import { loadDayLoad, loadCapacityPerDay } from './day-load.js';
+import { exclusive } from './tick-guard.js';
+import { claimFollowUpSend, releaseFollowUpClaim } from './follow-up-claim.js';
 
 const POLL_INTERVAL = 60_000; // check every 60 seconds
 
@@ -45,13 +47,19 @@ export function startSequenceScheduler() {
 
   console.log('[SequenceScheduler] Started (polling every 60s for due follow-ups)');
 
-  setInterval(async () => {
+  // Guarded: the interval fires every 60s whether or not the last tick
+  // finished, and overlapping ticks each carried their own view of how much
+  // each mailbox had sent — which is how 70 emails left on 2026-09-19 against
+  // a ceiling of 60.
+  const tick = exclusive(async () => {
     try {
       await processDueFollowUps();
     } catch (err) {
       console.error('[SequenceScheduler] Error:', err instanceof Error ? err.message : err);
     }
-  }, POLL_INTERVAL);
+  }, 'SequenceScheduler');
+
+  setInterval(() => { void tick(); }, POLL_INTERVAL);
 }
 
 /**
@@ -238,14 +246,12 @@ async function sendFollowUp(
   const nextStepNumber = currentStep + 1;
   const lead = cl.leads as Record<string, unknown>;
 
-  // Idempotency guard — refuse to send if an email_sent note already exists
-  // for this exact (lead, campaign, step_number) tuple. The claim above
-  // prevents *concurrent* duplicates; this catches the offline failure
-  // where a previous tick sent the email but crashed before its post-send
-  // UPDATE — the row would otherwise be re-eligible after the 10-minute
-  // claim expires and double-send. The DB-side unique partial index on
-  // lead_notes (migration 044) provides the same guarantee at the storage
-  // layer if this application check is ever bypassed.
+  // Cheap early-out only. This is a READ, so two workers can both pass it —
+  // which is exactly what happened on 18-20 September 2026, delivering 208
+  // duplicate follow-ups to 18 recipients. The guarantee now lives in
+  // claimFollowUpSend() below, which INSERTS before the send and lets the
+  // unique index decide the winner. This read just saves the losers some
+  // rendering work.
   const { data: existingNote } = await supabase
     .from('lead_notes')
     .select('id')
@@ -362,6 +368,35 @@ async function sendFollowUp(
   const inReplyTo = isGmailSender ? '' : recordedMessageId;
   const gmailThreadId = recordedThreadId || '';
 
+  // Take ownership BEFORE the email leaves. Whoever wins this insert owns the
+  // send; anyone else steps aside without sending. Ordering it after the send
+  // is what let the unique index reject the RECORD of mail that had already
+  // gone out — see follow-up-claim.ts.
+  const claimKey = {
+    leadId: cl.lead_id as string,
+    campaignId,
+    stepNumber: nextStepNumber,
+    to: String(cl.email_used ?? ''),
+  };
+  const claim = await claimFollowUpSend(supabase, claimKey);
+  if (!claim.owned) {
+    console.warn(
+      `[SequenceScheduler] ${cl.email_used} step ${nextStepNumber} is already owned by ` +
+      'another worker — not sending; advancing the row',
+    );
+    const stepsForAdvance = await getCampaignSteps(campaignId);
+    const nextNextStep = stepsForAdvance.find((st) => st.step_number === nextStepNumber + 1);
+    await supabase
+      .from('campaign_leads')
+      .update({
+        current_step: nextStepNumber,
+        next_step_at: nextNextStep ? dueDateFor(nextNextStep.delay_days, plan) : null,
+        sequence_completed: !nextNextStep,
+      })
+      .eq('id', id);
+    return;
+  }
+
   // Send the email
   const result = await sendEmail(
     transformed.to,
@@ -432,15 +467,12 @@ async function sendFollowUp(
       await updateCampaign(campaignId, { total_sent: (campaigns.data.total_sent || 0) + 1 });
     }
 
-    // Activity note
-    await createNote(cl.lead_id as string, {
-      type: 'email_sent',
-      content: `Follow-up step ${nextStepNumber} sent to ${cl.email_used}${isTestMode ? ' [TEST MODE]' : ''}`,
-      metadata: { campaign_id: campaignId, step_number: nextStepNumber },
-    });
-
+    // The activity note was already written as the claim, before the send.
     console.log(`[SequenceScheduler] Sent step ${nextStepNumber} to ${cl.email_used}`);
   } else {
+    // Nothing was delivered, so give the claim back — otherwise the lead is
+    // marked as contacted by a send that never happened.
+    await releaseFollowUpClaim(supabase, claimKey);
     console.warn(`[SequenceScheduler] Failed to send step ${nextStepNumber} to ${cl.email_used}: ${result.error}`);
     // A permanent rejection (recipient unknown / mailbox rejected) means the
     // address is dead — stop the sequence so we don't keep chasing it every
