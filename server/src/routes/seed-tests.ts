@@ -27,7 +27,7 @@ async function readJson<T>(key: string): Promise<T | null> {
 
 // GET /api/seed-tests/:runId
 router.get('/:runId', async (req: Request, res: Response) => {
-  const { runId } = req.params;
+  const runId = String(req.params.runId);
   if (!RUN_ID.test(runId)) { res.status(400).json({ success: false, error: 'Invalid run id' }); return; }
   try {
     const run = await readJson<{ subject?: string; updated_at?: string; results?: Array<Record<string, unknown>> }>(`${runId}/results.json`);
@@ -44,7 +44,8 @@ router.get('/:runId', async (req: Request, res: Response) => {
 
 // PATCH /api/seed-tests/:runId/:ref  { placement }
 router.patch('/:runId/:ref', async (req: Request, res: Response) => {
-  const { runId, ref } = req.params;
+  const runId = String(req.params.runId);
+  const ref = String(req.params.ref);
   const placement = String(req.body?.placement ?? '');
   if (!RUN_ID.test(runId)) { res.status(400).json({ success: false, error: 'Invalid run id' }); return; }
   if (!PLACEMENTS.has(placement)) {
