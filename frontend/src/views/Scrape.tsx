@@ -15,6 +15,59 @@ import Pill from '../ui/Pill';
 import SectionHeader from '../ui/SectionHeader';
 import Stat from '../ui/Stat';
 
+type CostBearing = {
+  cost_usd?: number | null;
+  cost_detail?: {
+    byVendor?: Array<{ vendor: string; usd: number; units: number; unitLabel: string }>;
+    usdPerLead?: number | null;
+  } | null;
+};
+
+/**
+ * Money at the precision the number deserves. A per-lead cost lives in
+ * fractions of a cent — $0.0032 is the whole argument for batching the
+ * OpenAI listing pass — and rendering it as "$0.00" throws the point away.
+ */
+function formatMoney(usd: number | null | undefined): string {
+  if (usd == null || !Number.isFinite(usd) || usd <= 0) return 'free';
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+/**
+ * Native vendor units, shown alongside the dollars. ScrapingBee credits are
+ * real spend even when no USD rate is configured, so a run reporting "$0.00"
+ * while consuming 150 credits would be actively misleading.
+ */
+function nativeUnits(job: CostBearing): string {
+  return (job.cost_detail?.byVendor ?? [])
+    .filter((v) => v.units > 0 && v.usd <= 0)
+    .map((v) => `${v.units.toLocaleString()} ${v.unitLabel}`)
+    .join(' · ');
+}
+
+function totalNativeUnits(jobs: CostBearing[]): string {
+  const totals = new Map<string, number>();
+  for (const job of jobs) {
+    for (const v of job.cost_detail?.byVendor ?? []) {
+      if (v.units > 0 && v.usd <= 0) {
+        totals.set(v.unitLabel, (totals.get(v.unitLabel) ?? 0) + v.units);
+      }
+    }
+  }
+  return [...totals.entries()]
+    .map(([label, n]) => `${n.toLocaleString()} ${label}`)
+    .join(' · ');
+}
+
+/** The per-vendor breakdown, for the cell's tooltip. */
+function describeCost(job: CostBearing): string {
+  const parts = (job.cost_detail?.byVendor ?? []).map((v) =>
+    `${v.vendor}: ${formatMoney(v.usd)} (${v.units.toLocaleString()} ${v.unitLabel})`);
+  return parts.length ? parts.join(' · ') : 'No vendor spend recorded for this run.';
+}
+
 function relativeFromNow(iso: string | null): string {
   if (!iso) return 'Never refreshed';
   const then = new Date(iso).getTime();
@@ -35,6 +88,7 @@ const PLATFORM_BADGE: Record<string, { label: string; bg: string; fg: string }> 
   trustpilot:   { label: 'Trustpilot',   bg: 'bg-emerald-50',  fg: 'text-emerald-700' },
   tripadvisor:  { label: 'TripAdvisor',  bg: 'bg-teal-50',     fg: 'text-teal-700' },
   yelp:         { label: 'Yelp',         bg: 'bg-rose-50',     fg: 'text-rose-700' },
+  booking:      { label: 'Booking.com',  bg: 'bg-indigo-50',   fg: 'text-indigo-700' },
   facebook:     { label: 'Facebook',     bg: 'bg-blue-50',     fg: 'text-blue-700' },
   instagram:    { label: 'Instagram',    bg: 'bg-fuchsia-50',  fg: 'text-fuchsia-700' },
 };
@@ -44,6 +98,7 @@ const PLATFORM_FILTERS: Array<{ value: string | null; label: string }> = [
   { value: 'trustpilot',   label: 'Trustpilot' },
   { value: 'tripadvisor',  label: 'TripAdvisor' },
   { value: 'yelp',         label: 'Yelp' },
+  { value: 'booking',      label: 'Booking.com' },
   { value: 'facebook',     label: 'Facebook' },
   { value: 'instagram',    label: 'Instagram' },
 ];
@@ -385,6 +440,10 @@ export default function Scrape() {
                     location?: string;
                     query?: string;
                     lead_type?: 'consumers' | 'businesses';
+                    // booking -> {city, max_review_score}; scores are out of
+                    // 10, so this row cannot use the shared star range.
+                    city?: string;
+                    max_review_score?: number;
                   } | null;
                   let displayPrimary: string;
                   let displaySecondary: string;
@@ -407,6 +466,16 @@ export default function Scrape() {
                     displayPrimary = tag ? `#${tag}` : '—';
                     displaySecondary = f?.location || f?.country || '—';
                     displayRating = null;
+                  } else if (platKey === 'booking') {
+                    // No category: the segmentation is host size, and that is
+                    // derived from the scrape, not chosen up front. The target
+                    // is the city. Scores are out of 10 here, so the shared
+                    // "1–3.5★" line below would be actively wrong.
+                    displayPrimary = (f?.city as string) || '—';
+                    displaySecondary = (f?.country as string) || '—';
+                    displayRating = f?.max_review_score
+                      ? `≤${f.max_review_score}/10`
+                      : null;
                   } else {
                     displayPrimary =
                       job.category && job.category !== 'all'
@@ -465,6 +534,21 @@ export default function Scrape() {
                             </>
                           )}
                         </div>
+                        {/* What the run actually spent. Shown even when it
+                            found nothing — a zero-result run that burned
+                            credits is exactly the case worth surfacing. */}
+                        {job.cost_usd != null && (
+                          <div
+                            className="mt-1 text-[11px] text-secondary whitespace-nowrap"
+                            title={describeCost(job)}
+                          >
+                            {formatMoney(job.cost_usd)}
+                            {job.cost_detail?.usdPerLead != null && (
+                              <span> · {formatMoney(job.cost_detail.usdPerLead)}/lead</span>
+                            )}
+                            {nativeUnits(job) && <span> · {nativeUnits(job)}</span>}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-xs text-secondary whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5">
@@ -502,6 +586,35 @@ export default function Scrape() {
                   </tr>
                 )}
               </tbody>
+              {/* Total vendor spend across the jobs in view. TripAdvisor and
+                  Yelp are the only platforms that cost anything, so this is
+                  usually their bill. */}
+              {jobs.some((j) => j.cost_usd != null) && (
+                <tfoot>
+                  <tr className="border-t-2 border-outline-variant bg-surface-variant/30">
+                    <td
+                      className="px-6 py-3 text-xs font-bold uppercase tracking-wider text-secondary"
+                      colSpan={5}
+                    >
+                      Total scraping cost
+                    </td>
+                    <td className="px-6 py-3">
+                      <div className="flex items-baseline gap-3 text-sm whitespace-nowrap">
+                        <span className="font-extrabold text-on-surface tabular-nums">
+                          {formatMoney(jobs.reduce((n, j) => n + (j.cost_usd ?? 0), 0))}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wider text-secondary">
+                          across {jobs.filter((j) => j.cost_usd != null).length} jobs
+                        </span>
+                      </div>
+                      {totalNativeUnits(jobs) && (
+                        <div className="mt-1 text-[11px] text-secondary">{totalNativeUnits(jobs)}</div>
+                      )}
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
 

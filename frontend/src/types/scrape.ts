@@ -144,6 +144,21 @@ export interface ScrapeJob {
   total_verified: number;
   total_failed: number;
   total_skipped: number;
+  /**
+   * Vendor spend for this job (migration 066). NULL on jobs that predate cost
+   * tracking; 0 means it genuinely cost nothing — a free browser path.
+   * TripAdvisor and Yelp are the two platforms that always cost something.
+   */
+  cost_usd?: number | null;
+  /**
+   * Per-vendor breakdown, keeping NATIVE units alongside the dollars —
+   * ScrapingBee credits are real spend even when no USD rate is configured,
+   * so a run showing "$0.00" while burning 150 credits would be misleading.
+   */
+  cost_detail?: {
+    byVendor?: Array<{ vendor: string; usd: number; units: number; unitLabel: string }>;
+    usdPerLead?: number | null;
+  } | null;
   error: string | null;
   started_at: string | null;
   completed_at: string | null;

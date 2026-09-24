@@ -31,6 +31,8 @@ import os
 import urllib.parse
 from typing import Optional
 
+from tools.scraper.shared.cost_report import report_scrapingbee
+
 import requests
 
 
@@ -47,6 +49,12 @@ MAX_BYTES = 5_000_000
 
 def scrapingbee_enabled() -> bool:
     return bool(os.environ.get('SCRAPINGBEE_API_KEY'))
+
+
+# Per-call credit cost, from ScrapingBee's published pricing. render_js adds
+# 5, premium_proxy 10, stealth_proxy 75 (stealth supersedes premium).
+STEALTH_CREDITS = 75
+PREMIUM_CREDITS = 10
 
 
 def fetch_via_scrapingbee(
@@ -134,10 +142,15 @@ def fetch_via_scrapingbee(
         body_chunks.append(chunk)
     resp.close()
     try:
-        return b''.join(body_chunks).decode('utf-8', errors='replace')
+        html = b''.join(body_chunks).decode('utf-8', errors='replace')
     except Exception as e:
         print(f"[scrapingbee:{proxy_tier}] decode error: {e}")
         return None
+
+    # Only a SUCCESSFUL fetch is billed — the 4xx/5xx paths above return
+    # before this, so a run that failed on a dead key reports no spend.
+    report_scrapingbee(None, STEALTH_CREDITS if stealth_proxy else PREMIUM_CREDITS)
+    return html
 
 
 def fetch_screenshot_via_scrapingbee(

@@ -249,14 +249,64 @@ export async function releaseStaleClaims(maxAgeMin = 10): Promise<number> {
   return Number(data ?? 0);
 }
 
+/** PostgREST's code for "that column is not there". */
+export function isMissingColumnError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: string; message?: string };
+  if (e.code === '42703') return true;
+  return typeof e.message === 'string'
+    && /column\s+\S*(?:"[^"]+"|\w+).*does not exist/i.test(e.message);
+}
+
+/**
+ * The same patch without the column the database just rejected, or null when
+ * there is nothing useful left to retry with.
+ *
+ * Deliberately narrow: it drops ONLY the column named in the error. Guessing
+ * would silently discard fields the caller needed.
+ */
+export function stripMissingColumns(
+  patch: Record<string, unknown>,
+  err: unknown,
+): Record<string, unknown> | null {
+  const message = (err as { message?: string })?.message ?? '';
+  // Matches both `column scrape_jobs.cost_usd does not exist` and
+  // `column "cost_detail" of relation "scrape_jobs" does not exist`.
+  const named = /column\s+(?:"([^"]+)"|(?:[\w.]*?\.)?(\w+))/i.exec(message);
+  const column = named?.[1] ?? named?.[2];
+  if (!column || !(column in patch)) return null;
+
+  const next = { ...patch };
+  delete next[column];
+  return Object.keys(next).length > 0 ? next : null;
+}
+
 export async function updateJob(id: string, patch: Record<string, unknown>) {
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  const write = async (body: Record<string, unknown>) => supabase
     .from('scrape_jobs')
-    .update(patch)
+    .update(body)
     .eq('id', id)
     .select()
     .single();
+
+  let { data, error } = await write(patch);
+
+  // A migration is applied by hand, so deployed code can reference a column
+  // the database does not have yet. Losing the cost figure is trivial; losing
+  // the job's completion status because of it is not — the job would sit
+  // "running" until the stale sweep requeued it.
+  if (error && isMissingColumnError(error)) {
+    const reduced = stripMissingColumns(patch, error);
+    if (reduced) {
+      console.warn(
+        `[ScrapeJobs] ${error.message} — retrying the update without it. `
+        + 'Apply the pending migration to record this field.',
+      );
+      ({ data, error } = await write(reduced));
+    }
+  }
+
   if (error) throw new Error(error.message);
   return data;
 }

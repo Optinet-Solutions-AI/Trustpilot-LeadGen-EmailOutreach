@@ -11,6 +11,7 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
+import { summariseScrapeCost } from './scrape-cost.js';
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
@@ -28,6 +29,23 @@ import {
   scrapeJobUsesBrowser,
   isFacebookConsumerJob,
 } from './social-routing.js';
+
+/**
+ * Every COST: line a job has printed, so the total survives a watchdog kill
+ * and can be written to the job when it finishes.
+ */
+const jobCostLines = new Map<string, string[]>();
+
+/** What this job has spent so far, ready to write to its row. */
+function costPatch(jobId: string, leadsFound?: number) {
+  const lines = jobCostLines.get(jobId);
+  if (!lines || lines.length === 0) return {};
+  const s = summariseScrapeCost(lines, leadsFound);
+  return {
+    cost_usd: s.totalUsd,
+    cost_detail: { byVendor: s.byVendor, usdPerLead: s.usdPerLead },
+  };
+}
 
 /**
  * Last listing-phase FAILED: line per job, so a zero-result run can say WHY.
@@ -390,7 +408,16 @@ function runPython(
         const trimmed = line.trim();
         if (!trimmed) continue;
 
-        if (trimmed.startsWith('PROGRESS:')) {
+        if (trimmed.startsWith('COST:')) {
+          // Vendor spend, reported by the paid paths as it happens. Collected
+          // here rather than parsed from the final stdout blob so a run that
+          // is killed by the watchdog still reports what it had already spent.
+          const bucket = jobCostLines.get(jobId) ?? [];
+          bucket.push(trimmed);
+          jobCostLines.set(jobId, bucket);
+          const spent = summariseScrapeCost(bucket);
+          emitProgress(jobId, 'cost', `${spent.totalUsd}`);
+        } else if (trimmed.startsWith('PROGRESS:')) {
           const parts = trimmed.split(':');
           emitProgress(jobId, parts[1], parts.slice(2).join(':'));
         } else if (trimmed.startsWith('FAILED:')) {
@@ -973,8 +1000,12 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         status: couldNotRun ? 'failed' : 'completed',
         total_scraped: 0,
         completed_at: new Date().toISOString(),
+        // A run that found nothing can still have spent money — that is
+        // exactly the case worth showing.
+        ...costPatch(jobId, 0),
         ...(blocked ? { last_error: `${blocked.reasonCode}: ${blocked.message}` } : {}),
       });
+      jobCostLines.delete(jobId);
       emitProgress(
         jobId,
         couldNotRun ? 'failed' : 'completed',
@@ -1296,7 +1327,11 @@ export async function runScrapeJob(params: ScrapeParams): Promise<void> {
       total_enriched: totalEnriched,
       total_failed: failedCount + totalDbFailed,
       completed_at: new Date().toISOString(),
+      // Priced against the leads actually saved, which is the number the
+      // operator cares about — not the raw rows a vendor billed for.
+      ...costPatch(jobId, totalSaved),
     });
+    jobCostLines.delete(jobId);
     emitProgress(jobId, 'completed', JSON.stringify({
       totalFound: rawData.length,
       skipped: skippedCount,

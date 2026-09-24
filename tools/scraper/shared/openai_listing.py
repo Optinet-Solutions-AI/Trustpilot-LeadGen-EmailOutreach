@@ -59,6 +59,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Iterable, Optional
 
+from tools.scraper.shared.cost_report import report_openai
+
 RESPONSES_URL = 'https://api.openai.com/v1/responses'
 DEFAULT_MODEL = 'gpt-4.1'
 TIMEOUT_S = 300
@@ -612,10 +614,11 @@ def run_listing(
             'cost_per_lead_usd': round(guard.spent / len(results), 4) if results else None,
         })
 
-    # The operator sees what the run cost, whether or not it succeeded.
+    # Machine-readable, for the job's cost row in the dashboard...
+    report_openai(platform, guard.spent, len(results))
+    # ...and human-readable, for anyone reading the worker log.
     print(
-        f"COST:listing|{platform}|openai|{guard.summary()}|"
-        f"{len(results)} leads|"
+        f"[{platform}:openai] {guard.summary()} | {len(results)} leads | "
         f"${(guard.spent / len(results)) if results else 0:.4f} per lead",
         flush=True,
     )

@@ -70,6 +70,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 from tools.scraper.platforms import get_platform, list_manifests
+from tools.scraper.shared.cost_report import set_cost_platform
 
 
 def _ensure_parent_dir(path: str) -> None:
@@ -91,6 +92,7 @@ def _parse_filters(raw: Optional[str]) -> dict:
 
 
 async def _run_list(args: argparse.Namespace) -> None:
+    set_cost_platform(args.platform)
     platform = get_platform(args.platform)
     filters = _parse_filters(args.filters)
 
@@ -119,6 +121,7 @@ async def _run_list(args: argparse.Namespace) -> None:
 
 
 async def _run_enrich(args: argparse.Namespace) -> None:
+    set_cost_platform(args.platform)
     platform = get_platform(args.platform)
 
     with open(args.input, 'r', encoding='utf-8') as f:
@@ -139,6 +142,7 @@ async def _run_enrich(args: argparse.Namespace) -> None:
 
 
 async def _run_discover_taxonomy(args: argparse.Namespace) -> None:
+    set_cost_platform(args.platform)
     platform = get_platform(args.platform)
     summary = await platform.discover_taxonomy()
     print(f"Taxonomy refresh summary: {summary}")
@@ -150,6 +154,7 @@ async def _run_search_posts(args: argparse.Namespace) -> None:
     Reads ``query`` out of --filters (the same envelope the listing path
     uses, so frontends can submit one shape). Writes PostStubs as JSON.
     """
+    set_cost_platform(args.platform)
     platform = get_platform(args.platform)
     if not hasattr(platform, 'search_posts'):
         raise SystemExit(f"Platform '{args.platform}' does not support post search.")
@@ -168,6 +173,7 @@ async def _run_search_posts(args: argparse.Namespace) -> None:
 
 async def _run_enrich_authors(args: argparse.Namespace) -> None:
     """Social-platforms author enrichment — turns PostStubs into AuthorLeads."""
+    set_cost_platform(args.platform)
     platform = get_platform(args.platform)
     if not hasattr(platform, 'enrich_authors'):
         raise SystemExit(f"Platform '{args.platform}' does not support author enrichment.")

@@ -26,6 +26,8 @@ SHAPE CONTRACT
 """
 from __future__ import annotations
 
+from tools.scraper.shared.cost_report import report_apify
+
 import os
 import re
 from typing import Optional
@@ -258,6 +260,12 @@ def market_allowed(country: str) -> bool:
     return str(country or '').strip().upper() in allowed
 
 
+# memo23/yelp-scraper's measured rate, 2026-08-12. A per-run start fee also
+# applies; it amortises away on anything but a tiny run and is left out rather
+# than spread across rows arbitrarily.
+USD_PER_ITEM = 0.00275
+
+
 def search_city_apify(
     city: str,
     category: str,
@@ -278,5 +286,9 @@ def search_city_apify(
     if max_items <= 0:
         return []
     items = run_actor(actor_id(), build_actor_input(city, category, max_items))
+    # Apify bills per RETURNED row, not per row we end up keeping, so the
+    # charge is the raw count — the rating filter below is free to us but not
+    # to the bill.
+    report_apify(None, len(items or []), USD_PER_ITEM)
     mapped = [map_business(i) for i in (items or [])]
     return [m for m in mapped if m]
