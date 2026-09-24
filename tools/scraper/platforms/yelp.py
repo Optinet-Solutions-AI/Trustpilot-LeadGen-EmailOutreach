@@ -92,6 +92,7 @@ from tools.scraper.platforms.yelp_apify import (
     search_city_apify,
 )
 from tools.scraper.shared.apify import ApifyCreditError, ApifyError
+from tools.scraper.shared.openai_listing import run_listing as run_openai_listing
 
 
 # Where the country → list-of-cities seed lives.
@@ -531,6 +532,18 @@ class YelpScraper(BasePlatformScraper):
                 flush=True,
             )
             return []
+
+        # The OpenAI path is self-contained: two passes per city, no browser,
+        # no cookie, no actor. Branching here rather than threading a fourth
+        # source through the loop below keeps the Apify/browser/relay paths
+        # exactly as they were.
+        if source == 'openai':
+            return run_openai_listing(
+                self.name, cities, category, country=country,
+                max_rating=max_rating, min_rating=min_rating,
+                min_review_count=min_review_count, include_unrated=include_unrated,
+                max_results=max_results, on_progress=on_progress,
+            )
 
         results: list[dict] = []
         seen_urls: set[str] = set()

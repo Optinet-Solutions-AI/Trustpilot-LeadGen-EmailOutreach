@@ -267,6 +267,11 @@ trustpilot-leadgen/
 | `BOOKING_APIFY_MAX_HOTELS` | Per-run ceiling on properties requested | `100` |
 | `BOOKING_APIFY_MAX_ITEMS_PER_JOB` | Whole-job spend guard — max billable rows one scrape may fetch. ~$2.20/job at list price. Along with the Yelp guard, the only cap on Apify spend in the system | `400` |
 | `BOOKING_APIFY_MARKETS` | Comma-separated ISO codes. Unset = every market allowed; set it only to deliberately narrow (spend control, or parking a misbehaving market) | unset |
+| `OPENAI_API_KEY` | Powers the **cookieless `openai` listing source** (`TRIPADVISOR_LISTING_SOURCE=openai`) and model-based email discovery. Server-side only — the old `NEXT_PUBLIC_OPENAI_API_KEY` in `frontend/.env.local` was unused and that prefix would have published the key in the browser bundle | set |
+| `TRIPADVISOR_LISTING_SOURCE` | `scrapingbee` (default) or `openai`. The `openai` source needs NO ScrapingBee credits and is checked BEFORE the ScrapingBee key gate | `scrapingbee` |
+| `OPENAI_LISTING_MODEL` | Model for the listing passes. **Do not use `gpt-4.1-mini`** — live-tested 2026-09-24 it ignored the rating ceiling outright and returned hotels above the cap | `gpt-4.1` |
+| `OPENAI_MAX_SPEND_PER_JOB` | Hard USD budget per scrape job, the only cap on OpenAI spend. On exhaustion the job stops and emits `openai_budget_exhausted`, keeping the leads already gathered. `<= 0` means unlimited | `2.00` |
+| `OPENAI_LISTING_BATCH` | Candidates requested per pass-1 call. Batching is what makes this affordable — the flat web-search fee is shared across everything one call returns | `15` |
 | `MILLIONVERIFIER_API_KEY` | Optional Stage-6 verifier (fires only on ZB-unknown). Free tier: 1,000 credits at https://app.millionverifier.com | unset |
 | `HUNTER_API_KEY` | Powers Tier 9 enrichment (domain search for fully-blocked operators) + Stage 7 verifier (last-resort, fires only when ZB AND MV both unknown). Free tier: 50 calls/mo at https://hunter.io. Free-mailbox domains skipped automatically; per-process hourly cap defaults to 15 enrich + 20 verify (overridable via `HUNTER_MAX_DOMAIN_SEARCHES_PER_HOUR` / `HUNTER_MAX_CALLS_PER_HOUR`) | unset |
 | `SCRAPFLY_API_KEY` | Optional Tier 5b enrichment (different IP pool from ScrapingBee, ASP=true bypasses CF/PerimeterX/DataDome). Free tier: 1,000 credits/mo at https://scrapfly.io | unset |
@@ -549,6 +554,45 @@ See `docs/deployment.md` for complete reference.
 - **Fallback listing sources** (in rough order of use): `browser` — FREE headed-browser `/search`, owner-local-only (headed Chrome + residential IP; cannot run on Cloud Run/EC2) — this is the code's technical default. `fusion` — paid Yelp API; the trial has expired (`400 TRIAL_EXPIRED`). `relay` — residential proxy + a human-minted DataDome cookie reused in a headed browser; the escape hatch for a withdrawn actor or a market Apify can't reach (operator runbook in `workflows/scrape_yelp.md`). PerimeterX is aggressive on the `browser` path — conservative jittered pacing + hard-block abort (`"Access to this page has been denied"` only; the `perimeterx`/`captcha` SDK strings appear on every successful page, so they are NOT treated as blocks).
 - **Profile enrichment** on the fallback (`browser`/`fusion`/`relay`) paths still uses ScrapingBee `stealth_proxy` on `/biz/<slug>` (75 credits/page) — unchanged.
 - Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
+
+### OpenAI listing source (`openai`) — TripAdvisor only
+- **Two passes, and the second is not optional.** Pass 1 asks for a whole
+  city in ONE call so the flat web-search fee is shared ($0.0032/business
+  measured). Pass 2 opens each candidate's own profile. Asked to include the
+  profile URL in pass 1, the model **fabricated 9 of 11** as the literal
+  placeholder `.../Hotel_Review-g187371-dXXXXX-Reviews-...`. That URL is the
+  `lead_platform_presences(platform, profile_url)` dedupe key, so a fabricated
+  one creates a fresh duplicate lead on every re-scrape. `valid_profile_url()`
+  rejects them.
+- **Always fan out per CITY.** A country-wide ask returns real businesses with
+  the WRONG city — hotels in Kuhfelde and Kuesten both came back labelled
+  "Bergen an der". City drives campaign segmentation and outreach language.
+- **Never trust the rating ceiling to the model.** Asked for ≤3.5 it returned
+  3.8 and 3.6; the ceiling is re-applied locally in `parse_candidates()` and
+  again against the profile page in pass 2.
+- **Cost: ~$0.07–0.085 per confirmed lead** — 4.7x TripAdvisor's Terra API and
+  25x Apify. What it buys is needing no scraping vendor at all. Every run
+  prints a `COST:listing|<platform>|openai|…` line and emits `spent_usd` on
+  each progress event.
+- **The index runs ~1 month behind.** Asked for the newest review on two busy
+  profiles on 24 Sep, both answered "Aug 2026". Fine for emails, phones and
+  ratings; not for anything needing today's number.
+- **YELP DOES NOT WORK ON THIS PATH.** PerimeterX refuses OpenAI's crawler
+  exactly as it refuses ours: handed REAL Yelp URLs from our own database the
+  model answered `page_opened: false` every time. Pass 1 still returns
+  plausible names, so unguarded it spent $1.04 across 15 calls for 0 leads.
+  The `openai_platform_unreadable` abort now stops the whole job after 3
+  unconfirmed candidates (~$0.30). The source stays wired for Yelp so it will
+  simply start working if that ever changes — it is not a code fix.
+
+### Screenshots without ScrapingBee
+- **undetected-chromedriver, already installed, clears Cloudflare on
+  TripAdvisor profile pages** — verified 2026-09-24, ~11s, clean 880KB PNG.
+  Free, no vendor. **Pin the driver** (`uc.Chrome(version_main=<installed
+  Chrome major>)`) or it dies with "ChromeDriver only supports Chrome version
+  N". Headed + residential IP, so owner-local only — it cannot run on Cloud
+  Run or the Linux worker, the same constraint the TripAdvisor city seeder
+  already has.
 
 ### Booking.com (short-term-rental hosts)
 - **Purpose is different from every other platform here.** These leads are not

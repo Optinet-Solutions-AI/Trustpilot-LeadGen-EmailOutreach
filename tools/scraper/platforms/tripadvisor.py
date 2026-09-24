@@ -55,11 +55,13 @@ from tools.scraper.shared.scrapingbee import (
     fetch_via_scrapingbee_tiered,
     scrapingbee_enabled,
 )
+from tools.scraper.shared.iso_countries import ISO_COUNTRY_NAMES
 from tools.scraper.shared.supabase_storage import (
     supabase_storage_enabled,
     upload_screenshot_bytes,
 )
 from tools.scraper.shared.screenshot_crop import crop_tripadvisor_header
+from tools.scraper.shared.openai_listing import run_listing as run_openai_listing
 
 
 # URL templates per listing type. (geo_id, location_slug, offset)
@@ -361,6 +363,20 @@ def _extract_profile_detail(html: str) -> dict:
     return result
 
 
+def _city_from_slug(slug: str) -> str:
+    """'Cologne_North_Rhine_Westphalia' -> 'Cologne'.
+
+    Tripadvisor slugs are City_Region_Country with underscores. Only the
+    leading segment is the city, and passing the whole thing to the model
+    produces a place that does not exist.
+    """
+    head = (slug or '').split('-')[0].strip().strip('_')
+    if not head:
+        return ''
+    parts = [p for p in head.split('_') if p]
+    return parts[0].replace('+', ' ').strip() if parts else ''
+
+
 class TripAdvisorScraper(BasePlatformScraper):
     name = 'tripadvisor'
     base_url = 'https://www.tripadvisor.com'
@@ -419,6 +435,35 @@ class TripAdvisorScraper(BasePlatformScraper):
         max_results: Optional[int] = None,
         on_progress: ProgressCallback = None,
     ) -> list[dict]:
+        # The OpenAI path runs two web-search passes per city and needs no
+        # ScrapingBee credits at all, so it MUST be checked before the key
+        # gate below — otherwise a vendor we no longer use blocks the route
+        # that exists to replace it.
+        source = os.environ.get('TRIPADVISOR_LISTING_SOURCE', 'scrapingbee').strip().lower()
+        if source == 'openai':
+            listing_type = (filters.get('listing_type') or 'hotels').lower()
+            # The geo slug is the only human-readable place name this
+            # platform's filters carry, and the model needs a real city name
+            # rather than a Tripadvisor geo id.
+            city = str(filters.get('city') or '').strip() or _city_from_slug(
+                str(filters.get('location_slug') or ''))
+            if not city:
+                print(
+                    "FAILED:listing|tripadvisor|no_city|The openai source needs a "
+                    "readable city. Pass filters.city, or a location_slug it can "
+                    "be derived from.",
+                    flush=True,
+                )
+                return []
+            return run_openai_listing(
+                self.name, [city], listing_type,
+                country=str(filters.get('country') or ''),
+                max_rating=float(filters.get('max_rating', 3.0)),
+                min_rating=float(filters.get('min_rating', 1.0)),
+                include_unrated=bool(filters.get('include_unrated', False)),
+                max_results=max_results, on_progress=on_progress,
+            )
+
         if not scrapingbee_enabled():
             print("FAILED:listing|tripadvisor|missing_key|SCRAPINGBEE_API_KEY is not set; TripAdvisor cannot be scraped without it.")
             return []
@@ -788,24 +833,7 @@ class TripAdvisorScraper(BasePlatformScraper):
             return {'categories': [], 'countries': []}
 
 
-# ISO-3166-1 alpha-2 → display name. Covers every country code we've seeded
-# in tripadvisor_cities + every code listed in yelp_country_cities.json, plus
-# a generous tail of additional markets so a future seed-list expansion
-# doesn't need a code edit. Unknown codes fall back to the uppercased code.
-_ISO_COUNTRY_NAMES = {
-    'AE': 'United Arab Emirates', 'AR': 'Argentina', 'AT': 'Austria', 'AU': 'Australia',
-    'BE': 'Belgium', 'BG': 'Bulgaria', 'BR': 'Brazil', 'CA': 'Canada', 'CH': 'Switzerland',
-    'CL': 'Chile', 'CN': 'China', 'CO': 'Colombia', 'CR': 'Costa Rica', 'CY': 'Cyprus',
-    'CZ': 'Czech Republic', 'DE': 'Germany', 'DK': 'Denmark', 'EE': 'Estonia', 'EG': 'Egypt',
-    'ES': 'Spain', 'FI': 'Finland', 'FR': 'France', 'GB': 'United Kingdom', 'UK': 'United Kingdom',
-    'GR': 'Greece', 'HK': 'Hong Kong', 'HR': 'Croatia', 'HU': 'Hungary', 'ID': 'Indonesia',
-    'IE': 'Ireland', 'IL': 'Israel', 'IN': 'India', 'IS': 'Iceland', 'IT': 'Italy',
-    'JP': 'Japan', 'KR': 'South Korea', 'LT': 'Lithuania', 'LU': 'Luxembourg', 'LV': 'Latvia',
-    'MT': 'Malta', 'MX': 'Mexico', 'MY': 'Malaysia', 'NL': 'Netherlands', 'NO': 'Norway',
-    'NZ': 'New Zealand', 'PE': 'Peru', 'PH': 'Philippines', 'PL': 'Poland', 'PT': 'Portugal',
-    'RO': 'Romania', 'RU': 'Russia', 'SA': 'Saudi Arabia', 'SE': 'Sweden', 'SG': 'Singapore',
-    'SI': 'Slovenia', 'SK': 'Slovakia', 'TH': 'Thailand', 'TR': 'Turkey', 'TW': 'Taiwan',
-    'UA': 'Ukraine', 'US': 'United States', 'VN': 'Vietnam', 'ZA': 'South Africa',
-    'BH': 'Bahrain', 'DO': 'Dominican Republic', 'JO': 'Jordan', 'MA': 'Morocco',
-    'OM': 'Oman', 'QA': 'Qatar',
-}
+# ISO-3166-1 alpha-2 → display name. Moved to shared/iso_countries.py when
+# the Booking plugin needed the same table; kept under the old name here so
+# nothing else in this module has to change.
+_ISO_COUNTRY_NAMES = ISO_COUNTRY_NAMES
