@@ -4,7 +4,7 @@ import { stripMissingColumns, isMissingColumnError } from './scrape-jobs.js';
 /**
  * A job update must survive a column the database does not have yet.
  *
- * Migration 066 adds `cost_usd` / `cost_detail` to scrape_jobs, and the code
+ * Migration 069 adds `cost_usd` / `cost_detail` to scrape_jobs, and the code
  * that writes them ships to Cloud Run the moment main moves — but a migration
  * is applied by hand in the Supabase SQL editor. So there is always a window
  * where the deployed code writes a column that does not exist.
