@@ -585,7 +585,13 @@ See `docs/deployment.md` for complete reference.
   unconfirmed candidates (~$0.30). The source stays wired for Yelp so it will
   simply start working if that ever changes — it is not a code fix.
 
-### Screenshots without ScrapingBee
+### Screenshots without ScrapingBee — BOTH platforms, free
+- **undetected-chromedriver clears BOTH walls.** Verified 2026-09-24:
+  TripAdvisor (Cloudflare) in ~11s / 880KB, and **Yelp (PerimeterX) in ~12s /
+  391KB** — the Yelp page rendered name, rating, review count, phone and
+  address, matching our stored rating exactly. Neither needs ScrapingBee.
+  Note Yelp draws the profile as a modal over the search page, so crop it the
+  way `crop_tripadvisor_header` crops TripAdvisor.
 - **undetected-chromedriver, already installed, clears Cloudflare on
   TripAdvisor profile pages** — verified 2026-09-24, ~11s, clean 880KB PNG.
   Free, no vendor. **Pin the driver** (`uc.Chrome(version_main=<installed
@@ -593,6 +599,26 @@ See `docs/deployment.md` for complete reference.
   N". Headed + residential IP, so owner-local only — it cannot run on Cloud
   Run or the Linux worker, the same constraint the TripAdvisor city seeder
   already has.
+
+### Scrape cost tracking (migration 066)
+- **Every paid path prints `COST:{platform}|{vendor}|{usd}|{units}|{label}`**
+  and `scrape-runner.ts` collects those off stdout onto the job
+  (`scrape_jobs.cost_usd` + `cost_detail`). The Scrape page shows it per job
+  and totals it in a row beneath the table.
+- **Reported as it happens, not at the end**, so a run killed by the watchdog
+  still records what it had already spent. A zero-result run that spent money
+  is exactly the case this exists for — measured live, a $0.27 TripAdvisor run
+  that returned 0 leads.
+- **USD is left EMPTY rather than guessed.** OpenAI is exact (the API reports
+  token usage per call) and Apify is priced from the actor's listed rate;
+  ScrapingBee reports CREDITS only unless `SCRAPINGBEE_USD_PER_CREDIT` is set,
+  because credits are real spend and an invented dollar figure would be quoted
+  back as fact. The UI shows native units alongside the money for that reason.
+- **`updateJob` drops an unknown column and retries.** Migration 066 is
+  applied by hand while the code ships on push, so there is always a window
+  where it writes a column the database lacks. Without this the whole
+  completion update fails and a finished job sits `running` until the stale
+  sweep requeues it.
 
 ### Booking.com (short-term-rental hosts)
 - **Purpose is different from every other platform here.** These leads are not
@@ -882,6 +908,8 @@ Style rules — match the user's preferred voice:
 | Classify prospects (dry run) | `.venv/Scripts/python.exe tools/db/classify_prospects.py` |
 | Classify prospects (write) | `.venv/Scripts/python.exe tools/db/classify_prospects.py --apply` |
 | Run server tests | `cd server && npx vitest run` |
+| Run scraper tests | `.venv/Scripts/python.exe -m pytest tests/scraper -q` |
+| **Run migration 066** | Paste `supabase/migrations/066_scrape_job_cost.sql` into the Supabase SQL editor. Until it runs, scrapes still complete normally — `updateJob` drops the cost columns and retries — but no cost is recorded |
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
