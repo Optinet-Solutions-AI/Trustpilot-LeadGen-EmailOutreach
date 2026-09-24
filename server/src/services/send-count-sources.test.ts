@@ -67,6 +67,11 @@ const ALLOWED = new Map<string, string>([
   ['routes/email-accounts.ts', 'displays the shared loadSentCounts figure, computes none itself'],
   ['services/follow-up-budget.ts', 'names the column in a doc comment only'],
 
+  ['services/seed-test/plan.ts',
+   'seed-test result rows, not campaign_leads: one row per seed send, sent_at '
+   + 'written once and never rewritten by a later step'],
+  ['services/seed-test/sender.ts', 'same seed-test rows; writes sent_at on its own row'],
+
   // Unrelated tables that happen to use the same column name.
   ['routes/warmup.ts', 'warmup_pipeline table, not campaign_leads'],
   ['services/warmup-scheduler.ts', 'warmup tables; loops removed from startup'],

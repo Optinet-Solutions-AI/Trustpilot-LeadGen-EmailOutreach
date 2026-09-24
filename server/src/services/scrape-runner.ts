@@ -834,11 +834,18 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         return;
       }
 
-      // Refuse to run on an empty ScrapingBee pool. The submit route checks
-      // too, but a job can be queued straight into the DB or wait while the
-      // pool drains. Failed outright rather than via markJobFailed: a retry
-      // cannot succeed until someone tops the account up.
+      // Refuse to run on an empty ScrapingBee pool — but ONLY while
+      // ScrapingBee is what fetches the listings. On the `openai` source the
+      // listing comes from OpenAI's web search, the profile fetch is skipped
+      // (pass 2 already carries phone/website/email) and screenshots go
+      // through Apify, so ScrapingBee is never called and an empty pool is
+      // irrelevant. This is the SECOND of two gates: the submit route has its
+      // own, and fixing only that one still left every job failing here with
+      // "out of credits" three seconds after starting.
       const failOnExhaustedCredits = async (): Promise<boolean> => {
+        const taSource = (process.env.TRIPADVISOR_LISTING_SOURCE ?? 'scrapingbee')
+          .trim().toLowerCase();
+        if (taSource === 'openai') return false;
         const credits = await getScrapingBeeCredits({ fresh: true });
         if (credits.status !== 'exhausted') return false;
         const msg = scrapingBeeExhaustedMessage(credits);

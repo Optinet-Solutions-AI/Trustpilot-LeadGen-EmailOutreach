@@ -588,7 +588,13 @@ class TripAdvisorScraper(BasePlatformScraper):
     ) -> list[dict]:
         if not profile_stubs:
             return []
-        if not scrapingbee_enabled():
+        # On the openai source ScrapingBee is not used for enrichment at all:
+        # pass 2 already carried phone/website/email, and screenshots go
+        # through Apify. Requiring the key here would refuse a run that needs
+        # nothing from it — the same mistake as the two credit gates above.
+        openai_stubs = any((st.get('listing_source') or '') == 'openai'
+                           for st in profile_stubs)
+        if not openai_stubs and not scrapingbee_enabled():
             print("FAILED:enrich|tripadvisor|missing_key|SCRAPINGBEE_API_KEY is not set; TripAdvisor cannot be enriched.")
             return [{**s} for s in profile_stubs]
 
