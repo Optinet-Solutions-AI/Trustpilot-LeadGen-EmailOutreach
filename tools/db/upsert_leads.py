@@ -156,6 +156,11 @@ def _upsert_presences(presence_rows: list[dict]) -> int:
     return upserted
 
 
+# Platforms whose rating is out of 5, and so may share leads.star_rating with
+# Trustpilot. Booking.com is out of 10 and is deliberately absent.
+FIVE_POINT_PLATFORMS = {'trustpilot', 'tripadvisor', 'yelp'}
+
+
 def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bool]:
     """
     Upsert one non-Trustpilot lead via the presence-first path.
@@ -276,6 +281,12 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         'author_handle': lead.get('author_handle'),
         'follower_count': lead.get('follower_count'),
         'is_business_profile': lead.get('is_business_profile'),
+        # Short-term-rental column (migration 062) — how many properties this
+        # host manages. Null everywhere else. The coarse tier already rides in
+        # leads.category and is what campaigns segment on; this is the exact
+        # figure, so the CRM can say "manages 12 properties" and a follow-up
+        # can be specific about it.
+        'host_property_count': lead.get('host_property_count'),
     }
     presence_row = {k: v for k, v in presence_row.items() if v is not None}
     try:
