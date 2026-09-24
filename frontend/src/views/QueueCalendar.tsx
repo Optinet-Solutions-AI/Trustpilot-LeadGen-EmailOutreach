@@ -210,7 +210,7 @@ export default function QueueCalendar() {
                             </span>
                           )}
                         </p>
-                        {d.paused > 0 && (
+                        {(d.paused ?? 0) > 0 && (
                           <p
                             className="text-[0.62rem] leading-tight text-on-surface-variant opacity-70 tabular-nums"
                             title={`${d.paused} queued on campaigns that are not sending, so they will not go out. They are not counted in the day's total or against its cap.`}
@@ -259,7 +259,7 @@ export default function QueueCalendar() {
               ['Already sent', selected.sent],
               ['Still queued', selected.scheduled],
               ['Forecast', selected.projected],
-              ['Paused', selected.paused],
+              ['Paused', selected.paused ?? 0],
             ].map(([label, value]) => (
               <div key={label as string}>
                 <p className="text-[0.68rem] uppercase tracking-wider font-bold text-on-surface-variant">{label}</p>
@@ -268,7 +268,7 @@ export default function QueueCalendar() {
             ))}
           </div>
 
-          {selected.paused > 0 && (
+          {(selected.paused ?? 0) > 0 && (
             <p className="text-sm mb-4 px-3 py-2 rounded-lg bg-surface-variant/60 text-on-surface-variant font-medium">
               {selected.paused} queued on campaigns that are not sending, so nothing here will go
               out until they are resumed. They are not counted in this day's total or against its cap.
