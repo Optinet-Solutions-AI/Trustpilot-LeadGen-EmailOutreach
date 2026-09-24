@@ -414,19 +414,26 @@ router.post('/', async (req: Request, res: Response) => {
         });
         return;
       }
-      // Every TripAdvisor page goes through ScrapingBee. With the pool empty
-      // the job would "complete" with 0 found, indistinguishable from a
-      // market with no matches — refuse it here instead.
-      const { getScrapingBeeCredits, scrapingBeeExhaustedMessage } =
-        await import('../services/scrapingbee-credits.js');
-      const credits = await getScrapingBeeCredits();
-      if (credits.status === 'exhausted') {
-        res.status(402).json({
-          success: false,
-          code: 'scrapingbee_out_of_credits',
-          error: scrapingBeeExhaustedMessage(credits),
-        });
-        return;
+      // ScrapingBee is a HARD dependency only while it is the listing source.
+      // On the `openai` source the listing is fetched by OpenAI's web search
+      // and the profile fetch is skipped entirely (the second pass already
+      // carries phone, website and email), so an empty credit pool costs
+      // screenshots — not the run. Refusing the job then would block a route
+      // that exists precisely to avoid needing ScrapingBee at all.
+      const taSource = (process.env.TRIPADVISOR_LISTING_SOURCE ?? 'scrapingbee')
+        .trim().toLowerCase();
+      if (taSource !== 'openai') {
+        const { getScrapingBeeCredits, scrapingBeeExhaustedMessage } =
+          await import('../services/scrapingbee-credits.js');
+        const credits = await getScrapingBeeCredits();
+        if (credits.status === 'exhausted') {
+          res.status(402).json({
+            success: false,
+            code: 'scrapingbee_out_of_credits',
+            error: scrapingBeeExhaustedMessage(credits),
+          });
+          return;
+        }
       }
     } else if (platform === 'booking') {
       // Country + city, and nothing else. There is no seed table to check:

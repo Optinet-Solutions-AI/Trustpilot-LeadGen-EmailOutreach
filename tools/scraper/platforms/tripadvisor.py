@@ -647,19 +647,34 @@ class TripAdvisorScraper(BasePlatformScraper):
                 print(f"  [{idx + 1}/{total}] {profile_url}", flush=True)
                 print(f"PROGRESS:profile_start:{idx + 1}|{total}|{slug_for_file}", flush=True)
 
-                # Fetch profile HTML — same tiered escalation as the listing.
-                html = await asyncio.to_thread(
-                    fetch_via_scrapingbee_tiered,
-                    profile_url,
-                    render_js=True,
-                )
-                if not html:
-                    print(f"FAILED:profile|{profile_url}|empty_page|ScrapingBee returned no HTML", flush=True)
-                    results[idx] = {**stub}
-                    print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
-                    return
+                # The openai listing source already opened this profile in its
+                # second pass and carries the phone, website and email, so
+                # re-fetching it would spend 75 ScrapingBee credits to learn
+                # what the stub already knows. Same arrangement as the Yelp
+                # Apify path, where one actor call covers listing AND profile.
+                if (stub.get('listing_source') or '') == 'openai':
+                    detail = {
+                        k: v for k, v in (
+                            ('phone', stub.get('phone')),
+                            ('website_url', stub.get('website_url')),
+                            ('platform_email', stub.get('platform_email')),
+                            ('company_name', stub.get('name')),
+                        ) if v
+                    }
+                else:
+                    # Fetch profile HTML — same tiered escalation as the listing.
+                    html = await asyncio.to_thread(
+                        fetch_via_scrapingbee_tiered,
+                        profile_url,
+                        render_js=True,
+                    )
+                    if not html:
+                        print(f"FAILED:profile|{profile_url}|empty_page|ScrapingBee returned no HTML", flush=True)
+                        results[idx] = {**stub}
+                        print(f"PROGRESS:profile_progress:{idx + 1}/{total}", flush=True)
+                        return
 
-                detail = _extract_profile_detail(html)
+                    detail = _extract_profile_detail(html)
 
                 # Screenshot — fetch from ScrapingBee, upload to Supabase
                 # Storage directly, store the public URL on the row. Local
