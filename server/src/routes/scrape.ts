@@ -65,6 +65,13 @@ interface PlatformManifest {
   // of the category-picker variant.
   supports_post_search?: boolean;
   supports_group_search?: boolean;
+  /**
+   * Which backend actually fetches this platform's listings right now. The
+   * frontend needs it to price a run honestly: the cost advisory used to
+   * state "~150 SB credits" unconditionally, which is simply wrong on the
+   * `openai` source, where ScrapingBee is not touched at all.
+   */
+  listing_source?: string;
 }
 const PLATFORM_MANIFESTS: PlatformManifest[] = [
   {
@@ -239,7 +246,18 @@ const KNOWN_PLATFORMS = new Set(PLATFORM_MANIFESTS.map(p => p.name));
 // GET /api/scrape/platforms — registry of supported platforms.
 // Drives the frontend platform picker; static at deploy time.
 router.get('/platforms', (_req: Request, res: Response) => {
-  res.json({ success: true, data: PLATFORM_MANIFESTS });
+  // Resolved per request rather than baked into the constant, so flipping
+  // the env var takes effect without a redeploy.
+  const withSources = PLATFORM_MANIFESTS.map((p) => ({
+    ...p,
+    listing_source:
+      p.name === 'tripadvisor'
+        ? (process.env.TRIPADVISOR_LISTING_SOURCE ?? 'scrapingbee').trim().toLowerCase()
+        : p.name === 'yelp'
+          ? (process.env.YELP_LISTING_SOURCE ?? 'browser').trim().toLowerCase()
+          : undefined,
+  }));
+  res.json({ success: true, data: withSources });
 });
 
 // GET /api/scrape/taxonomy[?platform=...] — categories + countries for the form pickers

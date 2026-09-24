@@ -14,6 +14,12 @@ const AVG_PAGES_PER_CITY = 1;
 
 interface Props {
   country: string;
+  /**
+   * Which backend will actually fetch the listings. On `openai` no
+   * ScrapingBee credit is spent at all, so quoting a credit figure would be
+   * plainly wrong — the run is priced in dollars instead.
+   */
+  listingSource?: string;
   /** Threshold above which the user is asked to confirm before submitting. */
   confirmAboveCredits?: number;
   /** Called with a function the parent uses to gate submission. */
@@ -31,10 +37,28 @@ interface Props {
  */
 export default function ScrapeCostAdvisory({
   country,
+  listingSource,
   confirmAboveCredits = 5000,
   onGuardReady,
 }: Props) {
   const [count, setCount] = useState<number | null>(null);
+  // Resolved from the server rather than passed in, so the advisory is right
+  // the moment the env var flips — no redeploy, and no prop threaded through
+  // a form that has no reason to know about scraping backends.
+  const [source, setSource] = useState<string | undefined>(listingSource);
+
+  useEffect(() => {
+    if (listingSource) { setSource(listingSource); return; }
+    let cancelled = false;
+    api.get('/scrape/platforms')
+      .then((res) => {
+        if (cancelled) return;
+        const list = (res.data?.data ?? []) as Array<{ name?: string; listing_source?: string }>;
+        setSource(list.find((p) => p.name === 'tripadvisor')?.listing_source);
+      })
+      .catch(() => { /* fall through to the credit estimate */ });
+    return () => { cancelled = true; };
+  }, [listingSource]);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +93,20 @@ export default function ScrapeCostAdvisory({
       </p>
     );
   }
+  // The openai source touches ScrapingBee not at all, so a credit figure
+  // would be plainly wrong. It is metered in dollars instead — measured
+  // 2026-09-24 at roughly $0.07-0.085 per confirmed lead, bounded per job by
+  // OPENAI_MAX_SPEND_PER_JOB.
+  if (source === 'openai') {
+    return (
+      <p className="text-[12px] text-on-surface-muted">
+        Top {effectiveCities} of {count} cities, billed to OpenAI at roughly
+        $0.07–0.09 per lead — no ScrapingBee credits. Each run stops at its
+        spend limit and reports what it cost.
+      </p>
+    );
+  }
+
   return (
     <p className="text-[12px] text-on-surface-muted">
       Top {effectiveCities} of {count} cities × {AVG_PAGES_PER_CITY} page
