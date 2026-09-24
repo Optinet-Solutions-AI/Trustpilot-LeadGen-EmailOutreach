@@ -41,7 +41,18 @@ type Filter = 'all' | 'unchecked' | 'spam' | 'failed';
 const fmt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
-export default function SeedTest({ runId }: { runId: string }) {
+/** The route is served from a static `_id` shell, so the real run id comes
+ *  from the browser URL rather than useParams(). */
+function runIdFromUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const m = window.location.pathname.match(/\/seed-test\/([^/?#]+)/);
+  const id = m ? decodeURIComponent(m[1]) : '';
+  return id === '_id' ? '' : id;
+}
+
+export default function SeedTest() {
+  const [runId, setRunId] = useState('');
+  useEffect(() => { setRunId(runIdFromUrl()); }, []);
   const [rows, setRows] = useState<SeedRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
@@ -49,6 +60,7 @@ export default function SeedTest({ runId }: { runId: string }) {
   const [saving, setSaving] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (!runId) return;
     try {
       const res = await api.get(`/seed-tests/${encodeURIComponent(runId)}`);
       setRows(res.data.data.results);
