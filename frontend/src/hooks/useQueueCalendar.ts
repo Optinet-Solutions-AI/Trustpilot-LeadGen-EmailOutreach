@@ -20,6 +20,12 @@ export interface QueueDay {
    * in `followUp` and `total`.
    */
   projected: number;
+  /**
+   * Queued on a campaign that is not sending, so it cannot go out. Shown so
+   * the backlog stays visible, but kept out of `total` and out of the capacity
+   * check — otherwise a stopped queue reads as a busy day and a breached cap.
+   */
+  paused: number;
   total: number;
   capacity: number | null;
   overCapacity: boolean;
@@ -36,6 +42,10 @@ export interface QueueCalendarData {
     firstTouch: number;
     followUp: number;
     projected: number;
+    /** Emails that actually went out in the window, counted from the log. */
+    sent: number;
+    /** Queued behind a paused campaign — backlog, not a plan. */
+    paused: number;
     total: number;
     daysOver: number;
     /** Follow-ups behind mail already sent that carry no date — stuck, not queued. */
@@ -83,7 +93,7 @@ export interface DayLead {
   campaignName: string;
   timezone: string;
   kind: 'first_touch' | 'follow_up';
-  state: 'sent' | 'scheduled' | 'projected';
+  state: 'sent' | 'scheduled' | 'projected' | 'paused';
   at: string;
   /** HH:mm in the campaign's timezone — the time it actually goes out. */
   localTime: string;

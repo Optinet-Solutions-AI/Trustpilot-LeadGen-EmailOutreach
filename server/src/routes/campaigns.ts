@@ -7,6 +7,7 @@ import { resolveScheduleStart, BUDGET_TIMEZONE, type SendingSchedule } from '../
 import { planCampaignQueueTimes, loadFollowUpForecast } from '../services/day-load.js';
 import { selectAllRows } from '../lib/paginate.js';
 import { summarizeQueueDays, type QueueEntry } from '../services/queue-calendar.js';
+import { loadSentEmails } from '../services/sent-log.js';
 import { localDayKey } from '../services/schedule-engine.js';
 import { followUpSubject, pickStepTemplate } from '../services/message-preview.js';
 import { repaceQueue } from '../services/queue-repacer.js';
@@ -393,9 +394,16 @@ router.get('/warmup-status', (_req: Request, res: Response) => {
  *
  * The send queue as days. Combines three sources the UI previously had no way
  * to see together:
- *   - already-sent emails            (campaign_leads.sent_at, status='sent')
+ *   - emails that actually went out  (lead_notes, one row per send)
  *   - still-scheduled first touches  (campaign_leads.scheduled_at, pending)
  *   - follow-ups coming due          (campaign_leads.next_step_at)
+ *
+ * History is read from the LOG, never from `campaign_leads.sent_at`. That
+ * column is one per lead-campaign pair and every later step overwrites it, so
+ * a row marked one send however many it had really made, and the mark moved
+ * forward each time — emptying the day the first email went out. Measured
+ * 2026-09-24 over 1-23 September: 675 emails left, the calendar showed 376,
+ * and the 16th read zero on a day that sent 44.
  *
  * The follow-up leg is the point of the endpoint: it is the half that was
  * invisible when 5 September sent 43 against a cap of 30.
@@ -445,8 +453,9 @@ router.get('/calendar', async (req: Request, res: Response) => {
       .from('campaign_leads')
       .select('campaign_id, status, sent_at, scheduled_at, next_step_at, current_step, sequence_completed, sequence_paused')
       .eq('channel', 'email')
+      // No sent_at clause: history comes from the log now, and this column
+      // cannot be trusted to say when anything was sent.
       .or(
-        `and(sent_at.gte.${loPad},sent_at.lte.${hiPad}),` +
         `and(scheduled_at.gte.${loPad},scheduled_at.lte.${hiPad}),` +
         `and(next_step_at.gte.${loPad},next_step_at.lte.${hiPad})`,
       )
@@ -465,25 +474,41 @@ router.get('/calendar', async (req: Request, res: Response) => {
         perAccountLimit: m.dailyLimit,
       };
 
-      // A row contributes up to two entries: its most recent send, and its
-      // pending follow-up. They land on different days and both matter.
+      // Sends are counted from the log below, so a row contributes only what
+      // is still ahead of it: its queued first touch and its pending
+      // follow-up. They land on different days and both matter.
       //
-      // current_step is what distinguishes them for an ALREADY-SENT row:
-      // step 1 was the first touch, anything above it was a follow-up. Without
-      // it every historical send reads as a first touch, which is exactly the
-      // blindness that made 5 September look like 43 new emails.
-      const step = typeof r.current_step === 'number' ? r.current_step : 1;
-      const sentKind = step > 1 ? 'follow_up' : 'first_touch';
-
-      if (r.status === 'sent' && r.sent_at) {
-        entries.push({ ...base, at: new Date(r.sent_at as string), kind: sentKind, state: 'sent' });
-      } else if (r.status === 'pending' && r.scheduled_at) {
-        entries.push({ ...base, at: new Date(r.scheduled_at as string), kind: 'first_touch', state: 'scheduled' });
+      // A first email fires only for a campaign whose status is `sending` —
+      // the scheduler joins on it — so a paused campaign's queue is marked
+      // rather than drawn as work that will happen.
+      if (r.status === 'pending' && r.scheduled_at) {
+        entries.push({
+          ...base,
+          at: new Date(r.scheduled_at as string),
+          kind: 'first_touch',
+          state: m.live ? 'scheduled' : 'paused',
+        });
       }
 
       if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
         entries.push({ ...base, at: new Date(r.next_step_at as string), kind: 'follow_up', state: 'scheduled' });
       }
+    }
+
+    // What actually went out, one entry per email. Counting rows instead of
+    // sends is what hid 299 of September's 675 emails.
+    for (const email of await loadSentEmails(loPad, hiPad)) {
+      const m = meta.get(email.campaignId);
+      if (!m) continue;
+      entries.push({
+        campaignId: email.campaignId,
+        campaignName: m.name,
+        timezone: m.timezone,
+        perAccountLimit: m.dailyLimit,
+        at: email.at,
+        kind: email.kind,
+        state: 'sent',
+      });
     }
 
     // The follow-ups that have no date yet, because the email before them has
@@ -500,7 +525,9 @@ router.get('/calendar', async (req: Request, res: Response) => {
         perAccountLimit: m.dailyLimit,
         at: proj.at,
         kind: 'follow_up',
-        state: 'projected',
+        // A forecast follow-up sits behind a first email that will not send
+        // while its campaign is paused, so it cannot happen either.
+        state: m.live ? 'projected' : 'paused',
       });
     }
 
@@ -534,6 +561,9 @@ router.get('/calendar', async (req: Request, res: Response) => {
           firstTouch: days.reduce((n, d) => n + d.firstTouch, 0),
           followUp:   days.reduce((n, d) => n + d.followUp, 0),
           projected:  days.reduce((n, d) => n + d.projected, 0),
+          sent:       days.reduce((n, d) => n + d.sent, 0),
+          /** Queued behind a paused campaign — real backlog, but not a plan. */
+          paused:     days.reduce((n, d) => n + d.paused, 0),
           total:      days.reduce((n, d) => n + d.total, 0),
           daysOver:   days.filter((d) => d.overCapacity).length,
           /**
@@ -555,9 +585,10 @@ router.get('/calendar', async (req: Request, res: Response) => {
  * GET /api/campaigns/calendar/day?date=YYYY-MM-DD
  *
  * The individual leads that make up one calendar day — what the day cell in
- * the send queue is actually counting. Bucketed with the SAME rule as the
- * calendar (each campaign's own timezone), or the rows would not add up to
- * the number the operator clicked on.
+ * the send queue is actually counting. Every leg has to match the calendar's
+ * exactly, or the list will not add up to the number the operator clicked on:
+ * sends come from the log, and a paused campaign's queue is labelled rather
+ * than shown as mail that will go out.
  *
  * MUST stay above the `/:id` routes.
  */
@@ -575,13 +606,14 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
 
     const { data: campaigns } = await supabase
       .from('campaigns')
-      .select('id, name, sending_schedule');
-    const meta = new Map<string, { name: string; timezone: string }>();
+      .select('id, name, status, sending_schedule');
+    const meta = new Map<string, { name: string; timezone: string; live: boolean }>();
     for (const c of (campaigns ?? []) as Array<Record<string, unknown>>) {
       const sched = (c.sending_schedule ?? {}) as { timezone?: string };
       meta.set(c.id as string, {
         name: (c.name as string) ?? 'Untitled campaign',
         timezone: sched.timezone || 'UTC',
+        live: c.status === 'sending',
       });
     }
 
@@ -590,7 +622,6 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
       .select('id, campaign_id, lead_id, email_used, sender_email, status, sent_at, scheduled_at, next_step_at, current_step, sequence_completed, sequence_paused, leads(company_name, website_url, country)')
       .eq('channel', 'email')
       .or(
-        `and(sent_at.gte.${loIso},sent_at.lte.${hiIso}),` +
         `and(scheduled_at.gte.${loIso},scheduled_at.lte.${hiIso}),` +
         `and(next_step_at.gte.${loIso},next_step_at.lte.${hiIso})`,
       )
@@ -600,7 +631,7 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
     interface DayLead {
       id: string; leadId: string; company: string; email: string;
       campaignId: string; campaignName: string; timezone: string;
-      kind: 'first_touch' | 'follow_up'; state: 'sent' | 'scheduled' | 'projected';
+      kind: 'first_touch' | 'follow_up'; state: 'sent' | 'scheduled' | 'projected' | 'paused';
       at: string; localTime: string; stepNumber: number;
       senderEmail: string | null; country: string | null;
     }
@@ -640,19 +671,46 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
       });
     };
 
+    // Keyed on campaign AND lead, because the log names both and the same
+    // lead can sit in more than one campaign.
+    const byPair = new Map<string, Record<string, unknown>>();
     for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+      byPair.set(`${r.campaign_id}:${r.lead_id}`, r);
+
       const m = meta.get(r.campaign_id as string);
       if (!m) continue;
       const step = typeof r.current_step === 'number' ? r.current_step : 1;
 
-      if (r.status === 'sent' && r.sent_at) {
-        push(r, m, r.sent_at as string, step > 1 ? 'follow_up' : 'first_touch', 'sent', step);
-      } else if (r.status === 'pending' && r.scheduled_at) {
-        push(r, m, r.scheduled_at as string, 'first_touch', 'scheduled', 1);
+      if (r.status === 'pending' && r.scheduled_at) {
+        push(r, m, r.scheduled_at as string, 'first_touch', m.live ? 'scheduled' : 'paused', 1);
       }
       if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
         push(r, m, r.next_step_at as string, 'follow_up', 'scheduled', step + 1);
       }
+    }
+
+    // What actually went out that day, from the log rather than from a column
+    // a later step overwrites.
+    const sentToday = await loadSentEmails(loIso, hiIso);
+    const missing = sentToday
+      .filter((e) => !byPair.has(`${e.campaignId}:${e.leadId}`))
+      .map((e) => e.leadId);
+    for (let i = 0; i < missing.length; i += 150) {
+      const { data: chunk } = await supabase
+        .from('campaign_leads')
+        .select('id, campaign_id, lead_id, email_used, sender_email, leads(company_name, website_url, country)')
+        .eq('channel', 'email')
+        .in('lead_id', missing.slice(i, i + 150));
+      for (const r of (chunk ?? []) as Array<Record<string, unknown>>) {
+        const key = `${r.campaign_id}:${r.lead_id}`;
+        if (!byPair.has(key)) byPair.set(key, r);
+      }
+    }
+    for (const email of sentToday) {
+      const m = meta.get(email.campaignId);
+      const r = byPair.get(`${email.campaignId}:${email.leadId}`);
+      if (!m || !r) continue;
+      push(r, m, email.at.toISOString(), email.kind, 'sent', email.stepNumber);
     }
 
     // Forecast follow-ups land here too, or the list would not add up to the
@@ -680,7 +738,7 @@ router.get('/calendar/day', async (req: Request, res: Response) => {
         const m = meta.get(proj.campaignId);
         const r = detail.get(proj.campaignLeadId);
         if (!m || !r) continue;
-        push(r, m, proj.at.toISOString(), 'follow_up', 'projected', proj.stepNumber);
+        push(r, m, proj.at.toISOString(), 'follow_up', m.live ? 'projected' : 'paused', proj.stepNumber);
       }
     }
 

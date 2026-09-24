@@ -67,11 +67,13 @@ export default function QueueCalendar() {
       />
 
       {/* Totals for the month in view */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         {[
           { label: 'First emails', value: data?.totals.firstTouch ?? 0, icon: 'outgoing_mail', tone: 'text-on-surface' },
           { label: 'Follow-ups',   value: data?.totals.followUp ?? 0,   icon: 'reply',         tone: 'text-on-surface' },
-          { label: 'Forecast f/u', value: data?.totals.projected ?? 0,  icon: 'schedule',      tone: 'text-on-surface' },
+          { label: 'Actually sent', value: data?.totals.sent ?? 0,      icon: 'mark_email_read', tone: 'text-on-surface' },
+          { label: 'Paused',       value: data?.totals.paused ?? 0,     icon: 'pause_circle',
+            tone: (data?.totals.paused ?? 0) > 0 ? 'text-on-surface-variant' : 'text-on-surface' },
           { label: 'Total',        value: data?.totals.total ?? 0,      icon: 'functions',     tone: 'text-on-surface' },
           { label: 'Days over cap', value: data?.totals.daysOver ?? 0,  icon: 'warning',
             tone: (data?.totals.daysOver ?? 0) > 0 ? 'text-[#ba1a1a]' : 'text-on-surface' },
@@ -208,7 +210,15 @@ export default function QueueCalendar() {
                             </span>
                           )}
                         </p>
-                        {d.capacity !== null && (
+                        {d.paused > 0 && (
+                          <p
+                            className="text-[0.62rem] leading-tight text-on-surface-variant opacity-70 tabular-nums"
+                            title={`${d.paused} queued on campaigns that are not sending, so they will not go out. They are not counted in the day's total or against its cap.`}
+                          >
+                            {d.paused} paused
+                          </p>
+                        )}
+                        {d.capacity !== null && d.total > 0 && (
                           <p className="text-[0.62rem] text-on-surface-variant tabular-nums">
                             {over ? `+${d.overBy} over ${d.capacity}` : `cap ${d.capacity}`}
                           </p>
@@ -242,13 +252,14 @@ export default function QueueCalendar() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-5">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-4 mb-5">
             {[
               ['First emails', selected.firstTouch],
               ['Follow-ups', selected.followUp],
               ['Already sent', selected.sent],
               ['Still queued', selected.scheduled],
               ['Forecast', selected.projected],
+              ['Paused', selected.paused],
             ].map(([label, value]) => (
               <div key={label as string}>
                 <p className="text-[0.68rem] uppercase tracking-wider font-bold text-on-surface-variant">{label}</p>
@@ -256,6 +267,13 @@ export default function QueueCalendar() {
               </div>
             ))}
           </div>
+
+          {selected.paused > 0 && (
+            <p className="text-sm mb-4 px-3 py-2 rounded-lg bg-surface-variant/60 text-on-surface-variant font-medium">
+              {selected.paused} queued on campaigns that are not sending, so nothing here will go
+              out until they are resumed. They are not counted in this day's total or against its cap.
+            </p>
+          )}
 
           {selected.overCapacity && (
             <p className="text-sm mb-4 px-3 py-2 rounded-lg bg-[#ba1a1a]/[0.08] text-[#ba1a1a] font-medium">
@@ -323,6 +341,14 @@ export default function QueueCalendar() {
                         </span>
                         {l.state === 'sent' && (
                           <span className="text-[0.6rem] font-bold uppercase text-on-surface-variant shrink-0">sent</span>
+                        )}
+                        {l.state === 'paused' && (
+                          <span
+                            className="text-[0.6rem] font-bold uppercase text-on-surface-variant opacity-70 shrink-0"
+                            title="Its campaign is not sending, so this will not go out until the campaign is resumed"
+                          >
+                            paused
+                          </span>
                         )}
                         {l.state === 'projected' && (
                           <span

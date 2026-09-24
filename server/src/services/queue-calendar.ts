@@ -29,8 +29,13 @@ export type QueueKind = 'first_touch' | 'follow_up';
  * has not gone out. A projection is a forecast, not a booking — but it is real
  * work that will consume that day's capacity, so leaving it out is what made
  * the calendar show half the queue.
+ *
+ * `paused` is work that cannot happen at all: a first touch queued on a
+ * campaign whose status is not `sending`, which the scheduler will never
+ * select. It is shown so the backlog stays visible, but it is counted apart
+ * from the queue and never charged against a day's capacity.
  */
-export type QueueState = 'sent' | 'scheduled' | 'projected';
+export type QueueState = 'sent' | 'scheduled' | 'projected' | 'paused';
 
 export interface QueueEntry {
   at: Date;
@@ -63,6 +68,11 @@ export interface QueueDay {
   scheduled: number;
   /** Forecast follow-ups — counted in `total`, but not yet booked. */
   projected: number;
+  /**
+   * Queued on a campaign that is not sending, so it cannot go out. Excluded
+   * from `total` and from the capacity check — it is a backlog, not a plan.
+   */
+  paused: number;
   total: number;
   /** Daily ceiling across all mailboxes, or null when it can't be determined. */
   capacity: number | null;
@@ -112,8 +122,21 @@ export function summarizeQueueDays(
     let sent = 0;
     let scheduled = 0;
     let projected = 0;
+    let paused = 0;
 
     for (const r of rows) {
+      // Counted, named, and otherwise kept out of every figure that describes
+      // the day's workload — nothing here will leave while the campaign is
+      // paused, so adding it to the total is how a stopped queue reads as a
+      // busy day and a breached cap.
+      if (r.state === 'paused') {
+        paused += 1;
+        const own = shares.get(r.campaignId);
+        if (own) own.count += 1;
+        else shares.set(r.campaignId, { id: r.campaignId, name: r.campaignName, count: 1 });
+        continue;
+      }
+
       if (r.kind === 'follow_up') followUp += 1;
       else firstTouch += 1;
       if (r.state === 'sent') sent += 1;
@@ -129,7 +152,7 @@ export function summarizeQueueDays(
       else shares.set(r.campaignId, { id: r.campaignId, name: r.campaignName, count: 1 });
     }
 
-    const total = rows.length;
+    const total = rows.length - paused;
     const capacity = resolveDailyCapacity(limits, senderCount, accountCap);
     const over = capacity !== null && total > capacity;
 
@@ -140,6 +163,7 @@ export function summarizeQueueDays(
       sent,
       scheduled,
       projected,
+      paused,
       total,
       capacity,
       overCapacity: over,

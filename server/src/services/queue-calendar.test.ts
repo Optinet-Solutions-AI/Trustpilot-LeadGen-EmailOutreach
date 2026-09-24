@@ -228,3 +228,58 @@ describe('capacity never exceeds the mailbox cap', () => {
     expect(days[0].capacity).toBe(30);
   });
 });
+
+/**
+ * Work belonging to a campaign that is not sending.
+ *
+ * A first email only fires for a campaign whose status is `sending` — the
+ * scheduler joins on it. A paused campaign's queued first touches therefore
+ * cannot go out at all, yet the calendar drew them as ordinary scheduled mail.
+ * Measured 2026-09-24 with every campaign paused: 443 first touches were
+ * drawn as if they would send, 120 of them dated in the past, which is what
+ * put "53 new" on 21 September and "42 new" on the 23rd — days on which no
+ * first email left at all.
+ *
+ * They are still shown, because the operator needs to know the backlog is
+ * there. They are just not counted as work that will happen, and they cannot
+ * push a day over its cap.
+ *
+ * Follow-ups are deliberately NOT treated this way: the sequence scheduler
+ * fires any row with a due date regardless of its campaign's status, so a
+ * dated follow-up on a paused campaign really does send.
+ */
+describe('work that cannot send', () => {
+  test('is counted apart from the queue rather than added to it', () => {
+    const [day] = summarizeQueueDays([
+      entry({ at: '2026-09-21T10:00:00Z' }),
+      entry({ at: '2026-09-21T11:00:00Z', state: 'paused' }),
+      entry({ at: '2026-09-21T12:00:00Z', state: 'paused' }),
+    ], { senderCount: 3 });
+
+    expect(day.total).toBe(1);
+    expect(day.firstTouch).toBe(1);
+    expect(day.scheduled).toBe(1);
+    expect(day.paused).toBe(2);
+  });
+
+  test('never pushes a day over capacity on its own', () => {
+    // 30 paused rows against a ceiling of 30 is not an over-cap day: none of
+    // them will leave. Alarming on them is how a paused queue reads as a
+    // breach.
+    const at = '2026-09-21T10:00:00Z';
+    const [day] = summarizeQueueDays(
+      Array.from({ length: 40 }, () => entry({ at, state: 'paused' })),
+      { senderCount: 3 },
+    );
+    expect(day.total).toBe(0);
+    expect(day.overCapacity).toBe(false);
+    expect(day.paused).toBe(40);
+  });
+
+  test('still names its campaign, so the backlog can be traced', () => {
+    const [day] = summarizeQueueDays([
+      entry({ at: '2026-09-21T10:00:00Z', state: 'paused', campaignId: 'uae', campaignName: 'UAE' }),
+    ], { senderCount: 3 });
+    expect(day.campaigns).toEqual([{ id: 'uae', name: 'UAE', count: 1 }]);
+  });
+});
