@@ -585,7 +585,41 @@ See `docs/deployment.md` for complete reference.
   unconfirmed candidates (~$0.30). The source stays wired for Yelp so it will
   simply start working if that ever changes — it is not a code fix.
 
-### Screenshots without ScrapingBee — BOTH platforms, free
+### Screenshots — Apify UNBLOCKER replaces ScrapingBee (server-side)
+- **`SCREENSHOT_SOURCE` picks the backend, defaulting to `apify` whenever
+  `APIFY_API_TOKEN` is set.** Defaulting to ScrapingBee would mean every
+  screenshot silently fails, since that account is out of credits and is not
+  being renewed. One dispatcher — `fetch_profile_screenshot()` in
+  `tools/scraper/shared/apify_screenshot.py` — serves both plugins; their call
+  sites were byte-identical and a divergence is how one platform quietly keeps
+  calling a switched-off vendor.
+- **It is the UNBLOCKER PROXY GROUP, not an Apify actor.**
+  `apify/puppeteer-scraper` refuses to run until its full-account permission is
+  approved by hand (`403 full-permission-actor-not-approved`), and an actor
+  bills per run on top. The proxy needs no approval and reuses our own browser.
+- **`ignore_https_errors=True` is mandatory.** UNBLOCKER terminates TLS itself,
+  so without it every page dies on `ERR_CERT_AUTHORITY_INVALID`.
+- **Verified 2026-09-24 through the real plugin path:** TripAdvisor 979KB in
+  70s, Yelp 122KB in 115s, both full profile pages with rating and review
+  count. Headless — so it runs on the EC2 worker, which the free browser
+  cannot.
+- **Cost ~$0.0135 per screenshot** (`PROXY_UNBLOCKER_UNITS`, $0.06/400 units,
+  ~90 units a page), reported on the job through the `COST:` line.
+- **It is SLOW — 70-115s a page.** Both plugins already parallelise enrichment
+  behind their `parallel_tabs` semaphore (default 3), so screenshots inherit
+  that; run serially, 50 leads would take over an hour.
+- **A blank page counts as blocked.** The challenge interstitial renders almost
+  no text, so a check that only looked for block PHRASES scored it as success —
+  exactly how the first probe wrongly reported the plain residential proxy as
+  working. `looks_blocked()` treats a body under 80 chars as refused.
+- **A residential proxy alone does NOT work.** Measured: plain Playwright
+  headless on an Apify RESIDENTIAL IP was refused with "Automated (bot)
+  activity ... Use of developer or inspection tools", and undetected-chromedriver
+  HEADLESS on the owner's own residential line was refused too. Headless-ness
+  is the trigger, not the address — which is why UNBLOCKER (which solves the
+  challenge server-side) is the only server-side option.
+
+### Screenshots with the free browser — owner-local only
 - **undetected-chromedriver clears BOTH walls.** Verified 2026-09-24:
   TripAdvisor (Cloudflare) in ~11s / 880KB, and **Yelp (PerimeterX) in ~12s /
   391KB** — the Yelp page rendered name, rating, review count, phone and

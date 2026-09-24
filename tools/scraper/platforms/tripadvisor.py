@@ -50,6 +50,7 @@ from tools.scraper.platforms.base import (
     FilterField,
     ProgressCallback,
 )
+from tools.scraper.shared.apify_screenshot import fetch_profile_screenshot
 from tools.scraper.shared.scrapingbee import (
     fetch_screenshot_via_scrapingbee,
     fetch_via_scrapingbee_tiered,
@@ -685,11 +686,10 @@ class TripAdvisorScraper(BasePlatformScraper):
                 screenshot_path = ''
                 if screenshots_dir or supabase_storage_enabled():
                     png = await asyncio.to_thread(
-                        fetch_screenshot_via_scrapingbee,
+                        fetch_profile_screenshot,
                         profile_url,
                         full_page=False,
-                        stealth_proxy=True,
-                        render_js=True,
+                        platform=self.name,
                     )
                     if png:
                         # Crop the tall full-page capture down to the business

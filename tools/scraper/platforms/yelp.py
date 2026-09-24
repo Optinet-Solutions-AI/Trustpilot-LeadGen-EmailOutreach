@@ -70,6 +70,7 @@ from tools.scraper.platforms.base import (
     FilterField,
     ProgressCallback,
 )
+from tools.scraper.shared.apify_screenshot import fetch_profile_screenshot
 from tools.scraper.shared.supabase_storage import (
     supabase_storage_enabled,
     upload_screenshot_bytes,
@@ -1077,11 +1078,10 @@ class YelpScraper(BasePlatformScraper):
                 screenshot_path = ''
                 if want_shot and (screenshots_dir or supabase_storage_enabled()):
                     png = await asyncio.to_thread(
-                        fetch_screenshot_via_scrapingbee,
+                        fetch_profile_screenshot,
                         profile_url,
                         full_page=False,
-                        stealth_proxy=True,
-                        render_js=True,
+                        platform=self.name,
                     )
                     if png:
                         # Local copy (best-effort; failure here is fine).
