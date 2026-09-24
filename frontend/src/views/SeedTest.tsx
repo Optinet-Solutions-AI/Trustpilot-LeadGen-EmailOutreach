@@ -18,6 +18,8 @@ type Placement = 'unchecked' | 'inbox' | 'promotions' | 'spam' | 'not_found';
 interface SeedRow {
   ref: string; n: number; email: string; sender: string; subject: string | null;
   status: 'queued' | 'sent' | 'failed'; sent_at: string | null; error: string | null;
+  /** Manila day the pair went out, or is planned to (YYYY-MM-DD). */
+  scheduled_for?: string | null;
   placement: Placement; placement_at: string | null;
 }
 
@@ -37,6 +39,12 @@ const STATUS_TONE: Record<SeedRow['status'], string> = {
 };
 
 type Filter = 'all' | 'unchecked' | 'spam' | 'failed';
+
+/** "Fri 25 Sep" for a YYYY-MM-DD Manila day. */
+const fmtDay = (day: string) =>
+  new Date(`${day}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const todayManila = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 const fmt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
@@ -144,7 +152,7 @@ export default function SeedTest() {
               <p className="font-bold text-on-surface break-all">{local}@</p>
               <p className="text-xs text-on-surface-variant font-mono break-all">{domain}</p>
               <div className="grid grid-cols-4 gap-2 mt-4">
-                {[['Seeds', list.length], ['Sent', sent.length], ['Failed', failed], ['Checked', checked]].map(([l, v]) => (
+                {[['Planned', list.length], ['Sent', sent.length], ['Failed', failed], ['Checked', checked]].map(([l, v]) => (
                   <div key={l as string}>
                     <p className="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">{l}</p>
                     <p className={`text-2xl font-extrabold tabular-nums ${l === 'Failed' && failed ? 'text-[#ba1a1a]' : 'text-on-surface'}`}>{v}</p>
@@ -174,6 +182,54 @@ export default function SeedTest() {
         })}
       </div>
 
+      {rows && rows.some((r) => r.scheduled_for) && (() => {
+        const days = [...new Set(rows.map((r) => r.scheduled_for).filter(Boolean) as string[])].sort();
+        const today = todayManila();
+        const last = days[days.length - 1];
+        return (
+          <Card variant="flush">
+            <div className="px-4 pt-4">
+              <p className="font-bold text-on-surface">Send plan</p>
+              <p className="text-sm text-on-surface-variant">
+                Every seed is mailed once by each sender, at most 20 per sender per day (Manila time).
+                {last && <> Last batch: <span className="font-semibold text-on-surface">{fmtDay(last)}</span>.</>}
+              </p>
+            </div>
+            <div className="overflow-x-auto mt-3">
+              <table className="w-full text-sm tabular-nums">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                    <th className="px-4 py-2 font-bold">Day</th>
+                    {senders.map(([s]) => <th key={s} className="px-4 py-2 font-bold whitespace-nowrap">{s.split('@')[0]}@</th>)}
+                    <th className="px-4 py-2 font-bold">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map((d) => {
+                    const onDay = rows.filter((r) => r.scheduled_for === d);
+                    const cell = (list: SeedRow[]) => {
+                      const sent = list.filter((r) => r.status === 'sent').length;
+                      return sent === list.length ? `${sent} sent` : sent ? `${sent} of ${list.length} sent` : `${list.length} planned`;
+                    };
+                    return (
+                      <tr key={d} className={`border-t border-slate-50 ${d === today ? 'bg-[#b0004a]/5' : ''}`}>
+                        <td className="px-4 py-2 whitespace-nowrap font-semibold text-on-surface">
+                          {fmtDay(d)}{d === today && <span className="ml-2 text-xs font-bold text-[#b0004a]">today</span>}
+                        </td>
+                        {senders.map(([s]) => (
+                          <td key={s} className="px-4 py-2 whitespace-nowrap text-on-surface-variant">{cell(onDay.filter((r) => r.sender === s))}</td>
+                        ))}
+                        <td className="px-4 py-2 whitespace-nowrap text-on-surface">{cell(onDay)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        );
+      })()}
+
       <Card variant="flush">
         <div className="flex flex-wrap items-center gap-2 p-4 border-b border-slate-50">
           {([['all', 'All'], ['unchecked', 'Not checked yet'], ['spam', 'Spam'], ['failed', 'Send failed']] as Array<[Filter, string]>).map(([f, l]) => (
@@ -191,7 +247,7 @@ export default function SeedTest() {
           <table className="w-full text-sm tabular-nums">
             <thead>
               <tr className="text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
-                {['#', 'Seed', 'Sender', 'Send', 'Sent at', 'Placement'].map((h) => (
+                {['#', 'Seed', 'Sender', 'Send', 'Sent / planned', 'Placement'].map((h) => (
                   <th key={h} className="px-4 py-2 font-bold whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -203,10 +259,12 @@ export default function SeedTest() {
                   <td className="px-4 py-2 font-mono text-xs whitespace-nowrap">{r.email}</td>
                   <td className="px-4 py-2 font-mono text-xs whitespace-nowrap">{r.sender.split('@')[0]}@</td>
                   <td className="px-4 py-2">
-                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_TONE[r.status]}`}>{r.status}</span>
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_TONE[r.status]}`}>{r.status === 'queued' ? 'scheduled' : r.status}</span>
                     {r.error && <p className="text-xs text-[#ba1a1a] mt-1 max-w-xs">{r.error}</p>}
                   </td>
-                  <td className="px-4 py-2 whitespace-nowrap text-on-surface-variant">{fmt(r.sent_at)}</td>
+                  <td className="px-4 py-2 whitespace-nowrap text-on-surface-variant">
+                    {r.status === 'queued' && r.scheduled_for ? `Planned ${fmtDay(r.scheduled_for)}` : fmt(r.sent_at)}
+                  </td>
                   <td className="px-4 py-2">
                     <select id={`placement-${r.ref}`} value={r.placement} disabled={r.status !== 'sent' || saving === r.ref}
                       onChange={(e) => setPlacement(r.ref, e.target.value as Placement)}

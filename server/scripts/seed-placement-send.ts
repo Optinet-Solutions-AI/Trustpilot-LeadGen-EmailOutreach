@@ -1,22 +1,29 @@
 /**
  * Seed inbox-placement test: send one identical message to every address in a
- * seed CSV, splitting the list round-robin across every Ongage sender in
- * ONGAGE_SENDERS, so each sending domain's placement can be compared on the
- * same content.
+ * seed CSV from EVERY Ongage sender in ONGAGE_SENDERS, so each sending
+ * domain's placement is measured on the same mailboxes and the same content.
  *
  * Sends go straight through sendEmailOngage — no campaign, no lead rows, so
- * the seeds never enter the CRM or the sent-emails dedup set.
+ * the seeds never enter the CRM or the sent-emails dedup set. That also means
+ * the campaign scheduler's cap counting never sees them: --per-day is the only
+ * limit on them.
+ *
+ * Unsent (seed, sender) pairs are planned onto Manila days at --per-day per
+ * sender. Run with --send once a day to dispatch that day's batch; a missed day
+ * rolls the rest of the plan forward, so the dates shown are always honest.
  *
  * Resume-safe: results are written to --out after every send, and a rerun
- * skips any seed already marked sent. The same JSON is mirrored to the private
+ * skips any pair already sent. The same JSON is mirrored to the private
  * `seed-tests` Storage bucket (<runId>/results.json), which the unlinked
  * /seed-test/<runId> page reads. Placements live in a separate object the
  * API owns, so nothing here can overwrite what people recorded.
  *
  * Usage (from /server):
- *   npx tsx scripts/seed-placement-send.ts --csv "../September-2nd seed-100-Gmail.csv"            # dry run
- *   npx tsx scripts/seed-placement-send.ts --csv "../September-2nd seed-100-Gmail.csv" --send     # live
- *   options: --run-id <id> --out <json> --min-delay 20 --max-delay 60 (seconds between sends) --limit <n>
+ *   npx tsx scripts/seed-placement-send.ts --csv "../September-2nd seed-100-Gmail.csv"            # print the plan
+ *   npx tsx scripts/seed-placement-send.ts --csv "../September-2nd seed-100-Gmail.csv" --sync     # publish the plan
+ *   npx tsx scripts/seed-placement-send.ts --csv "../September-2nd seed-100-Gmail.csv" --send     # send today's batch
+ *   options: --run-id <id> --per-day 20 --out <json> --limit <n>
+ *            --min-delay 90 --max-delay 150 (seconds between sends)
  */
 
 import dotenv from 'dotenv';
@@ -41,10 +48,15 @@ if (!csvPath) { console.error('--csv is required'); process.exit(1); }
 const live = process.argv.includes('--send');
 const runId = arg('run-id', `seed-${new Date().toISOString().slice(0, 10)}`)!;
 const outPath = path.resolve(arg('out', path.resolve(__dirname, `../../.tmp/seed-test/${runId}.json`))!);
-const minDelay = Number(arg('min-delay', '20')) * 1000;
-const maxDelay = Number(arg('max-delay', '60')) * 1000;
+// Default pacing keeps each sender well under its 15/hour ceiling: with three
+// senders interleaved, one send every ~2 minutes is ~10/hour per sender.
+const minDelay = Number(arg('min-delay', '90')) * 1000;
+const maxDelay = Number(arg('max-delay', '150')) * 1000;
 const limitArg = arg('limit');
 const limit = limitArg === undefined ? Infinity : Number(limitArg);  // canary: send only the next N
+// Matches the live dailyCap on the Ongage accounts (20 on 2026-09-24).
+const perDay = Number(arg('per-day', '20'));
+const TZ = 'Asia/Manila';
 
 const SUBJECT = 'Quick question about your online reviews';
 const BODY = (ref: string, fromName: string) =>
@@ -61,6 +73,18 @@ interface Sender { connectionId: number; email: string; fromName: string }
 interface SeedResult {
   n: number; email: string; sender: string; ref: string;
   status: 'queued' | 'sent' | 'failed'; sent_at: string | null; error: string | null;
+  /** Manila calendar day this pair went out, or is planned to (YYYY-MM-DD). */
+  scheduled_for?: string | null;
+}
+
+/** YYYY-MM-DD in Manila for an instant. */
+function manilaDay(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function addDays(day: string, n: number): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
 }
 
 function senders(): Sender[] {
@@ -82,14 +106,17 @@ function readSeeds(file: string): string[] {
   return out;
 }
 
+function payload(results: SeedResult[]) {
+  return JSON.stringify({ runId, subject: SUBJECT, per_day: perDay, timezone: TZ, updated_at: new Date().toISOString(), results }, null, 2);
+}
+
 function save(results: SeedResult[]) {
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, JSON.stringify({ runId, subject: SUBJECT, updated_at: new Date().toISOString(), results }, null, 2));
+  fs.writeFileSync(outPath, payload(results));
 }
 
 async function syncDb(results: SeedResult[]) {
-  if (!live) return;
-  const body = JSON.stringify({ runId, subject: SUBJECT, updated_at: new Date().toISOString(), results });
+  const body = payload(results);
   for (let attempt = 1; attempt <= 3; attempt++) {
     const { error } = await getSupabase().storage.from('seed-tests').upload(
       `${runId}/results.json`, new Blob([body], { type: 'application/json' }),
@@ -101,27 +128,78 @@ async function syncDb(results: SeedResult[]) {
   }
 }
 
+/** One row per (seed, sender). The first run gave each seed one sender and
+ *  the bare ref; those rows keep it, the other pairs get a sender suffix. */
+function buildPairs(seeds: string[], pool: Sender[], prior: SeedResult[]): SeedResult[] {
+  const byPair = new Map(prior.map((r) => [`${r.email}|${r.sender}`, r]));
+  const out: SeedResult[] = [];
+  seeds.forEach((email, i) => {
+    const nnn = String(i + 1).padStart(3, '0');
+    for (const s of pool) {
+      out.push(byPair.get(`${email}|${s.email}`) ?? {
+        n: i + 1, email, sender: s.email, ref: `${runId}-${nnn}-${s.email.split('@')[0]}`,
+        status: 'queued', sent_at: null, error: null,
+      });
+    }
+  });
+  return out;
+}
+
+/** Plan unsent pairs onto days, perDay per sender. Today only gets what is
+ *  left after today's seed sends. */
+function plan(results: SeedResult[], pool: Sender[]) {
+  const today = manilaDay(new Date());
+  for (const s of pool) {
+    const mine = results.filter((r) => r.sender === s.email);
+    for (const r of mine) if (r.status === 'sent' && r.sent_at) r.scheduled_for = manilaDay(new Date(r.sent_at));
+    const usedToday = mine.filter((r) => r.status === 'sent' && r.scheduled_for === today).length;
+    let day = today;
+    let room = Math.max(0, perDay - usedToday);
+    for (const r of mine.filter((x) => x.status !== 'sent').sort((a, b) => a.n - b.n)) {
+      while (room === 0) { day = addDays(day, 1); room = perDay; }
+      r.scheduled_for = day;
+      room--;
+    }
+  }
+}
+
 async function main() {
   const pool = senders();
   if (pool.length === 0) throw new Error('ONGAGE_SENDERS is empty');
   const seeds = readSeeds(path.resolve(csvPath!));
 
   const prior = fs.existsSync(outPath) ? (JSON.parse(fs.readFileSync(outPath, 'utf8')).results as SeedResult[]) : [];
-  const byEmail = new Map(prior.map((r) => [r.email, r]));
-  const results: SeedResult[] = seeds.map((email, i) => byEmail.get(email) ?? {
-    n: i + 1, email, sender: pool[i % pool.length].email, ref: `${runId}-${String(i + 1).padStart(3, '0')}`,
-    status: 'queued', sent_at: null, error: null,
-  });
+  const results = buildPairs(seeds, pool, prior);
+  plan(results, pool);
   save(results);
 
-  const counts = pool.map((s) => `${s.email}=${results.filter((r) => r.sender === s.email).length}`).join(' ');
-  console.log(`[seed] ${seeds.length} seeds, ${pool.length} senders (${counts}) → ${outPath}`);
-  if (!live) { console.log('[seed] dry run — pass --send to dispatch'); return; }
+  const today = manilaDay(new Date());
+  console.log(`[seed] ${seeds.length} seeds × ${pool.length} senders = ${results.length} pairs, ${perDay}/sender/day (${TZ}) → ${outPath}`);
+  for (const d of [...new Set(results.map((r) => r.scheduled_for!))].sort()) {
+    const row = pool.map((s) => {
+      const x = results.filter((r) => r.sender === s.email && r.scheduled_for === d);
+      return `${s.email.split('@')[0]} ${x.filter((r) => r.status === 'sent').length}/${x.length}`;
+    }).join('  ');
+    console.log(`[seed]   ${d}${d === today ? ' (today)' : ''}  sent/planned: ${row}`);
+  }
+  if (!live) {
+    if (process.argv.includes('--sync')) { await syncDb(results); console.log('[seed] plan published'); }
+    else console.log('[seed] dry run — pass --sync to publish the plan, --send to dispatch today\'s batch');
+    return;
+  }
   await syncDb(results);
 
-  const todo = results.filter((r) => r.status !== 'sent').slice(0, limit);
-  for (let k = 0; k < todo.length; k++) {
-    const r = todo[k];
+  // Today's batch only, interleaved across senders so no domain bursts.
+  const queues = pool.map((s) => results
+    .filter((r) => r.sender === s.email && r.status !== 'sent' && r.scheduled_for === today)
+    .sort((a, b) => a.n - b.n));
+  const todo: SeedResult[] = [];
+  for (let i = 0; queues.some((q) => i < q.length); i++) for (const q of queues) if (q[i]) todo.push(q[i]);
+  const batch = todo.slice(0, limit);
+  console.log(`[seed] sending ${batch.length} due today (${today})`);
+
+  for (let k = 0; k < batch.length; k++) {
+    const r = batch[k];
     const s = pool.find((p) => p.email === r.sender)!;
     const res = await sendEmailOngage(r.email, SUBJECT, BODY(r.ref, s.fromName), {}, {
       email: s.email, fromName: s.fromName, auth_type: 'ongage', ongage_connection_id: s.connectionId,
@@ -131,11 +209,11 @@ async function main() {
     r.error = res.success ? null : (res.error ?? 'unknown error');
     save(results);
     await syncDb(results);
-    console.log(`[seed] ${new Date().toISOString()} ${r.n}/${results.length} ${r.email} via ${r.sender}: ${r.status}${r.error ? ` (${r.error})` : ''}`);
-    if (k < todo.length - 1) await new Promise((ok) => setTimeout(ok, minDelay + Math.random() * (maxDelay - minDelay)));
+    console.log(`[seed] ${new Date().toISOString()} ${k + 1}/${batch.length} ${r.email} via ${r.sender}: ${r.status}${r.error ? ` (${r.error})` : ''}`);
+    if (k < batch.length - 1) await new Promise((ok) => setTimeout(ok, minDelay + Math.random() * (maxDelay - minDelay)));
   }
   const sent = results.filter((r) => r.status === 'sent').length;
-  console.log(`[seed] done: ${sent} sent, ${results.length - sent} not sent`);
+  console.log(`[seed] done for today: ${sent}/${results.length} pairs sent overall`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
