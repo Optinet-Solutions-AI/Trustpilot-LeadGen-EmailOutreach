@@ -83,18 +83,51 @@ export async function loadAccountCaps(): Promise<Record<string, AccountCaps>> {
 }
 
 /**
+ * The stricter of the two counts.
+ *
+ * `campaign_leads` holds one `sent_at` and one `sender_email` per
+ * lead-campaign pair, and both are overwritten by every later step. So a lead
+ * that sends twice inside the window counts once, and an earlier step's send
+ * is re-attributed to whichever mailbox sent last. `lead_notes` is
+ * append-only — one row per email, never rewritten — and is the durable
+ * answer, but notes written before the sender was recorded are invisible to
+ * it. Keeping the row count as a floor means the ceiling can only get
+ * stricter than it is today, never looser.
+ */
+export function reconcileSentCount(fromLog: number, fromRows: number): number {
+  const safe = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
+  return Math.max(safe(fromLog), safe(fromRows));
+}
+
+/**
  * How many emails one mailbox has really sent in the last 24 hours, read
  * fresh from the database rather than from a tick-start snapshot.
+ *
+ * Both sources are asked, because neither alone is complete: see
+ * `reconcileSentCount`. A failure in EITHER throws, so the caller fails
+ * closed — a silent zero would turn the cap into a suggestion.
  */
 export async function liveSentCount(email: string): Promise<number> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const { count, error } = await getSupabase()
-    .from('campaign_leads')
-    .select('id', { count: 'exact', head: true })
-    .ilike('sender_email', email)
-    .gte('sent_at', since);
-  if (error) throw new Error(error.message);
-  return count ?? 0;
+  const supabase = getSupabase();
+
+  const [rows, log] = await Promise.all([
+    supabase
+      .from('campaign_leads')
+      .select('id', { count: 'exact', head: true })
+      .ilike('sender_email', email)
+      .gte('sent_at', since),
+    supabase
+      .from('lead_notes')
+      .select('id', { count: 'exact', head: true })
+      .eq('type', 'email_sent')
+      .eq('metadata->>sender_email', email.toLowerCase())
+      .gte('created_at', since),
+  ]);
+
+  if (rows.error) throw new Error(rows.error.message);
+  if (log.error) throw new Error(log.error.message);
+  return reconcileSentCount(log.count ?? 0, rows.count ?? 0);
 }
 
 export type LiveCapDecision =

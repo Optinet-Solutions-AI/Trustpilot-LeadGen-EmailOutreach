@@ -27,6 +27,13 @@ export interface FollowUpKey {
   stepNumber: number;
   /** Only used for the human-readable note text. */
   to: string;
+  /**
+   * The mailbox about to send. Recorded on the note because the cap counts
+   * this log: `campaign_leads.sender_email` is overwritten by each later step,
+   * so it cannot say which mailbox sent an EARLIER email. Lowercased on write
+   * so the count can match exactly.
+   */
+  senderEmail?: string | null;
 }
 
 export type ClaimResult =
@@ -54,7 +61,11 @@ export async function claimFollowUpSend(
     lead_id: key.leadId,
     type: 'email_sent',
     content: `Follow-up step ${key.stepNumber} sent to ${key.to}`,
-    metadata: { campaign_id: key.campaignId, step_number: key.stepNumber },
+    metadata: {
+      campaign_id: key.campaignId,
+      step_number: key.stepNumber,
+      sender_email: key.senderEmail?.trim().toLowerCase() || null,
+    },
   });
 
   if (!error) return { owned: true };

@@ -54,7 +54,21 @@ describe('claimFollowUpSend', () => {
     const written = db.insert.mock.calls[0][0] as Record<string, unknown>;
     expect(written.type).toBe('email_sent');
     expect(written.lead_id).toBe('l1');
-    expect(written.metadata).toEqual({ campaign_id: 'c9', step_number: 3 });
+    expect(written.metadata).toEqual({ campaign_id: 'c9', step_number: 3, sender_email: null });
+  });
+
+  test('records which mailbox sent it, lowercased, because the cap counts this log', async () => {
+    // campaign_leads.sender_email is overwritten by the next step, so it
+    // cannot say which mailbox sent an EARLIER email. The note can, and it is
+    // never rewritten — see reconcileSentCount in send-counts.ts.
+    const db = fakeDb(OK);
+    await claimFollowUpSend(db.client as never, {
+      leadId: 'l1', campaignId: 'c9', stepNumber: 2, to: 'a@b.com',
+      senderEmail: '  Grace@RP.RateUpDigital.com ',
+    });
+    const written = db.insert.mock.calls[0][0] as Record<string, unknown>;
+    expect((written.metadata as Record<string, unknown>).sender_email)
+      .toBe('grace@rp.rateupdigital.com');
   });
 
   test('an unexpected database error is raised, not mistaken for a duplicate', async () => {

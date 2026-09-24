@@ -433,6 +433,10 @@ async function sendFollowUp(
     campaignId,
     stepNumber: nextStepNumber,
     to: String(cl.email_used ?? ''),
+    // Resolved above, before the claim, so the log records WHICH mailbox this
+    // email came from — the cap counts the log, and the row's own
+    // sender_email will be rewritten by the next step.
+    senderEmail: senderAccount?.email ?? config.gmail.fromEmail ?? null,
   };
   const claim = await claimFollowUpSend(supabase, claimKey);
   if (!claim.owned) {

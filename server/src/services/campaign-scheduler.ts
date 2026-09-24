@@ -492,7 +492,13 @@ async function sendScheduledEmail(cl: any, senderAccount: SenderAccount | undefi
     await createNote(lead.id as string, {
       type: 'email_sent',
       content: `Campaign "${campaign.name}" email sent to ${cl.email_used}`,
-      metadata: { campaign_id: campaign.id, gmail_message_id: result.messageId },
+      metadata: {
+        campaign_id: campaign.id,
+        gmail_message_id: result.messageId,
+        // The cap counts this log rather than the row, whose sender_email a
+        // later step overwrites.
+        sender_email: senderEmail?.trim().toLowerCase() || null,
+      },
     });
 
     console.log(`[CampaignScheduler] Sent → ${cl.email_used}`);
