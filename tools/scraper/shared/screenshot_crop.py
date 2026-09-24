@@ -19,10 +19,17 @@ from __future__ import annotations
 
 import io
 
-# Preview-card box on a 1920-wide capture: the content column (excludes the
-# left gutter and the Save/Review buttons on the right), from just below the
-# breadcrumb down through the first hero-photo row.
+# Preview-card box measured on a 1920-wide capture: the content column
+# (excludes the left gutter and the Save/Review buttons on the right), from
+# just below the breadcrumb down through the first hero-photo row.
 _LEFT, _TOP, _RIGHT, _BOTTOM = 384, 300, 1560, 780
+# ...and the width those numbers were measured against. The box is SCALED to
+# whatever width actually arrives, because the capture width is no longer
+# fixed: ScrapingBee shot 1920, the Apify UNBLOCKER path shoots 1400. Applying
+# 1920 coordinates to a 1400 capture crops the middle of the page instead of
+# the header, which is exactly what reached the CRM on 2026-09-24 — a picture
+# of the photo gallery with no business name or rating in it.
+_MEASURED_AT_WIDTH = 1920
 # Captures at least this wide are full pages we crop; anything narrower is
 # already a cropped card and is left alone (idempotent).
 _FULLPAGE_MIN_WIDTH = 1400
@@ -46,7 +53,12 @@ def crop_tripadvisor_header(png_bytes: bytes) -> bytes:
     if w < _FULLPAGE_MIN_WIDTH:
         return png_bytes  # already a preview/header crop — nothing to recover
 
-    cropped = img.crop((_LEFT, _TOP, min(_RIGHT, w), min(_BOTTOM, h)))
+    # Scale the measured box to this capture's width. The page is the same
+    # layout at any viewport, just narrower, so the box moves with it.
+    k = w / _MEASURED_AT_WIDTH
+    left, right = int(_LEFT * k), int(_RIGHT * k)
+    top, bottom = int(_TOP * k), int(_BOTTOM * k)
+    cropped = img.crop((left, top, min(right, w), min(bottom, h)))
     out = io.BytesIO()
     cropped.save(out, format='PNG')
     return out.getvalue()

@@ -345,7 +345,17 @@ _PASS2_SCHEMA = (
     '"website":<string or null>,"email":<string or null>}. '
     'The profile_url must be copied exactly from the page you opened. '
     'If you could not open the real profile page, set profile_url to null — '
-    'never construct, guess or template a URL.'
+    'never construct, guess or template a URL. '
+    # The review page itself publishes neither a website nor an email — the
+    # first live run returned 25 leads with no way to contact any of them.
+    # The business's OWN site does, and asking for it explicitly is the
+    # difference between a lead and a name: a separate probe found a public
+    # address for 8 of 10 businesses our whole enrichment ladder had failed on.
+    'For `website` and `email`, look beyond the review page: find the '
+    "business's own official website and the contact address published on it. "
+    'Report only an address you actually saw published; never construct one '
+    'from the company name, and never return a placeholder such as '
+    'info@example.com.'
 )
 
 _SITE = {'tripadvisor': 'Tripadvisor', 'yelp': 'Yelp'}
@@ -426,8 +436,9 @@ def confirm_candidate(
         'review_count': int(_as_float(payload.get('review_count')) or 0) or None,
         'city': (str(payload.get('city')).strip() if payload.get('city') else city),
         'phone': (str(payload.get('phone')).strip() if payload.get('phone') else None),
-        'website_url': (str(payload.get('website')).strip() if payload.get('website') else None),
-        'platform_email': (str(payload.get('email')).strip() if payload.get('email') else None),
+        # Never written raw — see clean_email/clean_url below.
+        'website_url': clean_url(payload.get('website')),
+        'platform_email': clean_email(payload.get('email')),
     }, cost, None
 
 
@@ -623,3 +634,55 @@ def run_listing(
         flush=True,
     )
     return results
+
+
+# ── model output is typed like prose, not like data ─────────────────────────
+#
+# Measured on the first live pass-2 run that asked for contact details:
+# "Hansa Hotel" came back as info@hotel\u2011hahn.de — a Unicode non-breaking
+# hyphen instead of an ASCII one. It is visually identical, it is not a
+# deliverable address, and written through unchecked it reaches a lead and
+# bounces. The same defect appears on the enrichment side, which is why the
+# TypeScript path has its own gate (llm-email-normalise.ts).
+_DASHES = str.maketrans({c: '-' for c in '\u2010\u2011\u2012\u2013\u2014\u2015\u2212'})
+_ADDRESS = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$')
+# Separators a model uses around an address: whitespace, list punctuation and
+# the brackets it wraps prose in.
+_SPLIT_PROSE = re.compile(r'[\s,;<>()\[\]"\']+')
+_PLACEHOLDER = {
+    'example@example.com', 'info@example.com', 'email@example.com',
+    'your@email.com', 'name@domain.com', 'email@address.com',
+    'contact@example.com', 'user@domain.com', 'test@example.com',
+}
+
+
+def clean_email(raw: Any) -> Optional[str]:
+    """A deliverable address, or None. Rejecting is always the safe answer.
+
+    A missing address costs one lead; a corrupted one costs a bounce against
+    sending domains that are mid-warm-up.
+    """
+    if not isinstance(raw, str):
+        return None
+    # Extracted rather than trimmed: a model wraps addresses in prose and
+    # punctuation ("<Info@Vangogh.RO>."), and stripping characters in a fixed
+    # order leaves whichever bracket happened to end up innermost.
+    for piece in _SPLIT_PROSE.split(raw.translate(_DASHES)):
+        candidate = piece.rstrip('.,;:').lower()
+        if candidate and _ADDRESS.match(candidate) and candidate not in _PLACEHOLDER:
+            return candidate
+    return None
+
+
+def clean_url(raw: Any) -> Optional[str]:
+    """A usable http(s) URL, or None. Same dash repair as an address."""
+    if not isinstance(raw, str):
+        return None
+    u = raw.strip().translate(_DASHES).strip('<>()[]"\' ')
+    if not u or ' ' in u:
+        return None
+    if not u.lower().startswith(('http://', 'https://')):
+        u = 'https://' + u
+    # A bare host with no dot is not a website.
+    host = u.split('//', 1)[-1].split('/', 1)[0]
+    return u if '.' in host and len(host) > 3 else None

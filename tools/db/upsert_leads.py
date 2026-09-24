@@ -236,6 +236,18 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         # Bug discovered 2026-08-14, when the Apify path started returning
         # claim status for 10/10 businesses and none of it survived the write.
         'profile_claimed': lead.get('profile_claimed'),
+        # The rating the Lead Matrix renders and filters on. It was written by
+        # the Trustpilot path only, so every TripAdvisor and Yelp lead reached
+        # the CRM with it NULL: the RATING column was blank, and because NULL
+        # fails both a >= and a <= test, filtering by rating made those leads
+        # vanish entirely rather than merely sort oddly. Same defect as
+        # profile_claimed above, different column.
+        #
+        # Only 5-point platforms write here. Booking.com scores out of 10 and
+        # deliberately keeps its score on the presence row alone, so the two
+        # scales can never end up compared in one column.
+        'star_rating': ((lead.get('rating') or lead.get('star_rating'))
+                        if platform in FIVE_POINT_PLATFORMS else None),
         'scraped_at': now_iso,
     }
     # None-stripped so a field this scrape didn't observe can't overwrite a

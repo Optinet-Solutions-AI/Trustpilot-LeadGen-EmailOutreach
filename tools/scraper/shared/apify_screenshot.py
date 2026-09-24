@@ -162,7 +162,16 @@ def fetch_screenshot_via_apify(
                 # trusted. Refusing it is right in general and wrong here.
                 ignore_https_errors=True,
                 locale='en-US',
-                viewport={'width': 1400, 'height': 1800},
+                # 1920 on purpose: crop_tripadvisor_header's preview-card box
+                # was measured against a 1920-wide capture, and TripAdvisor
+                # centres a fixed-width content column rather than scaling it,
+                # so a narrower shot moves the business name out of the box.
+                # Shot at 1400 the crop returned the photo gallery with no
+                # name and no rating in it.
+                # 1920 wide matches the layout the CRM card was designed
+                # around; 900 tall because this capture IS the card - the
+                # heading is scrolled to the top of it below.
+                viewport={'width': 1920, 'height': 900},
                 user_agent=('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                             '(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36'),
             )
@@ -188,6 +197,19 @@ def fetch_screenshot_via_apify(
                       f"Apify UNBLOCKER returned a challenge page, not the profile.",
                       flush=True)
                 return None
+
+            # Put the business heading at the top of the frame, then shoot
+            # the viewport. No pixel offsets anywhere: three attempts at a
+            # measured crop box each failed differently - a 1400-wide capture
+            # cut the name off the left, 1920-wide cut it off the top, and an
+            # anchored clip missed because the page reflows between measuring
+            # the element and taking the picture. Scrolling does not care.
+            if not full_page:
+                try:
+                    page.locator('h1').first.scroll_into_view_if_needed(timeout=15_000)
+                    page.wait_for_timeout(1200)
+                except Exception:
+                    pass
 
             shot = page.screenshot(full_page=full_page)
             # Charged whether or not the bytes are usable — the page was

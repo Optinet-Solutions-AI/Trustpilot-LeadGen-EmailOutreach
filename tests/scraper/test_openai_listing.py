@@ -202,3 +202,53 @@ class TestBlockedPlatformAbort:
         # Two misses is ordinary; three in a row with nothing is a wall.
         assert should_abort_blocked(attempted=1, confirmed=0) is False
         assert should_abort_blocked(attempted=2, confirmed=0) is False
+
+
+class TestCleanEmail:
+    """Everything a model returns is typed like prose, not like data.
+
+    Measured on the first live pass-2 run that asked for contact details:
+    "Hansa Hotel" came back as info@hotel\u2011hahn.de — a Unicode non-breaking
+    hyphen instead of an ASCII one. Visually identical, not deliverable, and
+    written through unchecked it reaches a lead and bounces against sending
+    domains that are mid-warm-up.
+    """
+
+    def test_repairs_the_unicode_dash_a_model_types(self):
+        from tools.scraper.shared.openai_listing import clean_email
+        assert clean_email('info@hotel\u2011hahn.de') == 'info@hotel-hahn.de'
+
+    def test_extracts_an_address_out_of_prose(self):
+        from tools.scraper.shared.openai_listing import clean_email
+        assert clean_email('<Info@Vangogh.RO>.') == 'info@vangogh.ro'
+        assert clean_email('Email: info@seaportboston.com (reception)') == 'info@seaportboston.com'
+
+    def test_rejects_the_placeholders_a_model_falls_back_to(self):
+        from tools.scraper.shared.openai_listing import clean_email
+        for bad in ('info@example.com', 'name@domain.com', 'your@email.com'):
+            assert clean_email(bad) is None, bad
+
+    def test_rejects_a_homoglyph_rather_than_guessing_the_domain(self):
+        from tools.scraper.shared.openai_listing import clean_email
+        # Cyrillic 'о'. Repairing it would mean inventing which domain was meant.
+        assert clean_email('info@vang\u043egh.ro') is None
+
+    def test_rejects_anything_that_is_not_an_address(self):
+        from tools.scraper.shared.openai_listing import clean_email
+        for bad in ('not found', '', None, 'info@', '@vangogh.ro', 'info@vangogh'):
+            assert clean_email(bad) is None, repr(bad)
+
+
+class TestCleanUrl:
+    def test_repairs_a_dash_and_adds_the_scheme(self):
+        from tools.scraper.shared.openai_listing import clean_url
+        assert clean_url('hotel\u2011hahn.de') == 'https://hotel-hahn.de'
+
+    def test_leaves_a_good_url_alone(self):
+        from tools.scraper.shared.openai_listing import clean_url
+        assert clean_url('https://www.pension-marie-luise.com') == 'https://www.pension-marie-luise.com'
+
+    def test_rejects_a_non_url(self):
+        from tools.scraper.shared.openai_listing import clean_url
+        for bad in ('n/a', 'none', '', None, 'no website found'):
+            assert clean_url(bad) is None, repr(bad)

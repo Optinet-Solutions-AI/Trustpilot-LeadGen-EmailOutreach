@@ -80,7 +80,6 @@ from tools.scraper.shared.yelp_fusion import (
     yelp_fusion_enabled,
 )
 from tools.scraper.shared.scrapingbee import (
-    fetch_screenshot_via_scrapingbee,
     fetch_via_scrapingbee,
     scrapingbee_enabled,
 )

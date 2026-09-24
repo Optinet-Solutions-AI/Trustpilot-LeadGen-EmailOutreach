@@ -49,7 +49,14 @@ def test_apify_path_keeps_the_actor_supplied_fields(monkeypatch):
 
 
 def test_data_is_never_capped_on_the_apify_path(monkeypatch):
-    """The legacy path's cap TRUNCATES the lead list, discarding website and
+    """
+Screenshot patches target `fetch_profile_screenshot`, the dispatcher that now
+chooses between Apify and ScrapingBee. Patching the old
+`fetch_screenshot_via_scrapingbee` silently stopped intercepting when that
+dispatcher landed, so these tests began making REAL network calls - 195 of
+them in one case, which is what turned a fast suite into a 30-minute one and
+failed the two screenshot-cap tests.
+The legacy path's cap TRUNCATES the lead list, discarding website and
     phone past the 25th. On this path the cap must only govern screenshots —
     every lead keeps its data.
 
@@ -60,7 +67,7 @@ def test_data_is_never_capped_on_the_apify_path(monkeypatch):
     monkeypatch.delenv('YELP_MAX_ENRICH', raising=False)
     monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
     monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: True)
-    monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee', lambda *a, **k: b'PNG')
+    monkeypatch.setattr(yelp, 'fetch_profile_screenshot', lambda *a, **k: b'PNG')
     monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
     rows = _run(_stubs(30))
     assert len(rows) == 30, 'no lead may be dropped — the legacy cap would have lost 5'
@@ -72,7 +79,7 @@ def test_explicit_cap_limits_screenshots_but_never_data(monkeypatch):
     monkeypatch.setenv('YELP_MAX_ENRICH', '2')
     monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
     monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: True)
-    monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee', lambda *a, **k: b'PNG')
+    monkeypatch.setattr(yelp, 'fetch_profile_screenshot', lambda *a, **k: b'PNG')
     monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
     rows = _run(_stubs(5))
     # Every lead survives with its data; only screenshots are capped.
@@ -204,7 +211,7 @@ def test_screenshots_are_bounded_by_default_not_unlimited(monkeypatch):
     monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
     monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: True)
     shots = []
-    monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee',
+    monkeypatch.setattr(yelp, 'fetch_profile_screenshot',
                         lambda url, **k: shots.append(url) or b'PNG')
     monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
 
@@ -220,7 +227,7 @@ def test_explicit_cap_still_raises_the_screenshot_ceiling(monkeypatch):
     monkeypatch.setattr(yelp, 'scrapingbee_enabled', lambda: True)
     monkeypatch.setattr(yelp, 'supabase_storage_enabled', lambda: True)
     shots = []
-    monkeypatch.setattr(yelp, 'fetch_screenshot_via_scrapingbee',
+    monkeypatch.setattr(yelp, 'fetch_profile_screenshot',
                         lambda url, **k: shots.append(url) or b'PNG')
     monkeypatch.setattr(yelp, 'upload_screenshot_bytes', lambda *a, **k: 'https://cdn/x.png')
 

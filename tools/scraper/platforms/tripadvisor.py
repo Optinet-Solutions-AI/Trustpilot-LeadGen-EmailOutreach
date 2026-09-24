@@ -50,9 +50,8 @@ from tools.scraper.platforms.base import (
     FilterField,
     ProgressCallback,
 )
-from tools.scraper.shared.apify_screenshot import fetch_profile_screenshot
+from tools.scraper.shared.apify_screenshot import fetch_profile_screenshot, screenshot_source
 from tools.scraper.shared.scrapingbee import (
-    fetch_screenshot_via_scrapingbee,
     fetch_via_scrapingbee_tiered,
     scrapingbee_enabled,
 )
@@ -701,7 +700,12 @@ class TripAdvisorScraper(BasePlatformScraper):
                         # Crop the tall full-page capture down to the business
                         # header (name + rating) so the CRM shows a small,
                         # relevant shot — no-ops if Pillow is unavailable.
-                        png = crop_tripadvisor_header(png)
+                        # Only ScrapingBee captures need this. The Apify path
+                        # already frames the header by scrolling to it, and
+                        # re-cropping with ScrapingBee's measured box is what
+                        # produced a picture of the photo gallery.
+                        if screenshot_source() != 'apify':
+                            png = crop_tripadvisor_header(png)
                         if screenshots_dir:
                             try:
                                 local_path = os.path.join(screenshots_dir, f"{slug_for_file}.png")
