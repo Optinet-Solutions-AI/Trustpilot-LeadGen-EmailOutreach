@@ -39,12 +39,23 @@ const STATUS_TONE: Record<SeedRow['status'], string> = {
 };
 
 type Filter = 'all' | 'unchecked' | 'spam' | 'failed';
+type SortKey = 'n' | 'email' | 'sender' | 'status' | 'when' | 'placement';
+
+/** When a row went out, or is planned to: sent rows by their timestamp,
+ *  planned rows by their day, so both sort on one timeline. */
+const whenKey = (r: SeedRow) => r.sent_at ?? (r.scheduled_for ? `${r.scheduled_for}T23:59:59` : '9999');
+const PLACEMENT_ORDER: Record<Placement, number> = { inbox: 0, promotions: 1, spam: 2, not_found: 3, unchecked: 4 };
+const STATUS_ORDER: Record<SeedRow['status'], number> = { sent: 0, queued: 1, failed: 2 };
 
 /** "Fri 25 Sep" for a YYYY-MM-DD Manila day. */
 const fmtDay = (day: string) =>
   new Date(`${day}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 const todayManila = () =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+const HEADER_SELECT =
+  'mt-1 block w-full min-w-[7rem] normal-case tracking-normal font-semibold text-xs text-on-surface ' +
+  'rounded-md border border-slate-200 bg-white px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a]';
 
 const fmt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
@@ -64,6 +75,10 @@ export default function SeedTest() {
   const [rows, setRows] = useState<SeedRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
+  const [senderF, setSenderF] = useState('all');
+  const [statusF, setStatusF] = useState<'all' | SeedRow['status']>('all');
+  const [placementF, setPlacementF] = useState<'all' | Placement>('all');
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'n', dir: 1 });
   const [q, setQ] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -104,13 +119,38 @@ export default function SeedTest() {
     return [...m.entries()];
   }, [rows]);
 
-  const visible = useMemo(() => (rows ?? []).filter((r) => {
-    if (filter === 'unchecked' && !(r.status === 'sent' && r.placement === 'unchecked')) return false;
-    if (filter === 'spam' && r.placement !== 'spam') return false;
-    if (filter === 'failed' && r.status !== 'failed') return false;
+  const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return !needle || r.email.includes(needle) || r.ref.toLowerCase().includes(needle);
-  }), [rows, filter, q]);
+    const list = (rows ?? []).filter((r) => {
+      if (filter === 'unchecked' && !(r.status === 'sent' && r.placement === 'unchecked')) return false;
+      if (filter === 'spam' && r.placement !== 'spam') return false;
+      if (filter === 'failed' && r.status !== 'failed') return false;
+      if (senderF !== 'all' && r.sender !== senderF) return false;
+      if (statusF !== 'all' && r.status !== statusF) return false;
+      if (placementF !== 'all' && r.placement !== placementF) return false;
+      return !needle || r.email.includes(needle) || r.ref.toLowerCase().includes(needle);
+    });
+    const val = (r: SeedRow): string | number => {
+      switch (sort.key) {
+        case 'n': return r.n;
+        case 'email': return r.email;
+        case 'sender': return r.sender;
+        case 'status': return STATUS_ORDER[r.status];
+        case 'when': return whenKey(r);
+        case 'placement': return PLACEMENT_ORDER[r.placement];
+      }
+    };
+    // Ties fall back to seed number, then sender, so the order is stable.
+    return [...list].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (va !== vb) return (va < vb ? -1 : 1) * sort.dir;
+      return a.n - b.n || a.sender.localeCompare(b.sender);
+    });
+  }, [rows, filter, q, senderF, statusF, placementF, sort]);
+
+  const anyColumnFilter = senderF !== 'all' || statusF !== 'all' || placementF !== 'all';
+  const toggleSort = (key: SortKey) =>
+    setSort((cur) => (cur.key === key ? { key, dir: cur.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
 
   if (!rows && !error) return <div className="p-4 lg:p-8"><LoadingState /></div>;
 
@@ -239,6 +279,15 @@ export default function SeedTest() {
               {l}
             </button>
           ))}
+          <span className="text-sm text-on-surface-variant tabular-nums">
+            {visible.length} of {rows?.length ?? 0} rows
+          </span>
+          {anyColumnFilter && (
+            <button type="button" onClick={() => { setSenderF('all'); setStatusF('all'); setPlacementF('all'); }}
+              className="text-sm font-bold text-[#b0004a] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a] rounded px-1">
+              Clear column filters
+            </button>
+          )}
           <input id="seed-filter" type="search" value={q} onChange={(e) => setQ(e.target.value)}
             placeholder="Filter by address or ref" aria-label="Filter by address or ref"
             className="ml-auto min-w-0 flex-1 sm:flex-none sm:w-64 px-3 py-1.5 rounded-lg border border-slate-200 text-sm bg-white" />
@@ -247,9 +296,49 @@ export default function SeedTest() {
           <table className="w-full text-sm tabular-nums">
             <thead>
               <tr className="text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
-                {['#', 'Seed', 'Sender', 'Send', 'Sent / planned', 'Placement'].map((h) => (
-                  <th key={h} className="px-4 py-2 font-bold whitespace-nowrap">{h}</th>
-                ))}
+                {([
+                  ['n', '#'], ['email', 'Seed'], ['sender', 'Sender'], ['status', 'Send'],
+                  ['when', 'Sent / planned'], ['placement', 'Placement'],
+                ] as Array<[SortKey, string]>).map(([key, label]) => {
+                  const active = sort.key === key;
+                  return (
+                    <th key={key} className="px-4 py-2 font-bold whitespace-nowrap align-top"
+                        aria-sort={active ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none'}>
+                      <button type="button" onClick={() => toggleSort(key)}
+                        className={`inline-flex items-center gap-1 uppercase tracking-wider hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-[#b0004a] rounded ${active ? 'text-on-surface' : ''}`}>
+                        {label}
+                        <span className={`material-symbols-outlined text-[16px] leading-none ${active ? '' : 'opacity-30'}`}>
+                          {active && sort.dir === -1 ? 'arrow_downward' : 'arrow_upward'}
+                        </span>
+                      </button>
+                      {key === 'sender' && (
+                        <select id="seed-sender-filter" value={senderF} onChange={(e) => setSenderF(e.target.value)}
+                          aria-label="Filter by sender" className={HEADER_SELECT}>
+                          <option value="all">All senders</option>
+                          {senders.map(([s]) => <option key={s} value={s}>{s.split('@')[0]}@</option>)}
+                        </select>
+                      )}
+                      {key === 'status' && (
+                        <select id="seed-status-filter" value={statusF}
+                          onChange={(e) => setStatusF(e.target.value as typeof statusF)}
+                          aria-label="Filter by send status" className={HEADER_SELECT}>
+                          <option value="all">All</option>
+                          <option value="sent">Sent</option>
+                          <option value="queued">Scheduled</option>
+                          <option value="failed">Failed</option>
+                        </select>
+                      )}
+                      {key === 'placement' && (
+                        <select id="seed-placement-filter" value={placementF}
+                          onChange={(e) => setPlacementF(e.target.value as typeof placementF)}
+                          aria-label="Filter by placement" className={HEADER_SELECT}>
+                          <option value="all">All</option>
+                          {PLACEMENTS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                        </select>
+                      )}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
