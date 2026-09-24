@@ -436,7 +436,21 @@ router.post('/', async (req: Request, res: Response) => {
         const total = emails.length;
 
         // Run distinct domains in parallel; addresses within a domain serial.
-        await Promise.all([...byDomain.entries()].map(async ([domain, group]) => {
+        //
+        // The fan-out is BOUNDED on purpose. Un-capped, a 78-address job fired
+        // ~75 simultaneous ZeroBounce requests, ZB refused the burst, and
+        // every refusal was recorded as a plain `unknown` verdict — 74 leads
+        // stamped unverifiable on 2026-09-03 without spending one credit.
+        // It also protects the 1-vCPU Cloud Run instance, the same starvation
+        // that stalls the enrichment heartbeat above concurrency 4.
+        const domains = [...byDomain.entries()];
+        let domainCursor = 0;
+        const domainWorkers = Math.max(1, Math.min(
+          Number(process.env.VERIFY_DOMAIN_CONCURRENCY) || 6,
+          12,
+        ));
+
+        const runDomain = async ([domain, group]: [string, string[]]) => {
           emit(jobId, 'mx_check', domain);
           for (const email of group) {
             emit(jobId, 'verify_address', email);
@@ -452,6 +466,12 @@ router.post('/', async (req: Request, res: Response) => {
 
             processed++;
             emit(jobId, 'verify_address_done', `${processed}|${total}|${email}|${result.status}`);
+          }
+        };
+
+        await Promise.all(Array.from({ length: domainWorkers }, async () => {
+          while (domainCursor < domains.length) {
+            await runDomain(domains[domainCursor++]);
           }
         }));
 

@@ -184,6 +184,48 @@ function looksLikeCodeFragment(email: string): boolean {
   return false;
 }
 
+/**
+ * Documentation / template placeholders. Company sites ship them in unedited
+ * theme boilerplate, and they pass every other filter: real-looking prefix,
+ * real-looking TLD, not a free provider. A live lead was found on 2026-09-03
+ * holding `example@example.com` as its scraped website email, which then went
+ * through the verifier and onto the sendable pile.
+ */
+const PLACEHOLDER_DOMAINS = new Set([
+  'example.com', 'example.org', 'example.net', 'example.co.uk', 'example.de',
+  'domain.com', 'yourdomain.com', 'your-domain.com', 'mydomain.com',
+  'yourcompany.com', 'your-company.com', 'company.com',
+  'yoursite.com', 'yourwebsite.com', 'website.com',
+  'emailaddress.com', 'test.com', 'testing.com', 'sample.com',
+]);
+
+const PLACEHOLDER_PREFIXES = new Set([
+  'youremail', 'your-email', 'your_email', 'yourname', 'your-name',
+  'youraddress', 'emailaddress', 'email-address', 'firstname', 'lastname',
+  'name@name', 'somebody', 'someone', 'username', 'user',
+]);
+
+function looksLikePlaceholder(email: string): boolean {
+  const [prefix, domain] = email.toLowerCase().split('@');
+  if (!domain) return true;
+  if (PLACEHOLDER_DOMAINS.has(domain)) return true;
+  if (PLACEHOLDER_PREFIXES.has(prefix)) return true;
+  return false;
+}
+
+/**
+ * The single junk gate every extracted address passes through. Kept as one
+ * predicate because the four checks were previously spelled out at nine
+ * separate call sites — so a new rule (placeholders) only landed in whichever
+ * ones got edited.
+ */
+export function isJunkEmail(email: string): boolean {
+  return isUndeliverable(email)
+    || isFreeProvider(email)
+    || looksLikeCodeFragment(email)
+    || looksLikePlaceholder(email);
+}
+
 function rankEmail(email: string): number {
   const prefix = email.split('@')[0].toLowerCase();
   if (TOP_PREFIXES.has(prefix)) return 0;
@@ -372,7 +414,7 @@ async function findEmailsOnPage(page: Page): Promise<string[]> {
   }
 
   const preFiltered = [...collected].filter(
-    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    (e) => !isJunkEmail(e),
   );
   return filterByMx(preFiltered);
 }
@@ -1008,7 +1050,7 @@ async function httpFastLane(websiteUrl: string): Promise<string | null> {
   }
 
   const candidates = [...all].filter(
-    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    (e) => !isJunkEmail(e),
   );
   if (candidates.length === 0) return null;
   const verified = await filterByMx(candidates);
@@ -1105,13 +1147,13 @@ async function tier5ScrapingbeeScan(
     }
 
     const cleanNow = [...all].filter(
-      (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+      (e) => !isJunkEmail(e),
     );
     if (cleanNow.some((e) => rankEmail(e) === 0)) break;
   }
 
   let cleanedSoFar = [...all].filter(
-    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    (e) => !isJunkEmail(e),
   );
   const haveTopHit = cleanedSoFar.some((e) => rankEmail(e) === 0);
 
@@ -1145,7 +1187,7 @@ async function tier5ScrapingbeeScan(
       }
 
       cleanedSoFar = [...all].filter(
-        (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+        (e) => !isJunkEmail(e),
       );
       if (cleanedSoFar.some((e) => rankEmail(e) === 0)) break;
     }
@@ -1154,7 +1196,7 @@ async function tier5ScrapingbeeScan(
   const totalProbes = premiumProbes + stealthProbes;
   const usedStealth = stealthProbes > 0;
   const candidates = [...all].filter(
-    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    (e) => !isJunkEmail(e),
   );
   if (candidates.length === 0) {
     console.log(`    [tier5] no email after ${premiumProbes} premium + ${stealthProbes} stealth probe(s)${countryCode ? ` (country=${countryCode})` : ''}`);
@@ -1209,13 +1251,13 @@ async function tier5bScrapflyScan(
     }
 
     const cleanNow = [...all].filter(
-      (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+      (e) => !isJunkEmail(e),
     );
     if (cleanNow.some((e) => rankEmail(e) === 0)) break;
   }
 
   const candidates = [...all].filter(
-    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    (e) => !isJunkEmail(e),
   );
   if (candidates.length === 0) {
     console.log(`    [tier5b] no email after ${probes} probe(s)${countryCode ? ` (country=${countryCode})` : ''}`);
@@ -1254,7 +1296,7 @@ async function tier1_5TlsScan(
   }
 
   const candidates = [...all].filter(
-    (e) => !isUndeliverable(e) && !isFreeProvider(e) && !looksLikeCodeFragment(e),
+    (e) => !isJunkEmail(e),
   );
   if (candidates.length === 0) {
     console.log(`    [tier1_5_tls] ran ${result.probes.length} probe(s), no usable email${sawCfBlock ? ' (CF block seen)' : ''}`);
@@ -1642,6 +1684,36 @@ function domainOf(url: string): string {
   return stripped.replace(/^www\./, '');
 }
 
+/**
+ * Hard wall-clock cap on a single lead.
+ *
+ * `enrichSingleLeadWithTiers` checks its PER_LEAD_BUDGET_MS deadline only
+ * BETWEEN stages, so one stage that never settles (a paid-tier HTTP call with
+ * no timeout, a browser launch that wedges) hangs the whole chunk: the worker
+ * loop never advances, the route's `await enrichLeads(...)` never resolves,
+ * and the scrape_jobs row sits 'running' with a live heartbeat forever
+ * (job 85511d75 on 2026-09-02 parked at 48/50 for 16h this way). Racing every
+ * lead against this cap guarantees the chunk terminates and the job closes.
+ */
+const PER_LEAD_HARD_TIMEOUT_MS = PER_LEAD_BUDGET_MS + 60_000;
+
+class LeadTimeoutError extends Error {}
+
+function withHardTimeout<T>(work: Promise<T>, ms = PER_LEAD_HARD_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work,
+    new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new LeadTimeoutError(`hard timeout after ${Math.round(ms / 1000)}s`)),
+        ms,
+      );
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 export async function enrichLeads(
   leads: EnrichableLead[],
   opts: {
@@ -1680,7 +1752,9 @@ export async function enrichLeads(
       opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain, leadId });
       try {
         const country = (lead.country as string | null | undefined) ?? null;
-        const { email, tier, blockReason, redirectsTo, scrapeSource } = await enrichSingleLeadWithTiers(websiteUrl, { country });
+        const { email, tier, blockReason, redirectsTo, scrapeSource } = await withHardTimeout(
+          enrichSingleLeadWithTiers(websiteUrl, { country }),
+        );
         const resolvedSource: 'scrape' | 'lateral' | 'none' =
           email == null ? 'none' :
           scrapeSource === 'lateral' ? 'lateral' :
@@ -1721,8 +1795,9 @@ export async function enrichLeads(
         }
       } catch (err) {
         const message = (err as Error).message.slice(0, 200);
-        console.error(`    [enricher] ERROR for ${websiteUrl}:`, message);
-        opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: 'error', message, leadId });
+        const reasonCode = err instanceof LeadTimeoutError ? 'lead_timeout' : 'error';
+        console.error(`    [enricher] ${reasonCode.toUpperCase()} for ${websiteUrl}:`, message);
+        opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode, message, leadId });
       }
 
       done++;

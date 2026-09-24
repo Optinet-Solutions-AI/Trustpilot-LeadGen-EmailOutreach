@@ -26,20 +26,51 @@ export interface AccountCaps { dailyCap: number; hourlyCap: number }
  */
 export async function loadSentCounts(): Promise<Record<string, SentCount>> {
   const counts: Record<string, SentCount> = {};
+  const bump = (key: string | undefined, at: string, since1h: string, into: Record<string, SentCount>) => {
+    if (!key) return;
+    if (!into[key]) into[key] = { daily: 0, hourly: 0 };
+    into[key].daily += 1;
+    if (at >= since1h) into[key].hourly += 1;
+  };
+
   try {
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const since1h  = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { data } = await getSupabase()
-      .from('campaign_leads')
-      .select('sender_email, sent_at')
-      .eq('status', 'sent')
-      .gte('sent_at', since24h);
-    for (const row of (data ?? []) as Array<{ sender_email?: string; sent_at?: string }>) {
-      const key = row.sender_email?.toLowerCase();
-      if (!key || !row.sent_at) continue;
-      if (!counts[key]) counts[key] = { daily: 0, hourly: 0 };
-      counts[key].daily += 1;
-      if (row.sent_at >= since1h) counts[key].hourly += 1;
+    const supabase = getSupabase();
+
+    const [rows, log] = await Promise.all([
+      supabase
+        .from('campaign_leads')
+        .select('sender_email, sent_at')
+        .eq('status', 'sent')
+        .gte('sent_at', since24h),
+      supabase
+        .from('lead_notes')
+        .select('created_at, metadata')
+        .eq('type', 'email_sent')
+        .gte('created_at', since24h),
+    ]);
+
+    const fromRows: Record<string, SentCount> = {};
+    for (const row of (rows.data ?? []) as Array<{ sender_email?: string; sent_at?: string }>) {
+      if (!row.sent_at) continue;
+      bump(row.sender_email?.toLowerCase(), row.sent_at, since1h, fromRows);
+    }
+
+    // The append-only side. A note written before the sending mailbox was
+    // recorded has no sender and is skipped here; the row count above is what
+    // covers it, and the merge below keeps whichever is stricter.
+    const fromLog: Record<string, SentCount> = {};
+    for (const n of (log.data ?? []) as Array<{ created_at?: string; metadata?: { sender_email?: string } }>) {
+      if (!n.created_at) continue;
+      bump(n.metadata?.sender_email?.toLowerCase(), n.created_at, since1h, fromLog);
+    }
+
+    for (const key of new Set([...Object.keys(fromRows), ...Object.keys(fromLog)])) {
+      counts[key] = {
+        daily:  Math.max(fromRows[key]?.daily  ?? 0, fromLog[key]?.daily  ?? 0),
+        hourly: Math.max(fromRows[key]?.hourly ?? 0, fromLog[key]?.hourly ?? 0),
+      };
     }
   } catch {
     // sender_email column missing — skip per-account enforcement

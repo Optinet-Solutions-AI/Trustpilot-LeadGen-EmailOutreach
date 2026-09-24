@@ -6,6 +6,36 @@ import { scrapeEvents, translateEnricherEvent } from '../services/scrape-runner.
 const router = Router();
 const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
 
+/**
+ * Build the job-row counters for a finished enrichment chunk.
+ *
+ * Kept pure and exported so the accounting is testable. The completion block
+ * used to write `total_failed: dbFailed` — *database write* failures, which
+ * are all but always 0 — on top of the live count of leads that produced no
+ * email. Every `completed` chunk therefore reported failed=0, and a finished
+ * run could not say how many leads came back empty; recovering that for one
+ * day's 73 chunks meant reading the driver's own state file.
+ *
+ * The three counters are meant to add up to the items processed:
+ *   total_enriched + total_failed + total_skipped
+ * A `dbFailed` — an email found and then LOST on write — is the one outcome
+ * that must never be silent, so it goes in `error`.
+ */
+export function summariseEnrichmentRun(
+  results: Array<{ foundEmail: string | null; redirectsTo?: string }>,
+  counts: { successful: number; noEmail: number; dbFailed: number },
+): { total_enriched: number; total_failed: number; total_skipped: number; error?: string } {
+  const redirectOnly = results.filter((r) => r.redirectsTo && !r.foundEmail).length;
+  return {
+    total_enriched: counts.successful,
+    total_failed: counts.noEmail,
+    total_skipped: redirectOnly,
+    ...(counts.dbFailed > 0
+      ? { error: `${counts.dbFailed} lead row write(s) failed — email found but not saved` }
+      : {}),
+  };
+}
+
 // Sentinel value used in scrape_jobs to identify enrichment-only jobs
 const ENRICH_SENTINEL = '_enrich_';
 
@@ -20,7 +50,7 @@ router.get('/status', async (req: Request, res: Response) => {
   const supabase = getSupabase();
   const { data: job } = await supabase
     .from('scrape_jobs')
-    .select('id, status, total_found, total_enriched, total_failed, error, last_heartbeat_at')
+    .select('id, status, total_found, total_enriched, total_failed, total_skipped, error, last_heartbeat_at')
     .eq('id', jobId)
     .eq('country', ENRICH_SENTINEL)
     .single();
@@ -38,6 +68,10 @@ router.get('/status', async (req: Request, res: Response) => {
       total: job.total_found ?? 0,
       found: job.total_enriched ?? 0,
       failed: job.total_failed ?? 0,
+      // Redirect-only outcomes: a redirect target was resolved but no email
+      // came from it. Counted separately so found + failed + skipped accounts
+      // for every item processed, instead of the remainder vanishing.
+      skipped: job.total_skipped ?? 0,
       // Surfaced so the frontend stall detector can use the worker's
       // heartbeat (refreshed every ~20s) instead of relying on counter
       // changes — slow websites can hold the enricher for 60-90s without
@@ -280,10 +314,15 @@ router.post('/', async (req: Request, res: Response) => {
         const redirected = results.filter((r) => r.redirectsTo);
         console.log(`[enrich] Job ${jobId} — enrichment complete, ${enriched.length}/${leads.length} emails found, ${redirected.length} redirected`);
 
+        const summary = summariseEnrichmentRun(results, {
+          successful,
+          noEmail: liveFailed,
+          dbFailed,
+        });
+
         const { error: jobUpdateErr } = await supabase.from('scrape_jobs').update({
           status: 'completed',
-          total_enriched: successful,
-          total_failed: dbFailed,
+          ...summary,
           completed_at: new Date().toISOString(),
         }).eq('id', jobId);
 
@@ -298,8 +337,9 @@ router.post('/', async (req: Request, res: Response) => {
           detail: JSON.stringify({
             totalFound: leads.length,
             saved: successful,
-            enriched: successful,
-            failed: dbFailed,
+            enriched: summary.total_enriched,
+            failed: summary.total_failed,
+            skipped: summary.total_skipped,
           }),
           timestamp: new Date().toISOString(),
         });

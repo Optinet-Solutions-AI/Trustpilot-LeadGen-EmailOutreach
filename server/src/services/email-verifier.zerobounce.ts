@@ -86,6 +86,53 @@ function postJson(url: string, body: object): Promise<unknown> {
 
 const BATCH_SIZE = 100; // ZeroBounce batch limit
 
+/**
+ * Turn one ZeroBounce batch response into verdicts, and REFUSE to be silent
+ * about addresses ZB declined to judge.
+ *
+ * ZB reports per-address refusals (rate limiting, quota, malformed input) in
+ * `errors[]` and simply omits them from `email_batch`. Dropping that field —
+ * which this module used to do — makes a refusal indistinguishable from "no
+ * verdict available": the validator's Stage 5 stores NULL, the lead ends up
+ * `unknown`, and nothing anywhere says ZB was never actually consulted.
+ * That is how 74 leads were stamped `unknown` on 2026-09-03 without spending
+ * a single credit. Throwing here surfaces the reason in the validator's
+ * existing catch (`[validator] ZB fallback failed for …`) and lets the caller
+ * retry instead of persisting a false verdict.
+ */
+export function mapBatchResponse(
+  chunk: string[],
+  response: ZBBatchResponse,
+): Array<{ email: string; status: ZBStatus }> {
+  const batch = response.email_batch ?? [];
+  const results = batch.map((item) => ({
+    email: item.address,
+    status: mapStatus(item.status, item.sub_status),
+  }));
+
+  if (results.length === 0) {
+    const reasons = (response.errors ?? [])
+      .map((e) => `${e.email_address}: ${e.error}`)
+      .join('; ');
+    throw new Error(
+      reasons
+        ? `ZeroBounce returned no verdict for ${chunk.length} address(es) — ${reasons}`
+        : `ZeroBounce returned no verdict for ${chunk.length} address(es) and no error detail`,
+    );
+  }
+
+  if (results.length < chunk.length) {
+    const reasons = (response.errors ?? [])
+      .map((e) => `${e.email_address}: ${e.error}`)
+      .join('; ');
+    console.warn(
+      `[ZeroBounce] ${chunk.length - results.length}/${chunk.length} address(es) got no verdict${reasons ? ` — ${reasons}` : ''}`,
+    );
+  }
+
+  return results;
+}
+
 export async function verifyEmails(emails: string[]): Promise<Array<{ email: string; status: ZBStatus }>> {
   const apiKey = process.env.ZEROBOUNCE_API_KEY;
   if (!apiKey) throw new Error('ZEROBOUNCE_API_KEY is not set');
@@ -103,15 +150,8 @@ export async function verifyEmails(emails: string[]): Promise<Array<{ email: str
       email_batch: emailBatch,
     })) as ZBBatchResponse;
 
-    if (!response.email_batch) {
-      console.error('[ZeroBounce] Unexpected response:', JSON.stringify(response));
-      // Mark all in chunk as unknown rather than crash
-      chunk.forEach((email) => results.push({ email, status: 'unknown' }));
-      continue;
-    }
-
-    for (const item of response.email_batch) {
-      results.push({ email: item.address, status: mapStatus(item.status, item.sub_status) });
+    for (const r of mapBatchResponse(chunk, response)) {
+      results.push(r);
     }
   }
 

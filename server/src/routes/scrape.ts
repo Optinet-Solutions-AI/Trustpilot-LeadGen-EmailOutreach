@@ -116,6 +116,28 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
     ],
   },
   {
+    name: 'booking',
+    label: 'Booking.com',
+    base_url: 'https://www.booking.com',
+    // Cookieless Apify HTTP end to end — no browser, no proxy, no account.
+    // Runs on Cloud Run and the Linux worker, so no local-mode nudge.
+    requires_proxy: false,
+    filter_schema: [
+      { name: 'country',          type: 'select',  label: 'Country',          required: true,  options_source: 'taxonomy:countries' },
+      { name: 'city',             type: 'text',    label: 'City / cities (comma-separated)', required: true },
+      // Booking scores out of 10, not 5 — the bounds differ from every other
+      // platform's rating filter on purpose.
+      { name: 'max_review_score', type: 'number',  label: 'Max review score (out of 10)', required: false, default: 8.5, min: 1.0, max: 10.0, step: 0.1 },
+      { name: 'min_review_count', type: 'number',  label: 'Min review count', required: false, default: 5,   min: 0, max: 5000, step: 1 },
+      { name: 'max_properties',   type: 'number',  label: 'Max properties per host (0 = no limit)', required: false, default: 0, min: 0, max: 500, step: 1 },
+      { name: 'exclude_hotels',   type: 'boolean', label: 'Exclude hotels / hostels / resorts', required: false, default: false },
+      // Defaults ON: the actor does not always publish a review score, and a
+      // score filter that silently drops every row would return 0 leads from
+      // a paid run. Same failure Yelp hit in ratingless markets.
+      { name: 'include_unrated',  type: 'boolean', label: 'Include properties with no review score', required: false, default: true },
+    ],
+  },
+  {
     name: 'facebook',
     label: 'Facebook',
     base_url: 'https://www.facebook.com',
@@ -181,6 +203,34 @@ const PLATFORM_MANIFESTS: PlatformManifest[] = [
       // country when blank.
       { name: 'location', type: 'text',   label: 'Location / city (optional)', required: false },
       { name: 'country',  type: 'select', label: 'Country', options_source: 'taxonomy:countries' },
+    ],
+  },
+  {
+    // NOT an outreach source. This platform yields forum CASES to answer
+    // publicly in-thread, never contacts to email: FPA redacts addresses
+    // out of post bodies, so every lead lands with primary_email NULL and
+    // the campaign wizard's hasEmail filter excludes them by design.
+    name: 'forexpeacearmy',
+    label: 'ForexPeaceArmy (complaint feed)',
+    base_url: 'https://www.forexpeacearmy.com',
+    requires_proxy: false,
+    filter_schema: [
+      { name: 'folders', type: 'select', label: 'Folders to monitor', required: false,
+        // The folders NAMED for scams are archives (newest posts 1,002 and
+        // 3,630 days old, measured 2026-08-28); live complaint traffic sits
+        // in the ordinary broker forums. Default must be 'live'.
+        default: 'live',
+        options: [
+          { value: 'live',        label: 'Live complaint traffic (recommended)' },
+          { value: 'archives',    label: 'Scam Alerts + Blacklisted (archive, pre-2024)' },
+          { value: 'resolutions', label: 'Resolved cases (reference only)' },
+        ] },
+      { name: 'max_age_days', type: 'number', label: 'Only posts from the last N days',
+        required: false, default: 14, min: 1, max: 90, step: 1 },
+      { name: 'min_urgency', type: 'number', label: 'Minimum urgency (1-5)',
+        required: false, default: 1, min: 1, max: 5, step: 1 },
+      { name: 'include_unclassified', type: 'boolean',
+        label: 'Keep posts the classifier could not judge', required: false, default: true },
     ],
   },
 ];
@@ -361,6 +411,33 @@ router.post('/', async (req: Request, res: Response) => {
         res.status(400).json({
           success: false,
           error: `No seeded cities for country ${taCountry}. Run tools/scraper/seed_tripadvisor_cities.py --country ${taCountry} first.`,
+        });
+        return;
+      }
+      // Every TripAdvisor page goes through ScrapingBee. With the pool empty
+      // the job would "complete" with 0 found, indistinguishable from a
+      // market with no matches — refuse it here instead.
+      const { getScrapingBeeCredits, scrapingBeeExhaustedMessage } =
+        await import('../services/scrapingbee-credits.js');
+      const credits = await getScrapingBeeCredits();
+      if (credits.status === 'exhausted') {
+        res.status(402).json({
+          success: false,
+          code: 'scrapingbee_out_of_credits',
+          error: scrapingBeeExhaustedMessage(credits),
+        });
+        return;
+      }
+    } else if (platform === 'booking') {
+      // Country + city, and nothing else. There is no seed table to check:
+      // the actor takes a plain "City, Country" string, so any city the
+      // operator can name is scrapable.
+      const bkCountry = (rawFilters.country ?? body.country) as string | undefined;
+      const bkCity = (rawFilters.city ?? body.city) as string | undefined;
+      if (!bkCountry || !bkCity || !String(bkCity).trim()) {
+        res.status(400).json({
+          success: false,
+          error: 'booking requires country and at least one city',
         });
         return;
       }

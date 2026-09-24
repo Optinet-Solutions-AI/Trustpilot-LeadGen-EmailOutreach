@@ -88,3 +88,42 @@ export async function loadSentEmails(loIso: string, hiIso: string): Promise<Sent
     .range(from, to));
   return sentEmailsFromNotes(rows);
 }
+
+/**
+ * The stricter of two count maps, key by key.
+ *
+ * Every per-day and per-mailbox send count in this service is now taken from
+ * BOTH sources: `campaign_leads`, which under-reports as soon as a sequence
+ * moves on, and `lead_notes`, which is append-only but silent for entries
+ * written before the sending mailbox was recorded. Taking the higher of the
+ * two is the safety property — a count can only ever come out stricter than
+ * today's behaviour, never looser, whichever source is incomplete.
+ */
+export function mergeCounts(
+  fromRows: ReadonlyMap<string, number>,
+  fromLog: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const safe = (n: number | undefined) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0);
+  const out = new Map<string, number>();
+  for (const key of new Set([...fromRows.keys(), ...fromLog.keys()])) {
+    out.set(key, Math.max(safe(fromRows.get(key)), safe(fromLog.get(key))));
+  }
+  return out;
+}
+
+/**
+ * Sends per day in a window, from the log, bucketed with the caller's own day
+ * rule so it lines up with whatever it is being merged into.
+ */
+export async function loadSentCountsByDay(
+  loIso: string,
+  hiIso: string,
+  dayKey: (at: Date) => string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const email of await loadSentEmails(loIso, hiIso)) {
+    const key = dayKey(email.at);
+    out.set(key, (out.get(key) ?? 0) + 1);
+  }
+  return out;
+}

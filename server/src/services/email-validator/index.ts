@@ -207,13 +207,20 @@ export async function validateEmail(
   // Only invoked when our stack returned `unknown`. This is the credit-saver.
   let zb: FinalStatus | null = null;
   if (!opts.skipZeroBounce && process.env.ZEROBOUNCE_API_KEY) {
-    try {
-      emit('zb_fallback', norm);
-      const [zbResult] = await verifyEmailsZB([norm]);
-      zb = zbResult?.status ?? null;
-    } catch (err) {
-      const m = err instanceof Error ? err.message : String(err);
-      console.warn(`[validator] ZB fallback failed for ${norm}: ${m}`);
+    // Two attempts. ZB declines addresses when requests arrive in a burst and
+    // reports the refusal in `errors[]` (see mapBatchResponse), which now
+    // throws instead of returning nothing. Without a retry a momentary
+    // refusal still lands in the DB as a real-looking `unknown` verdict.
+    for (let attempt = 1; attempt <= 2 && zb === null; attempt++) {
+      try {
+        emit('zb_fallback', norm);
+        const [zbResult] = await verifyEmailsZB([norm]);
+        zb = zbResult?.status ?? null;
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        console.warn(`[validator] ZB fallback attempt ${attempt}/2 failed for ${norm}: ${m}`);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 2_000));
+      }
     }
   }
 

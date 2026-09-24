@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { loadSentCounts } from '../services/send-counts.js';
 import { getSupabase } from '../lib/supabase.js';
 import { config } from '../config.js';
 import { rateLimiter, getAccountDailyCap } from '../services/rate-limiter.js';
@@ -51,28 +52,13 @@ router.get('/', async (req: Request, res: Response) => {
       config.emailMode === 'gmail' ? 'Gmail (OAuth2)' :
       config.emailMode === 'brevo' ? 'Brevo' : 'Mock';
 
-    // ── Per-account dailySent: count sends per sender_email for the last 24h ─────
+    // ── Per-account dailySent, for the last rolling 24h ────────────────────
     const nowIso = new Date().toISOString();
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const since1h  = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const sentCounts: Record<string, { daily: number; hourly: number }> = {};
-    try {
-      const { data: sentRows } = await supabase
-        .from('campaign_leads')
-        .select('sender_email, sent_at')
-        .eq('status', 'sent')
-        .gte('sent_at', since24h);
-      for (const row of sentRows ?? []) {
-        const key = (row as { sender_email?: string }).sender_email?.toLowerCase();
-        const sentAt = (row as { sent_at?: string }).sent_at;
-        if (!key || !sentAt) continue;
-        if (!sentCounts[key]) sentCounts[key] = { daily: 0, hourly: 0 };
-        sentCounts[key].daily += 1;
-        if (sentAt >= since1h) sentCounts[key].hourly += 1;
-      }
-    } catch {
-      // sender_email column missing or query failed — leave counts empty
-    }
+    // The SAME counter the cap enforces with, so the page can never show a
+    // mailbox as having room the scheduler will refuse — or vice versa.
+    const sentCounts = await loadSentCounts();
 
     const envAccount = envEmail ? {
       id: '__env__',

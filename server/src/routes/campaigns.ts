@@ -7,7 +7,7 @@ import { resolveScheduleStart, BUDGET_TIMEZONE, type SendingSchedule } from '../
 import { planCampaignQueueTimes, loadFollowUpForecast } from '../services/day-load.js';
 import { selectAllRows } from '../lib/paginate.js';
 import { summarizeQueueDays, type QueueEntry } from '../services/queue-calendar.js';
-import { loadSentEmails } from '../services/sent-log.js';
+import { loadSentEmails, loadSentCountsByDay, mergeCounts } from '../services/sent-log.js';
 import { localDayKey } from '../services/schedule-engine.js';
 import { followUpSubject, pickStepTemplate } from '../services/message-preview.js';
 import { repaceQueue } from '../services/queue-repacer.js';
@@ -969,13 +969,20 @@ router.post('/queue/repace', async (req: Request, res: Response) => {
       .gte('sent_at', sinceIso)
       .order('id', { ascending: true })
       .range(from, to));
-    const alreadySent: Record<string, number> = {};
+    const spentFromRows = new Map<string, number>();
     for (const r of (sentRows ?? []) as Array<Record<string, unknown>>) {
       const m = meta.get(r.campaign_id as string);
       if (!m || !r.sent_at) continue;
       const key = localDayKey(new Date(r.sent_at as string), BUDGET_TIMEZONE);
-      alreadySent[key] = (alreadySent[key] ?? 0) + 1;
+      spentFromRows.set(key, (spentFromRows.get(key) ?? 0) + 1);
     }
+    // `sent_at` is rewritten by each later step, so it under-reports the day
+    // the earlier email went out. Take the stricter of it and the log.
+    const alreadySent: Record<string, number> = Object.fromEntries(mergeCounts(
+      spentFromRows,
+      await loadSentCountsByDay(sinceIso, new Date().toISOString(),
+        (at) => localDayKey(at, BUDGET_TIMEZONE)),
+    ));
 
     const plan = repaceQueue(
       rows.map((r) => ({

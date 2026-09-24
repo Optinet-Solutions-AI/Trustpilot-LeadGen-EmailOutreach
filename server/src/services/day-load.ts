@@ -8,6 +8,7 @@
 
 import { getSupabase } from '../lib/supabase.js';
 import { selectAllRows } from '../lib/paginate.js';
+import { loadSentCountsByDay, mergeCounts } from './sent-log.js';
 import { config } from '../config.js';
 import { getAccountDailyCap } from './rate-limiter.js';
 import { localDayKey, BUDGET_TIMEZONE, type SendingSchedule } from './schedule-engine.js';
@@ -74,10 +75,16 @@ export async function loadDayLoad(options: DayLoadOptions = {}): Promise<DayLoad
     load.set(key, (load.get(key) ?? 0) + 1);
   };
 
+  // Spent budget is counted separately, below, because a row's `sent_at`
+  // is rewritten by every later step and so under-reports the day the
+  // earlier email actually went out.
+  const spentFromRows = new Map<string, number>();
   for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
     const zone = tz.get(r.campaign_id as string) ?? 'UTC';
-    if (r.status === 'sent' && r.sent_at) bump(r.sent_at as string, zone);
-    else if (
+    if (r.status === 'sent' && r.sent_at) {
+      const key = localDayKey(new Date(r.sent_at as string), BUDGET_TIMEZONE);
+      spentFromRows.set(key, (spentFromRows.get(key) ?? 0) + 1);
+    } else if (
       r.status === 'pending' && r.scheduled_at
       && r.campaign_id !== options.excludePendingForCampaign
     ) bump(r.scheduled_at as string, zone);
@@ -85,6 +92,13 @@ export async function loadDayLoad(options: DayLoadOptions = {}): Promise<DayLoad
       bump(r.next_step_at as string, zone);
     }
   }
+
+  // The stricter of the row count and the append-only log — see mergeCounts.
+  const spent = mergeCounts(
+    spentFromRows,
+    await loadSentCountsByDay(lo, hi, (at) => localDayKey(at, BUDGET_TIMEZONE)),
+  );
+  for (const [key, n] of spent) load.set(key, (load.get(key) ?? 0) + n);
 
   return load;
 }
@@ -263,14 +277,17 @@ export async function loadFollowUpForecast(now: Date = new Date()): Promise<{
   };
 
   const forecastRows: ForecastRow[] = [];
+  const spentFromRows = new Map<string, number>();
   let stalled = 0;
 
   for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
     const campaignId = r.campaign_id as string;
     const zone = tz.get(campaignId) ?? 'UTC';
 
-    if (r.status === 'sent' && r.sent_at) bump(r.sent_at as string, zone);
-    else if (r.status === 'pending' && r.scheduled_at) bump(r.scheduled_at as string, zone);
+    if (r.status === 'sent' && r.sent_at) {
+      const key = localDayKey(new Date(r.sent_at as string), BUDGET_TIMEZONE);
+      spentFromRows.set(key, (spentFromRows.get(key) ?? 0) + 1);
+    } else if (r.status === 'pending' && r.scheduled_at) bump(r.scheduled_at as string, zone);
     if (r.next_step_at && r.sequence_completed === false && r.sequence_paused === false) {
       bump(r.next_step_at as string, zone);
     }
@@ -294,6 +311,13 @@ export async function loadFollowUpForecast(now: Date = new Date()): Promise<{
       stalled += steps.filter((s) => s.stepNumber > Math.max(currentStep, 1)).length;
     }
   }
+
+  // Same rule as loadDayLoad: the stricter of the row count and the log.
+  const spent = mergeCounts(
+    spentFromRows,
+    await loadSentCountsByDay(lo, hi, (at) => localDayKey(at, BUDGET_TIMEZONE)),
+  );
+  for (const [key, n] of spent) load.set(key, (load.get(key) ?? 0) + n);
 
   const capacityPerDay = await loadCapacityPerDay();
   const projections = projectFollowUps({

@@ -21,6 +21,7 @@ import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
 
 import { listActiveCitiesForCountry, type TripAdvisorCity } from '../db/tripadvisor-cities.js';
+import { getScrapingBeeCredits, scrapingBeeExhaustedMessage } from './scrapingbee-credits.js';
 import {
   shouldRefuseSocialOnLinux,
   socialProfileEnv,
@@ -806,6 +807,25 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         return;
       }
 
+      // Refuse to run on an empty ScrapingBee pool. The submit route checks
+      // too, but a job can be queued straight into the DB or wait while the
+      // pool drains. Failed outright rather than via markJobFailed: a retry
+      // cannot succeed until someone tops the account up.
+      const failOnExhaustedCredits = async (): Promise<boolean> => {
+        const credits = await getScrapingBeeCredits({ fresh: true });
+        if (credits.status !== 'exhausted') return false;
+        const msg = scrapingBeeExhaustedMessage(credits);
+        await updateJob(jobId, {
+          status: 'failed',
+          error: msg,
+          last_error: msg,
+          completed_at: new Date().toISOString(),
+        });
+        emitProgress(jobId, 'failed', msg.slice(0, 200));
+        return true;
+      };
+      if (await failOnExhaustedCredits()) return;
+
       emitProgress(jobId, 'city_total', String(cities.length));
 
       const dedup = new Map<string, Record<string, unknown>>();
@@ -895,6 +915,11 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         }
       });
       await Promise.all(workers);
+
+      // The pool can drain mid-run — every remaining city then returns empty
+      // HTML. Zero rows is the only case where that turns a real result into
+      // a misleading "0 found", so re-check only then.
+      if (dedup.size === 0 && !cancelled && await failOnExhaustedCredits()) return;
 
       rawData = Array.from(dedup.values());
       fs.writeFileSync(rawOutput, JSON.stringify(rawData, null, 2), 'utf-8');
