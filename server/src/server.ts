@@ -256,6 +256,16 @@ const server = app.listen(config.port, async () => {
     } catch (e) {
       console.error('[Startup] Campaign scheduler error:', e instanceof Error ? e.message : e);
     }
+
+    // Seed inbox-placement tests — sends each run's planned seed emails from
+    // here so the plan keeps going with nobody's machine on. One email per
+    // minute at most, leader-locked, only for runs flagged auto_send.
+    try {
+      const { startSeedTestSender } = await import('./services/seed-test/sender.js');
+      startSeedTestSender();
+    } catch (e) {
+      console.error('[Startup] Seed test sender error:', e instanceof Error ? e.message : e);
+    }
   }
 
   // Duplicate-send monitor — watchdog that pages an operator when a
