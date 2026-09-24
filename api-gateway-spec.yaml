@@ -1304,6 +1304,34 @@ paths:
       responses:
         "200":
           description: OK
+  /api/seed-tests/{runId}:
+    get:
+      operationId: getSeedTest
+      security: []
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/seed-tests/{runId}/{ref}:
+    patch:
+      operationId: setSeedPlacement
+      security: []
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          type: string
+        - in: path
+          name: ref
+          required: true
+          type: string
+      responses:
+        "200":
+          description: OK
   /api/settings/dns-check:
     get:
       operationId: checkDomainDNS
