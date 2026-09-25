@@ -899,13 +899,34 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       let citiesDone = 0;
       const spentSoFar = () => summariseScrapeCost(jobCostLines.get(jobId) ?? []).totalUsd;
 
+      // Cities in flight have not billed yet, and with concurrency raised to 5
+      // they all read the same low total and none of them stops: measured
+      // 2026-09-25, a $2.00 cap produced $3.13 once concurrency went from 2 to
+      // 5. So RESERVE the likely cost of each running city while it runs. The
+      // estimate is the per-city item ceiling at the actor's rate, deliberately
+      // pessimistic — stopping one city early is cheaper than overshooting.
+      const estPerCity = Number(process.env.TRIPADVISOR_APIFY_MAX_ITEMS ?? '150') * 0.0029;
+      let citiesInFlight = 0;
+      const committed = () => spentSoFar() + citiesInFlight * estPerCity;
+
       const runOneCity = async (city: TripAdvisorCity): Promise<void> => {
         if (cancelled) return;
+        // Reserved for the whole of this city's run; released in the finally
+        // below whether it succeeds, fails or is killed by the watchdog.
+        citiesInFlight += 1;
+        try {
+          return await runOneCityInner(city);
+        } finally {
+          citiesInFlight -= 1;
+        }
+      };
+
+      const runOneCityInner = async (city: TripAdvisorCity): Promise<void> => {
 
         // Checked BEFORE starting a city, because a city cannot be stopped
         // once its process is running. Whatever earlier cities produced is
         // kept — the same contract the Apify guards use.
-        if (jobSpendCap > 0 && spentSoFar() >= jobSpendCap) {
+        if (jobSpendCap > 0 && committed() >= jobSpendCap) {
           cancelled = true;
           const spent = spentSoFar();
           console.warn(
