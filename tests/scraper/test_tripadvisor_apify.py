@@ -1,3 +1,4 @@
+import time
 """The TripAdvisor Apify adapter's pure parts.
 
 Measured live on Cologne, 2026-09-25 — the whole city, 104 hotels, $0.30:
@@ -155,3 +156,43 @@ class TestPhoneCleaning:
 
     def test_drops_something_too_short_to_be_a_number(self):
         assert _map(phone='12345')['phone'] is None
+
+
+class TestActorHeartbeat:
+    """One actor call is a single blocking request that prints nothing.
+
+    The runner kills any Python process silent for 300s with "Watchdog: Python
+    process hung ... likely OOM or Playwright freeze". A big city takes longer
+    than that — measured 2026-09-25, Cologne 254s — and a live German run lost
+    Hamburg and Munich outright while the job itself carried on and reported
+    nothing wrong. Any stdout resets the watchdog, so the call just has to say
+    it is still working.
+    """
+
+    def test_emits_while_waiting(self, capsys, monkeypatch):
+        import threading
+        from tools.scraper.platforms import tripadvisor_apify as ta
+
+        monkeypatch.setattr(ta, '_HEARTBEAT_S', 0.05)
+        stop = threading.Event()
+        t = threading.Thread(target=ta._heartbeat, args=('Hamburg', stop), daemon=True)
+        t.start()
+        time.sleep(0.22)
+        stop.set()
+        t.join(timeout=2)
+
+        out = capsys.readouterr().out
+        assert 'PROGRESS:' in out, 'the watchdog only resets on stdout'
+        assert 'Hamburg' in out, 'the operator should see which city is waiting'
+
+    def test_stops_as_soon_as_the_call_returns(self, capsys, monkeypatch):
+        import threading
+        from tools.scraper.platforms import tripadvisor_apify as ta
+
+        monkeypatch.setattr(ta, '_HEARTBEAT_S', 0.05)
+        stop = threading.Event()
+        t = threading.Thread(target=ta._heartbeat, args=('Cologne', stop), daemon=True)
+        t.start()
+        stop.set()
+        t.join(timeout=2)
+        assert not t.is_alive(), 'a heartbeat thread that outlives its call leaks'

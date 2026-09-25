@@ -48,6 +48,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Iterable, Optional
@@ -197,6 +199,22 @@ def keep_business(
     return True
 
 
+# The runner kills any Python process that prints nothing for 300s ("Watchdog:
+# Python process hung ... likely OOM or Playwright freeze"). One actor call is
+# a single blocking request that prints nothing at all while it waits, and a
+# big city takes longer than that: measured 2026-09-25, Cologne 254s, and a
+# live German run lost Hamburg and Munich outright. So say something while
+# waiting — the call is not hung, it is working.
+_HEARTBEAT_S = 45
+
+
+def _heartbeat(city: str, stop: threading.Event) -> None:
+    waited = 0
+    while not stop.wait(_HEARTBEAT_S):
+        waited += _HEARTBEAT_S
+        print(f"PROGRESS:listing_wait:{city}|{waited}s waiting for the actor", flush=True)
+
+
 def run_actor(actor_input: dict, *, timeout_s: int = 600) -> list[dict]:
     token = os.environ.get('APIFY_API_TOKEN', '').strip()
     if not token:
@@ -208,6 +226,10 @@ def run_actor(actor_input: dict, *, timeout_s: int = 600) -> list[dict]:
         headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
         data=json.dumps(actor_input).encode('utf-8'),
     )
+    stop = threading.Event()
+    beat = threading.Thread(
+        target=_heartbeat, args=(str(actor_input.get('query') or '?'), stop), daemon=True)
+    beat.start()
     try:
         with urllib.request.urlopen(req, timeout=timeout_s + 60) as resp:
             body = resp.read().decode('utf-8')
@@ -220,6 +242,8 @@ def run_actor(actor_input: dict, *, timeout_s: int = 600) -> list[dict]:
         raise TripAdvisorApifyError(f'{e.code}: {detail}') from e
     except Exception as e:
         raise TripAdvisorApifyError(f'{type(e).__name__}: {str(e)[:200]}') from e
+    finally:
+        stop.set()
 
     try:
         items = json.loads(body)
