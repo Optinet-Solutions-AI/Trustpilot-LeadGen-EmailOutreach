@@ -829,7 +829,9 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
           total_found: 0,
           total_scraped: 0,
           completed_at: new Date().toISOString(),
+          ...costPatch(jobId, 0),
         });
+        jobCostLines.delete(jobId);
         emitProgress(jobId, 'completed', `No seeded cities for ${taCountry}`);
         return;
       }
@@ -1096,7 +1098,13 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       total_scraped: totalSaved,
       total_enriched: totalEnriched,
       completed_at: new Date().toISOString(),
+      // This is the completion EVERY plugin scrape reaches — the other two
+      // patched earlier belong to the legacy Trustpilot path and the
+      // no-cities early return, so a real TripAdvisor run collected its COST
+      // lines and then dropped them on the floor.
+      ...costPatch(jobId, totalSaved),
     });
+    jobCostLines.delete(jobId);
     emitProgress(jobId, 'completed', `${totalSaved} leads saved`);
     // verify pass is intentionally skipped for non-Trustpilot in v1 — the
     // Trustpilot pipeline below filters by country+category which doesn't
