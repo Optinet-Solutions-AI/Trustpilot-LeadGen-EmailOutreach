@@ -891,6 +891,12 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       // that can see the job total, because it is the only thing that sees
       // every city.
       const jobSpendCap = Number(process.env.SCRAPE_MAX_SPEND_PER_JOB ?? '2.00');
+      // A city that adds this few NEW leads is not worth the next one.
+      const yieldFloor = Number(process.env.SCRAPE_CITY_YIELD_FLOOR ?? '1');
+      // ...but give the fan-out a fair run first; the first city or two can be
+      // unrepresentative.
+      const minCitiesBeforeStop = Number(process.env.SCRAPE_MIN_CITIES ?? '3');
+      let citiesDone = 0;
       const spentSoFar = () => summariseScrapeCost(jobCostLines.get(jobId) ?? []).totalUsd;
 
       const runOneCity = async (city: TripAdvisorCity): Promise<void> => {
@@ -965,6 +971,7 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
         try {
           const cityRows: Array<Record<string, unknown>> =
             JSON.parse(fs.readFileSync(cityOutput, 'utf-8'));
+          const beforeThisCity = dedup.size;
           for (const row of cityRows) {
             const key = String(row.profile_url ?? '');
             if (key && !dedup.has(key)) {
@@ -976,7 +983,26 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
               dedup.set(key, { ...row, country: taCountry, category: taCategory, city: city.name, city_geo_id: city.geo_id });
             }
           }
-          emitProgress(jobId, 'city_done', `${city.geo_id}|${city.name}|${cityRows.length}`);
+          // Stop fanning out once a city stops contributing. Hotel chains
+          // appear in every city and are billed in every city, but survive
+          // de-duplication only once: measured 2026-09-25, a ten-city German
+          // run fetched 749 items, matched 78 on rating and kept 25 — the
+          // other 53 were the same chains bought over and over. Paying per
+          // city while the unique yield collapses is where the money goes.
+          const newFromThisCity = dedup.size - beforeThisCity;
+          citiesDone += 1;
+          if (newFromThisCity <= yieldFloor && citiesDone >= minCitiesBeforeStop) {
+            cancelled = true;
+            console.warn(
+              `[${platform}] Job ${jobId} stopping after ${city.name}: only `
+              + `${newFromThisCity} new lead(s) after ${citiesDone} cities.`,
+            );
+            emitProgress(jobId, 'diminishing_returns',
+              `Stopped after ${city.name} — ${newFromThisCity} new leads from that city. `
+              + `${dedup.size} kept. Later cities were returning the same chains.`);
+          }
+          emitProgress(jobId, 'city_done',
+            `${city.geo_id}|${city.name}|${cityRows.length}|+${newFromThisCity} new`);
         } catch (err) {
           console.warn(`[tripadvisor] failed reading ${cityOutput}:`, err);
         } finally {
