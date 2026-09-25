@@ -51,17 +51,43 @@ const ENRICH_SENTINEL = '_enrich_';
  * Returns 0 when the paid tier is off, which is the honest answer rather than
  * a guess at credits nobody is paying for: every tier before 10 is free or
  * running on a dead account.
+ *
+ * WITH NO `leads` PARAM it prices "Enrich all", whose size only the server
+ * knows — the caller has no list to count. It is counted with the SAME filter
+ * the run itself uses, as a HEAD count: that reads no rows, so it escapes the
+ * 1,000-row page cap that would otherwise quote a fraction of the real queue
+ * (the trap that made `/api/leads/filters` report 49 categories out of 58).
  */
-router.get('/estimate', (req: Request, res: Response) => {
-  const leads = Number(req.query.leads ?? 0);
-  if (!Number.isFinite(leads) || leads < 0) {
-    return res.status(400).json({ success: false, error: 'leads must be a non-negative number' });
+router.get('/estimate', async (req: Request, res: Response) => {
+  const raw = req.query.leads;
+  const forWholeQueue = raw === undefined || raw === '';
+  let leads: number;
+
+  if (forWholeQueue) {
+    const { count, error } = await getSupabase()
+      .from('leads')
+      .select('id', { count: 'exact', head: true })
+      .not('website_url', 'is', null)
+      .is('website_email', null);
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+    leads = count ?? 0;
+  } else {
+    leads = Number(raw);
+    if (!Number.isFinite(leads) || leads < 0) {
+      return res.status(400).json({ success: false, error: 'leads must be a non-negative number' });
+    }
   }
+
   const estimate = estimateEnrichCost(leads, {
     openAiEnabled: openaiEnrichEnabled(),
     maxCalls: maxCallsPerRun(),
   });
-  return res.json({ success: true, data: estimate });
+  return res.json({
+    success: true,
+    data: { ...estimate, scope: forWholeQueue ? 'queue' : 'selection' },
+  });
 });
 
 // ── GET /api/enrich/status?jobId=xxx ─────────────────────────────────────────

@@ -10,6 +10,7 @@ import type { LeadStatus } from '../types/lead';
 import api from '../api/client';
 import JobProgress from '../components/JobProgress';
 import MobileBottomSheet from '../components/MobileBottomSheet';
+import CostConfirmModal from '../components/CostConfirmModal';
 import { useEnrichJob } from '../hooks/useEnrichJob';
 import { useVerifyJob } from '../hooks/useVerifyJob';
 import { useCheckLinksJob } from '../hooks/useCheckLinksJob';
@@ -466,6 +467,9 @@ export default function Leads() {
   });
   const [enrichResult, setEnrichResult] = useState<{ found: number; total: number; failed: number } | null>(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  // Which paid run is waiting on a price and a yes. Null = no gate open.
+  const [costGate, setCostGate] =
+    useState<'enrich-selection' | 'enrich-all' | 'verify' | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -479,7 +483,7 @@ export default function Leads() {
     setTimeout(() => setNotification(null), 5000);
   };
 
-  const handleBulkVerify = async () => {
+  const runBulkVerify = async () => {
     if (selectedIds.length === 0) return;
     try {
       const res = await api.post('/verify', { leadIds: selectedIds, emailField: verifyEmailField });
@@ -520,8 +524,39 @@ export default function Leads() {
     }
   };
 
-  const handleBulkEnrich = () => startEnrich(selectedIds);
-  const handleEnrichAll  = () => startEnrich();
+  // Enrichment and verification both spend real money, so neither starts on a
+  // single click any more: the button opens a gate that prices the run first.
+  // Scraping can't do this — it discovers businesses nobody has counted — but
+  // these two work on a known list, so there is no excuse for the operator to
+  // learn the cost only after committing to it.
+  const handleBulkEnrich = () => setCostGate('enrich-selection');
+  const handleEnrichAll  = () => setCostGate('enrich-all');
+  const handleBulkVerify = () => selectedIds.length > 0 && setCostGate('verify');
+
+  const costGateConfig = !costGate ? null : costGate === 'verify'
+    ? {
+        title: `Verify ${selectedIds.length} address${selectedIds.length === 1 ? '' : 'es'}?`,
+        estimatePath: `/verify/estimate?emails=${selectedIds.length}`,
+        confirmLabel: 'Verify',
+        // The server drops addresses it has already confirmed valid, so the
+        // billed count is this or fewer — never more.
+        note: 'Addresses already verified as valid are skipped, so the real spend may be lower.',
+        run: runBulkVerify,
+      }
+    : costGate === 'enrich-selection'
+      ? {
+          title: `Find emails for ${selectedIds.length} lead${selectedIds.length === 1 ? '' : 's'}?`,
+          estimatePath: `/enrich/estimate?leads=${selectedIds.length}`,
+          confirmLabel: 'Find emails',
+          run: () => startEnrich(selectedIds),
+        }
+      : {
+          title: 'Find emails for every lead without one?',
+          // No `leads` param — only the server knows how big this queue is.
+          estimatePath: '/enrich/estimate',
+          confirmLabel: 'Find emails',
+          run: () => startEnrich(),
+        };
 
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
@@ -1533,6 +1568,18 @@ export default function Leads() {
         )}
       </div>
 
+
+      {costGateConfig && (
+        <CostConfirmModal
+          open
+          title={costGateConfig.title}
+          estimatePath={costGateConfig.estimatePath}
+          confirmLabel={costGateConfig.confirmLabel}
+          note={'note' in costGateConfig ? costGateConfig.note : undefined}
+          onCancel={() => setCostGate(null)}
+          onConfirm={() => { setCostGate(null); costGateConfig.run(); }}
+        />
+      )}
 
       {confirmDeleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
