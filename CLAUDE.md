@@ -784,6 +784,28 @@ See `docs/deployment.md` for complete reference.
   each miss walks the whole paid tier ladder (ScrapingBee → ScrapFly → Hunter,
   ~50s/lead). Enrich the SMB categories and skip the gambling tail.
 - Realistic throughput: **~43s/lead, ~50% yield** on SMB leads.
+- **Tier 10 (`tier10-openai.ts`) is the only tier that SEARCHES rather than
+  fetching**, so it is the only one that can help when a site is unreachable,
+  gone, or never published an address in scrapeable form. Measured 2026-09-25
+  on leads with NO email after the full ladder: **6 of 10 (Trustpilot 2/4,
+  Yelp 2/4, TripAdvisor 2/2), $0.079 per email found, $0.047 per attempt.**
+- **The ladder it sits behind is mostly dead**, which is why it matters:
+  ScrapingBee is a FREE tier 100x over its allowance (101,595 of 1,000),
+  `SCRAPFLY_API_KEY` is unset, and Hunter's free tier is 50 calls/month. For
+  most leads tier 10 is the only tier left.
+- **OFF by default** (`ENRICH_OPENAI_ENABLED=true` to arm, plus
+  `OPENAI_API_KEY`). 8,314 leads carry no email; at $0.047 an attempt that is
+  ~$390, which is a decision rather than something that should fire because a
+  key happens to be present. `ENRICH_OPENAI_MAX_PER_RUN` caps calls per run.
+- **It can be wrong in a way the fetching tiers cannot** — it can return a
+  plausible address for a DIFFERENT business, or a personal mailbox
+  (`t0ny_1961@live.com` came back for a locksmith). It is given the company
+  NAME for that reason, refuses to search on a bare domain
+  (`no_identity`), passes everything through `normaliseDiscoveredEmails`, and
+  nothing it finds is sendable until ZeroBounce has verified it.
+- **Scope it to SMB.** ~60% of email-less leads with a website are
+  gambling/casino/forex; they yield ~0 and cost full price. The measured 60%
+  yield is on an SMB sample with that tail excluded.
 
 ### Email verdicts — who is actually sendable
 - **`valid`** → send. **`catch-all`** → send cautiously (the domain accepts any

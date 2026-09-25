@@ -32,6 +32,7 @@ import { tier6WhoisLookup } from './tier6-whois.js';
 import { tier7WaybackLookup } from './tier7-wayback.js';
 import { tier8CrtshLookup } from './tier8-crtsh.js';
 import { tier9HunterLookup, hunterEnabled } from './tier9-hunter.js';
+import { tier10OpenAiLookup, openaiEnrichEnabled } from './tier10-openai.js';
 
 // Use explicit DNS servers. System DNS on Cloud Run can be flaky and may refuse
 // MX queries when the instance is cold. Google + Cloudflare are always reachable.
@@ -931,7 +932,7 @@ const PER_LEAD_BUDGET_MS = 240_000;
 type CachedTierKey =
   | 'tier1_5_tls' | 'tier2' | 'tier3' | 'tier4'
   | 'scrapingbee_premium' | 'scrapingbee_stealth' | 'scrapfly'
-  | 'whois' | 'wayback' | 'crtsh' | 'hunter'
+  | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'openai'
   | 'cloudflare_blocked' | 'redirected_off_domain' | 'no_email';
 
 interface DomainTierMemo {
@@ -1334,10 +1335,17 @@ async function enrichSingleLeadWithTiers(
      * doubling/tripling it for chained follow-ups.
      */
     inheritedDeadline?: number;
+    /**
+     * Business name, used ONLY by tier 10. Searching on a bare domain invites
+     * an address for whoever else uses that word, so the name is what makes
+     * that tier safe — and it has to be passed in, because this function is
+     * handed a URL rather than a lead row. (`country` above is reused.)
+     */
+    companyName?: string | null;
   } = {},
 ): Promise<{
   email: string | null;
-  tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'redirected' | 'none';
+  tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'openai' | 'redirected' | 'none';
   blockReason?: string;
   redirectsTo?: string;
   // Set when the in-tier scrapeSite() reports the email came from a lateral
@@ -1635,6 +1643,37 @@ async function enrichSingleLeadWithTiers(
     }
   }
 
+  // Tier 10 — the only tier that SEARCHES rather than fetching, so it is the
+  // only one that can help when the site is unreachable, gone, or never
+  // published an address in scrapeable form. Measured 2026-09-25 on leads
+  // with nothing after the full ladder: 6 of 10, at $0.079 per email found.
+  //
+  // Off unless ENRICH_OPENAI_ENABLED=true. It costs real money per lead and
+  // the ladder above is free, so it must never fire by accident.
+  if (openaiEnrichEnabled()) {
+    try {
+      const got = await tier10OpenAiLookup({
+        companyName: opts.companyName ?? null,
+        websiteUrl,
+        country: opts.country ?? null,
+      });
+      if (got.usd > 0) {
+        // Same COST: line the scrapers print, so enrichment spend lands on
+        // the job beside scraping spend instead of being invisible.
+        console.log(`COST:enrich|openai|${got.usd.toFixed(6)}|1|lookups`);
+      }
+      if (got.email) {
+        setDomainMemo(websiteUrl, { workingTier: 'openai', lastBlockReason: undefined });
+        return { email: got.email, tier: 'openai' };
+      }
+      if (got.error) {
+        console.warn(`    [enricher] tier10: ${got.error.slice(0, 120)}`);
+      }
+    } catch (err) {
+      console.warn(`    [enricher] tier10 error: ${(err as Error).message.slice(0, 100)}`);
+    }
+  }
+
   // No MX-guess fallback — if real scraping found nothing, return null.
   // Guessed emails (info@<domain>) polluted the DB with addresses that look
   // legitimate but were never actually verified to exist on the page.
@@ -1659,7 +1698,7 @@ export interface EnrichmentResult {
   // leads.affiliate_email). 'scrape' = main-domain scrape or any other tier
   // (writes to leads.website_email). 'none' = no email found.
   source: 'scrape' | 'lateral' | 'none';
-  tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'redirected' | 'none';
+  tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'openai' | 'redirected' | 'none';
   blockReason?: string;
   redirectsTo?: string;
 }
@@ -1753,7 +1792,13 @@ export async function enrichLeads(
       try {
         const country = (lead.country as string | null | undefined) ?? null;
         const { email, tier, blockReason, redirectsTo, scrapeSource } = await withHardTimeout(
-          enrichSingleLeadWithTiers(websiteUrl, { country }),
+          enrichSingleLeadWithTiers(websiteUrl, {
+            country,
+            // Only tier 10 reads this, and it is what makes that tier safe:
+            // searching a bare domain returns an address for whoever else
+            // uses the word.
+            companyName: (lead.company_name as string | null | undefined) ?? null,
+          }),
         );
         const resolvedSource: 'scrape' | 'lateral' | 'none' =
           email == null ? 'none' :
