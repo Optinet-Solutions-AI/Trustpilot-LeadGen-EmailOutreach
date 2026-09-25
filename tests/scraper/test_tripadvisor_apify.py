@@ -196,3 +196,34 @@ class TestActorHeartbeat:
         stop.set()
         t.join(timeout=2)
         assert not t.is_alive(), 'a heartbeat thread that outlives its call leaks'
+
+
+class TestEnrichmentBranchesOnTheRightThing:
+    """Enrichment must name the source that NEEDS ScrapingBee, not the exempt ones.
+
+    Written as `== 'openai'`, the branch exempted exactly one source. Switching
+    to `apify` sent every stub back down the ScrapingBee fetch, which on an
+    empty pool returns no HTML and bails out BEFORE the screenshot. A live run
+    on 2026-09-25 produced 25 leads with rating, website and email — and not a
+    single picture.
+
+    This is the same denylist mistake the credit gates made four times, so it
+    is asserted on the source rather than left to review.
+    """
+
+    def test_the_source_check_is_an_allowlist(self):
+        import inspect
+        from tools.scraper.platforms import tripadvisor as ta
+
+        raw = inspect.getsource(ta.TripAdvisorScraper.enrich_profiles)
+        # Comments explaining the old mistake naturally quote it, so strip
+        # them — this guard is about what the code does, not what it says.
+        src = chr(10).join(l.split('#', 1)[0] for l in raw.splitlines())
+        assert "!= 'scrapingbee'" in src, (
+            'enrichment should skip the profile fetch for every source that is '
+            'not scrapingbee, not for a named list of exempt ones'
+        )
+        assert "== 'openai'" not in src, (
+            "naming an exempt source here is what broke the apify path — the "
+            "next cookieless source would break it again"
+        )

@@ -665,9 +665,16 @@ class TripAdvisorScraper(BasePlatformScraper):
         # pass 2 already carried phone/website/email, and screenshots go
         # through Apify. Requiring the key here would refuse a run that needs
         # nothing from it — the same mistake as the two credit gates above.
-        openai_stubs = any((st.get('listing_source') or '') == 'openai'
-                           for st in profile_stubs)
-        if not openai_stubs and not scrapingbee_enabled():
+        # Allowlist again: name the ONE source that needs ScrapingBee, never
+        # the ones that do not. Written as `== 'openai'` this exempted a single
+        # source, so switching to `apify` sent every stub back down the
+        # ScrapingBee path — which, with the pool empty, returned no HTML and
+        # bailed out before taking a screenshot. A live run produced 25 leads
+        # with rating, website and email, and not one picture.
+        cookieless_stubs = any(
+            (st.get('listing_source') or 'scrapingbee') != 'scrapingbee'
+            for st in profile_stubs)
+        if not cookieless_stubs and not scrapingbee_enabled():
             print("FAILED:enrich|tripadvisor|missing_key|SCRAPINGBEE_API_KEY is not set; TripAdvisor cannot be enriched.")
             return [{**s} for s in profile_stubs]
 
@@ -732,7 +739,11 @@ class TripAdvisorScraper(BasePlatformScraper):
                 # re-fetching it would spend 75 ScrapingBee credits to learn
                 # what the stub already knows. Same arrangement as the Yelp
                 # Apify path, where one actor call covers listing AND profile.
-                if (stub.get('listing_source') or '') == 'openai':
+                # Any cookieless source already carries phone, website and
+                # email from its listing call, so re-fetching the page buys
+                # nothing and — on an empty ScrapingBee pool — costs the
+                # screenshot, because the empty-HTML branch returns early.
+                if (stub.get('listing_source') or 'scrapingbee') != 'scrapingbee':
                     detail = {
                         k: v for k, v in (
                             ('phone', stub.get('phone')),
