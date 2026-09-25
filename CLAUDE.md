@@ -555,7 +555,29 @@ See `docs/deployment.md` for complete reference.
 - **Profile enrichment** on the fallback (`browser`/`fusion`/`relay`) paths still uses ScrapingBee `stealth_proxy` on `/biz/<slug>` (75 credits/page) — unchanged.
 - Country fan-out via `yelp_country_cities.json` (24 markets as of 2026-06-18).
 
-### OpenAI listing source (`openai`) — TripAdvisor only
+### TripAdvisor listing — `apify` is the recommended source
+- **`TRIPADVISOR_LISTING_SOURCE=apify`** uses `maxcopell/tripadvisor` and
+  answers in ONE call what the OpenAI path needed two for. Crucially it
+  returns the canonical `webUrl`, so the dedupe key comes from the source
+  rather than from a model that fabricated 9 of 11 when asked for it.
+- **Measured live on Cologne, 2026-09-25** — the whole city, 104 hotels,
+  $0.30: 15 at or under 3.5 (14%), 13 of those with an email already attached
+  (87%). **$0.020 per usable lead against the OpenAI path's $0.204.**
+- **A 40-result sample first suggested only 2% qualified.** That was the TOP
+  of a ranked list — by definition the best-rated hotels. Never estimate a
+  tail from the head of a ranking; pull the city.
+- **Rating is filtered client-side** because the actor exposes none, so
+  billed and kept differ by roughly 7x. That gap IS the cost model and the
+  run prints both (`N kept of M fetched`).
+- **Contact data arrives with the listing** — website, email and phone — so
+  there is no second pass and no ScrapingBee. The actor does return
+  placeholders where a number should be (`OTHER` on a live row), which
+  `_clean_phone` drops.
+- Guards: `TRIPADVISOR_APIFY_MAX_ITEMS` (per city, 150) and
+  `TRIPADVISOR_APIFY_MAX_ITEMS_PER_JOB` (whole job, 600). Out-of-credit
+  raises `apify_credit` and is never reported as an empty market.
+
+### OpenAI listing source (`openai`) — kept as a fallback
 - **Two passes, and the second is not optional.** Pass 1 asks for a whole
   city in ONE call so the flat web-search fee is shared ($0.0032/business
   measured). Pass 2 opens each candidate's own profile. Asked to include the

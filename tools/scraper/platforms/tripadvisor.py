@@ -62,6 +62,13 @@ from tools.scraper.shared.supabase_storage import (
 )
 from tools.scraper.shared.screenshot_crop import crop_tripadvisor_header
 from tools.scraper.shared.openai_listing import run_listing as run_openai_listing
+from tools.scraper.platforms.tripadvisor_apify import (
+    TripAdvisorApifyCreditError,
+    TripAdvisorApifyError,
+    apify_enabled as ta_apify_enabled,
+    job_item_budget as ta_job_item_budget,
+    search_city as ta_search_city,
+)
 
 
 # URL templates per listing type. (geo_id, location_slug, offset)
@@ -440,6 +447,73 @@ class TripAdvisorScraper(BasePlatformScraper):
         # gate below — otherwise a vendor we no longer use blocks the route
         # that exists to replace it.
         source = os.environ.get('TRIPADVISOR_LISTING_SOURCE', 'scrapingbee').strip().lower()
+
+        # The Apify actor answers in ONE call what the OpenAI path needed two
+        # for, and returns the canonical profile URL rather than a model's
+        # guess at it. Measured on Cologne 2026-09-25: the whole city for
+        # $0.30, 15 usable leads, 13 of them with an email already attached —
+        # $0.020 a lead against the OpenAI path's $0.204. Checked before the
+        # ScrapingBee key gate, like the openai source, because it needs no
+        # ScrapingBee either.
+        if source == 'apify':
+            listing_type = (filters.get('listing_type') or 'hotels').lower()
+            city = str(filters.get('city') or '').strip() or _city_from_slug(
+                str(filters.get('location_slug') or ''))
+            if not city:
+                print(
+                    "FAILED:listing|tripadvisor|no_city|The apify source needs a "
+                    "readable city. Pass filters.city, or a location_slug it can "
+                    "be derived from.",
+                    flush=True,
+                )
+                return []
+            if not ta_apify_enabled():
+                print(
+                    "FAILED:listing|tripadvisor|missing_key|APIFY_API_TOKEN is not "
+                    "set; the apify listing source cannot run without it.",
+                    flush=True,
+                )
+                return []
+
+            budget = ta_job_item_budget()
+            try:
+                kept, billed = ta_search_city(
+                    city, listing_type,
+                    country=str(filters.get('country') or ''),
+                    max_rating=float(filters.get('max_rating', 3.0)),
+                    min_rating=float(filters.get('min_rating', 1.0)),
+                    min_review_count=int(filters.get('min_review_count', 0)),
+                    include_unrated=bool(filters.get('include_unrated', False)),
+                    item_budget=budget if budget else None,
+                )
+            except TripAdvisorApifyCreditError as e:
+                # Never reported as an empty market — that is the ScrapingBee
+                # "completed, 0 found" failure wearing a different coat.
+                print(
+                    f"FAILED:listing|tripadvisor|apify_credit|{e}|Top up at "
+                    f"https://console.apify.com/billing and re-run.",
+                    flush=True,
+                )
+                return []
+            except TripAdvisorApifyError as e:
+                print(f"FAILED:listing|tripadvisor|apify_error|{city}|{e}", flush=True)
+                return []
+
+            if on_progress:
+                on_progress({
+                    'stage': 'listing', 'city': city,
+                    'found': len(kept), 'page_found': len(kept),
+                })
+            # Billed vs kept differ by roughly 7x — the actor cannot filter on
+            # rating, so the gap IS the cost model and hiding it would
+            # understate spend by that factor.
+            print(
+                f"  TripAdvisor/apify {city}: {len(kept)} kept of {billed} fetched "
+                f"(rating filter is client-side).",
+                flush=True,
+            )
+            return kept[:max_results] if max_results else kept
+
         if source == 'openai':
             listing_type = (filters.get('listing_type') or 'hotels').lower()
             # The geo slug is the only human-readable place name this
