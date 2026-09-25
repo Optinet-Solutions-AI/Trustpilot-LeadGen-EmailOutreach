@@ -845,9 +845,12 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       // own, and fixing only that one still left every job failing here with
       // "out of credits" three seconds after starting.
       const failOnExhaustedCredits = async (): Promise<boolean> => {
+        // Allowlist, not denylist — see the matching gate in routes/scrape.ts.
+        // Written as `=== 'openai'` this exempted one source and re-blocked
+        // every other cookieless one.
         const taSource = (process.env.TRIPADVISOR_LISTING_SOURCE ?? 'scrapingbee')
           .trim().toLowerCase();
-        if (taSource === 'openai') return false;
+        if (taSource !== 'scrapingbee') return false;
         const credits = await getScrapingBeeCredits({ fresh: true });
         if (credits.status !== 'exhausted') return false;
         const msg = scrapingBeeExhaustedMessage(credits);

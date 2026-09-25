@@ -438,9 +438,14 @@ router.post('/', async (req: Request, res: Response) => {
       // carries phone, website and email), so an empty credit pool costs
       // screenshots — not the run. Refusing the job then would block a route
       // that exists precisely to avoid needing ScrapingBee at all.
+      // Allowlist, not denylist. This was written as `!== 'openai'`, which
+      // exempted exactly one source and re-blocked the job the moment the
+      // operator switched to `apify` — the same "out of credits" failure on a
+      // path that never calls ScrapingBee. Only the ScrapingBee source can be
+      // stopped by an empty ScrapingBee pool.
       const taSource = (process.env.TRIPADVISOR_LISTING_SOURCE ?? 'scrapingbee')
         .trim().toLowerCase();
-      if (taSource !== 'openai') {
+      if (taSource === 'scrapingbee') {
         const { getScrapingBeeCredits, scrapingBeeExhaustedMessage } =
           await import('../services/scrapingbee-credits.js');
         const credits = await getScrapingBeeCredits();
