@@ -226,7 +226,16 @@ def _upsert_nontrustpilot_lead(lead: dict, now_iso: str) -> tuple[str | None, bo
         'category': canonicalize_category(lead.get('category')),
         'website_url': lead.get('website_url'),
         'phone': lead.get('phone'),
-        'primary_email': lead.get('primary_email') or lead.get('website_email'),
+        # platform_email FIRST, per the documented order (platform > website).
+        # It was missing here, so an address scraped straight off the profile
+        # reached lead_platform_presences and stopped: measured 2026-09-25 on
+        # a live TripAdvisor run, 24 of 25 leads had a real address on the
+        # presence row and primary_email NULL on every one of them. The UI and
+        # every campaign read primary_email, so those leads were uncontactable
+        # while their address sat one table away.
+        'primary_email': (lead.get('primary_email')
+                          or lead.get('platform_email')
+                          or lead.get('website_email')),
         'website_email': lead.get('website_email'),
         # An unclaimed listing is the highest-converting cold-outreach target
         # — nobody is watching that profile, so the pitch lands fresh. The

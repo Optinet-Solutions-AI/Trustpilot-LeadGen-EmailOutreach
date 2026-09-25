@@ -869,8 +869,34 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       let cityIdx = 0;
       let cancelled = false;
 
+      // Whole-JOB spend ceiling. OPENAI_MAX_SPEND_PER_JOB is enforced inside
+      // the Python process, and the fan-out below starts a SEPARATE process
+      // per city — so each city got its own full budget and the job total was
+      // never capped at all. Measured 2026-09-25: a $2.00 "per job" ceiling
+      // produced a $5.09 run across 10 cities. The runner is the only place
+      // that can see the job total, because it is the only thing that sees
+      // every city.
+      const jobSpendCap = Number(process.env.SCRAPE_MAX_SPEND_PER_JOB ?? '2.00');
+      const spentSoFar = () => summariseScrapeCost(jobCostLines.get(jobId) ?? []).totalUsd;
+
       const runOneCity = async (city: TripAdvisorCity): Promise<void> => {
         if (cancelled) return;
+
+        // Checked BEFORE starting a city, because a city cannot be stopped
+        // once its process is running. Whatever earlier cities produced is
+        // kept — the same contract the Apify guards use.
+        if (jobSpendCap > 0 && spentSoFar() >= jobSpendCap) {
+          cancelled = true;
+          const spent = spentSoFar();
+          console.warn(
+            `[${platform}] Job ${jobId} stopped at $${spent.toFixed(2)} of `
+            + `$${jobSpendCap.toFixed(2)} — remaining cities skipped.`,
+          );
+          emitProgress(jobId, 'budget_exhausted',
+            `Stopped after $${spent.toFixed(2)} of $${jobSpendCap.toFixed(2)}. `
+            + `${dedup.size} leads kept. Raise SCRAPE_MAX_SPEND_PER_JOB to go further.`);
+          return;
+        }
 
         // Early-stop: bail out of remaining cities once we've collected
         // enough leads. Saves credits + time on broad scrapes where the
