@@ -505,6 +505,20 @@ paths:
       responses:
         "200":
           description: OK
+  /api/enrich/estimate:
+    get:
+      operationId: enrichEstimate
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/verify/estimate:
+    get:
+      operationId: verifyEstimate
+      security: []
+      responses:
+        "200":
+          description: OK
   /api/campaigns:
     get:
       operationId: listCampaigns

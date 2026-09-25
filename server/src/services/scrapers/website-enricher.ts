@@ -1346,6 +1346,13 @@ async function enrichSingleLeadWithTiers(
 ): Promise<{
   email: string | null;
   tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'openai' | 'redirected' | 'none';
+  /**
+   * What this lead cost in vendor spend. Only tier 10 charges anything today;
+   * it is carried out rather than logged so the caller can put it on the job,
+   * which is the difference between spend the operator can see and spend that
+   * only shows up on a vendor invoice.
+   */
+  usd?: number;
   blockReason?: string;
   redirectsTo?: string;
   // Set when the in-tier scrapeSite() reports the email came from a lateral
@@ -1650,6 +1657,7 @@ async function enrichSingleLeadWithTiers(
   //
   // Off unless ENRICH_OPENAI_ENABLED=true. It costs real money per lead and
   // the ladder above is free, so it must never fire by accident.
+  let tier10Spend = 0;
   if (openaiEnrichEnabled()) {
     try {
       const got = await tier10OpenAiLookup({
@@ -1664,8 +1672,11 @@ async function enrichSingleLeadWithTiers(
       }
       if (got.email) {
         setDomainMemo(websiteUrl, { workingTier: 'openai', lastBlockReason: undefined });
-        return { email: got.email, tier: 'openai' };
+        return { email: got.email, tier: 'openai', usd: got.usd };
       }
+      // A miss still cost money — reporting only successful lookups would
+      // understate the bill by the 40% that find nothing.
+      if (got.usd > 0) tier10Spend = got.usd;
       if (got.error) {
         console.warn(`    [enricher] tier10: ${got.error.slice(0, 120)}`);
       }
@@ -1678,7 +1689,7 @@ async function enrichSingleLeadWithTiers(
   // Guessed emails (info@<domain>) polluted the DB with addresses that look
   // legitimate but were never actually verified to exist on the page.
   setDomainMemo(websiteUrl, { lastBlockReason: lastBlockReason ?? 'no_email' });
-  return { email: null, tier: 'none', blockReason: lastBlockReason };
+  return { email: null, tier: 'none', usd: tier10Spend, blockReason: lastBlockReason };
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -1699,6 +1710,8 @@ export interface EnrichmentResult {
   // (writes to leads.website_email). 'none' = no email found.
   source: 'scrape' | 'lateral' | 'none';
   tier: Tier | 'scrapingbee' | 'scrapfly' | 'whois' | 'wayback' | 'crtsh' | 'hunter' | 'openai' | 'redirected' | 'none';
+  /** Vendor spend for this lead — 0 for every free tier. */
+  usd?: number;
   blockReason?: string;
   redirectsTo?: string;
 }
@@ -1791,7 +1804,7 @@ export async function enrichLeads(
       opts.onEvent?.({ type: 'enrich_start', index: itemIndex, total: queue.length, domain, leadId });
       try {
         const country = (lead.country as string | null | undefined) ?? null;
-        const { email, tier, blockReason, redirectsTo, scrapeSource } = await withHardTimeout(
+        const { email, tier, blockReason, redirectsTo, scrapeSource, usd } = await withHardTimeout(
           enrichSingleLeadWithTiers(websiteUrl, {
             country,
             // Only tier 10 reads this, and it is what makes that tier safe:
@@ -1809,6 +1822,10 @@ export async function enrichLeads(
           foundEmail: email,
           source: resolvedSource,
           tier,
+          // Carried per lead so the route can total it onto the job. A miss
+          // costs the same as a hit on tier 10, and only counting hits would
+          // understate the bill by the ~40% that find nothing.
+          usd,
           blockReason,
           redirectsTo,
         };

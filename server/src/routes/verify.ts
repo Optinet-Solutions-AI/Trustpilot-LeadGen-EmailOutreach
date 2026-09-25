@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { estimateVerifyCost } from '../services/run-cost.js';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { getSupabase } from '../lib/supabase.js';
@@ -31,6 +32,25 @@ function emit(jobId: string, stage: string, detail: string) {
 const router = Router();
 
 // ── GET /api/verify/status?jobId=xxx — polling fallback ──────────────────────
+/**
+ * GET /api/verify/estimate?emails=N
+ *
+ * What verifying this many addresses will cost, before it runs. One
+ * ZeroBounce credit per address.
+ *
+ * The dollar figure appears only when ZEROBOUNCE_USD_PER_CREDIT is set. The
+ * rate depends entirely on the plan, and an invented number gets quoted back
+ * as fact — the same reason ScrapingBee reports credits rather than dollars.
+ * A credit count is true whether or not anyone has configured a price.
+ */
+router.get('/estimate', (req: Request, res: Response) => {
+  const emails = Number(req.query.emails ?? 0);
+  if (!Number.isFinite(emails) || emails < 0) {
+    return res.status(400).json({ success: false, error: 'emails must be a non-negative number' });
+  }
+  return res.json({ success: true, data: estimateVerifyCost(emails) });
+});
+
 router.get('/status', (req: Request, res: Response) => {
   const { jobId } = req.query;
   if (!jobId || typeof jobId !== 'string') {

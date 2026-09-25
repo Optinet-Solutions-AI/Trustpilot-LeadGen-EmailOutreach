@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { RunCost, estimateEnrichCost } from '../services/run-cost.js';
+import { openaiEnrichEnabled, maxCallsPerRun } from '../services/scrapers/tier10-openai.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead } from '../services/scrapers/website-enricher.js';
 import { scrapeEvents, translateEnricherEvent } from '../services/scrape-runner.js';
@@ -38,6 +40,29 @@ export function summariseEnrichmentRun(
 
 // Sentinel value used in scrape_jobs to identify enrichment-only jobs
 const ENRICH_SENTINEL = '_enrich_';
+
+/**
+ * GET /api/enrich/estimate?leads=N
+ *
+ * What this enrichment will cost, BEFORE it runs. Enrichment can be priced up
+ * front because the work is known — a list of leads — unlike a scrape, which
+ * discovers businesses nobody has counted.
+ *
+ * Returns 0 when the paid tier is off, which is the honest answer rather than
+ * a guess at credits nobody is paying for: every tier before 10 is free or
+ * running on a dead account.
+ */
+router.get('/estimate', (req: Request, res: Response) => {
+  const leads = Number(req.query.leads ?? 0);
+  if (!Number.isFinite(leads) || leads < 0) {
+    return res.status(400).json({ success: false, error: 'leads must be a non-negative number' });
+  }
+  const estimate = estimateEnrichCost(leads, {
+    openAiEnabled: openaiEnrichEnabled(),
+    maxCalls: maxCallsPerRun(),
+  });
+  return res.json({ success: true, data: estimate });
+});
 
 // ── GET /api/enrich/status?jobId=xxx ─────────────────────────────────────────
 router.get('/status', async (req: Request, res: Response) => {
@@ -320,9 +345,20 @@ router.post('/', async (req: Request, res: Response) => {
           dbFailed,
         });
 
+        // Vendor spend for this enrichment run. Tier 10 charges per lead
+        // ATTEMPTED, so misses are counted too — billing only for hits would
+        // understate it by the ~40% that find nothing. Written in the same
+        // shape scrapes use, so the Scrape page totals both together.
+        const runCost = new RunCost();
+        for (const r of results) {
+          const spent = (r as { usd?: number }).usd ?? 0;
+          if (spent > 0) runCost.add('openai', spent, 1, 'lookups');
+        }
+
         const { error: jobUpdateErr } = await supabase.from('scrape_jobs').update({
           status: 'completed',
           ...summary,
+          ...runCost.toJobPatch(successful),
           completed_at: new Date().toISOString(),
         }).eq('id', jobId);
 
