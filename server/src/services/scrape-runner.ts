@@ -36,6 +36,34 @@ import {
  */
 const jobCostLines = new Map<string, string[]>();
 
+/**
+ * Book vendor spend against a job.
+ *
+ * The Python scrapers report spend by printing `COST:` lines, which the child's
+ * stdout handler collects. The website enricher does NOT — it runs IN-PROCESS
+ * here, so its `console.log` goes to the service log and never reaches this
+ * map. That is how a scrape with "find emails" ticked could run tier 10 and
+ * report a cost of zero.
+ *
+ * Recorded per lead as the events arrive, never totalled at the end: this
+ * function's whole reason for existing is that the enrichment watchdog
+ * abandons its results after 45 minutes, and money already spent must survive
+ * that.
+ */
+export function recordJobSpend(
+  jobId: string,
+  vendor: string,
+  usd: number,
+  units = 1,
+  unitLabel = 'lookups',
+): void {
+  if (!Number.isFinite(usd) || usd <= 0) return;
+  const bucket = jobCostLines.get(jobId) ?? [];
+  bucket.push(`COST:enrich|${vendor}|${usd.toFixed(6)}|${units}|${unitLabel}`);
+  jobCostLines.set(jobId, bucket);
+  emitProgress(jobId, 'cost', `${summariseScrapeCost(bucket).totalUsd}`);
+}
+
 /** What this job has spent so far, ready to write to its row. */
 function costPatch(jobId: string, leadsFound?: number) {
   const lines = jobCostLines.get(jobId);
@@ -282,7 +310,13 @@ async function runTsEnricher(jobId: string, jsonFile: string): Promise<number> {
     onProgress: (done, totalItems) => {
       emitProgress(jobId, 'enrich_progress', `${done}/${totalItems}`);
     },
-    onEvent: (event) => translateEnricherEvent(jobId, event),
+    onEvent: (event) => {
+      // Tier 10 costs the same whether it finds an address or not, so every
+      // outcome event can carry spend — not just the hits.
+      const spent = (event as { usd?: number }).usd;
+      if (spent) recordJobSpend(jobId, 'openai', spent);
+      translateEnricherEvent(jobId, event);
+    },
   });
 
   let timedOut = false;

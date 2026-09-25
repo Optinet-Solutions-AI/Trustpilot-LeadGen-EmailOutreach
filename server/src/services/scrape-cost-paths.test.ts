@@ -53,3 +53,42 @@ describe('every job completion records its cost', () => {
     expect(releases).toBe(costWrites);
   });
 });
+
+/**
+ * Enrichment that runs INSIDE a scrape must book its spend too.
+ *
+ * The Python scrapers report spend by printing `COST:` lines, collected off
+ * the child's stdout. The website enricher prints the same line — but it runs
+ * in-process, so its output goes to the service log and reaches no child
+ * handler. A scrape with "find emails" ticked could therefore run tier 10, at
+ * $0.047 a lead, and report a cost of zero.
+ *
+ * The fix routes it through `recordJobSpend`, and these guard the two ways it
+ * silently reverts: the call site disappearing, and the enricher no longer
+ * telling anyone what a lead cost.
+ */
+describe('in-scrape enrichment books its spend', () => {
+  test('the enricher event stream is what records it', () => {
+    // Per event, not totalled after the await: the enrichment watchdog
+    // abandons its results at 45 minutes and money already spent must survive.
+    const onEvent = /onEvent:\s*\(event\)\s*=>\s*\{[\s\S]{0,400}?recordJobSpend\(jobId/;
+    expect(SOURCE).toMatch(onEvent);
+  });
+
+  test('the enricher hands every outcome its cost, not just the hits', () => {
+    // A tier-10 miss costs the same as a hit. Counting only hits would
+    // understate the bill by the ~40% that find nothing.
+    const enricher = readFileSync(join(import.meta.dirname, 'scrapers/website-enricher.ts'), 'utf8');
+    const events = enricher.slice(enricher.indexOf('export type EnricherEvent'));
+    for (const outcome of ['enrich_email', 'enrich_no_email', 'enrich_redirected', 'enrich_failed']) {
+      const decl = new RegExp(`type: '${outcome}'[^}]*usd[?]: number`);
+      expect(events, outcome).toMatch(decl);
+    }
+  });
+
+  test('nothing is spent at enrich_start, so it carries no cost', () => {
+    const enricher = readFileSync(join(import.meta.dirname, 'scrapers/website-enricher.ts'), 'utf8');
+    const decl = /type: 'enrich_start'[^}]*\}/.exec(enricher)?.[0] ?? '';
+    expect(decl).not.toContain('usd');
+  });
+});

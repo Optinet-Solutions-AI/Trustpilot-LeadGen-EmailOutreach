@@ -1726,10 +1726,10 @@ export type EnricherEvent =
   // immediately (per-lead inline writes), so partial progress survives if
   // the worker dies mid-job — no more "Yazino was found but never saved"
   // problems on Cloud Run instance rotations.
-  | { type: 'enrich_email'; index: number; total: number; domain: string; email: string; tier: string; leadId?: string; source: 'scrape' | 'lateral'; redirectsTo?: string }
-  | { type: 'enrich_no_email'; index: number; total: number; domain: string; reason?: string; leadId?: string }
-  | { type: 'enrich_redirected'; index: number; total: number; domain: string; redirectsTo: string; leadId?: string }
-  | { type: 'enrich_failed'; index: number; total: number; domain: string; reasonCode: string; message: string; leadId?: string };
+  | { type: 'enrich_email'; index: number; total: number; domain: string; email: string; tier: string; leadId?: string; source: 'scrape' | 'lateral'; redirectsTo?: string; usd?: number }
+  | { type: 'enrich_no_email'; index: number; total: number; domain: string; reason?: string; leadId?: string; usd?: number }
+  | { type: 'enrich_redirected'; index: number; total: number; domain: string; redirectsTo: string; leadId?: string; usd?: number }
+  | { type: 'enrich_failed'; index: number; total: number; domain: string; reasonCode: string; message: string; leadId?: string; usd?: number };
 
 function domainOf(url: string): string {
   const stripped = url.replace(/^https?:\/\//, '').split('/')[0] || url;
@@ -1843,17 +1843,18 @@ export async function enrichLeads(
             // means it can't be 'none' here — narrow it for the route handler.
             source: resolvedSource === 'lateral' ? 'lateral' : 'scrape',
             redirectsTo,
+            usd,
           });
         } else if (redirectsTo) {
           console.log(`    [enricher] ⤳ redirected to ${redirectsTo}`);
-          opts.onEvent?.({ type: 'enrich_redirected', index: itemIndex, total: queue.length, domain, redirectsTo, leadId });
+          opts.onEvent?.({ type: 'enrich_redirected', index: itemIndex, total: queue.length, domain, redirectsTo, leadId, usd });
         } else if (blockReason && BLOCK_REASONS_THAT_ESCALATE.has(blockReason.replace(/^error:.*$/, 'bot_detected'))) {
           // A real scanner block — surface as a failed item with a reason code
           console.log(`    [enricher] ✗ blocked (${blockReason})`);
-          opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: blockReason, message: `Site blocked the scanner (${blockReason})`, leadId });
+          opts.onEvent?.({ type: 'enrich_failed', index: itemIndex, total: queue.length, domain, reasonCode: blockReason, message: `Site blocked the scanner (${blockReason})`, leadId, usd });
         } else {
           console.log(`    [enricher] ✗ no email (blockReason=${blockReason || 'none'})`);
-          opts.onEvent?.({ type: 'enrich_no_email', index: itemIndex, total: queue.length, domain, reason: blockReason, leadId });
+          opts.onEvent?.({ type: 'enrich_no_email', index: itemIndex, total: queue.length, domain, reason: blockReason, leadId, usd });
         }
       } catch (err) {
         const message = (err as Error).message.slice(0, 200);
