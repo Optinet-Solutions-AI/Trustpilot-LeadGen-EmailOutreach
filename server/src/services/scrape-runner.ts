@@ -868,7 +868,18 @@ async function runScrapeJobViaRunPy(params: ScrapeParams & { platform: string })
       emitProgress(jobId, 'city_total', String(cities.length));
 
       const dedup = new Map<string, Record<string, unknown>>();
-      const CONCURRENCY = 2;
+      // 2 was tuned for a path where each city meant a headless browser and
+      // ScrapingBee credits, so more parallelism cost memory and money. The
+      // cookieless sources are a plain HTTP call that spends minutes waiting
+      // on Apify, so the same 2 just makes the operator wait: measured
+      // 2026-09-25, a 10-city German run took ~20 minutes in the listing phase
+      // alone. Waiting in parallel costs nothing here.
+      const cookielessListing = ['apify', 'openai'].includes(
+        (process.env.TRIPADVISOR_LISTING_SOURCE ?? 'scrapingbee').trim().toLowerCase(),
+      );
+      const CONCURRENCY = Number(
+        process.env.SCRAPE_CITY_CONCURRENCY ?? (cookielessListing ? 5 : 2),
+      ) || 2;
       let cityIdx = 0;
       let cancelled = false;
 
