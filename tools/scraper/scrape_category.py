@@ -13,7 +13,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from tools.scraper.browser_utils import launch_browser, human_delay, safe_goto
+from tools.scraper.browser_utils import browser_proxy_for, launch_browser, human_delay, safe_goto
 
 
 async def scrape_category(
@@ -28,7 +28,7 @@ async def scrape_category(
     Scrape all companies from a Trustpilot category page filtered by rating.
     Returns list of { name, slug, rating, trustpilot_url }.
     """
-    browser, context, page = await launch_browser()
+    browser, context, page = await launch_browser(proxy=browser_proxy_for('trustpilot'))
     results = []
 
     try:

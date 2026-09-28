@@ -67,6 +67,22 @@ def apify_screenshot_enabled() -> bool:
     return bool(os.environ.get('APIFY_API_TOKEN', '').strip())
 
 
+def unblocker_proxy() -> Optional[dict]:
+    """Playwright proxy config for UNBLOCKER, or None when unavailable.
+
+    Exposed because the proxy is no longer only for screenshots: it is also
+    what lets Trustpilot be read from a server at all. Measured 2026-09-28 it
+    clears the AWS WAF that had kept Trustpilot pinned to the owner's laptop.
+
+    Callers must also set ignore_https_errors - UNBLOCKER terminates TLS
+    itself, so without it every page dies on ERR_CERT_AUTHORITY_INVALID.
+    """
+    password = _proxy_password()
+    if not password:
+        return None
+    return {'server': PROXY_SERVER, 'username': PROXY_GROUP_USER, 'password': password}
+
+
 def screenshot_source() -> str:
     """Which backend takes screenshots. Defaults to Apify when a token exists.
 

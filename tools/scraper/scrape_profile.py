@@ -12,10 +12,40 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from tools.scraper.browser_utils import launch_browser, human_delay, safe_goto, dismiss_popups
+from tools.scraper.browser_utils import browser_proxy_for, launch_browser, human_delay, safe_goto, dismiss_popups
+
+# Trustpilot's <h1> joins the company name to the word "Reviews" with a
+# NON-BREAKING space — that character is what distinguishes page furniture from
+# a business genuinely called "... Reviews" (onlinecasinocanadareviews.com is
+# one of ten such leads). The count that used to trail "Reviews" has moved out
+# of the heading, so it is optional here; the old regex required it and names
+# started arriving as "VBET\xa0Reviews".
+_REVIEWS_NBSP_RE = re.compile(r'\xa0\s*reviews(\s+[\d,.]+)?\s*$', re.IGNORECASE)
+# Legacy heading: plain space, but the trailing count proves it is furniture.
+_REVIEWS_COUNT_RE = re.compile(r'\s+reviews\s+[\d,.]+\s*$', re.IGNORECASE)
+
+
+def clean_company_name(raw: str | None) -> str | None:
+    """Strip Trustpilot's `<h1>` furniture off a scraped company name.
+
+    Deliberately conservative: a plain space before "Reviews" with no review
+    count is left alone, because that is a real business name rather than the
+    heading. Returns None when nothing usable survives, so the caller keeps the
+    name it already had instead of overwriting it with an empty string.
+    """
+    if not raw:
+        return None
+    name = _REVIEWS_NBSP_RE.sub('', str(raw))
+    name = _REVIEWS_COUNT_RE.sub('', name)
+    name = ' '.join(name.replace('\xa0', ' ').split())
+    # A bare heading means extraction found no name at all.
+    if name.lower() == 'reviews':
+        return None
+    return name or None
 
 
 CONTACT_EXTRACT_JS = r'''() => {
@@ -42,7 +72,16 @@ CONTACT_EXTRACT_JS = r'''() => {
             }
         }
         if (!rawName) rawName = h1.textContent.trim();
-        rawName = rawName.replace(/\s*Reviews\s+[\d,]+\s*$/i, '').trim();
+        // The h1 joins the name to "Reviews" with a NON-BREAKING space, and
+        // the review count that used to trail it has moved out of the heading.
+        // Match the nbsp form (count optional), or a plain space ONLY when a
+        // count proves it is furniture -- otherwise a business genuinely called
+        // "... Reviews" gets renamed. clean_company_name() mirrors this in
+        // Python as a backstop if the DOM drifts again.
+        rawName = rawName
+            .replace(/\u00a0\s*Reviews(\s+[\d,.]+)?\s*$/i, '')
+            .replace(/\s+Reviews\s+[\d,.]+\s*$/i, '')
+            .trim();
         result.company_name = rawName;
     }
 
@@ -383,6 +422,7 @@ async def _scrape_batch(context, slugs_batch, screenshots_dir, results_dict, fai
                 else:
                     # Merge contact data with lead
                     enriched = {**lead}
+                    contact['company_name'] = clean_company_name(contact.get('company_name'))
                     for key in ('company_name', 'website_url', 'trustpilot_email', 'phone', 'screenshot_path'):
                         if contact.get(key):
                             enriched[key] = contact[key]
@@ -450,7 +490,7 @@ async def scrape_profiles(
     atomically written to output_path every flush_every completed profiles so
     an orchestrator can upsert partial results incrementally.
     """
-    browser, context, _ = await launch_browser()
+    browser, context, _ = await launch_browser(proxy=browser_proxy_for('trustpilot'))
 
     if screenshots_dir:
         os.makedirs(screenshots_dir, exist_ok=True)
