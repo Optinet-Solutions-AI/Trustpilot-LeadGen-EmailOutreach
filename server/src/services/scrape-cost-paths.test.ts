@@ -27,14 +27,21 @@ const SOURCE = readFileSync(
 );
 
 describe('every job completion records its cost', () => {
+  // The cancel path is excluded from these counts and guarded on its own
+  // below: it cannot use the `...costPatch(jobId)` spread, because a job that
+  // ran on a worker leaves no COST: lines in THIS process and it has to fall
+  // back to the row's progress events.
+  const EXITS = SOURCE.slice(0, SOURCE.indexOf('export async function cancelScrapeJob'))
+    + SOURCE.slice(SOURCE.indexOf('export function getActiveProcesses'));
+
   test('there is at least one completion, so the count is meaningful', () => {
-    const completions = SOURCE.match(/status: 'completed'/g) ?? [];
+    const completions = EXITS.match(/status: 'completed'/g) ?? [];
     expect(completions.length).toBeGreaterThan(0);
   });
 
   test('each completion is matched by a costPatch call', () => {
-    const completions = (SOURCE.match(/status: 'completed'/g) ?? []).length;
-    const costWrites = (SOURCE.match(/\.\.\.costPatch\(jobId/g) ?? []).length;
+    const completions = (EXITS.match(/status: 'completed'/g) ?? []).length;
+    const costWrites = (EXITS.match(/\.\.\.costPatch\(jobId/g) ?? []).length;
 
     expect(costWrites, [
       `${completions} places mark a job completed but only ${costWrites} record`,
@@ -48,8 +55,8 @@ describe('every job completion records its cost', () => {
     // jobCostLines is a module-level Map keyed by job id. A completion that
     // writes cost but never deletes its entry grows the map for the life of
     // the process.
-    const costWrites = (SOURCE.match(/\.\.\.costPatch\(jobId/g) ?? []).length;
-    const releases = (SOURCE.match(/jobCostLines\.delete\(jobId\)/g) ?? []).length;
+    const costWrites = (EXITS.match(/\.\.\.costPatch\(jobId/g) ?? []).length;
+    const releases = (EXITS.match(/jobCostLines\.delete\(jobId\)/g) ?? []).length;
     expect(releases).toBe(costWrites);
   });
 });
@@ -90,5 +97,32 @@ describe('in-scrape enrichment books its spend', () => {
     const enricher = readFileSync(join(import.meta.dirname, 'scrapers/website-enricher.ts'), 'utf8');
     const decl = /type: 'enrich_start'[^}]*\}/.exec(enricher)?.[0] ?? '';
     expect(decl).not.toContain('usd');
+  });
+});
+
+/**
+ * Cancelling a run does not un-spend its money.
+ *
+ * A Trustpilot job cancelled after 6 proxied pages had spent $0.081 and was
+ * written to the row as no cost at all. The guard above counts only
+ * `status: 'completed'` exits, so the cancel path — which writes
+ * `status: 'failed'` — was never covered by it.
+ *
+ * The spend is recoverable even when the job ran on a WORKER rather than in
+ * this process: the runner emits a `cost` progress event per charge, and those
+ * land on the row. So cancel has a source of truth either way.
+ */
+describe('cancelling a job still records what it spent', () => {
+  const CANCEL = SOURCE.slice(
+    SOURCE.indexOf('export async function cancelScrapeJob'),
+    SOURCE.indexOf('export function getActiveProcesses'),
+  );
+
+  test('the cancel path exists and marks the job failed', () => {
+    expect(CANCEL).toContain("status: 'failed'");
+  });
+
+  test('it writes a cost alongside that status', () => {
+    expect(CANCEL).toMatch(/costPatch\(|cost_usd/);
   });
 });

@@ -16,7 +16,7 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
 import { config } from '../config.js';
-import { updateJob, markJobFailed } from '../db/scrape-jobs.js';
+import { updateJob, markJobFailed, getJob } from '../db/scrape-jobs.js';
 import { insertFailure } from '../db/scrape-failures.js';
 import { getSupabase } from '../lib/supabase.js';
 import { enrichLeads, type EnrichableLead, type EnricherEvent } from './scrapers/website-enricher.js';
@@ -610,6 +610,32 @@ async function uploadScreenshotsToStorage(screenshotsDir: string, enrichedOutput
 /**
  * Cancel a running scrape job by killing its Python process.
  */
+/**
+ * Spend recovered from the job's own progress events.
+ *
+ * Only used when this process holds no COST: lines for the job — which is the
+ * normal case for a job that ran on a worker, since the lines live in that
+ * worker's memory. The runner emits a `cost` event carrying the running total
+ * each time it charges, so the last one is what the run had spent.
+ */
+async function costFromProgressEvents(jobId: string): Promise<Record<string, unknown>> {
+  try {
+    const job = await getJob(jobId) as { recent_events?: Array<{ stage?: string; detail?: string }> } | null;
+    const events = job?.recent_events ?? [];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i]?.stage !== 'cost') continue;
+      const usd = Number(events[i].detail);
+      if (Number.isFinite(usd) && usd > 0) {
+        return { cost_usd: Math.round(usd * 1e6) / 1e6 };
+      }
+    }
+  } catch {
+    // Never fail a cancel because the cost could not be recovered.
+  }
+  return {};
+}
+
+
 export async function cancelScrapeJob(jobId: string): Promise<void> {
   const proc = activeProcesses.get(jobId);
   if (proc) {
@@ -633,11 +659,27 @@ export async function cancelScrapeJob(jobId: string): Promise<void> {
 
   stopHeartbeat(jobId);
 
+  // Cancelling does not un-spend the money. A Trustpilot job cancelled after
+  // 6 proxied pages had spent $0.081 and recorded none of it, because the
+  // guard on the completion paths only covers `status: 'completed'` and this
+  // one writes `failed`.
+  //
+  // When the job ran on a WORKER, this process never saw its COST: lines —
+  // they were collected in the worker's own memory and SIGKILL took them with
+  // it. The `cost` progress events it emitted did reach the row, so fall back
+  // to the last of those rather than reporting a paid run as free.
+  const localCost = costPatch(jobId);
+  const cost = Object.keys(localCost).length > 0
+    ? localCost
+    : await costFromProgressEvents(jobId);
+
   await updateJob(jobId, {
     status: 'failed',
     error: 'Cancelled by user',
     completed_at: new Date().toISOString(),
+    ...cost,
   });
+  jobCostLines.delete(jobId);
   emitProgress(jobId, 'failed', 'Cancelled by user');
 }
 
