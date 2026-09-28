@@ -478,15 +478,34 @@ See `docs/deployment.md` for complete reference.
 ### Trustpilot
 - Aggressive scrapers get rate-limited — use 2-5s randomized delays
 - Pages are JS-rendered — Playwright required (plus playwright-stealth)
-- **AWS WAF now fronts the whole site (measured 2026-09-04).** Every URL —
-  including plain `/review/<slug>` profile pages — returns a 403 "Verifying
-  your connection" interstitial to curl_cffi, so **`tls_fetch.py` is no longer
-  a Trustpilot fallback**; the network-strategy table that lists it for
-  Trustpilot is stale. Only the stealth **headed** browser clears it
-  (`PLAYWRIGHT_HEADLESS=false`), which puts Trustpilot in the same
-  owner-local-only bucket as the TripAdvisor and Yelp `browser` fetchers. The
-  interstitial self-solves in a real browser, so the fix on a blocked page is
-  to wait and re-navigate, not to swap transport.
+- **AWS WAF fronts the whole site (measured 2026-09-04), but it is no longer
+  owner-local-only (2026-09-28).** Every URL — including plain `/review/<slug>`
+  pages — returns a 403 "Verifying your connection" interstitial to curl_cffi,
+  so **`tls_fetch.py` is not a Trustpilot fallback**. What changed is that
+  **Apify UNBLOCKER clears the WAF**: measured 2026-09-28, a real profile
+  (bet365, TrustScore 1.3, 7,052 reviews) and a real category page (20
+  businesses with scores and websites) both read **headless** through the
+  proxy, using the scraper's own `__NEXT_DATA__` extraction unchanged. So
+  Trustpilot now runs on the server with the operator's machine switched off.
+- **`browser_proxy_for(platform)` in `browser_utils.py` makes that decision,
+  and the default IS the decision.** Headless means a server, which is exactly
+  where the wall refuses us, so headless + `APIFY_API_TOKEN` opts in on its
+  own; headed means the owner's residential line, which clears the wall for
+  free and must NOT pay for the proxy. `TRUSTPILOT_FETCH=unblocker|browser`
+  overrides either way. It is an **allowlist** (`_PROXYABLE = {'trustpilot'}`)
+  for the same reason the ScrapingBee gate became one after breaking five
+  times — and **Facebook/Instagram must never be added**: they carry
+  logged-in cookies, and a session minted on one IP then used from another is
+  how an account gets checkpointed.
+- **Trustpilot is no longer free.** Every proxied navigation costs ~$0.0135
+  and is reported on the job through the usual `COST:` line — including
+  navigations that time out, which consume proxy traffic just the same.
+  Budget roughly a cent a page: a 50-page category crawl is ~$0.68, and
+  per-profile enrichment is ~$0.0135 each on top.
+- **Proxied navigation gets 120s, not 30s.** UNBLOCKER solves the challenge
+  before it answers (20s for raw HTML, 70-115s for a full browser page). At
+  the 30s default a run spent two whole attempts timing out — paying for the
+  traffic each time — before the third succeeded.
 - Legacy 3-script chain (`scrape_category.py` → `scrape_profile.py` → `discover_taxonomy.py`); not yet migrated to the plugin pattern
 - **Reverse lookup (brand list → Trustpilot).** The normal flow scrapes a
   category to discover businesses; `tools/scraper/trustpilot_reverse_lookup.py`
