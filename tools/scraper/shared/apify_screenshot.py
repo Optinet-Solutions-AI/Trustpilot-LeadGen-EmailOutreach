@@ -124,7 +124,30 @@ def looks_blocked(body_text: str) -> bool:
     return any(sign in lowered for sign in _BLOCK_SIGNS)
 
 
-def fetch_screenshot_via_apify(
+_DEFAULT_ATTEMPTS = 2
+
+
+def shot_attempts() -> int:
+    """How many times to ask UNBLOCKER for the same page.
+
+    It solves the challenge server-side and does not always win: measured on a
+    live Yelp run 2026-09-28, 8 of 25 profiles came back as interstitials. One
+    attempt made each of those a permanent loss for that lead, even though the
+    challenge is probabilistic and the next attempt often succeeds. TripAdvisor
+    never showed this because Cloudflare yields more readily than PerimeterX.
+
+    Bounded, because every attempt is a fresh paid page load and one stubborn
+    profile should not become an open-ended bill.
+    """
+    raw = (os.environ.get('APIFY_SHOT_ATTEMPTS', '') or '').strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return _DEFAULT_ATTEMPTS
+    return n if 2 <= n <= 4 else _DEFAULT_ATTEMPTS
+
+
+def _screenshot_attempt(
     target_url: str,
     *,
     full_page: bool = False,
@@ -192,6 +215,14 @@ def fetch_screenshot_via_apify(
                 body = page.inner_text('body')[:600]
             except Exception:
                 pass
+            # Billed here, not on the success path below: the page was
+            # fetched through the paid proxy whether or not what came back is
+            # usable. Recording it only on success under-reported the run's
+            # own spend, which is the one direction a cost figure must never
+            # be wrong in.
+            report_cost(platform, 'apify-unblocker', units=1,
+                        unit_label='screenshots', usd=USD_PER_SCREENSHOT)
+
             if looks_blocked(body):
                 print(f"FAILED:screenshot|{target_url}|unblocker_challenge|"
                       f"Apify UNBLOCKER returned a challenge page, not the profile.",
@@ -211,12 +242,8 @@ def fetch_screenshot_via_apify(
                 except Exception:
                     pass
 
-            shot = page.screenshot(full_page=full_page)
-            # Charged whether or not the bytes are usable — the page was
-            # fetched either way.
-            report_cost(platform, 'apify-unblocker', units=1,
-                        unit_label='screenshots', usd=USD_PER_SCREENSHOT)
-            return shot
+            # Already charged above, before the page was judged.
+            return page.screenshot(full_page=full_page)
     except Exception as e:
         print(f"[apify-shot] {target_url}: {type(e).__name__}: {str(e)[:160]}", flush=True)
         return None
@@ -252,6 +279,38 @@ async def fetch_screenshots_via_apify(
 
     await asyncio.gather(*(one(u) for u in urls))
     return out
+
+
+def fetch_screenshot_via_apify(
+    target_url: str,
+    *,
+    full_page: bool = False,
+    platform: Optional[str] = None,
+    wait_selector: Optional[str] = None,
+) -> Optional[bytes]:
+    """PNG bytes for a page, retrying a challenge.
+
+    Never raises, so a screenshot problem costs a screenshot rather than the
+    whole lead — the same contract the ScrapingBee fetcher had.
+
+    Each attempt builds a fresh browser and context, which is the point: a
+    retry down the same proxy session would meet the same challenge. Only a
+    challenge is retried; a crash or a timeout is not, because those are not
+    the probabilistic failure this exists for and retrying them just burns
+    the clock on a run that already takes 70-115s a page.
+    """
+    attempts = shot_attempts()
+    for attempt in range(1, attempts + 1):
+        shot = _screenshot_attempt(
+            target_url, full_page=full_page, platform=platform,
+            wait_selector=wait_selector,
+        )
+        if shot:
+            if attempt > 1:
+                print(f"PROGRESS:screenshot_retry_ok:{target_url}|cleared on attempt {attempt}",
+                      flush=True)
+            return shot
+    return None
 
 
 def fetch_profile_screenshot(
